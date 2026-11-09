@@ -28,6 +28,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   saved: [credentialId: string];
   cancel: [];
+  /**
+   * 处理中状态变化。父级必须据此挡住「会让表单消失」的关闭（弹窗关闭图标 / 遮罩 /
+   * Esc）：保存中把表单藏起来会被误读成取消，而请求其实还在跑。
+   */
+  "busy-change": [busy: boolean];
 }>();
 
 const PURPOSE_OPTIONS = [
@@ -265,6 +270,7 @@ async function submit() {
 async function save() {
   if (busy.value) return;
   busy.value = true;
+  emit("busy-change", true);
   try {
     if (props.mode === "create") {
       const model = resolvedModel();
@@ -317,9 +323,11 @@ async function save() {
     }
     emit("saved", keyId);
   } catch (exc) {
+    // 失败保留用户已填内容，只给一句能读懂的错因（不包含 Key 本身）。
     error.value = readableError(exc);
   } finally {
     busy.value = false;
+    emit("busy-change", false);
   }
 }
 </script>

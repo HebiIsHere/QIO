@@ -99,17 +99,19 @@ def test_proposal_results_carry_structured_facts(db_conn: sqlite3.Connection):
     """
     tool = _tool(db_conn)
     rejected = asyncio.run(tool.run(**_args(evidence_ids=["ghost"])))
-    assert rejected.facts == {
-        "knowledge_proposal": {"state": "failed", "code": "evidence_not_found"}
-    }
+    rejected_fact = rejected.facts["knowledge_proposal"]
+    assert rejected_fact["state"] == "failed"
+    assert rejected_fact["code"] == "evidence_not_found"
     accepted = asyncio.run(tool.run(**_args()))
-    assert accepted.facts == {
-        "knowledge_proposal": {
-            "state": "awaiting_approval",
-            "code": "awaiting_user_approval",
-            "knowledge_id": accepted.data["knowledge_id"],
-        }
+    accepted_fact = accepted.facts["knowledge_proposal"]
+    assert accepted_fact == {
+        "state": "awaiting_approval",
+        "code": "awaiting_user_approval",
+        "knowledge_id": accepted.data["knowledge_id"],
+        # 同一内容/类别/范围的重试共用指纹（界面据此更新该项而不是当成另一条提交）
+        "fingerprint": accepted_fact["fingerprint"],
     }
+    assert rejected_fact["fingerprint"] == accepted_fact["fingerprint"]
     duplicate = asyncio.run(tool.run(**_args()))
     assert duplicate.facts["knowledge_proposal"]["state"] == "awaiting_approval"
     assert duplicate.facts["knowledge_proposal"]["code"] == "already_awaiting_approval"
@@ -192,12 +194,12 @@ def test_active_duplicate_is_not_recreated(db_conn: sqlite3.Connection):
     assert result.ok and result.code == "already_active"
     assert result.data["knowledge_id"] == item.id
     # 已经是有效知识 = 成功事实（可据实说「已保存为有效知识」），不是失败。
-    assert result.facts == {
-        "knowledge_proposal": {
-            "state": "active",
-            "code": "already_active",
-            "knowledge_id": item.id,
-        }
+    fact = result.facts["knowledge_proposal"]
+    assert fact == {
+        "state": "active",
+        "code": "already_active",
+        "knowledge_id": item.id,
+        "fingerprint": fact["fingerprint"],
     }
     assert db_conn.execute("SELECT COUNT(*) c FROM knowledge").fetchone()["c"] == 1
 
@@ -214,9 +216,10 @@ def test_rejected_content_cannot_be_saved_again_by_propose(db_conn: sqlite3.Conn
     assert not result.ok
     assert result.status == "conflict" and result.code == "rejected_content"
     assert result.data["rejected"]["knowledge_id"] == item.id
-    assert result.facts == {
-        "knowledge_proposal": {"state": "rejected", "code": "rejected_content"}
-    }
+    fact = result.facts["knowledge_proposal"]
+    assert fact["state"] == "rejected"
+    assert fact["code"] == "rejected_content"
+    assert fact["fingerprint"]
 
 
 # ---------------------------------------------------------------------------

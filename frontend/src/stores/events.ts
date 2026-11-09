@@ -587,6 +587,8 @@ export const useEventStore = defineStore("events", {
               categoryLabel: stringOrNull(d.category_label),
               recoverable: typeof d.recoverable === "boolean" ? d.recoverable : null,
               resultStatus: stringOrNull(d.result_status ?? d.tool_result_status),
+              // 知识提交的稳定身份（同一条知识重试成功时据此更新该项，见问题 3）
+              knowledgeKey: stringOrNull(d.knowledge_key),
             },
           );
           if (session.turnRunning) {

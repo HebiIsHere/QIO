@@ -161,6 +161,18 @@ def facts(result: ToolResult) -> dict[str, Any]:
     字段时如实为 None —— 归一后的 `status` 仍然只说 success / failed / cancelled。
     """
     category = resolve_category(result) if not result.ok else None
+    # 知识提交的稳定身份（同一内容 / 类别 / 范围的重试共用）：只认工具给的
+    # 程序字段，界面用它区分「同一条知识重试」与「另一条独立提交」，不从文案猜。
+    proposal = (
+        result.facts.get("knowledge_proposal")
+        if isinstance(result.facts, dict)
+        else None
+    )
+    knowledge_key = ""
+    if isinstance(proposal, dict):
+        knowledge_key = str(
+            proposal.get("fingerprint") or proposal.get("knowledge_id") or ""
+        ).strip()
     return {
         "status": status_of(result),
         "ok": bool(result.ok),
@@ -169,6 +181,7 @@ def facts(result: ToolResult) -> dict[str, Any]:
         "recoverable": is_recoverable(result) if not result.ok else None,
         "code": result.code,
         "result_status": result.status,
+        "knowledge_key": knowledge_key or None,
         "reason": (result.error or "").strip() or None,
     }
 

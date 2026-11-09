@@ -171,8 +171,11 @@ describe("§四.1/2/3：区分「本轮结束」「调用失败」「等待审�
       content: "已提交审批：「…」",
       presentation: { title: "提交知识", tool: "propose_knowledge" },
     });
+    // 同一身份由后端程序字段给出（fingerprint）；没有身份的多次提交不得互相覆盖。
+    const failedSame = { ...KNOWLEDGE_FAILED, toolKnowledgeKey: "fp_retry" };
+    const retriedSame = { ...retried, toolKnowledgeKey: "fp_retry" };
     const { w } = mountProcess({
-      items: [KNOWLEDGE_FAILED, retried],
+      items: [failedSame, retriedSame],
       stages: [stage({ stageId: "st_1", callIds: ["c_k", "c_k2"] })],
       facts: facts(),
     });

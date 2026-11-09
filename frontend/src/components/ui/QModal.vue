@@ -10,6 +10,9 @@
  * - 唯一 role="dialog" + aria-modal + aria-labelledby 指向标题；
  * - 标题栏三列等宽：左槽留空、中间标题严格居中、右槽关闭图标按钮；
  * - Esc / 外部点击 / 关闭按钮只在 dismissible 且非 busy 时触发 close；
+ * - Esc 走共享层级栈（composables/useEscapeLayer.ts）：内层下拉菜单展开时先收菜单，
+ *   本层（最内层弹窗）才处理；busy / dismissible=false 时消费 Esc 但不关闭，
+ *   也不让后面的界面（如全窗口预览）误关；
  * - 焦点陷阱、打开时记录焦点、关闭后归还；不主动抢输入框焦点
  *   （弹窗可能在用户打字时被打开，抢焦点会打断输入/输入法）；
  * - 重复的关闭请求只发一次 close，避免父级重复提交；
@@ -21,9 +24,10 @@
  * - 被 suspendAll(by) 挂起时用 v-show 隐藏而不是卸载（草稿与内部状态保留）；
  * - 关闭 / 卸载时 close(modalId)；没有 pinia 的环境（画廊/单测）跳过仲裁，只做纯视觉。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 import { getActivePinia } from "pinia";
 import QIconButton from "./QIconButton.vue";
+import { useEscapeLayer } from "../../composables/useEscapeLayer";
 import { useModalArbiterStore, type ModalKind } from "../../stores/modalArbiter";
 
 const props = withDefaults(
@@ -118,6 +122,9 @@ const canDismiss = computed(() => props.dismissible && !props.busy);
 let restoreFocusTo: HTMLElement | null = null;
 let movedFocus = false;
 let closeEmitted = false;
+const instanceId = useId();
+/** Esc 层级身份：同一 modalId 的多个实例也互不干扰。 */
+const escapeLayerId = `qio-modal-${props.modalId}-${instanceId}`;
 
 const panelStyle = computed<Record<string, string>>(() => ({ "--qio-modal-width": props.width }));
 
@@ -131,6 +138,20 @@ function requestClose(): void {
 function onScrimClick(): void {
   requestClose();
 }
+
+/**
+ * Esc 交给共享层级栈仲裁：内层下拉菜单先处理（收菜单），本层只处理轮到自己的那次。
+ * - dismissible=false 或 busy：消费 Esc（不让后面的界面误关），但绝不 close；
+ * - 正常：与关闭按钮同一路径（同一次打开只发一次 close）。
+ */
+useEscapeLayer({
+  id: escapeLayerId,
+  active: () => shown.value,
+  onEscape: () => {
+    if (canDismiss.value) requestClose();
+    return true;
+  },
+});
 
 function focusablesInPanel(): HTMLElement[] {
   const root = panelRef.value;
@@ -174,13 +195,7 @@ function restoreFocus(): void {
 
 function onKeydown(event: KeyboardEvent): void {
   if (!shown.value) return;
-  if (event.key === "Escape") {
-    if (canDismiss.value) {
-      event.preventDefault();
-      requestClose();
-    }
-    return;
-  }
+  // Esc 由共享层级栈处理（见上面的 useEscapeLayer）；这里只负责 Tab 焦点陷阱。
   if (event.key !== "Tab") return;
   const root = panelRef.value;
   if (!root) return;

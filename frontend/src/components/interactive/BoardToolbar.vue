@@ -36,27 +36,16 @@ const props = withDefaults(
 );
 const emit = defineEmits<{
   (e: "toggle-bookmarks"): void;
-  (e: "annotate", tool: "pen" | "eraser"): void;
 }>();
 
 const store = useInteractiveStore();
 
-/** 标注菜单：本轮只有准确的占位提示，不创建笔迹、不改变鼠标模式。 */
-const annotateOpen = ref(false);
 /**
- * 一次操作后的短回执：浮在功能栏上方，**不参与功能栏高度**，
- * 所以功能栏在操作前后保持同一高度（避免「点一下长高一截」）。
+ * 标注菜单：画笔 / 橡皮本轮**尚未开放**，只保留入口说明。
+ * 未开放项用 disabled 明确禁用（不是可点击后再提示「开发中」的假按钮）；
+ * 该菜单不创建笔迹、不改变鼠标模式、不发出任何标注事件。
  */
-const notice = ref("");
-let noticeTimer: ReturnType<typeof setTimeout> | null = null;
-
-function say(text: string): void {
-  notice.value = text;
-  if (noticeTimer) clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => {
-    notice.value = "";
-  }, 5000);
-}
+const annotateOpen = ref(false);
 
 /* --------------------------------------------------------------------------
  * 按**实际可用宽度**分档（不是视口宽度）
@@ -98,7 +87,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  if (noticeTimer) clearTimeout(noticeTimer);
   observer?.disconnect();
   observer = null;
 });
@@ -116,8 +104,6 @@ onBeforeUnmount(() => {
     role="toolbar"
     aria-label="板面操作"
   >
-    <p v-if="notice" class="tb-notice" role="status">{{ notice }}</p>
-
     <!--
       只用来量「功能栏实际可用宽度」的隐形探测器：不显示、不可点、不参与主栏高度。
       reserve 的宽度写成 --im-toolbar-chat-reserve 的取值（可能含 min() 与 vw，无法用
@@ -171,13 +157,13 @@ onBeforeUnmount(() => {
 
         <span class="tb-sep" aria-hidden="true"></span>
 
-        <!-- 标注：本轮只给准确的「正在开发中」提示，不创建笔迹、不改变鼠标模式。 -->
+        <!-- 标注：画笔 / 橡皮尚未开放。入口本身明确标注「未开放」，展开后两项禁用执行。 -->
         <button
           class="tb-btn tb-icon-btn"
           type="button"
           data-im="annotate-toggle"
-          aria-label="标注"
-          v-qio-tip="'标注（画笔 / 橡皮）'"
+          aria-label="标注（画笔 / 橡皮，尚未开放）"
+          v-qio-tip="'标注（画笔 / 橡皮）尚未开放'"
           :aria-expanded="annotateOpen"
           @click="annotateOpen = !annotateOpen"
         >
@@ -188,10 +174,24 @@ onBeforeUnmount(() => {
             </g>
           </svg>
         </button>
-        <div v-if="annotateOpen" class="tb-annotate" data-im="annotate-menu" role="menu">
-          <button type="button" class="tb-annotate-item" role="menuitem" @click="say('正在开发中，敬请期待'); annotateOpen = false; emit('annotate', 'pen')">画笔</button>
-          <button type="button" class="tb-annotate-item" role="menuitem" @click="say('正在开发中，敬请期待'); annotateOpen = false; emit('annotate', 'eraser')">橡皮</button>
-          <p class="tb-annotate-note">正在开发中，敬请期待</p>
+        <div v-if="annotateOpen" class="tb-annotate" data-im="annotate-menu" role="group" aria-label="标注工具（尚未开放）">
+          <button
+            type="button"
+            class="tb-annotate-item"
+            data-im="annotate-pen"
+            disabled
+            aria-label="画笔（尚未开放）"
+          >画笔<span class="tb-annotate-badge">未开放</span></button>
+          <button
+            type="button"
+            class="tb-annotate-item"
+            data-im="annotate-eraser"
+            disabled
+            aria-label="橡皮（尚未开放）"
+          >橡皮<span class="tb-annotate-badge">未开放</span></button>
+          <p class="tb-annotate-note" data-im="annotate-note">
+            画笔与橡皮尚未开放：这里只保留入口说明，不能用于绘制。
+          </p>
         </div>
 
         <button
@@ -254,26 +254,6 @@ onBeforeUnmount(() => {
 }
 .tb-probe-reserve { width: var(--im-toolbar-chat-reserve); }
 .tb-probe-gap { width: calc(var(--sp-8) + var(--sp-4)); }
-
-/*
-  短回执浮在功能栏正上方右侧：绝对定位，**不改变功能栏高度**。
-  左下的板内搜索浮层占左侧，这里靠右，两者在 800×600 下互不相交。
-*/
-.tb-notice {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + var(--sp-2));
-  margin: 0;
-  max-width: min(320px, 62%);
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
-  box-shadow: var(--shadow-1);
-  font-size: var(--fs-xs);
-  line-height: var(--lh-tight);
-  color: var(--text-secondary);
-}
 
 /*
   主栏：显式 grid，五个具名区域。每一档的行列关系写死在下面，不随内容长度随机排列。
@@ -451,8 +431,25 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
 }
-.tb-annotate-item:hover { background: var(--layer-hover); color: var(--text-strong); }
-.tb-annotate-note { margin: var(--sp-1) var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs); }
+.tb-annotate-item:hover:not(:disabled) { background: var(--layer-hover); color: var(--text-strong); }
+/* 未开放项：明确禁用（不是「看起来能点、点完才提示开发中」的假按钮） */
+.tb-annotate-item:disabled {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 1;
+}
+.tb-annotate-badge {
+  font-size: 10px;
+  color: var(--text-faint);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  padding: 0 5px;
+}
+.tb-annotate-note { margin: var(--sp-1) var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs); line-height: var(--lh-tight); }
 
 /*
   提交区容器：display: contents —— 它自己不生成盒子，内部的历史 / 统计 / 操作组

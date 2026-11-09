@@ -10,8 +10,9 @@
  * 本轮视觉/状态收敛：触发框、菜单、选项行统一 var(--qio-ui-radius)；
  * 箭头用 QIcon(chevron-down) 而不是内联 svg；补 busy（处理中）与空结果文案 prop。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import { isComposingKeyEvent, useEscapeLayer } from "../../composables/useEscapeLayer";
 import QIcon from "./QIcon.vue";
 
 const props = withDefaults(
@@ -44,6 +45,10 @@ const hl = ref(-1);
 const root = ref<HTMLElement | null>(null);
 const searchEl = ref<HTMLInputElement | null>(null);
 const blocked = computed(() => props.disabled || props.busy);
+/** 输入法组合输入（选字）期间：回车 / 方向键属于输入法，不是选择与导航。 */
+const composing = ref(false);
+/** Esc 层级身份：所有 QCombo 实例互相独立，界面层级由 useEscapeLayer 统一仲裁。 */
+const escapeLayerId = "qio-combo-" + useId();
 
 const selectedLabel = computed(
   () => props.options.find((o) => o.value === props.modelValue)?.label ?? "",
@@ -58,6 +63,7 @@ const filtered = computed(() => {
 
 async function openMenu() {
   if (blocked.value) return;
+  composing.value = false;
   open.value = true;
   query.value = "";
   hl.value = Math.max(0, filtered.value.findIndex((o) => o.value === props.modelValue));
@@ -69,10 +75,13 @@ function close(restoreFocus = false) {
   if (!open.value) return;
   open.value = false;
   query.value = "";
+  composing.value = false;
   if (restoreFocus) (root.value?.querySelector(".qio-combo-trigger") as HTMLElement | null)?.focus();
 }
 
 function pick(value: string) {
+  // 提交入口自校验：处理中 / 已禁用时，迟到的事件（鼠标或键盘）不能改变取值。
+  if (blocked.value) return;
   emit("update:modelValue", value);
   close(true);
 }
@@ -83,13 +92,28 @@ function toggle() {
   else void openMenu();
 }
 
+function onCompositionStart() {
+  composing.value = true;
+}
+
+function onCompositionEnd() {
+  // 组合输入结束（候选字已确认）：之后正常键盘选择恢复；这里只解除保护，不提交任何东西。
+  composing.value = false;
+}
+
+/**
+ * 键盘只在根节点处理一次（输入框的 keydown 会冒泡到这里）。
+ * 之前输入框和根各挂一份，一次方向键会移动两项、回车先选中又被外层重新展开。
+ */
 function onKeydown(event: KeyboardEvent) {
-  if (blocked.value) return;
-  if (event.key === "Escape") {
-    event.preventDefault();
-    close(true);
+  // 组合输入阶段：确认候选字的回车、选字用的方向键都不是「提交 / 导航」。
+  if (composing.value || isComposingKeyEvent(event)) return;
+  // Tab 只收起菜单，不阻止默认焦点移动；无结果时同样要收起（空列表不是「还有活干」）。
+  if (event.key === "Tab") {
+    close(false);
     return;
   }
+  if (blocked.value) return;
   if (!open.value) {
     if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
       event.preventDefault();
@@ -98,22 +122,25 @@ function onKeydown(event: KeyboardEvent) {
     return;
   }
   const items = filtered.value;
-  if (!items.length) return;
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    // 菜单打开时方向键归菜单：即使没有结果也不能让页面滚动，且一次按键只移动一项。
     event.preventDefault();
+    if (!items.length) return;
     const step = event.key === "ArrowDown" ? 1 : -1;
     hl.value = (hl.value + step + items.length) % items.length;
-  } else if (event.key === "Home") {
+    return;
+  }
+  if (event.key === "Home" || event.key === "End") {
     event.preventDefault();
-    hl.value = 0;
-  } else if (event.key === "End") {
-    event.preventDefault();
-    hl.value = items.length - 1;
-  } else if (event.key === "Enter") {
+    if (!items.length) return;
+    hl.value = event.key === "Home" ? 0 : items.length - 1;
+    return;
+  }
+  if (event.key === "Enter") {
+    // 回车只选择一次；菜单打开时永远不触发周围表单提交（无结果时也不提交）。
     event.preventDefault();
     if (hl.value >= 0 && items[hl.value]) pick(items[hl.value].value);
-  } else if (event.key === "Tab") {
-    close(false);
+    return;
   }
 }
 
@@ -124,10 +151,25 @@ watch(open, (value) => {
   if (value) document.addEventListener("pointerdown", onDocPointer);
   else document.removeEventListener("pointerdown", onDocPointer);
 });
+watch(blocked, (value) => {
+  // 处理中 / 禁用：已展开的列表必须收起，后续鼠标、键盘与迟到事件都不能再提交。
+  if (value && open.value) close(false);
+});
 watch(filtered, (items) => {
   hl.value = items.length ? 0 : -1;
 });
 onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer));
+
+// Esc 层级：菜单展开时这一层最内层，先收菜单；收起后（active=false）Esc 才轮到外层弹窗。
+useEscapeLayer({
+  id: escapeLayerId,
+  active: () => open.value,
+  onEscape: () => {
+    if (!open.value) return false;
+    close(true);
+    return true;
+  },
+});
 </script>
 
 <template>
@@ -141,6 +183,8 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
     :aria-busy="busy || undefined"
     aria-haspopup="listbox"
     @keydown="onKeydown"
+    @compositionstart="onCompositionStart"
+    @compositionend="onCompositionEnd"
   >
     <button
       type="button"
@@ -162,7 +206,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
         type="text"
         :placeholder="searchPlaceholder"
         :aria-label="searchPlaceholder"
-        @keydown="onKeydown"
+        @blur="composing = false"
       />
       <ul class="qio-combo-list" role="listbox" v-qio-scrollbar="{ axis: 'y' }" data-qio-fit>
         <li

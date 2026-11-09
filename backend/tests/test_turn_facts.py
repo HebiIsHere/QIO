@@ -251,13 +251,19 @@ def test_awaiting_approval_is_not_a_failure():
     }
 
 
-def test_later_successful_proposal_clears_an_earlier_failure():
+def test_later_proposal_without_identity_does_not_clear_an_earlier_failure():
+    """没有身份关联时不得默认是同一条重试：A 失败 + B 等待审批仍要保留 A 的失败。"""
     facts = TurnFacts()
     facts.record_tool(call_id="c1", tool_name="propose_knowledge", ok=False, status="failed")
     facts.record_facts(_knowledge("failed", "evidence_not_found"))
     facts.record_tool(call_id="c2", tool_name="propose_knowledge", ok=True, status="success")
     facts.record_facts(_knowledge("awaiting_approval", "awaiting_user_approval"))
-    assert facts.annotation() is None
+    assert [record["state"] for record in facts.knowledge_proposals] == [
+        "failed",
+        "awaiting_approval",
+    ]
+    note = facts.annotation() or ""
+    assert "知识提交未成功" in note
 
 
 def test_rejected_knowledge_content_is_annotated_readably():

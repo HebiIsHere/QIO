@@ -76,6 +76,15 @@ export function taskStatusLabel(
   return TASK_STATUS_LABEL[taskDisplayStatus(item)];
 }
 
+/** 有真实结束事实的终态：没有结束时间时如实说明，不伪造「结束于」也不当成仍在运行。 */
+const END_FACT_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "completed",
+  "partial",
+  "failed",
+  "cancelled",
+  "budget_exhausted",
+]);
+
 export function isActiveStatus(status: TaskStatus): boolean {
   return (
     status === "queued" ||
@@ -93,18 +102,26 @@ export function isAttentionItem(item: TaskFeedItem): boolean {
 }
 
 /**
- * 「需要处理」数量：优先用服务端计数（当前视图是分页的，本地条数不是总数）；
- * 服务端没给计数时才按已加载条数兜底 —— 不把分页后的数量冒充总数。
+ * 「需要处理」数量：与「当前任务」列表同口径。
+ *
+ * 后端 counts 只统计当前视图里仍需要用户处理的事项（进行中 + 未「知道了」的
+ * waiting/failed）。用户点过「知道了」的失败已经归档到历史，保留真实结果但不再
+ * 计入这里；后端也**不会**把它算进 counts，所以前端直接信服务端计数即可。
+ *
+ * 有服务端计数时不再用本地已加载条目覆盖它：当前视图是分页的，本地条数不是总数，
+ * 也不能用「本地减一」去掩盖后端计数错误（那样只会让数字和真实待办对不上）。
+ * 只有服务端没给 counts 时，才按已加载条目兜底。
  */
 export function attentionCountOf(
   counts: TaskCounts | null | undefined,
   items: readonly TaskFeedItem[],
 ): number {
   if (counts && typeof counts === "object") {
-    const waiting = numberOrZero(counts.waitingApproval) + numberOrZero(counts.waitingUser);
-    const failed = numberOrZero(counts.failed);
-    if (waiting + failed > 0) return waiting + failed;
-    if (hasAnyCount(counts)) return 0;
+    return (
+      numberOrZero(counts.waitingApproval) +
+      numberOrZero(counts.waitingUser) +
+      numberOrZero(counts.failed)
+    );
   }
   return items.filter(isAttentionItem).length;
 }
@@ -296,7 +313,11 @@ export function taskTimingText(item: TaskFeedItem, now: Date = new Date()): stri
   if (startedAt) return "开始于 " + startedAt;
   // 恢复事项等只有登记时间、没有开始时间：如实说「记录于」，不冒充开始。
   const recordedAt = formatTaskClock(item.queuedAt, now);
-  return recordedAt ? "记录于 " + recordedAt : "";
+  if (recordedAt) return "记录于 " + recordedAt;
+  // 终态也可能没有结束时间（例如后台整理任务最终失败时只记了更新时间）：如实说明，
+  // 既不编造结束时间，也不把它当成「还在跑」。
+  if (END_FACT_STATUSES.has(status)) return "结束时间未记录";
+  return "";
 }
 
 /** 来源：话题名 / 公共维护 / 来源未知（三类都不能互相冒充）。 */

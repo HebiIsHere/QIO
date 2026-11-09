@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from typing import Any, Callable, Literal
 
@@ -88,8 +89,31 @@ class ProposeKnowledgeArgs(BaseModel):
     )
 
 
+def _knowledge_fingerprint(
+    category: str, content: str, scope_node_ids: list[str]
+) -> str:
+    """提交内容的稳定身份：同一内容 + 同一类别 + 同一范围 → 同一 fingerprint。
+
+    只用于「同一条知识的明确重试」配对（失败后重试成功要更新该项状态）；
+    不是错误文本关键词匹配，也绝不会把不同内容误当成同一项。截断到 16 位十六进制，
+    只进程序事实，不显示给用户。
+    """
+    canonical = "\n".join(
+        [
+            str(category or ""),
+            " ".join(str(content or "").split()),
+            ",".join(sorted(str(node) for node in scope_node_ids)),
+        ]
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 def _proposal_facts(
-    state: str, code: str, *, knowledge_id: str | None = None
+    state: str,
+    code: str,
+    *,
+    knowledge_id: str | None = None,
+    fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """知识提交的结构化事实（给主循环的每轮事实台账，不进模型消息）。
 
@@ -101,6 +125,8 @@ def _proposal_facts(
     payload: dict[str, Any] = {"state": state, "code": code}
     if knowledge_id:
         payload["knowledge_id"] = knowledge_id
+    if fingerprint:
+        payload["fingerprint"] = fingerprint
     return {"knowledge_proposal": payload}
 
 
@@ -112,6 +138,7 @@ def _failure(
     data: dict[str, Any] | None = None,
     status: str = "failed",
     state: str = "failed",
+    fingerprint: str | None = None,
 ) -> ToolResult:
     return ToolResult(
         ok=False,
@@ -122,7 +149,7 @@ def _failure(
         status=status,
         code=code,
         data=dict(data or {}),
-        facts=_proposal_facts(state, code),
+        facts=_proposal_facts(state, code, fingerprint=fingerprint),
     )
 
 
@@ -190,6 +217,10 @@ class ProposeKnowledgeTool(Tool):
         content = args.content.strip()
         if not content:
             return _failure("invalid_arguments", "content 不能为空")
+        # 程序身份：同一内容/类别/范围的重试共用同一个 fingerprint（只做事实配对）。
+        fingerprint = _knowledge_fingerprint(
+            args.category, content, list(args.scope.node_ids)
+        )
         catalog = self._catalog()
         evidence_ids, missing = catalog.validate_evidence_ids(args.evidence_ids)
         if missing:
@@ -198,6 +229,7 @@ class ProposeKnowledgeTool(Tool):
                 "evidence_ids 必须来自本轮实际证据目录，未找到："
                 + ", ".join(missing[:5]),
                 data={"missing_evidence_ids": missing, "available_ids": catalog.ids()[:20]},
+                fingerprint=fingerprint,
             )
         epistemic_reason = validate_epistemic_status(
             catalog, args.epistemic_status, evidence_ids
@@ -207,6 +239,7 @@ class ProposeKnowledgeTool(Tool):
                 "evidence_unsupported",
                 epistemic_reason,
                 data={"epistemic_status": args.epistemic_status},
+                fingerprint=fingerprint,
             )
         nodes, entity_ids, scope_error = resolve_scope_request(
             self.conn,
@@ -218,6 +251,7 @@ class ProposeKnowledgeTool(Tool):
                 "invalid_scope",
                 scope_error,
                 data={"scope_type": args.scope.type, "node_ids": args.scope.node_ids},
+                fingerprint=fingerprint,
             )
         # 用户明确拒绝过同一内容：不静默重存（返回结构化冲突 + 拒绝事实）。
         tombstone = rejection_record(
@@ -231,6 +265,7 @@ class ProposeKnowledgeTool(Tool):
                 status="conflict",
                 state="rejected",
                 data={"rejected": tombstone},
+                fingerprint=fingerprint,
             )
         ks = KnowledgeService(self.conn)
         existing = self._duplicate(
@@ -250,7 +285,10 @@ class ProposeKnowledgeTool(Tool):
                         "created": False,
                     },
                     facts=_proposal_facts(
-                        "active", "already_active", knowledge_id=existing.id
+                        "active",
+                        "already_active",
+                        knowledge_id=existing.id,
+                        fingerprint=fingerprint,
                     ),
                 )
             if existing.state in (
@@ -272,11 +310,12 @@ class ProposeKnowledgeTool(Tool):
                         "awaiting_approval",
                         "already_awaiting_approval",
                         knowledge_id=existing.id,
+                        fingerprint=fingerprint,
                     ),
                 )
             # draft：同一内容尚未被拒绝过 → 复用这一条重新提交（不重复建行）
             item = ks.submit(existing.id)
-            return self._awaiting(item, created=False)
+            return self._awaiting(item, created=False, fingerprint=fingerprint)
 
         provenance = {
             "source": "main_chat",
@@ -298,10 +337,17 @@ class ProposeKnowledgeTool(Tool):
             )
             item = ks.submit(item.id)
         except ValueError as exc:
-            return _failure("create_failed", f"提交审批失败：{exc}", recoverable=False)
-        return self._awaiting(item, created=True)
+            return _failure(
+                "create_failed",
+                f"提交审批失败：{exc}",
+                recoverable=False,
+                fingerprint=fingerprint,
+            )
+        return self._awaiting(item, created=True, fingerprint=fingerprint)
 
-    def _awaiting(self, item, *, created: bool) -> ToolResult:
+    def _awaiting(
+        self, item, *, created: bool, fingerprint: str | None = None
+    ) -> ToolResult:
         code = "awaiting_user_approval" if created else "resubmitted_for_approval"
         return ToolResult(
             ok=True,
@@ -323,7 +369,10 @@ class ProposeKnowledgeTool(Tool):
                 "created": created,
             },
             facts=_proposal_facts(
-                "awaiting_approval", code, knowledge_id=item.id
+                "awaiting_approval",
+                code,
+                knowledge_id=item.id,
+                fingerprint=fingerprint,
             ),
         )
 

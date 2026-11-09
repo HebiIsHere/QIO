@@ -78,8 +78,24 @@ let initialRestorePending = false;
 let initialRestoreDone = false;
 /** 有界校正的次数：不无限重试、也不固定等若干毫秒 */
 let restoreCorrections = 0;
+/**
+ * 阅读恢复任务的票据（问题 2）：用户接管 / 切换话题 / 卸载 / 开始新一次恢复都会 +1。
+ *
+ * 只停 rAF 或清标志不够 —— 已经发出的历史请求、nextTick、延迟帧在返回后必须重新核对
+ * 票据，否则旧任务还会继续补页、按旧目标定位，甚至「找不到位置」时兜底跳到顶部。
+ */
+let restoreTaskId = 0;
+/**
+ * 恢复程序正在驱动虚拟列表定位：scrollToIndex 之后虚拟列表还会按实测高度自己补写
+ * scrollTop（浏览器会补发 scroll 事件），那不是用户接管。
+ * 真实用户滚动一定先经过滚轮 / 触屏 / 指针 / 键盘（onUserInput 已先一步作废恢复）；
+ * 拖动 QIO 指示条也会在捕获阶段的 pointerdown 里被拦到。
+ */
+let restoreVirtualScrolling = false;
 /** 恢复成功后的短校正窗口：图片 / Markdown / 字体 / 窗口宽度变化可能继续改变布局 */
 let settleSaved: SavedReadingPosition | null = null;
+/** 短校正窗口属于哪一次恢复任务 / 哪一代：旧任务不得借它继续改位置 */
+let settleTask = 0;
 let settleGen = 0;
 let settleDeadline = 0;
 let settleAttempts = 0;
@@ -153,13 +169,18 @@ function onScroll() {
   const el = containerRef.value;
   if (!el) return;
   // 恢复 / 校正期间会触发 scroll 事件：那不是用户意图，不能据此改写跟随状态与位置。
-  // 但用户可能在恢复完成前自己滚动：位置与最近一次程序写入不一致 = 用户接管，恢复立即作废。
+  // 但用户可能在恢复完成前自己滚动：位置与最近一次程序写入不一致 = 用户接管，整次恢复作废。
   if (restoring) {
+    // 虚拟列表在 scrollToIndex 之后会按实测高度自己继续微调（并补发 scroll 事件）：
+    // 那是恢复程序产生的滚动，不能据此取消自己。真实用户滚动有 onUserInput 先兜住。
+    if (restoreVirtualScrolling) {
+      lastProgrammaticTop = el.scrollTop;
+      return;
+    }
     const userMoved =
       lastProgrammaticTop === null || Math.abs(el.scrollTop - lastProgrammaticTop) > 2;
     if (!userMoved) return;
     cancelRestore();
-    lastProgrammaticTop = null;
   }
   // 平滑回到最新由动画自己负责，中途的 scroll 事件不改写跟随状态
   if (backToLatestActive) return;
@@ -239,15 +260,11 @@ watch(
   () => session.currentTopicId,
   (topicId) => {
     streamGen += 1;
-    restoring = false;
-    initialRestorePending = false;
-    initialRestoreDone = true;
-    settleSaved = null;
+    // 旧话题的恢复任务（含已经发出、还没返回的历史请求）整次作废：不许再驱动新话题的位置
+    cancelRestore();
     restoreNote.value = "";
     if (anchorRaf) cancelAnimationFrame(anchorRaf);
     anchorRaf = 0;
-    if (restoreRaf) cancelAnimationFrame(restoreRaf);
-    restoreRaf = 0;
     // 切话题后默认回到最新位置；旧话题的位置已按滚动实时保存，不会丢
     viewport.setTopic(topicId);
     followBottom.value = true;
@@ -281,14 +298,64 @@ function onUserInput() {
   }
 }
 
-/** 作废所有在飞的恢复 / 校正（不动当前滚动位置） */
+/**
+ * 作废整次阅读恢复任务（不动当前滚动位置）。
+ *
+ * 票据 +1 之后，在飞的历史请求 / nextTick / 延迟帧返回时都会发现自己不再有效：
+ * 不再补页、不再按旧目标定位、不再兜底跳转；已经发出的请求仍可完成数据读取。
+ */
 function cancelRestore() {
+  restoreTaskId += 1;
+  stopVirtualScrollReconcile();
   initialRestorePending = false;
   initialRestoreDone = true;
   restoring = false;
   if (restoreRaf) cancelAnimationFrame(restoreRaf);
   restoreRaf = 0;
   settleSaved = null;
+  lastProgrammaticTop = null;
+}
+
+/**
+ * 停掉虚拟列表自己的定位补写。
+ *
+ * scrollToIndex 之后 @tanstack/virtual 会按实测高度继续 reconcile，最多数秒；
+ * 那也是恢复流程的延迟回调 —— 用户已经接管时如果不停，它会在旧目标附近继续写
+ * scrollTop，把用户刚选的位置拽走。不同版本没有这些运行态字段时静默退化为
+ * 只停我们自己的 rAF（不影响恢复正确性，只是少一层保护）。
+ */
+function stopVirtualScrollReconcile(): void {
+  restoreVirtualScrolling = false;
+  try {
+    const core = virtualizer.value as unknown as {
+      scrollState?: unknown;
+      rafId?: number | null;
+    };
+    core.scrollState = null;
+    if (typeof core.rafId === "number") {
+      cancelAnimationFrame(core.rafId);
+      core.rafId = null;
+    }
+  } catch {
+    // 旧虚拟列表版本没有这些字段：忽略
+  }
+}
+
+/** 当前票据是否仍属于这次恢复（且话题 / 组件代次没有变化） */
+function restoreTaskAlive(task: number, gen: number): boolean {
+  return task === restoreTaskId && gen === streamGen;
+}
+
+/** 恢复目标是否仍属于当前话题（话题刚切换、watcher 还没跑时先按归属拦一次） */
+function restoreTopicMatches(saved: SavedReadingPosition): boolean {
+  return (saved.topicId ?? null) === (session.currentTopicId ?? null);
+}
+
+/** 恢复程序写滚动位置：同时记账，浏览器随后补发的 scroll 事件不会被当成用户接管 */
+function writeRestoreScroll(el: HTMLElement, top: number): void {
+  el.scrollTop = top;
+  lastProgrammaticTop = el.scrollTop;
+  session.streamScrollTop = el.scrollTop;
 }
 
 /**
@@ -434,7 +501,8 @@ onMounted(() => {
   // 触屏 / 滚轮 / 指针 / 键盘属于用户意图：中断自动滚动与恢复，把控制权交回用户
   containerRef.value?.addEventListener("wheel", onUserInput, { passive: true });
   containerRef.value?.addEventListener("touchstart", onUserInput, { passive: true });
-  containerRef.value?.addEventListener("pointerdown", onUserInput);
+  // 捕获阶段：拖动 QIO 指示条时 pointerdown 会在滑块上 stopPropagation，冒泡阶段收不到
+  containerRef.value?.addEventListener("pointerdown", onUserInput, true);
   containerRef.value?.addEventListener("keydown", onKeyScroll);
   containerRef.value?.addEventListener("load", onContentSettled, true);
   window.addEventListener("resize", onWindowResize);
@@ -471,18 +539,15 @@ onBeforeUnmount(() => {
 onUnmounted(() => {
   // 卸载即换代：所有在飞的锚定/恢复回调作废，不再改动任何滚动位置
   streamGen += 1;
-  restoring = false;
-  initialRestorePending = false;
-  initialRestoreDone = true;
-  settleSaved = null;
+  cancelRestore();
   containerRef.value?.removeEventListener("wheel", onUserInput);
   containerRef.value?.removeEventListener("touchstart", onUserInput);
-  containerRef.value?.removeEventListener("pointerdown", onUserInput);
+  containerRef.value?.removeEventListener("pointerdown", onUserInput, true);
   containerRef.value?.removeEventListener("keydown", onKeyScroll);
   containerRef.value?.removeEventListener("load", onContentSettled, true);
   lastContainer?.removeEventListener("wheel", onUserInput);
   lastContainer?.removeEventListener("touchstart", onUserInput);
-  lastContainer?.removeEventListener("pointerdown", onUserInput);
+  lastContainer?.removeEventListener("pointerdown", onUserInput, true);
   lastContainer?.removeEventListener("keydown", onKeyScroll);
   lastContainer?.removeEventListener("load", onContentSettled, true);
   window.removeEventListener("resize", onWindowResize);
@@ -567,12 +632,15 @@ function attemptInitialRestore() {
   followBottom.value = saved ? saved.following : true;
   unseen.value = 0;
   const gen = streamGen;
+  // 新一次恢复任务开始：上一次恢复（如果有）的延迟回调一律失效
+  const task = ++restoreTaskId;
+  restoreVirtualScrolling = false;
   if (!saved || followBottom.value) {
     restoring = true;
-    settleFollowing(gen);
+    settleFollowing(gen, task);
     return;
   }
-  restoreReadingPosition(saved, gen);
+  void restoreReadingPosition(saved, gen, task);
 }
 
 watch(
@@ -588,15 +656,13 @@ watch(
 );
 
 /** 离开时在底部：主动贴底并保持跟随，不依赖「之后再来一条消息」 */
-function settleFollowing(gen: number): void {
+function settleFollowing(gen: number, task: number): void {
   const deadline = performance.now() + FOLLOW_SETTLE_MAX_MS;
   let stableFrames = 0;
   const step = () => {
     restoreRaf = 0;
-    if (gen !== streamGen) {
-      restoring = false;
-      return;
-    }
+    // 用户接管 / 切话题 / 卸载 / 新任务：旧任务不许再写位置（也不动新任务的 restoring）
+    if (!restoreTaskAlive(task, gen)) return;
     const el = containerRef.value;
     if (!el) {
       restoring = false;
@@ -604,8 +670,8 @@ function settleFollowing(gen: number): void {
     }
     const max = Math.max(0, el.scrollHeight - el.clientHeight);
     const atBottom = Math.abs(el.scrollTop - max) <= 1;
-    if (!atBottom) el.scrollTop = max;
-    lastProgrammaticTop = el.scrollTop;
+    if (!atBottom) writeRestoreScroll(el, max);
+    else lastProgrammaticTop = el.scrollTop;
     stableFrames = atBottom ? stableFrames + 1 : 0;
     if (stableFrames >= 2 || performance.now() > deadline) {
       restoring = false;
@@ -659,9 +725,15 @@ function showRestoreNote(text: string) {
  * 恢复阅读位置：先按稳定身份定位轮次，再按真实布局校正到「同一内容处于相近视口位置」。
  * 原目标不在当前加载范围时按现有分页机制有界寻找；确实不可用才回退并简短说明。
  */
-async function restoreReadingPosition(saved: SavedReadingPosition, gen: number): Promise<void> {
+async function restoreReadingPosition(
+  saved: SavedReadingPosition,
+  gen: number,
+  task: number,
+): Promise<void> {
+  // 任务已被用户接管 / 切话题 / 卸载作废：一个滚动位置都不许再写
+  if (!restoreTaskAlive(task, gen)) return;
   const el = containerRef.value;
-  if (!el || gen !== streamGen) {
+  if (!el) {
     restoring = false;
     return;
   }
@@ -673,57 +745,137 @@ async function restoreReadingPosition(saved: SavedReadingPosition, gen: number):
   // 旧记录 / 量不到 DOM：只保留像素回退（不是恢复成功的证明）。
   // 容器可能还没完成首帧布局（可滚动高度为 0）：等最多 3 帧再写，避免把旧像素截成 0。
   if (!saved.turnKey) {
-    restorePixelFallback(saved, gen, 0);
+    restorePixelFallback(saved, gen, task, 0);
     return;
   }
 
   // 1) 有界寻找目标轮次：必要时按现有分页加载更早历史
   let index = findTurnIndex(saved.turnKey);
   let loadTries = 0;
+  /** 等「别人正在读的同一页历史」落地的总预算（有界） */
+  let waitDeadline = 0;
   while (index < 0 && session.historyHasMore && loadTries < 6) {
     loadTries += 1;
-    await session.loadOlderHistory();
-    if (gen !== streamGen) {
-      restoring = false;
+    const heightBefore = el.scrollHeight;
+    const wasLoading = session.historyOlderLoading;
+    const loaded = await session.loadOlderHistory();
+    // 每次异步等待后都要核对：请求可以读完数据，但失效任务不许再补页 / 定位 / 兜底跳转
+    if (!restoreTaskAlive(task, gen)) {
+      // 数据已经插进当前话题：只补回「上方插入」造成的高度位移，让用户停在刚选的位置，
+      // 不因为同一份历史被读回来就把当前话题的视野顶走（不做任何旧目标定位）。
+      if (loaded) {
+        await nextTick();
+        anchorHistoryInsertion(el, heightBefore, gen);
+      }
       return;
     }
+    if (wasLoading && !loaded) {
+      // 「同一页历史正在读」不是「没有更早历史」：连续进出设置时上一个实例的请求
+      // 可能还在飞。等它落地再判断（有界），不要急着兜底跳到顶部。
+      if (!waitDeadline) waitDeadline = performance.now() + RESTORE_MAX_MS;
+      const state = await waitForOlderHistoryIdle(task, gen, waitDeadline);
+      if (state === "invalid") return;
+      if (state === "idle") {
+        await nextTick();
+        if (!restoreTaskAlive(task, gen) || !restoreTopicMatches(saved)) return;
+        index = findTurnIndex(saved.turnKey);
+      }
+      // timeout：按原有有界策略继续（store 的防重入保证不会并发打同一页）
+      continue;
+    }
     await nextTick();
+    if (!restoreTaskAlive(task, gen) || !restoreTopicMatches(saved)) return;
     index = findTurnIndex(saved.turnKey);
   }
+  if (!restoreTaskAlive(task, gen) || !restoreTopicMatches(saved)) return;
   if (index < 0) {
     // 2) 确实不可用：回退到最近可用内容（最早一页的起点），并简短说明
     followBottom.value = false;
-    el.scrollTop = 0;
-    lastProgrammaticTop = el.scrollTop;
-    session.streamScrollTop = el.scrollTop;
+    writeRestoreScroll(el, 0);
     restoring = false;
     saveReadingPosition(el);
     showRestoreNote(FALLBACK_NOTE);
     return;
   }
   // 3) 先按稳定索引定位（虚拟列表用估算尺寸，可能不准），再用真实布局校正
+  restoreVirtualScrolling = true;
   try {
     virtualizer.value.scrollToIndex(index, { align: "start" });
+    // 虚拟列表随后可能按实测高度自己补写位置：先记成程序化滚动，别被自己的 scroll 事件取消
+    lastProgrammaticTop = el.scrollTop;
   } catch {
     // 旧虚拟列表 API 差异：退回按旧像素接近目标
-    el.scrollTop = Math.min(Math.max(0, saved.scrollTop), Math.max(0, el.scrollHeight - el.clientHeight));
-    lastProgrammaticTop = el.scrollTop;
+    writeRestoreScroll(
+      el,
+      Math.min(Math.max(0, saved.scrollTop), Math.max(0, el.scrollHeight - el.clientHeight)),
+    );
   }
   await nextTick();
-  if (gen !== streamGen) {
-    restoring = false;
-    return;
+  if (!restoreTaskAlive(task, gen) || !restoreTopicMatches(saved)) return;
+  correctRestoredPosition(saved, gen, task, false);
+}
+
+/**
+ * 等 store 里正在进行的「更早一页」请求落地（有界，不重复发请求）。
+ *
+ * 连续进出设置时，上一个消息流实例的请求可能仍在飞；它读回的数据同样属于当前话题。
+ * 把它当成「忙」而不是「没有更早历史」，避免恢复过早兜底跳转。
+ */
+async function waitForOlderHistoryIdle(
+  task: number,
+  gen: number,
+  deadline: number,
+): Promise<"idle" | "invalid" | "timeout"> {
+  while (session.historyOlderLoading) {
+    if (!restoreTaskAlive(task, gen)) return "invalid";
+    if (performance.now() > deadline) return "timeout";
+    await new Promise<void>((resolve) => {
+      afterNextPaint(() => resolve());
+    });
   }
-  correctRestoredPosition(saved, gen, false);
+  return restoreTaskAlive(task, gen) ? "idle" : "invalid";
+}
+
+/**
+ * 恢复任务失效时更早历史恰好读回来了：把「上方插入」的高度增量补回 scrollTop。
+ *
+ * 这不是按旧目标恢复位置 —— 只让用户当前读的那一行保持不动（与滚动锚定同一口径）；
+ * 数据本身已经由 store 按话题归属落进当前列表，不丢、不串话题。
+ */
+function anchorHistoryInsertion(el: HTMLElement, heightBefore: number, gen: number): void {
+  if (gen !== streamGen) return;
+  // 请求发出时容器还没有真实布局（高度 0）：量不到「上方插入了多少」，宁可不补，
+  // 也绝不能把用户的位置按一个假增量冲走（真实页面在恢复开始时已有布局）。
+  if (heightBefore <= 0) return;
+  // 增量式记账：每补一次都把基线更新到当前高度，避免下一帧重复补同一段增量
+  let baseline = heightBefore;
+  const apply = () => {
+    if (gen !== streamGen) return;
+    const node = containerRef.value;
+    // 只用实例身份判断：单测挂载的节点不在 document 里（isConnected=false），但几何仍是可测的
+    if (!node || node !== el) return;
+    const height = node.scrollHeight;
+    const delta = height - baseline;
+    baseline = height;
+    if (!delta) return;
+    const max = Math.max(0, height - node.clientHeight);
+    writeRestoreScroll(node, Math.min(Math.max(0, node.scrollTop + delta), max));
+    saveReadingPosition(node);
+  };
+  apply();
+  // 虚拟列表可能按实测高度再量一帧：补一帧即可，不做无界循环
+  afterNextPaint(apply);
 }
 
 /** 旧像素回退：等容器完成首帧布局（最多 3 帧），再按真实可滚动范围夹取。 */
-function restorePixelFallback(saved: SavedReadingPosition, gen: number, attempt: number): void {
+function restorePixelFallback(
+  saved: SavedReadingPosition,
+  gen: number,
+  task: number,
+  attempt: number,
+): void {
   restoreRaf = 0;
-  if (gen !== streamGen) {
-    restoring = false;
-    return;
-  }
+  if (!restoreTaskAlive(task, gen)) return;
   const el = containerRef.value;
   if (!el) {
     restoring = false;
@@ -731,12 +883,11 @@ function restorePixelFallback(saved: SavedReadingPosition, gen: number, attempt:
   }
   const max = Math.max(0, el.scrollHeight - el.clientHeight);
   if (max <= 0 && attempt < 3) {
-    restoreRaf = afterNextPaint(() => restorePixelFallback(saved, gen, attempt + 1));
+    restoreRaf = afterNextPaint(() => restorePixelFallback(saved, gen, task, attempt + 1));
     return;
   }
-  el.scrollTop = Math.min(Math.max(0, saved.scrollTop), max);
-  lastProgrammaticTop = el.scrollTop;
-  session.streamScrollTop = el.scrollTop;
+  if (!restoreTaskAlive(task, gen) || !restoreTopicMatches(saved)) return;
+  writeRestoreScroll(el, Math.min(Math.max(0, saved.scrollTop), max));
   restoring = false;
   saveReadingPosition(el);
 }
@@ -750,6 +901,7 @@ function restorePixelFallback(saved: SavedReadingPosition, gen: number, attempt:
 function correctRestoredPosition(
   saved: SavedReadingPosition,
   gen: number,
+  task: number,
   settle: boolean,
 ): void {
   const deadline = performance.now() + (settle ? 900 : RESTORE_MAX_MS);
@@ -757,6 +909,7 @@ function correctRestoredPosition(
   let stuckFrames = 0;
   const finish = () => {
     restoring = false;
+    restoreVirtualScrolling = false;
     const el = containerRef.value;
     if (el) {
       session.streamScrollTop = el.scrollTop;
@@ -765,6 +918,7 @@ function correctRestoredPosition(
     if (!settle) {
       // 恢复成功后留一个短校正窗口（图片 / Markdown / 字体 / 宽度变化）
       settleSaved = saved;
+      settleTask = task;
       settleGen = gen;
       settleDeadline = performance.now() + SETTLE_MAX_MS;
       settleAttempts = 0;
@@ -772,10 +926,7 @@ function correctRestoredPosition(
   };
   const step = () => {
     restoreRaf = 0;
-    if (gen !== streamGen) {
-      restoring = false;
-      return;
-    }
+    if (!restoreTaskAlive(task, gen) || !restoreTopicMatches(saved)) return;
     const el = containerRef.value;
     if (!el) {
       restoring = false;
@@ -827,9 +978,10 @@ function correctRestoredPosition(
       stableFrames += 1;
       stuckFrames = 0;
     } else {
+      // 改变位置前再核对一次：任务可能已经在上一帧被用户接管
+      if (!restoreTaskAlive(task, gen)) return;
       const before = el.scrollTop;
-      el.scrollTop = before + delta;
-      lastProgrammaticTop = el.scrollTop;
+      writeRestoreScroll(el, before + delta);
       const applied = Math.abs(el.scrollTop - before) > 0.5;
       stableFrames = 0;
       // 已经到滚动边界仍无法接近目标：不再空转（可能目标内容已被裁剪/替换）
@@ -843,13 +995,14 @@ function correctRestoredPosition(
     restoreRaf = afterNextPaint(step);
   };
   restoring = true;
+  restoreVirtualScrolling = true;
   restoreRaf = afterNextPaint(step);
 }
 
 /** 恢复成功后的有界后续校正：布局再变化时把同一内容拉回相近视口位置 */
 function maybeSettleCorrect() {
   if (restoring || !settleSaved) return;
-  if (settleGen !== streamGen) {
+  if (!restoreTaskAlive(settleTask, settleGen)) {
     settleSaved = null;
     return;
   }
@@ -858,7 +1011,7 @@ function maybeSettleCorrect() {
     return;
   }
   settleAttempts += 1;
-  correctRestoredPosition(settleSaved, settleGen, true);
+  correctRestoredPosition(settleSaved, settleGen, settleTask, true);
 }
 
 // 动态测量列表项真实高度（替代固定 estimateSize），避免长消息重叠

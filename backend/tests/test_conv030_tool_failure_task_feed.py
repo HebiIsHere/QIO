@@ -204,8 +204,12 @@ def test_web_fetch_failure_then_same_url_success_has_no_item(client):
     assert succeeded  # 成功记录存在，只是失败尝试不再单列
 
 
-def test_failing_search_chain_is_one_item_not_two(client):
-    """换查询后仍然失败：同一尝试链只收敛成一条，且不是每条失败都进任务栏。"""
+def test_different_search_queries_are_independent_operations(client):
+    """换了查询 = 不同操作，不能互相覆盖；同一查询的重试链才只保留最后一次。
+
+    修复轮口径（问题 1）：操作身份 = web_search 的 query。没有可追踪的重试关系时
+    （不同查询），后一次失败不能把前一次失败当成「已被替换」而撤掉。
+    """
     ctx = client.app.state.ctx
     turn = "turn_search_chain"
     _end_turn(ctx.conn, turn)
@@ -219,11 +223,22 @@ def test_failing_search_chain_is_one_item_not_two(client):
     )
 
     items = _all_items(client)
-    tool_items = [item for item in items if item["source"] == "tool"]
-    assert len(tool_items) == 1, f"同一条失败链只能出现一条：{tool_items}"
-    assert tool_items[0]["id"] == f"tool:{second}"
-    assert f"tool:{first}" not in _tool_ids(items)
-    assert _feed(client)["counts"]["failed"] == 1
+    tool_ids = [item["id"] for item in items if item["source"] == "tool"]
+    assert {f"tool:{first}", f"tool:{second}"} <= set(tool_ids), (
+        f"不同查询是不同操作，两次失败都应保留：{items}"
+    )
+    assert _feed(client)["counts"]["failed"] == 2
+
+    # 同一查询再失败：这一条是同一操作的重试，只保留最新一次。
+    retried = _record(
+        ctx.conn, turn, "web_search", seq=3, error="搜索服务未配置",
+        code="search_not_configured", category="environment", arguments={"query": "b"},
+    )
+    ids = _tool_ids(_all_items(client))
+    assert f"tool:{second}" not in ids, "同一查询的重试链只认最后一次"
+    assert f"tool:{retried}" in ids
+    assert f"tool:{first}" in ids, "其它查询的操作不受这条重试链影响"
+    assert _feed(client)["counts"]["failed"] == 2
 
 
 # ── 2. 瞬时失败：本轮正常结束且没有后续处理事项 → 不进任务栏 ───────────────

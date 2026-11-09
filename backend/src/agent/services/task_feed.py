@@ -14,6 +14,11 @@
 * 派生任务自动重试（state=failed 且已安排退避）不算最终失败，显示为「排队中（自动重试）」。
 * 后端重启后**不**把历史任务重新标成 running：活任务状态只从仍存活的
   TaskManager 快照读取；持久行保留它最后一次已知的终态。
+* 计数与返回的视图同口径：当前视图只统计进行中 + 仍需用户处理的事项；用户点过
+  「知道了」的失败进历史并保留真实结果，但不再占「需要处理」数量。终态行即使
+  没有结束时间，只要用户已知晓也按真实终态归档（不补造结束时间）。
+* 同一轮内只有**同一工具 + 同一操作身份**（cmd+cwd / query / url）的后续调用才能
+  收口前一次尝试；不同操作互不覆盖，缺少可追踪身份时不推定关联。
 """
 
 from __future__ import annotations
@@ -91,6 +96,17 @@ _ACTIONABLE_CATEGORIES = frozenset({"permission", "missing_dependency", "environ
 _ACTIONABLE_CODES = frozenset({"search_not_configured"})
 #: 命令超时可能已产生副作用且无法确认是否生效 → 待核查（只对 run_shell）。
 _TRIAGE_TIMEOUT_TOOLS = frozenset({"run_shell"})
+#: 每个 triage 工具的「操作身份」参数（程序字段，不读错误文本）。
+#:
+#: 同一 turn 内只有这些参数完全相同的调用才算「同一项工作的重试/替换尝试」，前一次
+#: 失败才能被后续尝试收口；参数不同就是**不同的操作**，彼此不能覆盖结果（例如
+#: 「复制文件」超时与「查看当前目录」成功不是同一项工作，不能据此判定复制完成）。
+#: 主参数缺失/无法解析时没有可追踪的操作身份，绝不靠工具名、时间接近或同一轮对话猜。
+_TRIAGE_IDENTITY_ARGS: dict[str, tuple[str, ...]] = {
+    "run_shell": ("cmd", "cwd"),
+    "web_search": ("query",),
+    "web_fetch": ("url",),
+}
 #: 非零退出码常见于检查类命令：保留真实结果，但不进任务栏、不计入需要处理。
 _EXIT_CODE = "exit_code"
 #: turn_journal 里「这一轮还没结束」的状态：此刻模型可能正在重试，不先冒独立条目。
@@ -671,26 +687,85 @@ def _turn_statuses(conn: sqlite3.Connection, turn_ids: set[str]) -> dict[str, st
     return out
 
 
+def _triage_identity(tool_name: str, arguments: Any) -> str | None:
+    """从参数里取一次调用的操作对象（程序字段，可追踪的重试关系只靠它）。
+
+    返回 None = 主参数缺失 / 参数无法解析 / 该工具没有可追踪身份：调用方此时不得
+    把这条尝试与任何别的调用合并（缺少关联时不推定解决）。
+
+    参数本身在写入 tool_records 时已按统一规则打码限长，这里只做相等的规范化
+    （去首尾空白，缺省 cwd 视为空），不读错误文本、不做关键词匹配。
+    """
+    fields = _TRIAGE_IDENTITY_ARGS.get(tool_name)
+    if not fields:
+        return None
+    parsed: Any = arguments
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed or "{}")
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    parts: list[str] = []
+    for index, field in enumerate(fields):
+        value = parsed.get(field)
+        if value is None:
+            if index == 0:
+                return None  # 主参数缺失：没有操作对象，无法追踪
+            parts.append("")
+            continue
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return None  # 结构不符合预期：不猜它是不是同一个操作
+        text = str(value)
+        text = text.strip() if isinstance(value, str) else text
+        if index == 0 and not text:
+            return None  # 主参数为空 = 没有操作对象（缺参失败），无法追踪
+        parts.append(text)
+    return "\u0000".join(parts)
+
+
+def _triage_operation_key(row: Any) -> tuple[str, str, str] | None:
+    """一次调用的尝试链身份：同一 turn + 同一工具 + 同一操作身份。
+
+    只有这三个事实都相同，后面的尝试才能收口前面的失败；任何一项不同（换了命令 /
+    查询 / 来源，或换了轮次）都是**不同的工作**，不能互相覆盖结果。
+    无法从参数里追踪到操作对象时返回 None —— 调用方按「独立记录」处理，绝不靠
+    工具名、时间接近或同一轮对话猜它们有关联。
+    """
+    turn_id = str(row["turn_id"] or "")
+    tool_name = str(row["tool_name"] or "")
+    if not turn_id or not tool_name:
+        return None
+    identity = _triage_identity(tool_name, row["arguments"])
+    if identity is None:
+        return None
+    return (turn_id, tool_name, identity)
+
+
 def _triage_attempts(
     conn: sqlite3.Connection, turn_ids: set[str]
-) -> dict[tuple[str, str], list[dict[str, Any]]]:
-    """这三类工具在相关轮次里的全部尝试，按 (turn_id, tool_name) 分组、按真实顺序排。
+) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+    """这三类工具在相关轮次里的全部尝试，按**操作身份**分组、按真实执行顺序排。
 
-    同一 turn 内同一工具的尝试构成一条「尝试链」：同一目标（run_shell 的 cmd+cwd、
-    web_search 的 query、web_fetch 的 url）是重试，不同目标是替换查询/来源/命令。
-    链里只有**最后一次尝试**能代表这条链的最终状态 —— 前面的失败要么已被后续执行
-    补齐，要么已被替换，都不单独生成任务栏条目。
+    同一 turn 内同一工具、同一操作对象（run_shell 的 cmd+cwd / web_search 的 query /
+    web_fetch 的 url）的多次调用才构成一条「尝试链」：链里只有最后一次尝试能代表这项
+    工作的最终状态，前面的失败要么已被后续重试补齐，要么已被最新一次尝试取代。
+
+    不同操作对象之间没有可追踪的重试关系（例如「复制文件」超时之后「查看当前目录」
+    成功），不并成一条链，也就不能拿后者的结果去撤掉前者的待核查提醒。
     """
     ids = sorted(turn_id for turn_id in turn_ids if turn_id)
     if not ids:
         return {}
-    chains: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    chains: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for start in range(0, len(ids), 400):
         chunk = ids[start : start + 400]
         placeholders = ",".join("?" for _ in chunk)
         try:
             rows = conn.execute(
-                "SELECT id, turn_id, seq, tool_name, status, code, category, created_at "
+                "SELECT id, turn_id, seq, tool_name, status, code, category, arguments, "
+                "created_at "
                 "FROM tool_records "
                 f"WHERE turn_id IN ({placeholders}) "
                 "AND tool_name IN ('run_shell', 'web_search', 'web_fetch') "
@@ -700,7 +775,11 @@ def _triage_attempts(
         except sqlite3.Error:
             return {}
         for row in rows:
-            key = (str(row["turn_id"] or ""), str(row["tool_name"] or ""))
+            key = _triage_operation_key(row)
+            if key is None:
+                # 无法追踪操作身份：这条尝试不并入任何链（它只代表自己）。
+                key = (str(row["turn_id"] or ""), str(row["tool_name"] or ""),
+                       "\u0000record:" + str(row["id"]))
             chains.setdefault(key, []).append(dict(row))
     return chains
 
@@ -755,9 +834,11 @@ def _triage_hidden_ids(
     """本轮过滤：返回失败但「不值得进任务栏」的记录 id（执行记录本身原样保留）。
 
     规则（全部来自结构化事实）：
-    1) 同一 turn 内同一工具只认最后一次尝试（重试/替换前的失败不单列）；
-    2) 最后一次尝试已被后续成功执行补齐 → 不列；
-    3) 这一轮还在跑/排队（可能正在重试）或没有结束事实 → 暂不列；
+    1) 同一 turn 内同一工具、**同一操作身份**的尝试链只认最后一次尝试：同一项工作
+       被重试/改写前的失败不单列；不同操作（不同命令/查询/来源）互不覆盖；
+    2) 无法追踪操作身份的失败按独立记录处理 —— 不靠工具相同、时间接近或同一轮推定；
+    3) 同一操作之后已有新的执行结果（成功或失败）→ 旧失败不再单列；这一轮还在跑/
+       排队（可能正在重试）或没有结束事实 → 暂不列；
     4) 按 code / category 判定：只有真正需要用户处理或必须持续核查的才列。
     """
     candidates: dict[str, dict[str, Any]] = {}
@@ -782,9 +863,24 @@ def _triage_hidden_ids(
         if not turn_id:
             hidden.add(record_id)  # 没有可靠轮次事实：无法判定重试/补齐，默认不展示
             continue
-        chain = chains.get((turn_id, str(record.get("tool_name") or ""))) or []
-        if not chain or str(chain[-1].get("id")) != record_id:
-            hidden.add(record_id)  # 不是最后一次尝试：已被重试/替换覆盖
+        key = _triage_operation_key(record)
+        chain = chains.get(key) if key is not None else None
+        if chain is None:
+            # 没有可追踪的操作身份：这条失败只代表它自己，绝不与同工具/同轮其它调用合并。
+            chain = [record]
+        position = next(
+            (
+                index
+                for index, attempt in enumerate(chain)
+                if str(attempt.get("id")) == record_id
+            ),
+            None,
+        )
+        later = chain[position + 1 :] if position is not None else []
+        # 同一操作已有新的执行结果（成功=重试补齐；失败=被最新一次尝试取代）。
+        # 只有被取消的后续尝试不算结果 —— 它不能证明原操作是否已经生效。
+        if any(str(attempt.get("status") or "") in ("success", "failed") for attempt in later):
+            hidden.add(record_id)
             continue
         status = statuses.get(turn_id, "")
         if status in _TURN_OPEN_STATUSES or not status:
@@ -810,7 +906,8 @@ def _tool_rows(ctx: Any, conn: sqlite3.Connection, acked: set[str]) -> list[dict
         records = conn.execute(
             "SELECT id, turn_id, topic_id, tool_name, status, error, duration_ms, truncated, "
             "output_missing, missing_reason, created_at, substr(output, 1, 400) AS preview, "
-            "length(output) AS output_chars, code, category, recoverable, result_status "
+            "length(output) AS output_chars, code, category, recoverable, result_status, "
+            "arguments "
             "FROM tool_records ORDER BY created_at DESC LIMIT 200"
         ).fetchall()
     except sqlite3.Error:
@@ -909,13 +1006,30 @@ def _sort_key(item: dict[str, Any]) -> str:
     return str(item.get("startedAt") or item.get("queuedAt") or "")
 
 
-def _view_items(items: list[dict[str, Any]], view: str) -> list[dict[str, Any]]:
+#: 当前视图中「需要用户处理」的状态：与前端 isAttentionItem / TaskCounts 的
+#: waitingApproval / waitingUser / failed 三个计数键同口径。
+def _needs_attention(item: dict[str, Any]) -> bool:
+    return bool(item.get("requiresAttention")) and not item.get("acknowledged")
+
+
+def _classify_views(
+    items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """按真实终态与用户知晓状态把合并后的事项分到当前 / 历史两个视图。
+
+    * 进行中的状态（排队 / 运行 / 等待）一直在当前；
+    * 仍需用户处理的失败/等待项一直在当前，直到用户点「知道了」；
+    * 已「知道了」的终态（含失败）直接进历史 —— **不要求它有完成时间**：后台整理
+      等来源可能没有结束事实，但终态 + 已知晓本身就是可以归档的真实事实；
+    * 其余终态：没有结束时间的仍留在当前（无法证明它已经结束很久，也不伪造结束
+      时间），有结束时间的停留一小段可读期后进历史。
+    两边各自「需要处理置顶、其余按真实开始/入队时间从新到旧」。
+    """
     now = datetime.now(timezone.utc)
     current: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
     for item in items:
         status = item["status"]
-        attention = bool(item.get("requiresAttention")) and not item.get("acknowledged")
         finished = _parse_ts(item.get("finishedAt"))
         recent = (
             finished is not None
@@ -923,28 +1037,27 @@ def _view_items(items: list[dict[str, Any]], view: str) -> list[dict[str, Any]]:
         )
         if status in ACTIVE_STATUSES:
             is_current = True
-        elif attention:
-            # 需要用户处理的失败/等待项一直留在当前，直到用户点「知道了」。
+        elif _needs_attention(item):
             is_current = True
+        elif item.get("acknowledged"):
+            # 用户已知晓的终态：按真实终态归档；缺失结束时间不影响归类，也不补造时间。
+            is_current = False
         elif finished is None:
-            # 没有结束时间的终态行：无法证明它已经结束很久（历史行也不会凭空消失），
-            # 留在当前并如实显示真实状态，而不是悄悄塞进历史。
             is_current = True
         else:
-            # 成功/部分完成/取消/预算耗尽：短暂停留后进入历史；用户已知晓的直接进历史。
-            is_current = recent and not item.get("acknowledged")
+            is_current = recent
         (current if is_current else history).append(item)
     # 需要处理置顶；其余按实际开始（排队项用入队时间）从新到旧。
     def ordered(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return sorted(
             rows,
             key=lambda row: (
-                0 if (row.get("requiresAttention") and not row.get("acknowledged")) else 1,
+                0 if _needs_attention(row) else 1,
                 _invert(_sort_key(row)),
             ),
         )
 
-    return ordered(current if view == "current" else history)
+    return ordered(current), ordered(history)
 
 
 def _invert(value: str) -> str:
@@ -984,7 +1097,14 @@ def _counts(items: list[dict[str, Any]]) -> dict[str, int]:
 def build_feed(
     ctx: Any, *, view: str = "current", cursor: str | None = None, limit: int = DEFAULT_LIMIT
 ) -> dict[str, Any]:
-    """权威快照：当前 / 历史两个视图 + 计数 + 分页游标。"""
+    """权威快照：当前 / 历史两个视图 + 计数 + 分页游标。
+
+    计数与本次返回的视图同口径（数字与可见事项一致）：
+    * view=current 只统计仍留在当前视图的事项（进行中 + 仍需用户处理）；
+      用户点过「知道了」的失败已经归档到历史，保留真实结果但不再计入需要处理数量
+      —— 前端不靠本地减一掩盖这个事实；
+    * view=history 统计历史视图里的真实终态，已确认的失败仍然在历史计数里如实存在。
+    """
     conn = ctx.conn
     acked = _acknowledged_ids(conn)
     items: dict[str, dict[str, Any]] = {}
@@ -1006,8 +1126,11 @@ def build_feed(
         if item["status"] in deny:
             item["status"] = "unknown"
     _enrich_topics(conn, merged)
-    counts = _counts(merged)
-    ordered = _view_items(merged, "current" if view != "history" else "history")
+    current_items, history_items = _classify_views(merged)
+    ordered = history_items if view == "history" else current_items
+    # 计数与返回的视图同口径：当前视图里已「知道了」的失败不再占「需要处理」数量；
+    # 历史视图仍如实统计它自己包含的真实终态。
+    counts = _counts(ordered)
     try:
         offset = max(0, int(cursor or 0))
     except (TypeError, ValueError):

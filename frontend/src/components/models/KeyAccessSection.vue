@@ -86,6 +86,12 @@ const usages = computed<UsageAssignment[]>(() => props.catalog?.usages ?? []);
 const formOpen = ref(false);
 const formMode = ref<"create" | "edit" | "rotate">("create");
 const formInitial = ref<CredentialMeta | null>(null);
+/**
+ * 表单是否正在处理中（由 KeyForm 的 busy-change 同步上来）。
+ * 保存期间必须挡住所有「让表单消失」的关闭：关闭图标、遮罩、Esc —— 表单被藏起来
+ * 不等于取消请求，请求其实还在跑。成功后由 onSaved 正常关闭；失败保留表单与内容。
+ */
+const formBusy = ref(false);
 
 const notice = ref<{ tone: "ok" | "warn" | "err" | "info"; text: string } | null>(null);
 const busyId = ref<string | null>(null);
@@ -188,22 +194,37 @@ const confirmState = ref<ConfirmState | null>(null);
 function openCreate() {
   formMode.value = "create";
   formInitial.value = null;
+  formBusy.value = false;
   formOpen.value = true;
 }
 
 function openEdit(connection: ModelConnection) {
   formMode.value = "edit";
   formInitial.value = byId.value[connection.credentialId] ?? null;
+  formBusy.value = false;
   formOpen.value = true;
 }
 
 function openRotate(connection: ModelConnection) {
   formMode.value = "rotate";
   formInitial.value = byId.value[connection.credentialId] ?? null;
+  formBusy.value = false;
   formOpen.value = true;
 }
 
+/** 普通关闭（关闭图标 / 遮罩 / Esc / 取消）：处理中一律不允许（QModal 本身也会挡）。 */
+function closeForm() {
+  if (formBusy.value) return;
+  formOpen.value = false;
+}
+
+/** 处理中状态变化：同步给 QModal，让关闭图标、遮罩与 Esc 一起被挡住。 */
+function onFormBusy(value: boolean) {
+  formBusy.value = value;
+}
+
 async function onSaved(credentialId: string) {
+  formBusy.value = false;
   formOpen.value = false;
   const request = beginDiscover(credentialId);
   notice.value = { tone: "info", text: "连接已保存。正在同步模型目录…" };
@@ -434,7 +455,8 @@ async function confirmAction() {
       :open="formOpen"
       :title="formMode === 'edit' ? '编辑连接' : formMode === 'rotate' ? '更换 API Key' : '添加 Key'"
       modal-id="qio-model-key-form"
-      @close="formOpen = false"
+      :busy="formBusy"
+      @close="closeForm"
     >
       <KeyForm
         v-if="formOpen"
@@ -442,7 +464,8 @@ async function confirmAction() {
         :mode="formMode"
         :initial="formInitial"
         @saved="onSaved"
-        @cancel="formOpen = false"
+        @cancel="closeForm"
+        @busy-change="onFormBusy"
       />
     </QModal>
 

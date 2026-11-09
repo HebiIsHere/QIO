@@ -230,22 +230,37 @@ const unknownTools = computed(() => tools.value.filter((m) => toolStateOf(m) ===
 const awaitingApprovalTools = computed(() => tools.value.filter(isAwaitingApprovalTool));
 
 /**
- * 本轮最后一次知识提交的结局：同一轮里失败后重试成功时，以**最后一次**为准
- * （用户要求 §四.4「有后续成功证据时按证据呈现」；后端事实台账同一口径）。
+ * 本轮知识提交的结局按「可追踪身份」分别保留（问题 3）：
+ *
+ * - 后端给了稳定身份（toolKnowledgeKey，同一内容/类别/范围的重试共用）时，
+ *   同一身份以**最后一次结局**为准：失败后同一条知识重试成功，不再念旧失败；
+ * - 没有身份关联的多次提交**各自保留**：A 失败、B 等待审批都要如实显示，
+ *   不能因为最后一次是成功/等待审批就把 A 的失败抹掉（缺少关联时不默认是重试）。
  */
-const lastKnowledgeProposal = computed(() => {
-  const list = tools.value.filter(isKnowledgeProposal);
-  return list.length ? list[list.length - 1] : null;
+const knowledgeProposals = computed(() => tools.value.filter(isKnowledgeProposal));
+function knowledgeKeyOf(m: StreamMessage): string {
+  return String(m.toolKnowledgeKey ?? "").trim();
+}
+/** 有明确身份、且同一身份后面已出现非失败结局的失败提交（这次重试已解决它）。 */
+const resolvedKnowledgeFailures = computed(() => {
+  const list = knowledgeProposals.value;
+  const resolved = new Set<StreamMessage>();
+  list.forEach((current, index) => {
+    const key = knowledgeKeyOf(current);
+    if (!key || toolStateOf(current) !== "failed") return;
+    const retried = list
+      .slice(index + 1)
+      .some((next) => knowledgeKeyOf(next) === key && toolStateOf(next) !== "failed");
+    if (retried) resolved.add(current);
+  });
+  return resolved;
 });
-const lastKnowledgeProposalFailed = computed(() => {
-  const last = lastKnowledgeProposal.value;
-  return !!last && toolStateOf(last) === "failed";
-});
-/** 默认摘要里真正要报的失败：知识提交已被后续成功覆盖时不再念旧失败（细节仍在工具卡里）。 */
-const summaryFailedTools = computed(() => {
-  if (lastKnowledgeProposalFailed.value) return failedTools.value;
-  return failedTools.value.filter((m) => !isKnowledgeProposal(m));
-});
+/** 默认摘要里真正要报的失败：已被同身份重试解决的旧失败不再念（细节仍在工具卡里）。 */
+const summaryFailedTools = computed(() =>
+  failedTools.value.filter(
+    (m) => !(isKnowledgeProposal(m) && resolvedKnowledgeFailures.value.has(m)),
+  ),
+);
 const runningToolLabel = computed(
   () => runningTools.value[0]?.presentation?.title || runningTools.value[0]?.toolName || "",
 );

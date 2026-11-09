@@ -220,6 +220,18 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null;
 const pdfViewerRef = ref<{ search: (query: string) => void } | null>(null);
 const pdfSearchHits = ref<PreviewSearchHit[]>([]);
 const pdfSearchInfo = ref<{ truncated: boolean; scannedPages: number; totalPages: number } | null>(null);
+/**
+ * PDF 文字搜索的独立状态机：
+ *   idle      = 还没有搜索（空查询词）
+ *   searching = 正在逐页提取文字（不能说成「无匹配」）
+ *   ready     = 搜索完成（命中数可以是 0，此时才是真的「无匹配」）
+ *   error     = 文字层读取失败 / PDF 未读出（说明搜索未完成，可重试）
+ * 只有 ready 且 totalHits 为 0 才显示「无匹配」。
+ */
+const pdfSearchStatus = ref<"idle" | "searching" | "ready" | "error">("idle");
+const pdfSearchError = ref("");
+/** 最近一次真正交给 PDF viewer 的查询词：旧查询的迟到结果/错误不能覆盖当前状态。 */
+const pdfSearchQuery = ref("");
 
 const searchHits = computed<PreviewSearchHit[]>(() => {
   const query = searchQuery.value;
@@ -240,6 +252,21 @@ const totalHits = computed(() =>
 );
 const activeHitNumber = computed(() => (activeHitIndex.value >= 0 ? activeHitIndex.value + 1 : 0));
 
+/** 清掉 PDF 搜索的命中/错误/旧查询词：切换查询词或换文件时先隔离，再显示新状态。 */
+function isolatePdfSearchState(): void {
+  pdfSearchHits.value = [];
+  pdfSearchInfo.value = null;
+  pdfSearchError.value = "";
+  pdfSearchQuery.value = "";
+  pdfSearchStatus.value = searchQuery.value.trim() ? "searching" : "idle";
+}
+
+/** PDF 搜索失败后的重试：按当前查询词重新提取文字，不把异常保留成「无匹配」。 */
+function retryPdfSearch(): void {
+  if (!searchQuery.value.trim()) return;
+  runSearch();
+}
+
 function runSearch(): void {
   savePosition({ search: searchQuery.value.trim() });
   activeHitIndex.value = -1;
@@ -252,9 +279,19 @@ function runSearch(): void {
     return;
   }
   if (kind.value === "pdf") {
+    const query = searchQuery.value.trim();
     pdfSearchHits.value = [];
     pdfSearchInfo.value = null;
-    pdfViewerRef.value?.search(searchQuery.value);
+    pdfSearchError.value = "";
+    pdfSearchQuery.value = query;
+    if (!query) {
+      pdfSearchStatus.value = "idle";
+      pdfViewerRef.value?.search("");
+      return;
+    }
+    // 阅读器可能还没挂上（PDF 还在读）：先保持「搜索中」，等 pages 就绪后再发请求。
+    pdfSearchStatus.value = "searching";
+    pdfViewerRef.value?.search(query);
   }
 }
 
@@ -266,7 +303,16 @@ function scheduleSearch(): void {
   }, 200);
 }
 
-watch(searchQuery, () => scheduleSearch());
+watch(searchQuery, () => {
+  // 查询词一变，旧命中/旧错误立即失效（不能在新查询词下继续显示旧结果或「无匹配」）。
+  if (kind.value === "pdf" && searchQuery.value.trim() !== pdfSearchQuery.value) {
+    activeHitIndex.value = -1;
+    activeHit.value = null;
+    activeLine.value = null;
+    isolatePdfSearchState();
+  }
+  scheduleSearch();
+});
 
 async function refreshMarkdownMarks(): Promise<void> {
   await nextTick();
@@ -554,10 +600,25 @@ watch(
   () => {
     flushScroll();
     restored = false;
+    searchQuery.value = String(props.tab.position.search || "");
+    isolatePdfSearchState();
     store.ensureLoaded(tabId.value);
     restoreScroll();
     initialisePanes();
     if (searchQuery.value.trim()) runSearch();
+  },
+);
+
+// 文件内容原地更新（同一标签的新版本）：旧文件的命中/错误不能留到新版本上。
+watch(
+  () => [kind.value, runtime.value?.version, runtime.value?.phase] as const,
+  () => {
+    isolatePdfSearchState();
+    if (kind.value === "pdf" && searchQuery.value.trim()) {
+      void nextTick(() => {
+        if (searchQuery.value.trim()) runSearch();
+      });
+    }
   },
 );
 
@@ -568,7 +629,15 @@ function routeKey(): string {
 watch(
   () => runtime.value?.phase,
   (phase) => {
-    if (phase === "ready") restoreScroll();
+    if (phase === "ready") {
+      restoreScroll();
+      // PDF 阅读器在 ready 后才挂载：之前输入的查询等它挂上再发，避免永远停在「搜索中」。
+      if (kind.value === "pdf" && searchQuery.value.trim()) {
+        void nextTick(() => {
+          if (searchQuery.value.trim()) runSearch();
+        });
+      }
+    }
   },
 );
 
@@ -597,17 +666,43 @@ function onPdfPages(count: number): void {
     pdfPage.value = count;
     savePosition({ page: count });
   }
-  // 页数就绪后补一次搜索（搜索框可能在 PDF 打开之前就输入了）。
-  if (searchQuery.value.trim()) pdfViewerRef.value?.search(searchQuery.value);
+  // 页数就绪后补一次搜索（搜索框可能在 PDF 打开之前就输入了；换文件后也由这里重新搜索）。
+  if (searchQuery.value.trim()) runSearch();
+}
+
+/** 旧查询词的迟到事件一律丢弃：标题下的结果/错误必须属于当前查询词。 */
+function isCurrentPdfSearch(query: string): boolean {
+  return query === searchQuery.value.trim();
+}
+
+function onPdfSearchStart(query: string): void {
+  if (!isCurrentPdfSearch(query)) return;
+  pdfSearchQuery.value = query;
+  pdfSearchError.value = "";
+  pdfSearchStatus.value = "searching";
 }
 
 function onPdfSearchResult(
   hits: PreviewSearchHit[],
   info: { truncated: boolean; scannedPages: number; totalPages: number },
+  query: string,
 ): void {
+  if (!isCurrentPdfSearch(query)) return;
+  pdfSearchQuery.value = query;
   pdfSearchHits.value = hits;
   pdfSearchInfo.value = info;
+  pdfSearchError.value = "";
+  pdfSearchStatus.value = "ready";
   if (activeHitIndex.value >= hits.length) activeHitIndex.value = -1;
+}
+
+function onPdfSearchError(message: string, query: string): void {
+  if (!isCurrentPdfSearch(query)) return;
+  pdfSearchQuery.value = query;
+  pdfSearchHits.value = [];
+  pdfSearchInfo.value = null;
+  pdfSearchError.value = message;
+  pdfSearchStatus.value = "error";
 }
 function onPdfScrolled(top: number): void {
   store.savePosition(tabId.value, { scrollTop: top });
@@ -637,9 +732,26 @@ function onSlidePage(page: number): void {
           placeholder="在当前文件里搜索"
           aria-label="搜索当前文件内容"
         />
-        <span v-if="searchQuery.trim()" class="pv-count mono" data-pv-search-count>
-          {{ totalHits ? (activeHitNumber || "—") + " / " + totalHits : "无匹配" }}
+        <span
+          v-if="searchQuery.trim()"
+          class="pv-count mono"
+          data-pv-search-count
+          :data-pv-search-state="kind === 'pdf' ? pdfSearchStatus : undefined"
+        >
+          <template v-if="kind === 'pdf' && pdfSearchStatus === 'searching'">搜索中…</template>
+          <template v-else-if="kind === 'pdf' && pdfSearchStatus === 'error'">搜索未完成</template>
+          <template v-else-if="totalHits">{{ (activeHitNumber || "—") + " / " + totalHits }}</template>
+          <template v-else>无匹配</template>
         </span>
+        <button
+          v-if="kind === 'pdf' && pdfSearchStatus === 'error'"
+          type="button"
+          class="pv-mini-btn"
+          data-pv-search-retry
+          aria-label="重试搜索"
+          v-qio-tip="'重新提取 PDF 文字并搜索当前查询词'"
+          @click="retryPdfSearch"
+        >重试搜索</button>
         <span
           v-if="kind === 'pdf' && pdfSearchInfo?.truncated && searchQuery.trim()"
           class="pv-count mono"
@@ -708,6 +820,15 @@ function onSlidePage(page: number): void {
     </p>
     <p v-if="actionNote" class="pv-notice" role="status">{{ actionNote }}</p>
     <p v-if="viewError" class="pv-warn" role="alert">{{ viewError }}</p>
+    <p
+      v-if="kind === 'pdf' && pdfSearchStatus === 'error' && pdfSearchError"
+      class="pv-warn"
+      role="alert"
+      data-pv-search-error
+    >
+      {{ pdfSearchError }}
+      <button type="button" class="pv-mini-btn" data-pv-search-retry-inline aria-label="重试搜索" @click="retryPdfSearch">重试</button>
+    </p>
 
     <!-- 加载中 -->
     <div v-if="!runtime || runtime.phase === 'loading'" class="pv-state" aria-busy="true" data-pv-loading>
@@ -752,7 +873,9 @@ function onSlidePage(page: number): void {
           @page-change="goPdfPage"
           @pages="onPdfPages"
           @scroll="onPdfScrolled"
+          @search-start="onPdfSearchStart"
           @search-result="onPdfSearchResult"
+          @search-error="onPdfSearchError"
         />
       </div>
       <div

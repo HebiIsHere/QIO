@@ -9,8 +9,9 @@
  * - 处理中（busy）不展开菜单，但保留当前值；
  * - 键盘完整：↑↓ / Home / End / Enter / Space / Esc / Tab（Tab 收起并继续走焦点）。
  */
-import { computed, ref, watch, onUnmounted } from "vue";
+import { computed, ref, watch, onUnmounted, useId } from "vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import { useEscapeLayer } from "../../composables/useEscapeLayer";
 import QIcon from "./QIcon.vue";
 
 const props = withDefaults(
@@ -29,6 +30,8 @@ const emit = defineEmits<{ "update:modelValue": [string] }>();
 const open = ref(false);
 const hl = ref(-1); // 当前高亮项索引
 const root = ref<HTMLElement | null>(null);
+/** Esc 层级身份：下拉展开时是最内层，先收菜单；收起后才轮到外层弹窗。 */
+const escapeLayerId = "qio-select-" + useId();
 const selectedLabel = computed(
   () => props.options.find((o) => o.value === props.modelValue)?.label ?? "",
 );
@@ -43,12 +46,19 @@ function openMenu() {
   open.value = true;
   hl.value = Math.max(0, props.options.findIndex((o) => o.value === props.modelValue));
 }
+function closeMenu() {
+  open.value = false;
+  hl.value = -1;
+}
 function toggle() {
   if (blocked.value) return;
   if (open.value) open.value = false;
   else openMenu();
 }
 function pick(v: string) {
+  // 提交入口自校验：处理中 / 已禁用时，还在路上的鼠标或键盘事件不能改变取值。
+  // 只把触发按钮变灰不够 —— 已展开的选项行必须同样被挡住。
+  if (blocked.value) return;
   emit("update:modelValue", v);
   open.value = false;
 }
@@ -60,16 +70,20 @@ watch(open, v => {
   if (v) document.addEventListener("pointerdown", onDocPointer);
   else document.removeEventListener("pointerdown", onDocPointer);
 });
+watch(blocked, v => {
+  // 可操作 → 处理中 / 禁用：没收已经展开的菜单，避免「按钮变了、选项还能点」。
+  if (v && open.value) closeMenu();
+});
 onUnmounted(() => document.removeEventListener("pointerdown", onDocPointer));
 
 function onKeydown(e: KeyboardEvent) {
-  if (blocked.value) return;
-  if (e.key === "Escape") { open.value = false; return; }
+  // Tab 先于 blocked 判断：即使刚进入处理中，也要正常收起并让焦点继续走。
   if (e.key === "Tab") {
     // Tab 只收起菜单，不吞掉焦点移动（键盘用户继续去下一个控件）
-    open.value = false;
+    if (open.value) closeMenu();
     return;
   }
+  if (blocked.value) return;
   if (props.options.length === 0) return; // 空选项不响应方向/确认键
   const len = props.options.length;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -94,6 +108,18 @@ function onKeydown(e: KeyboardEvent) {
     else toggle();
   }
 }
+
+// Esc 层级：展开时本组件是最内层，先收菜单、保留外层；收起后才让外层处理 Esc。
+// （否则 QModal 的捕获监听会先一步把整个表单关掉，菜单跟着消失。）
+useEscapeLayer({
+  id: escapeLayerId,
+  active: () => open.value,
+  onEscape: () => {
+    if (!open.value) return false;
+    closeMenu();
+    return true;
+  },
+});
 </script>
 <template>
   <div ref="root" class="qio-select" tabindex="0" :class="{ open, disabled, busy }" role="combobox"

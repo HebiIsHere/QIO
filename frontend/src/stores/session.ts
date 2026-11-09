@@ -1037,6 +1037,11 @@ export interface StreamMessage {
    * 但尚未生效，不能被 ok=true 吞掉。
    */
   toolResultStatus?: string | null;
+  /**
+   * 知识提交的稳定身份（后端 fingerprint / knowledge_id，见 tools/knowledge_propose.py）。
+   * 只有同一条知识的明确重试才共用这个 key；旧数据没有（undefined = 不做重试归并）。
+   */
+  toolKnowledgeKey?: string | null;
   /** 独立任务标识：同一 task_id 只有一张卡 */
   taskId?: string;
   /** 独立任务状态（用户可见语义：开始 / 进行中 / 已完成 / 失败） */
@@ -4672,6 +4677,8 @@ const sessionStoreDefinition = defineStore("session", {
         categoryLabel?: string | null;
         recoverable?: boolean | null;
         resultStatus?: string | null;
+        /** 知识提交的稳定身份（同一条知识重试配对用；缺省不归并）。 */
+        knowledgeKey?: string | null;
       } | null,
     ) {
       const key = callId || toolName;
@@ -4685,6 +4692,7 @@ const sessionStoreDefinition = defineStore("session", {
           message.toolRecoverable = structured.recoverable;
         }
         if (structured.resultStatus) message.toolResultStatus = structured.resultStatus;
+        if (structured.knowledgeKey) message.toolKnowledgeKey = structured.knowledgeKey;
       };
       // 折叠掉的创建流程调用：失败要写回创建卡，不能让用户看不到原因
       if (TOOL_CREATION_TOOLS.has(toolName) || this._suppressedToolCalls.includes(key)) {
@@ -4744,6 +4752,7 @@ const sessionStoreDefinition = defineStore("session", {
           ? { toolRecoverable: structured.recoverable }
           : {}),
         ...(structured?.resultStatus ? { toolResultStatus: structured.resultStatus } : {}),
+        ...(structured?.knowledgeKey ? { toolKnowledgeKey: structured.knowledgeKey } : {}),
       });
       this.attachCallToStage(null, stageId, key);
     },

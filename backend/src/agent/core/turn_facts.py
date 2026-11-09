@@ -134,8 +134,10 @@ class TurnFacts:
         self._tools: dict[str, dict[str, Any]] = {}
         self._dev_tasks: dict[str, DevTaskFact] = {}
         self._declaration: dict[str, Any] | None = None
-        # 本轮知识提交的**最后一次**结局（同一轮重试成功会覆盖失败：有证据按证据走）。
-        self._knowledge_proposal: dict[str, Any] | None = None
+        # 本轮知识提交的结局：**按可追踪身份分别保留**（见 record_knowledge_proposal）。
+        # 同一身份（fingerprint / knowledge_id）的后续结局更新这一项；没有身份的
+        # 多次提交各自保留，绝不用最后一次覆盖前一次。
+        self._knowledge_proposals: list[dict[str, Any]] = []
 
     # -- 记账 -------------------------------------------------------------
 
@@ -187,6 +189,7 @@ class TurnFacts:
                 state=proposal.get("state"),
                 code=proposal.get("code"),
                 knowledge_id=proposal.get("knowledge_id"),
+                fingerprint=proposal.get("fingerprint"),
             )
 
     def record_knowledge_proposal(
@@ -195,21 +198,39 @@ class TurnFacts:
         state: Any,
         code: Any,
         knowledge_id: Any = None,
+        fingerprint: Any = None,
     ) -> None:
-        """记一次知识提交的结局（同一轮后写覆盖先写）。
+        """记一次知识提交的结局（按可追踪身份分别保留）。
 
         只认程序字段：state 必须是我们认识的四种之一，code 必须非空；
         形状不对就忽略（宁可不记，也不编一个「已经提交」）。
+
+        身份 = 工具给的 fingerprint（同一内容/类别/范围）或 knowledge_id：
+        * 同一身份的后续结局**更新这一项**（失败后重试成功不会永久保留旧失败）；
+        * 没有身份关联的多次提交**各自保留**（A 失败、B 等待审批必须都能看见，
+          不能因为最后一次成功就把前一次失败抹掉）。
         """
         state_text = str(state or "").strip()
         code_text = str(code or "").strip()
         if state_text not in _KNOWLEDGE_STATES or not code_text:
             return
         record: dict[str, Any] = {"state": state_text, "code": code_text}
+        fingerprint_text = str(fingerprint or "").strip()
+        if fingerprint_text:
+            record["fingerprint"] = fingerprint_text
         knowledge_id_text = str(knowledge_id or "").strip()
         if knowledge_id_text:
             record["knowledge_id"] = knowledge_id_text
-        self._knowledge_proposal = record
+        identity = fingerprint_text or knowledge_id_text
+        if identity:
+            for index, previous in enumerate(self._knowledge_proposals):
+                previous_identity = str(
+                    previous.get("fingerprint") or previous.get("knowledge_id") or ""
+                ).strip()
+                if previous_identity == identity:
+                    self._knowledge_proposals[index] = record
+                    return
+        self._knowledge_proposals.append(record)
 
     def record_declaration(
         self,
@@ -228,11 +249,16 @@ class TurnFacts:
     # -- 读 ---------------------------------------------------------------
 
     @property
+    def knowledge_proposals(self) -> list[dict]:
+        """本轮知识提交的结局清单（按身份去重后的顺序；没有结构化事实时为空）。"""
+        return [dict(record) for record in self._knowledge_proposals]
+
+    @property
     def knowledge_proposal(self) -> dict | None:
-        """本轮最后一次知识提交结局；没有结构化事实时为 None（不猜）。"""
-        if not self._knowledge_proposal:
+        """本轮最后一次知识提交结局（兼容读取）；没有结构化事实时为 None（不猜）。"""
+        if not self._knowledge_proposals:
             return None
-        return dict(self._knowledge_proposal)
+        return dict(self._knowledge_proposals[-1])
 
     @property
     def declaration_accepted(self) -> bool:
@@ -251,22 +277,22 @@ class TurnFacts:
     def unresolved(self) -> list[str]:
         """本轮「没有通过验证」的事实，一条一行（已压成单行）。"""
         items: list[str] = []
-        proposal = self._knowledge_proposal
-        proposal_failed = bool(
-            proposal
-            and proposal.get("state") in (KNOWLEDGE_FAILED, KNOWLEDGE_REJECTED)
-        )
-        if proposal_failed and proposal is not None:
+        # 每一项未解决的知识提交单独列出：不同提交不能互相覆盖（同一身份的失败
+        # 若已被后续成功更新，记录本身已经不是 failed，自然不会再出现在这里）。
+        knowledge_failures = [
+            record
+            for record in self._knowledge_proposals
+            if record.get("state") in (KNOWLEDGE_FAILED, KNOWLEDGE_REJECTED)
+        ]
+        for record in knowledge_failures:
             # 知识提交失败：说人话，不把技术错误原文当结论（原文在工具卡展开详情里）。
-            label = _KNOWLEDGE_FAILURE_LABELS.get(str(proposal.get("code") or ""))
-            items.append(
-                f"知识提交未成功，{label}" if label else "知识提交未成功"
-            )
+            label = _KNOWLEDGE_FAILURE_LABELS.get(str(record.get("code") or ""))
+            items.append(f"知识提交未成功，{label}" if label else "知识提交未成功")
         for name, record in self._tools.items():
             if record.get("status") != STATUS_FAILED:
                 continue
             # 同一失败已经有可读的结构化说明时，不再重复一遍技术原文。
-            if name == "propose_knowledge" and proposal_failed:
+            if name == "propose_knowledge" and knowledge_failures:
                 continue
             reason = record.get("error") or "（没有给出失败原因）"
             items.append(f"{name} 执行失败：{reason}")

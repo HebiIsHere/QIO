@@ -42,10 +42,16 @@ const emit = defineEmits<{
   facts: [facts: PdfFactsView];
   scroll: [top: number];
   "load-error": [message: string];
+  /** 新一轮文字搜索真正开始（用于把界面切到「搜索中」，而不是提前说「无匹配」）。 */
+  "search-start": [query: string];
+  /** 搜索完成：命中 + 扫描范围 + 这次结果属于哪个查询词（reader 用它丢过期结果）。 */
   "search-result": [
     hits: PreviewSearchHit[],
     info: { truncated: boolean; scannedPages: number; totalPages: number },
+    query: string,
   ];
+  /** 搜索没有完成（文字层读取失败 / PDF 没读出来）：不能当成「无匹配」。 */
+  "search-error": [message: string, query: string];
 }>();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -64,39 +70,56 @@ let bytesController: AbortController | null = null;
 let searchController: AbortController | null = null;
 let pendingSearch = "";
 
-/** 逐页提取文字并搜索（reader 里的搜索框通过 defineExpose 调用）。 */
+/**
+ * 逐页提取文字并搜索（reader 里的搜索框通过 defineExpose 调用）。
+ *
+ * 状态必须可区分：开始搜索发 search-start；读完发 search-result（带查询词）；
+ * 文字层读取失败发 search-error —— **绝不再把异常当作空结果**（那会被显示成「无匹配」）。
+ * 文档还没打开时先记住 pendingSearch，等 load() 完成后重放；文档确定打不开时如实报错。
+ */
 async function search(query: string): Promise<void> {
-  pendingSearch = query;
-  searchController?.abort();
-  const pdf = handle;
   const needle = String(query || "").trim();
-  if (!pdf || !needle) {
-    emit("search-result", [], { truncated: false, scannedPages: 0, totalPages: pages.value });
+  pendingSearch = needle;
+  searchController?.abort();
+  searchController = null;
+  if (!needle) return;
+  const pdf = handle;
+  if (!pdf) {
+    // 还在读文档：等 load() 完成后重放（reader 保持「搜索中」），不要说成「没有匹配」。
+    if (!loading.value && error.value) {
+      emit("search-error", "搜索未完成：" + error.value, needle);
+    }
     return;
   }
   const controller = new AbortController();
   searchController = controller;
+  const mine = generation;
+  emit("search-start", needle);
   try {
     const maxPages = Math.min(pdf.pages, PDF_SEARCH_MAX_PAGES);
     const texts: string[] = [];
     for (let page = 1; page <= maxPages; page += 1) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || mine !== generation) return;
       texts.push(await pdf.pageText(page, controller.signal));
     }
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || mine !== generation) return;
     const result = searchPdfTextPages(texts, needle, {
       limit: 200,
       maxPages: PDF_SEARCH_MAX_PAGES,
     });
-    emit("search-result", result.hits, {
-      truncated: result.truncated,
-      scannedPages: result.scannedPages,
-      totalPages: result.totalPages,
-    });
-  } catch {
-    if (!controller.signal.aborted) {
-      emit("search-result", [], { truncated: false, scannedPages: 0, totalPages: pages.value });
-    }
+    emit(
+      "search-result",
+      result.hits,
+      {
+        truncated: result.truncated,
+        scannedPages: result.scannedPages,
+        totalPages: result.totalPages,
+      },
+      needle,
+    );
+  } catch (cause) {
+    if (controller.signal.aborted || mine !== generation || isAbort(cause)) return;
+    emit("search-error", "搜索未完成：" + messageOf(cause), needle);
   }
 }
 
@@ -217,6 +240,8 @@ async function load(): Promise<void> {
     loading.value = false;
     error.value = "读取 PDF 失败：" + messageOf(err);
     emit("load-error", error.value);
+    // 之前发起过的搜索随文档读取一起失败：如实说明「搜索未完成」，交给 reader 提供重试。
+    if (pendingSearch) emit("search-error", "搜索未完成：" + error.value, pendingSearch);
   }
 }
 

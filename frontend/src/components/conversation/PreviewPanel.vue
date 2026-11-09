@@ -11,11 +11,12 @@ import { vQioTip } from "../../composables/useQioTip";
  *
  * 本组件只做外壳与标签管理；渲染、搜索、缩放、更新检查都在 preview/PreviewReader。
  */
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { computed, getCurrentInstance, nextTick, ref } from "vue";
 import { useConversationShellStore } from "../../stores/conversationShell";
 import { useConversationPreviewStore } from "../../stores/conversationPreview";
 import { PREVIEW_KIND_LABEL } from "../../conversation/preview";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import { useEscapeLayer } from "../../composables/useEscapeLayer";
 import PreviewReader from "./preview/PreviewReader.vue";
 
 const props = withDefaults(defineProps<{ full?: boolean }>(), { full: false });
@@ -35,43 +36,103 @@ function closeTab(tabId: string): void {
   preview.closeTab(tabId);
 }
 
-function onTabsKeydown(event: KeyboardEvent): void {
+const tabStrip = ref<HTMLElement | null>(null);
+/** 标签按钮（v-for 顺序与 tabs 一致）；方向键切换后把真实焦点同步到新标签。 */
+const tabMainButtons = ref<HTMLButtonElement[]>([]);
+
+/**
+ * 把键盘焦点放到指定标签上，并保证它在标签栏里可见。
+ *
+ * 修复「文件已切换、焦点还在旧标签」：以前只改 store 的 active id，DOM 焦点仍留在旧按钮上，
+ * 继续按 Enter 会重新点回旧标签。现在切换后显式 focus 新标签。
+ */
+function focusTab(tabId: string): void {
+  const index = tabs.value.findIndex((tab) => tab.id === tabId);
+  const button = index >= 0 ? tabMainButtons.value[index] ?? null : null;
+  if (!button) return;
+  button.focus({ preventScroll: true });
+  revealTab(button);
+}
+
+/** 标签多到超出可视宽度时，把当前标签滚进标签栏（scrollIntoView 不可用的环境用容器算术）。 */
+function revealTab(button: HTMLButtonElement): void {
+  if (typeof button.scrollIntoView === "function") {
+    button.scrollIntoView({ block: "nearest", inline: "nearest" });
+    return;
+  }
+  const strip = tabStrip.value;
+  if (!strip) return;
+  const left = button.offsetLeft;
+  const right = left + button.offsetWidth;
+  const viewLeft = strip.scrollLeft;
+  const viewRight = viewLeft + strip.clientWidth;
+  if (left < viewLeft) strip.scrollLeft = Math.max(0, left - 4);
+  else if (right > viewRight) strip.scrollLeft = right - strip.clientWidth + 4;
+}
+
+/**
+ * 标签栏键盘：←/→ 循环切换、Home/End 到首尾，选中项、当前文件、真实焦点、可见性一起变；
+ * Tab / Shift+Tab 不受影响（不 preventDefault），按现有 ARIA tabs 约定进出标签组。
+ * 删除键只删当前标签（键盘关闭路径），删完把焦点交给新的当前标签。
+ */
+async function onTabsKeydown(event: KeyboardEvent): Promise<void> {
   const ids = tabs.value.map((tab) => tab.id);
   if (!ids.length) return;
+  if ((event.key === "Delete" || event.key === "Backspace") && activeTab.value) {
+    event.preventDefault();
+    event.stopPropagation();
+    const closingId = activeTab.value.id;
+    closeTab(closingId);
+    await nextTick();
+    const nextActive = activeTab.value?.id;
+    if (nextActive) focusTab(nextActive);
+    return;
+  }
   const currentIndex = Math.max(0, ids.indexOf(activeTab.value?.id ?? ids[0]));
   let next = -1;
   if (event.key === "ArrowRight") next = (currentIndex + 1) % ids.length;
   else if (event.key === "ArrowLeft") next = (currentIndex - 1 + ids.length) % ids.length;
   else if (event.key === "Home") next = 0;
   else if (event.key === "End") next = ids.length - 1;
-  else if ((event.key === "Delete" || event.key === "Backspace") && activeTab.value) {
-    event.preventDefault();
-    closeTab(activeTab.value.id);
-    return;
-  }
   if (next < 0) return;
   event.preventDefault();
-  activate(ids[next]);
+  event.stopPropagation();
+  const nextId = ids[next];
+  activate(nextId);
+  await nextTick();
+  focusTab(nextId);
 }
 
 function retrySave(): void {
   void shell.flush();
 }
 
-// 全窗口时 Esc 返回对话（外壳也有兜底；组件自身也必须能返回）。
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === "Escape" && (props.full || shell.effectivePreviewFull)) {
-    event.preventDefault();
-    emit("toggleFull");
-  }
+/**
+ * 前方是否还有一层还没接入 Esc 层级栈的阻挡弹层（恢复区 / 任务抽屉等）。
+ * 用与 ConversationView 兜底 Esc 完全相同的判断：这类弹层自己的 Esc 处理在冒泡阶段，
+ * 预览层若在捕获阶段先收走 Esc 就会「关弹层同时退出全窗口」—— 这里必须让开这一层。
+ */
+function hasBlockingDialogInFront(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(document.querySelector('[role="dialog"][aria-modal="true"]'));
 }
 
-onMounted(() => {
-  window.addEventListener("keydown", onKeydown);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("keydown", onKeydown);
+/**
+ * 全窗口时 Esc 返回对话。注册到共用 Esc 层级栈（composables/useEscapeLayer）：
+ * 前方弹窗 / 下拉先注册成为内层，它们处理过的 Esc 不会再传到预览；
+ * 未接入层级栈的阻挡弹层（恢复区 / 任务抽屉）打开时，本层返回 false 让给它们；
+ * 这里不再自己挂 window keydown，避免和层级栈抢先后。
+ */
+const instanceId = getCurrentInstance()?.uid ?? 0;
+useEscapeLayer({
+  id: "preview-full-" + instanceId,
+  active: () => props.full || shell.effectivePreviewFull,
+  onEscape: () => {
+    if (!(props.full || shell.effectivePreviewFull)) return false;
+    if (hasBlockingDialogInFront()) return false;
+    emit("toggleFull");
+    return true;
+  },
 });
 </script>
 
@@ -106,6 +167,7 @@ onBeforeUnmount(() => {
 
     <div
       v-if="tabs.length"
+      ref="tabStrip"
       class="pv-tabs"
       role="tablist"
       aria-label="已打开的文件"
@@ -119,9 +181,11 @@ onBeforeUnmount(() => {
         :class="{ 'is-active': tab.id === activeTab?.id }"
       >
         <button
+          ref="tabMainButtons"
           type="button"
           class="pv-tab-main"
           role="tab"
+          :tabindex="tab.id === activeTab?.id ? 0 : -1"
           :aria-selected="tab.id === activeTab?.id"
           v-qio-tip="tab.target.title + ' · ' + PREVIEW_KIND_LABEL[tab.target.kind]"
           @click="activate(tab.id)"

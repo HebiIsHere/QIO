@@ -956,6 +956,9 @@ class AgentLoop:
                 # 旧前端只读 status / category 也不受影响。
                 "code": result_facts.get("code"),
                 "result_status": result_facts.get("result_status"),
+                # 知识提交的稳定身份（见 tools/knowledge_propose.py 的 fingerprint）：
+                # 界面据此区分「同一条知识重试成功」与「另一条独立提交」。
+                "knowledge_key": result_facts.get("knowledge_key"),
                 "content_preview": safe_preview,
                 "duration_ms": duration_ms,
                 "presentation": data.get("presentation"),
