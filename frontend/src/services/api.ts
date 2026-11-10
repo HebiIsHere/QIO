@@ -760,6 +760,71 @@ function memoryQuery(params: Record<string, string | number | undefined>): strin
   return text ? `?${text}` : "";
 }
 
+/**
+ * R16（契约 §14.2）：手动导航命令的显式请求依据。
+ *
+ * 两者都**必填**（后端缺失 base 返回 400 navigation_basis_required）：
+ * requestId 是这次真实用户动作的 UUID（网络重试必须复用同一个）；
+ * baseNavVersion 是客户端最近**已接受**的 nav_version（后点排队时取最新值再发）。
+ */
+export interface NavigationRequestOptions {
+  requestId: string;
+  baseNavVersion: number;
+}
+
+/**
+ * R16（契约 §3.1）：完整位置状态 wire（snake_case）。
+ *
+ * 事件、runtime 快照、导航 HTTP 结果使用同一份形状；前端只经
+ * session.acceptPositionState 整份接受，不自行拼接位置与 pending。
+ */
+export interface NavigationPositionWire {
+  topic_id: string | null;
+  topic_name?: string | null;
+  fragment_id?: string | null;
+  fragment_title?: string | null;
+  historic?: boolean;
+  pending_intent_id?: string | null;
+  pending_intent_version?: number | null;
+  pending_source_fragment_id?: string | null;
+  pending_source_title?: string | null;
+  nav_version?: number | null;
+  position_version?: number | null;
+  position_identity?: string | null;
+}
+
+/** R16：导航命令的 HTTP 结果（在既有字段上追加 §14.1 冻结字段）。 */
+export interface NavigationCommandResponse {
+  ok: boolean;
+  /** §3.1 同源完整位置状态（命令结果时）。旧后端没有该字段 → 前端走兼容路径。 */
+  position?: NavigationPositionWire | null;
+  position_version?: number;
+  position_identity?: string;
+  command_id?: string;
+  changed?: boolean;
+  replay?: boolean;
+  inactive?: boolean;
+  conflict?: boolean;
+  code?: string | null;
+  reason?: string;
+  topic_id?: string;
+  fragment_id?: string | null;
+  fragment_title?: string | null;
+  historic?: boolean;
+  created_fragment_id?: string | null;
+  source_fragment_id?: string | null;
+  intent_id?: string | null;
+  intent_version?: number | null;
+  pending?: boolean;
+  cancelled?: boolean;
+  request_id?: string | null;
+}
+
+/** R16：把显式身份写进请求体（两者都是冻结必填字段，见契约 §14.2/§14.8）。 */
+function navigationRequestFields(options: NavigationRequestOptions): Record<string, unknown> {
+  return { request_id: options.requestId, base_nav_version: options.baseNavVersion };
+}
+
 export const api = {
   listCredentials: () =>
     request<{ credentials: CredentialMeta[]; default_key_id: string | null }>(
@@ -1113,6 +1178,9 @@ export const api = {
         fragment_title?: string | null;
         historic?: boolean;
         nav_version?: number | null;
+        /** R16：新后端 anchor = §3.1 position wire（含完整位置状态版本与数据库身份）。 */
+        position_version?: number | null;
+        position_identity?: string | null;
         pending_intent_id?: string | null;
         pending_intent_version?: number | null;
         pending_source_fragment_id?: string | null;
@@ -1313,48 +1381,44 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
-  setAnchor: (topicId: string, fragmentId?: string | null) =>
-    request<{
-      ok: boolean;
-      topic_id: string;
-      fragment_id: string | null;
-      /** 权威标题（memory_index / 摘要首句）；前端不用摘要自己拼 */
-      fragment_title: string | null;
-      /** 是否是「历史位置」（不是当前开放片段） */
-      historic: boolean;
-    }>("/api/anchor", {
+  setAnchor: (
+    topicId: string,
+    fragmentId: string | null | undefined,
+    options: NavigationRequestOptions,
+  ) =>
+    request<NavigationCommandResponse>("/api/anchor", {
       method: "POST",
-      body: JSON.stringify({ topic_id: topicId, fragment_id: fragmentId ?? null }),
+      body: JSON.stringify({
+        topic_id: topicId,
+        fragment_id: fragmentId ?? null,
+        ...navigationRequestFields(options),
+      }),
     }),
   /**
    * 从某段历史继续（spec 第 34 / 54 条）：旧片段保持不变，
    * 后端新建接续片段并把 Anchor 落到新片段上。
    */
-  continueFromHistory: (topicId: string, fragmentId: string) =>
-    request<{
-      ok: boolean;
-      topic_id: string;
-      fragment_id: string | null;
-      fragment_title: string | null;
-      historic: boolean;
-      created_fragment_id: string | null;
-      source_fragment_id: string | null;
-      /** 阶段 1：点击历史只登记意图；这两个字段说明它还没落实 */
-      intent_id?: string | null;
-      intent_version?: number | null;
-      pending?: boolean;
-    }>("/api/anchor", {
+  continueFromHistory: (
+    topicId: string,
+    fragmentId: string,
+    options: NavigationRequestOptions,
+  ) =>
+    request<NavigationCommandResponse>("/api/anchor", {
       method: "POST",
       body: JSON.stringify({
         topic_id: topicId,
         fragment_id: fragmentId,
         continue_from_history: true,
+        ...navigationRequestFields(options),
       }),
     }),
   /** 取消「下一条消息从这段历史继续」的登记（不发消息就不留痕迹）。 */
-  cancelContinuation: () =>
-    request<{ ok: boolean; cancelled: boolean }>("/api/anchor/continue/cancel", {
+  cancelContinuation: (options: NavigationRequestOptions) =>
+    request<NavigationCommandResponse>("/api/anchor/continue/cancel", {
       method: "POST",
+      body: JSON.stringify({
+        ...navigationRequestFields(options),
+      }),
     }),
   /**
    * @deprecated 旧「待确认切换」独立提交路由已退役（`/api/topic-switch/*` 返回 410）。

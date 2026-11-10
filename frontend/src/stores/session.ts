@@ -926,13 +926,64 @@ export interface TopicPositionFacts {
   topicId: string;
   fragmentId: string | null;
   historic: boolean;
+  /** 导航**决定**版本（只用于兼容旧后端；新后端的独立排序键是 positionVersion）。 */
   navVersion: number | null;
+  /** R16：完整位置状态版本（契约 §3.2；旧后端没有为 null）。 */
+  positionVersion: number | null;
+  /** R16：数据库身份（契约 §3.1；旧后端没有为 null）。 */
+  positionIdentity: string | null;
+  /** R16：待接续意图（与位置同源，禁止分别读取后拼接）。 */
+  pendingIntentId: string | null;
+  pendingIntentVersion: number | null;
+  pendingSourceFragmentId: string | null;
+  pendingSourceTitle: string | null;
   /** 采用这条事实时的后端实例身份（null = 旧后端没有实例字段）。 */
   instanceId: string | null;
   /** 进程内事件序号（仅同实例可比；旧后端没有为 null）。 */
   seq: number | null;
-  /** 最近一次写入来源：权威快照 / 实时位置事件。 */
-  source: "snapshot" | "anchor";
+  /** 最近一次写入来源：权威快照 / 实时位置事件 / 导航命令结果。 */
+  source: PositionAcceptSource;
+}
+
+/** R16：完整位置状态的接受来源（契约 §7.1 / §14.3）。 */
+export type PositionAcceptSource = "anchor" | "snapshot" | "command";
+
+/** R16：acceptPositionState 的冻结返回（契约 §14.3；adopted 是布尔字段，不是 reason）。 */
+export interface PositionStateAcceptance {
+  accepted: boolean;
+  /** 冻结 reason 码：baseline / new_position_state / new_position_identity / idempotent /
+   * stale_position_state / stale_position_identity / same_version_conflict / no_input /
+   * no_topic / legacy_nav_order（旧后端兼容路径）。 */
+  reason: string;
+  idempotent: boolean;
+  conflicted: boolean;
+  adopted: boolean;
+}
+
+/** R16：同版本内容冲突的可观察事实（契约 §7.2；只记录，不猜测、不合并）。 */
+export interface PositionStateConflict {
+  at: number;
+  source: PositionAcceptSource;
+  local: Record<string, unknown>;
+  incoming: Record<string, unknown>;
+}
+
+/** R16：手动导航输入（显式身份与依据在 store 内生成，见 services/api.ts）。 */
+export interface ManualNavigationInput {
+  kind: "enter_topic" | "continue_from_history";
+  topicId: string;
+  fragmentId?: string | null;
+  /** 进入话题最新位置 / 当前开放片段之前，先原子取消旧的未落实接续选择。 */
+  cancelPending?: boolean;
+  historic?: boolean;
+}
+
+/** R16：手动导航的冻结结果（不伪造成功；失败带结构化 code 与可读原因）。 */
+export interface ManualNavigationResult {
+  ok: boolean;
+  accepted: boolean;
+  code: string | null;
+  error: string | null;
 }
 
 /** R2：位置事件接受结果（E/F 独立断言 accepted / reason / migrated）。 */
@@ -992,6 +1043,10 @@ export interface RuntimeAnchorSnapshot {
   fragment_title?: string | null;
   historic?: boolean | null;
   nav_version?: number | null;
+  /** R16：完整位置状态版本（新后端的 anchor = §3.1 position wire）。 */
+  position_version?: number | null;
+  /** R16：数据库身份（新后端 anchor 携带；旧后端没有）。 */
+  position_identity?: string | null;
   pending_intent_id?: string | null;
   pending_intent_version?: number | null;
   pending_source_fragment_id?: string | null;
@@ -1017,6 +1072,168 @@ function normalizePositionInt(raw: unknown): number | null {
 function normalizePositionId(raw: unknown): string | null {
   const id = String(raw ?? "").trim();
   return id || null;
+}
+
+/**
+ * R16：一次完整位置状态的规范化读取（契约 §3.1 / §14.3）。
+ *
+ * 输入可以是 §3.1 position wire 本身，也可以是带着嵌套 `position` 的宿主对象
+ * （ANCHOR 事件 / 导航 HTTP 结果）：**优先用嵌套的整份 position**（I02 同源），
+ * 宿主对象只补充命令身份等因果字段。
+ */
+interface NormalizedPositionState {
+  topicId: string | null;
+  topicName: string | null;
+  fragmentId: string | null;
+  fragmentTitle: string | null;
+  historic: boolean;
+  pendingIntentId: string | null;
+  pendingIntentVersion: number | null;
+  pendingSourceFragmentId: string | null;
+  pendingSourceTitle: string | null;
+  navVersion: number | null;
+  positionVersion: number | null;
+  positionIdentity: string | null;
+  instanceId: string | null;
+  seq: number | null;
+  origin: string;
+  operationId: string | null;
+  approvalId: string | null;
+  paramVersion: number | null;
+  turnId: string | null;
+  commandId: string | null;
+  changed: boolean | null;
+  replay: boolean | null;
+  conflict: boolean | null;
+}
+
+function readWholePositionState(input: Record<string, unknown>): NormalizedPositionState {
+  const nestedRaw = input.position;
+  const nested =
+    nestedRaw && typeof nestedRaw === "object" && !Array.isArray(nestedRaw)
+      ? (nestedRaw as Record<string, unknown>)
+      : null;
+  /** 位置事实只从「整份状态」读：有嵌套就用嵌套，否则宿主对象本身就是整份状态。 */
+  const stateField = (camel: string, snake: string): unknown =>
+    nested ? readTopicPositionField(nested, camel, snake) : readTopicPositionField(input, camel, snake);
+  /** 因果 / 命令身份字段优先取宿主对象（事件 / HTTP 结果把它们放在外层）。 */
+  const metaField = (camel: string, snake: string): unknown => {
+    const outer = readTopicPositionField(input, camel, snake);
+    if (outer !== undefined) return outer;
+    if (nested) return readTopicPositionField(nested, camel, snake);
+    return undefined;
+  };
+  const optionalText = (raw: unknown): string | null =>
+    raw === undefined || raw === null ? null : String(raw);
+  const optionalBool = (raw: unknown): boolean | null =>
+    typeof raw === "boolean" ? raw : null;
+  return {
+    topicId: normalizePositionId(stateField("topicId", "topic_id")),
+    topicName: optionalText(stateField("topicName", "topic_name")),
+    fragmentId: normalizePositionId(stateField("fragmentId", "fragment_id")),
+    fragmentTitle: optionalText(stateField("fragmentTitle", "fragment_title")),
+    historic: Boolean(stateField("historic", "historic")),
+    pendingIntentId: normalizePositionId(stateField("pendingIntentId", "pending_intent_id")),
+    pendingIntentVersion: normalizePositionInt(
+      stateField("pendingIntentVersion", "pending_intent_version"),
+    ),
+    pendingSourceFragmentId: normalizePositionId(
+      stateField("pendingSourceFragmentId", "pending_source_fragment_id"),
+    ),
+    pendingSourceTitle: optionalText(stateField("pendingSourceTitle", "pending_source_title")),
+    navVersion: normalizePositionInt(stateField("navVersion", "nav_version")),
+    positionVersion: normalizePositionInt(stateField("positionVersion", "position_version")),
+    positionIdentity: normalizePositionId(stateField("positionIdentity", "position_identity")),
+    instanceId: normalizePositionId(metaField("instanceId", "instance_id")),
+    seq: normalizePositionInt(metaField("seq", "seq")),
+    origin: String(metaField("origin", "origin") ?? "").trim(),
+    operationId: normalizePositionId(metaField("operationId", "operation_id")),
+    approvalId: normalizePositionId(metaField("approvalId", "approval_id")),
+    paramVersion: normalizePositionInt(metaField("paramVersion", "param_version")),
+    turnId: normalizePositionId(metaField("turnId", "turn_id")),
+    commandId: normalizePositionId(metaField("commandId", "command_id")),
+    changed: optionalBool(metaField("changed", "changed")),
+    replay: optionalBool(metaField("replay", "replay")),
+    conflict: optionalBool(metaField("conflict", "conflict")),
+  };
+}
+
+/**
+ * R16：同版本是否「同内容」的精确比较（契约 §14.3）。
+ *
+ * 只比较位置/历史/pending/导航版本；**排除**派生展示标题、instance_id、seq 与两类版本号本身。
+ */
+function positionContentSignature(state: {
+  topicId: string | null;
+  fragmentId: string | null;
+  historic: boolean;
+  pendingIntentId: string | null;
+  pendingIntentVersion: number | null;
+  pendingSourceFragmentId: string | null;
+  navVersion: number | null;
+}): string {
+  return JSON.stringify([
+    state.topicId ?? null,
+    state.fragmentId ?? null,
+    Boolean(state.historic),
+    state.pendingIntentId ?? null,
+    state.pendingIntentVersion ?? null,
+    state.pendingSourceFragmentId ?? null,
+    state.navVersion ?? null,
+  ]);
+}
+
+/** R16：冲突事实的可观察视图（包含两版内容与来源；不用于任何判定）。 */
+function positionStateDebugView(state: {
+  topicId: string | null;
+  fragmentId: string | null;
+  historic: boolean;
+  pendingIntentId: string | null;
+  pendingIntentVersion: number | null;
+  pendingSourceFragmentId: string | null;
+  pendingSourceTitle: string | null;
+  navVersion: number | null;
+  positionVersion: number | null;
+  positionIdentity: string | null;
+}): Record<string, unknown> {
+  return {
+    topicId: state.topicId,
+    fragmentId: state.fragmentId,
+    historic: state.historic,
+    pendingIntentId: state.pendingIntentId,
+    pendingIntentVersion: state.pendingIntentVersion,
+    pendingSourceFragmentId: state.pendingSourceFragmentId,
+    pendingSourceTitle: state.pendingSourceTitle,
+    navVersion: state.navVersion,
+    positionVersion: state.positionVersion,
+    positionIdentity: state.positionIdentity,
+  };
+}
+
+/** R16：草稿跟随的独立幂等消费身份 `follow:<operation_id>:<param_version|approval_id>`。 */
+function draftFollowConsumptionKey(
+  operationId: string,
+  paramVersion: number | null,
+  approvalId: string | null,
+): string {
+  const suffix = paramVersion !== null ? String(paramVersion) : (approvalId ?? "");
+  return `follow:${operationId}:${suffix}`;
+}
+
+/** R16：从 command_id（== identity_key）推导工具操作身份（`operation:<opID>:<pv>`）。 */
+function operationIdFromCommandId(commandId: string | null): string | null {
+  if (!commandId || !commandId.startsWith("operation:")) return null;
+  const rest = commandId.slice("operation:".length);
+  const lastColon = rest.lastIndexOf(":");
+  const operationId = lastColon > 0 ? rest.slice(0, lastColon) : rest;
+  return operationId || null;
+}
+
+/** R16：一次真实导航动作的请求身份（UUID；契约 §5 / §14.2）。 */
+function newNavigationRequestId(): string {
+  const cryptoApi = globalThis.crypto as { randomUUID?: () => string } | undefined;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
+  return `nav-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 /**
@@ -2368,6 +2585,35 @@ const sessionStoreDefinition = defineStore("session", {
      */
     _positionFacts: null as TopicPositionFacts | null,
     /**
+     * R16：同版本内容冲突的可观察事实（契约 §7.2 / I06）。
+     *
+     * 只记录，不猜测、不部分合并；同时触发一次权威恢复取回真实状态。
+     */
+    _positionStateConflict: null as PositionStateConflict | null,
+    /**
+     * R16：草稿跟随的独立幂等消费身份（有界 200，契约 §7.1 / §7.3）。
+     *
+     * 位置版本的新旧与草稿迁移是两件事：即使位置同版本幂等接受，匹配本次操作
+     * 身份的权威结果仍可迁移草稿一次；重复结果命中这里 → 零副作用。
+     */
+    _draftFollowConsumed: [] as string[],
+    /** R16：正在触发的权威恢复（single-flight：已在飞时合并丢弃，不并发风暴）。 */
+    _positionRestoreInFlight: false,
+    /** R16：手动导航单飞串行（同一时刻只有一个手动作业在飞）。 */
+    _manualNavBusy: false,
+    _manualNavQueue: [] as (() => void)[],
+    /** R16：失败后尚未成功的同一次手动动作（重试复用同一 request_id 与 base）。 */
+    _manualNavRetry: null as {
+      key: string;
+      requestId: string;
+      baseNavVersion: number;
+    } | null,
+    /** R16：取消接续选择的网络重试身份（失败后重试复用同一 request_id 与 base）。 */
+    _cancelContinuationRetry: null as {
+      requestId: string;
+      baseNavVersion: number;
+    } | null,
+    /**
      * R2：已知被拒绝 / 失效 / 被新导航替代的话题操作 id（有界，幂等登记）。
      *
      * 操作进入终态（APPROVAL_RESULT 非 executed、TOPIC_PHASE recoverable_failure）
@@ -3427,6 +3673,7 @@ const sessionStoreDefinition = defineStore("session", {
       if (!tid) {
         this._topicApplications = [];
         this._topicDraftFollow = null;
+        this._releaseFollowBindHold();
         this.resetTopicPhase();
         this.clearDeferredFormalAnswers();
         return;
@@ -3434,7 +3681,10 @@ const sessionStoreDefinition = defineStore("session", {
       this.clearDeferredFormalAnswers(tid);
       this._topicApplications = this._topicApplications.filter((item) => item.turnId !== tid);
       const follow = this._topicDraftFollow;
-      if (follow && (!follow.turnId || follow.turnId === tid)) this._topicDraftFollow = null;
+      if (follow && (!follow.turnId || follow.turnId === tid)) {
+        this._topicDraftFollow = null;
+        this._releaseFollowBindHold();
+      }
       // 阶段只属于这一轮：轮结束 / 权威队列已空闲时收口，避免下一轮读到上一轮的阶段。
       if (!this.topicStageTurnId || this.topicStageTurnId === tid) this.resetTopicPhase();
     },
@@ -3460,6 +3710,7 @@ const sessionStoreDefinition = defineStore("session", {
       fromFragmentId?: string | null;
     } = {}) {
       const operationId = String(input.operationId ?? "").trim();
+      this._releaseFollowBindHold();
       if (!operationId) {
         // 没有操作身份：无法与权威结果对应 → 不武装（安全侧：草稿留原话题）
         this._topicDraftFollow = null;
@@ -3486,6 +3737,7 @@ const sessionStoreDefinition = defineStore("session", {
     /** 清除草稿跟随（拒绝 / 失效 / 失败 / 取消 / 一轮结束）：草稿归属不再改变。 */
     clearTopicDraftFollow() {
       this._topicDraftFollow = null;
+      this._releaseFollowBindHold();
     },
     /**
      * 按「本次操作失败/失效」收口跟随：只清与这条操作（或这一轮）对应的标记。
@@ -3503,6 +3755,7 @@ const sessionStoreDefinition = defineStore("session", {
       if (operationId && follow.operationId && follow.operationId !== operationId) return;
       if (!operationId && turnId && follow.turnId && follow.turnId !== turnId) return;
       this._topicDraftFollow = null;
+      this._releaseFollowBindHold();
     },
     /**
      * 权威话题操作成功结果（ANCHOR origin=topic_operation）→ 迁移一次草稿。
@@ -3616,12 +3869,11 @@ const sessionStoreDefinition = defineStore("session", {
     },
 
     /**
-     * R2：采用一份服务器权威位置快照（/api/runtime/state 的 anchor）。
+     * R2/R16：采用一份服务器权威位置快照（/api/runtime/state 的 anchor）。
      *
-     * 快照是权威的 position / pending 来源；但若本地已经有**更新**的实时位置
-     * （navVersion 更大），不倒退 —— 只按快照更新待接续提示并补齐缺失字段。
-     * 旧实例的本地 seq 不复用：快照没有 seq，采用快照后 seq 如实置 null。
-     * 旧后端没有 anchor 字段时调用方不传 / 传 null：这里保持现状，不伪造位置。
+     * 新后端快照是一整份 §3.1 position wire（含 position_version / position_identity）：
+     * 必须走唯一入口 acceptPositionState("snapshot")；旧后端没有这两类字段时保留 R2 的
+     * nav_version 兼容规则（legacy 路径，reason=legacy_nav_order）。
      */
     applyAuthoritativePositionSnapshot(
       anchor?: RuntimeAnchorSnapshot | Record<string, unknown> | null,
@@ -3631,6 +3883,38 @@ const sessionStoreDefinition = defineStore("session", {
         return { applied: false, reason: "no_snapshot", keptNewerLocal: false };
       }
       const record = anchor as Record<string, unknown>;
+      const nestedRaw = record.position;
+      const nested =
+        nestedRaw && typeof nestedRaw === "object" && !Array.isArray(nestedRaw)
+          ? (nestedRaw as Record<string, unknown>)
+          : null;
+      const version = normalizePositionInt(
+        readTopicPositionField(nested ?? record, "positionVersion", "position_version"),
+      );
+      const identity = normalizePositionId(
+        readTopicPositionField(nested ?? record, "positionIdentity", "position_identity"),
+      );
+      if (version !== null || identity !== null) {
+        const result = this.acceptPositionState(
+          { ...record, ...(instanceId ? { instance_id: instanceId } : {}) },
+          "snapshot",
+        );
+        return { applied: result.adopted, reason: result.reason, keptNewerLocal: false };
+      }
+      return this._applyLegacyPositionSnapshot(record, instanceId);
+    },
+
+    /**
+     * R2 旧后端兼容：快照没有 position_version / position_identity 时的 nav_version 规则。
+     *
+     * 快照是权威的 position / pending 来源；但若本地已经有**更新**的实时位置
+     * （navVersion 更大），不倒退 —— 只按快照更新待接续提示并补齐缺失字段。
+     * 旧实例的本地 seq 不复用：快照没有 seq，采用快照后 seq 如实置 null。
+     */
+    _applyLegacyPositionSnapshot(
+      record: Record<string, unknown>,
+      instanceId?: string | null,
+    ): { applied: boolean; reason: string; keptNewerLocal: boolean } {
       const topicId = normalizePositionId(readTopicPositionField(record, "topicId", "topic_id"));
       if (!topicId) return { applied: false, reason: "no_topic", keptNewerLocal: false };
       const instance = normalizePositionId(instanceId) ?? this.instanceId;
@@ -3659,6 +3943,12 @@ const sessionStoreDefinition = defineStore("session", {
         pendingSourceTitleRaw === undefined
           ? null
           : ((pendingSourceTitleRaw as string | null) ?? null);
+      const pendingIntentVersion = normalizePositionInt(
+        readTopicPositionField(record, "pendingIntentVersion", "pending_intent_version"),
+      );
+      const pendingSourceFragmentId = normalizePositionId(
+        readTopicPositionField(record, "pendingSourceFragmentId", "pending_source_fragment_id"),
+      );
       const facts = this._positionFacts;
       /**
        * 契约 §4.3(5)：快照是权威 pending / position 来源，但本地已有更新的实时事实时
@@ -3685,6 +3975,12 @@ const sessionStoreDefinition = defineStore("session", {
         fragmentId,
         historic,
         navVersion: snapshotVersion,
+        positionVersion: facts?.positionVersion ?? null,
+        positionIdentity: facts?.positionIdentity ?? null,
+        pendingIntentId,
+        pendingIntentVersion,
+        pendingSourceFragmentId,
+        pendingSourceTitle,
         instanceId: instance ?? null,
         seq: null,
         source: "snapshot",
@@ -3700,18 +3996,23 @@ const sessionStoreDefinition = defineStore("session", {
     },
 
     /**
-     * R2：接受 / 拒绝一条位置事件（契约 §4.3）。返回 accepted / reason / migrated。
+     * R2 兼容入口：接受 / 拒绝一条位置事件（旧后端 nav_version 规则）。
      *
-     * 步骤固定：
-     * 1. 操作 / 轮次关联拒绝（invalid 集合、stale turn）—— 即使带着更新的 nav_version
-     *    也不得生效；
-     * 2. 位置顺序判定（nav_version 主序；同版本只允许合法细化；读不到版本时退回
-     *    实例身份 + seq 兜底）；
-     * 3. 接受后统一更新当前位置、待接续提示，并在最后迁移草稿跟随（rejected 时三者都不动）。
-     *
-     * 位置接受**不依赖**草稿跟随对象是否存在 / 是否已消费 / 草稿是否非空。
+     * R16 新代码只通过 acceptPositionState 调用；这个公开方法保留给既有测试/调用方。
      */
     acceptTopicPositionEvent(
+      input?: TopicPositionEventInput | Record<string, unknown> | null,
+    ): TopicPositionAcceptResult {
+      return this._acceptLegacyNavOrder(input);
+    },
+
+    /**
+     * R2 旧后端兼容规则：nav_version 主序 + 实例身份/seq 兜底。
+     *
+     * 只允许旧后端（无 position_version）的 ANCHOR 事件走这里（reason=legacy_nav_order）。
+     * R16 新后端的事件/快照/HTTP 结果一律走 acceptPositionState 的整份接受规则。
+     */
+    _acceptLegacyNavOrder(
       input?: TopicPositionEventInput | Record<string, unknown> | null,
     ): TopicPositionAcceptResult {
       const reject = (reason: string): TopicPositionAcceptResult => ({
@@ -3805,29 +4106,38 @@ const sessionStoreDefinition = defineStore("session", {
       const nextSeq = seq !== null ? seq : instanceChanged ? null : facts?.seq ?? null;
       const nextVersion =
         navVersion !== null ? navVersion : instanceChanged ? null : facts?.navVersion ?? null;
+      const pendingIntentId = normalizePositionId(
+        readTopicPositionField(record, "pendingIntentId", "pending_intent_id"),
+      );
+      const pendingIntentVersion = normalizePositionInt(
+        readTopicPositionField(record, "pendingIntentVersion", "pending_intent_version"),
+      );
+      const pendingSourceFragmentId = normalizePositionId(
+        readTopicPositionField(record, "pendingSourceFragmentId", "pending_source_fragment_id"),
+      );
+      const pendingSourceTitle =
+        (readTopicPositionField(record, "pendingSourceTitle", "pending_source_title") as
+          | string
+          | null
+          | undefined) ?? null;
       this._positionFacts = {
         topicId,
         fragmentId,
         historic,
         navVersion: nextVersion,
+        // 旧后端兼容路径没有位置状态版本/身份：保留已有值，绝不由旧事件抹掉新基线。
+        positionVersion: instanceChanged ? null : facts?.positionVersion ?? null,
+        positionIdentity: instanceChanged ? null : facts?.positionIdentity ?? null,
+        pendingIntentId,
+        pendingIntentVersion,
+        pendingSourceFragmentId,
+        pendingSourceTitle,
         instanceId: nextInstanceId,
         seq: nextSeq,
         source: "anchor",
       };
-      const pendingIntentId = normalizePositionId(
-        readTopicPositionField(record, "pendingIntentId", "pending_intent_id"),
-      );
       this.setPendingContinuation(
-        pendingIntentId
-          ? {
-              intentId: pendingIntentId,
-              sourceTitle:
-                (readTopicPositionField(record, "pendingSourceTitle", "pending_source_title") as
-                  | string
-                  | null
-                  | undefined) ?? null,
-            }
-          : null,
+        pendingIntentId ? { intentId: pendingIntentId, sourceTitle: pendingSourceTitle } : null,
       );
       const migrated = this.applyAuthoritativeTopicAnchor({
         origin: record.origin,
@@ -3858,6 +4168,475 @@ const sessionStoreDefinition = defineStore("session", {
         historic,
       );
       return { accepted: true, reason, migrated };
+    },
+
+    /* ── R16：完整位置状态唯一接受入口（契约 §7 / §14.3）─────────────── */
+
+    /**
+     * R16：接受一份**完整位置状态**（唯一入口）。
+     *
+     * 排序键 = position_identity + position_version（契约 §14.3；instance/seq 只作旧后端
+     * 兼容兜底，nav_version 不用于新事件排序）。位置 facts / Anchor 视图 / pending /
+     * 草稿跟随全部由这里整份处理：任何调用方（事件层 ANCHOR、runtime 快照、导航 HTTP 结果）
+     * 都不得在成功后自己再 setAnchor/setAnchorAndSync。
+     */
+    acceptPositionState(
+      input?: TopicPositionEventInput | Record<string, unknown> | null,
+      source: PositionAcceptSource = "anchor",
+    ): PositionStateAcceptance {
+      const reject = (reason: string, conflicted = false): PositionStateAcceptance => ({
+        accepted: false,
+        reason,
+        idempotent: false,
+        conflicted,
+        adopted: false,
+      });
+      if (!input || typeof input !== "object") return reject("no_input");
+      const record = input as Record<string, unknown>;
+      const state = readWholePositionState(record);
+      if (!state.topicId) return reject("no_topic");
+      /**
+       * 旧后端兼容：没有 position_version 的输入只允许走旧 nav_version 规则
+       * （契约 §14.3 冻结 reason=legacy_nav_order；新测试只测新入口）。
+       */
+      if (state.positionVersion === null) {
+        return this._acceptLegacyPositionState(record, source);
+      }
+      const keeper = chatDraftKeeperFor(this as object);
+      const followArmed = Boolean(this._topicDraftFollow && !this._topicDraftFollow.consumed);
+      // 跟随武装期间：抑制 draft keeper 的普通 bind 切换（等待正文不从输入框消失）。
+      if (followArmed && keeper) keeper.holdFollowBind();
+      const commandOperationId =
+        state.operationId ?? operationIdFromCommandId(state.commandId);
+      const authoritativeOperation =
+        state.origin === "topic_operation" ||
+        (source === "command" && Boolean(commandOperationId));
+      /** I01：被拒绝 / 失效 / 被新导航替代的操作，以及旧轮迟到的成功结果，整条拒绝。 */
+      if (authoritativeOperation && commandOperationId && this.isTopicOperationInvalid(commandOperationId)) {
+        this._releaseFollowBindHold();
+        return reject("stale_position_state");
+      }
+      if (
+        authoritativeOperation &&
+        state.turnId &&
+        this.activeTurnId &&
+        state.turnId !== this.activeTurnId
+      ) {
+        this._releaseFollowBindHold();
+        return reject("stale_position_state");
+      }
+      const facts = this._positionFacts;
+      const localIdentity = facts?.positionIdentity ?? null;
+      /**
+       * 身份比较（契约 §7.2(2)）：只有权威快照可以以新身份重建基线；实时事件/旧命令
+       * 携带旧身份 → 整份拒绝并触发一次权威恢复，绝不让旧身份事件改状态。
+       */
+      if (facts && localIdentity && state.positionIdentity && state.positionIdentity !== localIdentity) {
+        if (source === "snapshot") {
+          return this._adoptWholePositionState(state, facts, "new_position_identity", source);
+        }
+        this._noteSupersededDraftFollow(state);
+        this._requestPositionStateRestore();
+        this._releaseFollowBindHold();
+        return reject("stale_position_identity");
+      }
+      /**
+       * I07：本地已有数据库身份，但这条**实时事件**没有身份字段 —— 无法核对身份就整份
+       * 拒绝（旧实例事件不得仅因带版本号绕过身份检查）；触发一次权威恢复。
+       * 权威快照 / HTTP 命令结果缺身份时退回 position_version 排序（其来源可信，
+       * 且新后端的冻结 wire 实际总是带 position_identity）。
+       */
+      if (facts && localIdentity && !state.positionIdentity && source === "anchor") {
+        this._noteSupersededDraftFollow(state);
+        this._requestPositionStateRestore();
+        this._releaseFollowBindHold();
+        return reject("stale_position_identity");
+      }
+      // 本地基线来自旧后端（没有身份）：新整份状态带身份 → 以新身份重建基线。
+      if (facts && !localIdentity && state.positionIdentity) {
+        return this._adoptWholePositionState(state, facts, "new_position_identity", source);
+      }
+      if (!facts || facts.positionVersion === null) {
+        return this._adoptWholePositionState(state, facts, "baseline", source);
+      }
+      const localVersion = facts.positionVersion;
+      if (state.positionVersion < localVersion) {
+        // I01/I06：较旧的整份状态不得部分覆盖；匹配本次操作的旧结果不搬草稿并清除跟随。
+        this._noteSupersededDraftFollow(state);
+        this._releaseFollowBindHold();
+        return reject("stale_position_state");
+      }
+      if (state.positionVersion === localVersion) {
+        if (positionContentSignature(state) !== positionContentSignature(facts)) {
+          // I06：同版本内容冲突 → 不猜测、不部分合并；记录事实并触发一次权威恢复。
+          this._positionStateConflict = {
+            at: Date.now(),
+            source,
+            local: positionStateDebugView(facts),
+            incoming: positionStateDebugView(state),
+          };
+          this._requestPositionStateRestore();
+          return reject("same_version_conflict", true);
+        }
+        /**
+         * 同版本同内容 = 幂等接受：位置/视图/pending 零变化。
+         * 但草稿迁移身份与位置版本新旧是两件事（契约 §14.8）：匹配本次操作身份的
+         * 权威结果仍可迁移草稿一次（快照先到、结果后到的场景依赖这一点）。
+         */
+        this._consumeDraftFollowForPositionState(state, source);
+        this._releaseFollowBindHold();
+        return {
+          accepted: true,
+          reason: "idempotent",
+          idempotent: true,
+          conflicted: false,
+          adopted: false,
+        };
+      }
+      return this._adoptWholePositionState(state, facts, "new_position_state", source);
+    },
+
+    /** R16 旧后端兼容分支（reason=legacy_nav_order）：只允许旧 ANCHOR / 旧快照走这里。 */
+    _acceptLegacyPositionState(
+      input: Record<string, unknown>,
+      source: PositionAcceptSource,
+    ): PositionStateAcceptance {
+      if (source === "snapshot") {
+        const instanceId = normalizePositionId(input.instanceId ?? input.instance_id);
+        const applied = this._applyLegacyPositionSnapshot(input, instanceId);
+        return {
+          accepted: applied.applied,
+          reason: "legacy_nav_order",
+          idempotent: false,
+          conflicted: false,
+          adopted: applied.applied,
+        };
+      }
+      const beforeKey = `${this.currentTopicId ?? ""}|${this.anchorFragmentId ?? ""}|${this.anchorHistoric}`;
+      const legacy = this._acceptLegacyNavOrder(input);
+      if (legacy.accepted) {
+        const afterKey = `${this.currentTopicId ?? ""}|${this.anchorFragmentId ?? ""}|${this.anchorHistoric}`;
+        if (beforeKey !== afterKey && !this.turnRunning) void this.loadHistory();
+      }
+      return {
+        accepted: legacy.accepted,
+        reason: "legacy_nav_order",
+        idempotent: legacy.reason === "idempotent",
+        conflicted: false,
+        adopted: legacy.accepted,
+      };
+    },
+
+    /**
+     * R16：整份采用（facts → Anchor 视图 / pending → 草稿跟随，契约 §7.2(5)）。
+     *
+     * 跟随武装时 draft keeper 的 bind 被抑制：快照先到时等待正文不离开输入框，
+     * 等本次操作的权威结果到达后按操作身份迁移一次。
+     */
+    _adoptWholePositionState(
+      state: NormalizedPositionState,
+      facts: TopicPositionFacts | null,
+      reason: string,
+      source: PositionAcceptSource,
+    ): PositionStateAcceptance {
+      if (source === "snapshot" && state.instanceId) this.adoptInstance(state.instanceId);
+      const previousView = {
+        topicId: this.currentTopicId,
+        fragmentId: this.anchorFragmentId,
+        historic: this.anchorHistoric,
+      };
+      this._positionFacts = {
+        topicId: state.topicId as string,
+        fragmentId: state.fragmentId,
+        historic: state.historic,
+        navVersion: state.navVersion,
+        positionVersion: state.positionVersion,
+        positionIdentity: state.positionIdentity ?? facts?.positionIdentity ?? null,
+        pendingIntentId: state.pendingIntentId,
+        pendingIntentVersion: state.pendingIntentVersion,
+        pendingSourceFragmentId: state.pendingSourceFragmentId,
+        pendingSourceTitle: state.pendingSourceTitle,
+        instanceId: state.instanceId ?? facts?.instanceId ?? this.instanceId ?? null,
+        seq:
+          state.seq ??
+          (state.instanceId && facts?.instanceId && state.instanceId !== facts.instanceId
+            ? null
+            : facts?.seq ?? null),
+        source,
+      };
+      this._positionStateConflict = null;
+      this.setAnchor(
+        state.topicId as string,
+        state.fragmentId,
+        state.topicName,
+        state.fragmentId ? { id: state.fragmentId, title: state.fragmentTitle } : null,
+        state.historic,
+      );
+      this.setPendingContinuation(
+        state.pendingIntentId
+          ? { intentId: state.pendingIntentId, sourceTitle: state.pendingSourceTitle }
+          : null,
+      );
+      this._consumeDraftFollowForPositionState(state, source);
+      const changedView =
+        previousView.topicId !== this.currentTopicId ||
+        previousView.fragmentId !== this.anchorFragmentId ||
+        previousView.historic !== this.anchorHistoric;
+      if (changedView && !this.turnRunning) void this.loadHistory();
+      return {
+        accepted: true,
+        reason,
+        idempotent: false,
+        conflicted: false,
+        adopted: true,
+      };
+    },
+
+    /**
+     * R16：本次操作的权威结果到达时，按独立消费身份迁移草稿一次（契约 §7.3）。
+     *
+     * 只有操作身份匹配（operation + param_version / approval_id，或 command_id 推导出的
+     * operation 身份）才消费；无关手动导航不消费、不搬草稿。
+     */
+    _consumeDraftFollowForPositionState(
+      state: NormalizedPositionState,
+      source: PositionAcceptSource,
+    ): void {
+      const follow = this._topicDraftFollow;
+      if (!follow) return;
+      const key = draftFollowConsumptionKey(
+        follow.operationId,
+        follow.paramVersion,
+        follow.approvalId,
+      );
+      if (this._draftFollowConsumed.includes(key)) {
+        this._topicDraftFollow = null;
+        this._releaseFollowBindHold();
+        return;
+      }
+      const commandOperationId =
+        state.operationId ?? operationIdFromCommandId(state.commandId);
+      const authoritative =
+        state.origin === "topic_operation" ||
+        (source === "command" && Boolean(commandOperationId));
+      if (!authoritative) return;
+      if (!commandOperationId || commandOperationId !== follow.operationId) return;
+      const approvalId = state.approvalId ?? "";
+      if (follow.approvalId && approvalId && follow.approvalId !== approvalId) return;
+      const approvalMatched = Boolean(
+        follow.approvalId && approvalId && follow.approvalId === approvalId,
+      );
+      if (
+        !approvalMatched &&
+        state.paramVersion !== null &&
+        follow.paramVersion !== null &&
+        state.paramVersion !== follow.paramVersion
+      ) {
+        return;
+      }
+      this._markDraftFollowConsumed(key);
+      this._topicDraftFollow = null;
+      this._migrateFollowedDraftForAcceptance(state.topicId, follow);
+      this._releaseFollowBindHold();
+    },
+
+    /** R16：把等待期间的草稿迁移到本次操作的真实目标（只此一次，不自动发送）。 */
+    _migrateFollowedDraftForAcceptance(
+      targetTopicId: string | null,
+      follow: TopicDraftFollow,
+    ): void {
+      const topicId = String(targetTopicId ?? "").trim();
+      if (!topicId) return;
+      const keeper = chatDraftKeeperFor(this as object);
+      if (!keeper) return;
+      const liveText = String(this.draft ?? "");
+      if (liveText !== "" && liveText === follow.draftText && keeper.currentSeq === follow.draftSeq) {
+        keeper.migrateFollowedDraft({
+          topicId,
+          expectedText: follow.draftText,
+          expectedSeq: follow.draftSeq,
+        });
+        return;
+      }
+      /**
+       * 输入框里已不是武装时那一份（用户等待期间改过 / 视图曾被普通绑定刷新）：
+       * 退到原话题的已落盘副本核对，仍是同一份才迁移；否则草稿留在原话题。
+       */
+      if (!follow.fromTopicId) return;
+      const sourceKey = chatDraftKeyFor(follow.fromTopicId);
+      const stored = readDraft(sourceKey);
+      if (!stored || !stored.text) return;
+      if (stored.text !== follow.draftText) return;
+      keeper.migrateFollowedDraftFromStored({
+        fromTopicId: follow.fromTopicId,
+        targetTopicId: topicId,
+        expectedText: follow.draftText,
+        expectedSeq: stored.seq,
+      });
+    },
+
+    /** R16：匹配本次操作的旧结果已被更新的选择替代 → 不搬草稿并清除跟随。 */
+    _noteSupersededDraftFollow(state: NormalizedPositionState): void {
+      const follow = this._topicDraftFollow;
+      if (!follow) return;
+      const commandOperationId =
+        state.operationId ?? operationIdFromCommandId(state.commandId);
+      if (!commandOperationId || commandOperationId !== follow.operationId) return;
+      this._markDraftFollowConsumed(
+        draftFollowConsumptionKey(follow.operationId, follow.paramVersion, follow.approvalId),
+      );
+      this._topicDraftFollow = null;
+      this._releaseFollowBindHold();
+    },
+
+    /** R16：登记已消费的草稿跟随身份（有界 200，幂等）。 */
+    _markDraftFollowConsumed(key: string): void {
+      if (!key || this._draftFollowConsumed.includes(key)) return;
+      this._draftFollowConsumed = [...this._draftFollowConsumed.slice(-199), key];
+    },
+
+    /** R16：解除「跟随武装期间抑制 bind」的保护，并把输入框重新绑定到当前话题。 */
+    _releaseFollowBindHold(): void {
+      chatDraftKeeperFor(this as object)?.releaseFollowBindHold();
+    },
+
+    /**
+     * R16：冲突 / 身份不一致 → 触发**一次**权威恢复（契约 §14.3 single-flight）。
+     *
+     * 已在飞时合并丢弃（不并发、不风暴）；本轮其余位置状态按现有 resync 缓冲补放。
+     */
+    _requestPositionStateRestore(): void {
+      if (this._positionRestoreInFlight) return;
+      this._positionRestoreInFlight = true;
+      void restoreRuntimeState("position-state-conflict").finally(() => {
+        this._positionRestoreInFlight = false;
+      });
+    },
+
+    /* ── R16：手动导航（显式身份 + base_nav_version + 单飞串行，§14.2）──── */
+
+    /**
+     * R16：用户手动导航（进入话题 / 从历史继续）的唯一动作入口。
+     *
+     * * 单飞串行：同一时刻只有一个手动作业在飞，后点排队，真正发出时才取**新** base；
+     * * 每次真实用户动作生成新 request_id；网络失败重试同一动作复用同一 id + base；
+     * * 成功响应里的 `position` 走 acceptPositionState（业务代码不再自己 setAnchor）；
+     * * 400/409 结构化失败如实返回（不伪造成功），409 触发权威恢复。
+     */
+    manualNavigation(input: ManualNavigationInput): Promise<ManualNavigationResult> {
+      return this._enqueueManualNavigation(() => this._runManualNavigation(input));
+    },
+
+    /** R16：手动导航的单飞队列（先入先出；后点拿前一次接受后的新 base）。 */
+    _enqueueManualNavigation<T>(task: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        const execute = () => {
+          this._manualNavBusy = true;
+          void task()
+            .then((value) => resolve(value))
+            .catch((error) => reject(error))
+            .finally(() => {
+              this._manualNavBusy = false;
+              const next = this._manualNavQueue.shift();
+              if (next) next();
+            });
+        };
+        if (this._manualNavBusy) this._manualNavQueue = [...this._manualNavQueue, execute];
+        else execute();
+      });
+    },
+
+    async _runManualNavigation(input: ManualNavigationInput): Promise<ManualNavigationResult> {
+      const topicId = String(input.topicId ?? "").trim();
+      if (!topicId) {
+        return { ok: false, accepted: false, code: "invalid_target", error: "没有指定要进入的话题" };
+      }
+      const kind: "enter_topic" | "continue_from_history" =
+        input.kind === "continue_from_history" ? "continue_from_history" : "enter_topic";
+      const fragmentId = String(input.fragmentId ?? "").trim() || null;
+      if (kind === "continue_from_history" && !fragmentId) {
+        return { ok: false, accepted: false, code: "invalid_fragment", error: "续接历史需要指定片段" };
+      }
+      if (input.cancelPending) {
+        const cancelled = await this.cancelPendingContinuation();
+        if (!cancelled) {
+          return {
+            ok: false,
+            accepted: false,
+            code: "cancel_failed",
+            error: this.lastError ?? "旧的接续选择没能取消，未改变起点",
+          };
+        }
+      }
+      const actionKey = `${kind}:${topicId}:${fragmentId ?? ""}`;
+      if (this._manualNavRetry && this._manualNavRetry.key !== actionKey) {
+        this._manualNavRetry = null;
+      }
+      const request = this._manualNavRetry ?? {
+        key: actionKey,
+        requestId: newNavigationRequestId(),
+        baseNavVersion: this._positionFacts?.navVersion ?? 0,
+      };
+      const options = {
+        requestId: request.requestId,
+        baseNavVersion: request.baseNavVersion,
+      };
+      let response: Record<string, unknown>;
+      try {
+        response = (
+          kind === "continue_from_history"
+            ? await api.continueFromHistory(topicId, String(fragmentId), options)
+            : await api.setAnchor(topicId, null, options)
+        ) as unknown as Record<string, unknown>;
+      } catch (error) {
+        const status = (error as { status?: unknown }).status;
+        const body = (error as { body?: unknown }).body as Record<string, unknown> | null;
+        const structuredCode = String((body && (body.code ?? body.error)) ?? "").trim();
+        if (typeof status === "number" && status >= 400 && status < 500) {
+          this._manualNavRetry = null;
+          if (status === 409) this._requestPositionStateRestore();
+          const message =
+            status === 409
+              ? "起点没有改变：这次导航依据已经过期，已按最新状态恢复（可以重试）"
+              : `起点没有改变：${(error as Error)?.message || "导航请求被拒绝"}`;
+          this.lastError = message;
+          return {
+            ok: false,
+            accepted: false,
+            code:
+              structuredCode ||
+              (status === 409 ? "navigation_command_stale" : "navigation_request_rejected"),
+            error: message,
+          };
+        }
+        // 网络 / 5xx：保留同一动作身份，用户重试同一动作时复用同一 request_id 与 base。
+        this._manualNavRetry = request;
+        const message = "没能改变起点：" + ((error as Error)?.message || "网络请求失败") + "（可以重试）";
+        this.lastError = message;
+        return { ok: false, accepted: false, code: "network", error: message };
+      }
+      this._manualNavRetry = null;
+      const rawPosition = response.position;
+      const acceptanceInput =
+        rawPosition && typeof rawPosition === "object" && !Array.isArray(rawPosition)
+          ? {
+              ...(rawPosition as Record<string, unknown>),
+              origin: "manual",
+              operation_id: response.operation_id ?? undefined,
+              approval_id: response.approval_id ?? undefined,
+              param_version: response.param_version ?? undefined,
+              command_id: response.command_id ?? undefined,
+              changed: response.changed,
+              replay: response.replay,
+            }
+          : response;
+      const acceptance = this.acceptPositionState(acceptanceInput, "command");
+      if (!acceptance.accepted && acceptance.reason !== "stale_position_state") {
+        const message = "起点没有改变：服务器返回的位置状态没有被接受（已请求权威恢复）";
+        this.lastError = message;
+        return { ok: false, accepted: false, code: acceptance.reason, error: message };
+      }
+      return { ok: true, accepted: acceptance.accepted, code: null, error: null };
     },
 
     /* ── 话题阶段（TOPIC_PHASE 唯一消费入口）────────────────────────── */
@@ -4210,14 +4989,40 @@ const sessionStoreDefinition = defineStore("session", {
       if (this._cancelContinuationBusy) return false;
       this._cancelContinuationBusy = true;
       try {
-        const res = await api.cancelContinuation();
+        /**
+         * R16（契约 §14.2）：取消也是手动导航命令，必须带显式 request_id 与
+         * base_nav_version（客户端最近已接受的 nav_version）；网络失败重试同一动作
+         * 复用同一身份，直到成功或被明确的 4xx 拒绝。
+         */
+        const request = this._cancelContinuationRetry ?? {
+          requestId: newNavigationRequestId(),
+          baseNavVersion: this._positionFacts?.navVersion ?? 0,
+        };
+        let res: Awaited<ReturnType<typeof api.cancelContinuation>>;
+        try {
+          res = await api.cancelContinuation({
+            requestId: request.requestId,
+            baseNavVersion: request.baseNavVersion,
+          });
+        } catch (error) {
+          const status = (error as { status?: unknown }).status;
+          if (typeof status !== "number" || status >= 500) this._cancelContinuationRetry = request;
+          throw error;
+        }
         if (res && res.ok === false) {
+          this._cancelContinuationRetry = null;
           this.lastError = "后端没有确认取消「从所选历史继续」，起点未改变（可以重试）";
           return false;
         }
+        this._cancelContinuationRetry = null;
         // 服务端已确认取消 → 本地同步撤下提示，避免「本地还留着旧选择」。
         // （服务端随后广播的 ANCHOR 也会是 pending=null，两边一致。）
         this.pendingContinuation = null;
+        // R16：取消命令响应携带的 position 同样走唯一接受入口。
+        const rawPosition = (res as { position?: unknown } | null)?.position;
+        if (rawPosition && typeof rawPosition === "object" && !Array.isArray(rawPosition)) {
+          this.acceptPositionState(rawPosition as Record<string, unknown>, "command");
+        }
         return true;
       } catch (e) {
         this.lastError = `没能取消「从所选历史继续」：${(e as Error).message}（起点未改变）`;
@@ -8443,6 +9248,15 @@ const sendTopicByDraftId = new Map<string, string | null>();
   /** 点击发送那一刻记下的归属；send() 消费它，消费后即失效 */
   let pendingAttribution: SendAttribution | null = null;
   /**
+   * R16：跟随武装期间暂时抑制「话题变化 → bind 切换草稿键」。
+   *
+   * 快照先于操作结果到达时，位置视图可能已经切到目标话题；如果按普通导航规则 bind，
+   * 等待期间的正文会从输入框消失（即使落盘还在），违反 §7.3/§14.8 的「不从输入框
+   * 消失、不覆盖等待期编辑」。抑制期间只记住待绑定的话题，跟随被消费/清除后再绑定。
+   */
+  let followBindHeld = false;
+  let followBindTarget: string | null | undefined = undefined;
+  /**
    * 反例 10：按存储键保留「还没持久化成功」的内存候选。
    *
    * 写入失败时文字只在内存里（host.draft 与失败状态）；一旦切话题，host.draft 会被
@@ -8679,6 +9493,14 @@ const sendTopicByDraftId = new Map<string, string | null>();
    * 也不会被搬到用户后来切换到的**别的**话题。
    */
   function bind(topicId: string | null): void {
+    /**
+     * R16：跟随武装期间抑制普通 bind 切换（等待正文不从输入框消失）。
+     * 记住待绑定话题，跟随被消费/清除后由 releaseFollowBindHold() 补做一次。
+     */
+    if (followBindHeld) {
+      followBindTarget = topicId;
+      return;
+    }
     const nextKey = chatDraftKeyFor(topicId);
     if (nextKey === key) return;
     const previousKey = key;
@@ -8901,6 +9723,89 @@ const sendTopicByDraftId = new Map<string, string | null>();
     const available = draftStorageAvailable();
     if (!available.ok) setStatus("error", available.error ?? "本地存储不可用，草稿无法保存");
     return { moved: true, reason: "" };
+  }
+
+  /**
+   * R16：从**原话题已落盘的副本**迁移一次草稿（视图已被快照切换、输入框由抑制保护）。
+   *
+   * 只搬运「仍是武装时那一份」的草稿；目标已有不同草稿沿用既有保护（登记为被让位
+   * 草稿，不静默覆盖）；成功后删除原话题副本；不发送、不改归属之外的任何状态。
+   */
+  function migrateFollowedDraftFromStored(input: {
+    fromTopicId: string;
+    targetTopicId: string;
+    expectedText: string;
+    expectedSeq: number;
+  }): { moved: boolean; reason: string } {
+    const sourceKey = chatDraftKeyFor(input.fromTopicId);
+    const targetKey = chatDraftKeyFor(input.targetTopicId);
+    if (sourceKey === targetKey) return { moved: false, reason: "already_there" };
+    const source = readDraft(sourceKey);
+    if (!source || isBlankText(source.text)) return { moved: false, reason: "draft_blank" };
+    if (source.seq !== input.expectedSeq || source.text !== input.expectedText) {
+      return { moved: false, reason: "draft_version_changed" };
+    }
+    const sourceText = source.text;
+    const sourceSeq = source.seq;
+    const targetStored = readDraft(targetKey);
+    const targetCandidate = memoryCandidates.get(targetKey);
+    if (
+      targetStored &&
+      !isBlankText(targetStored.text) &&
+      normalizeSendText(targetStored.text) !== normalizeSendText(sourceText)
+    ) {
+      host._registerDisplacedChatDraft?.({
+        topicId: input.targetTopicId,
+        key: targetKey,
+        text: targetStored.text,
+        seq: targetStored.seq,
+      });
+    }
+    if (targetKey === key) {
+      cancelTimer();
+      seq = Math.max(seq, targetStored?.seq ?? 0, targetCandidate?.seq ?? 0, sourceSeq);
+      seq += 1;
+      const saved = commit(seq, key, sourceText);
+      if (!saved) return { moved: false, reason: "target_save_failed" };
+      loadInto(sourceText);
+      const removal = draftRemoveOutcome(removeDraft(sourceKey));
+      if (removal.reason === "storage-failure") {
+        setStatus("error", removal.error ?? "原话题的旧草稿没有从本机删除（原因未知）");
+      }
+      return { moved: true, reason: "" };
+    }
+    const targetSeq = Math.max(seq, targetStored?.seq ?? 0, targetCandidate?.seq ?? 0, sourceSeq) + 1;
+    const result = writeDraft(targetKey, sourceText, targetSeq);
+    if (!result.ok) {
+      return { moved: false, reason: "target_save_failed" };
+    }
+    memoryCandidates.delete(targetKey);
+    const removal = draftRemoveOutcome(removeDraft(sourceKey));
+    if (removal.reason === "storage-failure") {
+      setStatus("error", removal.error ?? "原话题的旧草稿没有从本机删除（原因未知）");
+    }
+    return { moved: true, reason: "" };
+  }
+
+  /**
+   * R16：跟随武装期间抑制普通 bind 切换（可重复调用；只置位）。
+   */
+  function holdFollowBind(): void {
+    followBindHeld = true;
+  }
+
+  /** R16：解除抑制并补做一次普通绑定（跟随被消费/清除时调用）。 */
+  function releaseFollowBindHold(): boolean {
+    if (!followBindHeld) return false;
+    followBindHeld = false;
+    const target = followBindTarget ?? host.currentTopicId;
+    followBindTarget = undefined;
+    bind(target);
+    return true;
+  }
+
+  function isFollowBindHeld(): boolean {
+    return followBindHeld;
   }
 
   /**
@@ -9148,6 +10053,10 @@ const sendTopicByDraftId = new Map<string, string | null>();
     },
     bind,
     migrateFollowedDraft,
+    migrateFollowedDraftFromStored,
+    holdFollowBind,
+    releaseFollowBindHold,
+    isFollowBindHeld,
     restore,
     onDraftChanged,
     flushNow,

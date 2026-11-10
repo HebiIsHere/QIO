@@ -869,6 +869,40 @@ export const useEventStore = defineStore("events", {
             }
           }
           /**
+           * R16（契约 §14.8）：审批执行成功事件携带整份 position → 走唯一接受入口。
+           *
+           * 导航命令的真实执行结果优先以这条事件为准（B/A 保证 executed 事件携带
+           * position）；前端消费点就在这里，业务层不再自己 setAnchor。
+           */
+          if (
+            phase === "executed" &&
+            d.position &&
+            typeof d.position === "object" &&
+            !Array.isArray(d.position)
+          ) {
+            const positionRecord = d.position as Record<string, unknown>;
+            session.acceptPositionState(
+              {
+                ...positionRecord,
+                origin: "topic_operation",
+                operation_id:
+                  registeredOperationId ||
+                  eventOperationId ||
+                  (typeof positionRecord.operation_id === "string"
+                    ? String(positionRecord.operation_id)
+                    : undefined),
+                approval_id: approvalId,
+                param_version:
+                  typeof d.param_version === "number" && Number.isFinite(d.param_version)
+                    ? d.param_version
+                    : (registered?.paramVersion ?? undefined),
+                turn_id: String(d.turn_id ?? registered?.turnId ?? "").trim() || undefined,
+                instance_id: typeof d.instance_id === "string" ? d.instance_id : undefined,
+              },
+              "command",
+            );
+          }
+          /**
            * R9：事件不新增类型，用 payload.phase 表达状态（W1 冻结）。
            * 前端只呈现：中间态（confirmed / approved / executing）保留待办；
            * 终态（executed / failed / invalidated / interrupted_unverified / …）才收口。
@@ -911,75 +945,19 @@ export const useEventStore = defineStore("events", {
           break;
         }
         case "ANCHOR": {
-          // agent 切换/创建话题后实时更新锚点（输入框/消息流话题行随之切换）
-          const d = event.data as Record<string, unknown>;
-          const topicId = String(d.topic_id ?? "");
-          if (!topicId) break;
-          const fragmentId = (d.fragment_id as string | null) ?? null;
-          const fragmentTitle = (d.fragment_title as string | null) ?? null;
-          const beforeKey = `${session.currentTopicId ?? ""}|${session.anchorFragmentId ?? ""}|${session.anchorHistoric}`;
           /**
-           * R2：ANCHOR 是**位置事件**，先走统一的接受入口（契约 §4.3）。
+           * R16：ANCHOR 是**完整位置状态**事件（契约 §7.1 / §14.3）。
            *
-           * 判定顺序在 session.acceptTopicPositionEvent 内固定：
-           * * 操作 / 轮次关联拒绝：invalid 集合里的操作、旧轮迟到结果；
-           * * 位置顺序：nav_version 主序、同版本只允许合法细化、读不到版本时
-           *   退回 instance_id + seq 兜底（seq 不跨实例比较）；
-           * * 位置接受不依赖草稿跟随对象（是否存在 / 是否已消费 / 草稿是否非空）。
+           * 唯一接受入口 session.acceptPositionState 负责全部判定与写入：
+           * * 主排序 = position_identity + position_version；旧整份拒绝、同版本同内容幂等、
+           *   同版本内容冲突记录并触发一次权威恢复；
+           * * 位置 facts / Anchor 视图 / pending / 草稿跟随由它整份处理；
+           * * 旧后端没有 position_version 时走 legacy_nav_order 兼容路径（文档标注）。
            *
-           * rejected 事件整条丢弃：不迁移草稿、不改 pending、不改当前位置。
-           * accepted 后由该入口统一更新位置 / 待接续 / 草稿跟随；事件层再按事件
-           * 原文落一次展示字段（同值幂等）并决定是否重载消息。
+           * 事件层**不再**自己 setAnchor / setPendingContinuation / 判断历史重载。
            */
-          const position = session.acceptTopicPositionEvent({
-            topicId,
-            fragmentId,
-            fragmentTitle,
-            historic: Boolean(d.historic),
-            navVersion: d.nav_version as number | null,
-            instanceId: d.instance_id as string | null,
-            seq: d.seq as number | null,
-            origin: d.origin as string | null,
-            operationId: d.operation_id as string | null,
-            approvalId: d.approval_id as string | null,
-            paramVersion: d.param_version as number | null,
-            turnId: d.turn_id as string | null,
-            topicName: (d.topic_name as string | null) ?? null,
-            pendingIntentId: (d.pending_intent_id as string | null) ?? null,
-            pendingIntentVersion: d.pending_intent_version as number | null,
-            pendingSourceFragmentId: d.pending_source_fragment_id as string | null,
-            pendingSourceTitle: (d.pending_source_title as string | null) ?? null,
-          });
-          if (!position.accepted) break;
-          // 仅 accepted 才落位置与待接续提示（rejected 三者都不动）。
-          session.setAnchor(
-            topicId,
-            fragmentId,
-            (d.topic_name as string | null) ?? null,
-            fragmentId ? { id: fragmentId, title: fragmentTitle } : undefined,
-            // historic=false（位置推进到当前片段）→ UI 收起「从…继续」提示
-            Boolean(d.historic),
-          );
-          // 「已登记但还没落实」的接续选择：界面据此显示「将从所选记录继续」，
-          // 而不是让人以为已经建了新片段（阶段 1 的两步语义）。
-          const pendingIntent = (d.pending_intent_id as string | null) ?? null;
-          session.setPendingContinuation(
-            pendingIntent
-              ? {
-                  intentId: pendingIntent,
-                  sourceTitle: (d.pending_source_title as string | null) ?? null,
-                }
-              : null,
-          );
-          // 起点换了但界面还留在上一条对话上 → 显示与真实起点不一致。
-          // 正在跑任务时不重载（会擦掉正在流式输出的内容），
-          // 这种情况下由任务结束/下次进入时的加载来对齐。
-          if (
-            beforeKey !== `${session.currentTopicId ?? ""}|${session.anchorFragmentId ?? ""}|${session.anchorHistoric}` &&
-            !session.turnRunning
-          ) {
-            void session.loadHistory();
-          }
+          const d = event.data as Record<string, unknown>;
+          session.acceptPositionState(d, "anchor");
           break;
         }
         case "TOPIC_SWITCH_SUGGESTED": {

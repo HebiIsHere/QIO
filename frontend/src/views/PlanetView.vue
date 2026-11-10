@@ -1337,33 +1337,30 @@ async function continueFrom(payload: { topicId: string; fragmentId: string | nul
   anchorError.value = "";
   try {
     /**
-     * 落到「某话题的最新位置 / **当前开放片段**」时，旧的未落实接续选择必须先原子取消
-     * （复用 cancelContinuation），否则下一条消息仍会被旧登记的历史带偏。
-     * 只有选的是**历史片段**时才不用先取消（后端登记时会替换旧意图）。
+     * R16（契约 §14.2 / §14.8）：手动导航只经 store 的唯一动作入口。
+     *
+     * * 单飞串行：后点排队，真正发出时才取**新** base_nav_version；
+     * * 显式 request_id：每次真实用户动作新 UUID，网络失败重试复用同一 id；
+     * * 成功响应里的 position 由 acceptPositionState 整份接受（本页不再
+     *   setAnchor/setAnchorAndSync 直接改业务导航）。
+     *
+     * 落到「某话题的最新位置 / 当前开放片段」时，旧的未落实接续选择先原子取消；
+     * 选中历史片段时由后端登记时替换旧意图，不需要前端先取消。
      * 只浏览不经过这里，所以浏览不会取消用户已经做出的接续选择。
      */
     const opensCurrentPosition = !fragmentId || !payload.historic;
-    if (opensCurrentPosition && session.pendingContinuation) {
-      const cancelled = await session.cancelPendingContinuation();
-      if (!cancelled) {
-        anchorError.value = session.lastError ?? "旧的接续选择没能取消，未改变起点";
-        anchorBusy.value = false;
-        return;
-      }
+    const result = await session.manualNavigation({
+      kind: fragmentId ? "continue_from_history" : "enter_topic",
+      topicId,
+      fragmentId,
+      cancelPending: opensCurrentPosition,
+      historic: payload.historic,
+    });
+    if (!result.ok) {
+      anchorError.value = result.error ?? "切换失败，未切换话题";
+      anchorBusy.value = false;
+      return;
     }
-    // 两个明确不同的动作：选中历史片段 = 新建接续片段；没选片段 = 进入最新位置
-    const res = fragmentId
-      ? await api.continueFromHistory(topicId, fragmentId)
-      : await api.setAnchor(topicId, null);
-    const topicName =
-      topics.value.find((item) => item.topic_id === topicId)?.title ?? session.topicName ?? topicId;
-    await session.setAnchorAndSync(
-      res.topic_id || topicId,
-      res.fragment_id,
-      topicName,
-      res.fragment_id ? { id: res.fragment_id, title: res.fragment_title ?? "" } : undefined,
-      res.historic,
-    );
   } catch (e) {
     anchorError.value = `切换失败，未切换话题：${(e as Error).message}`;
     anchorBusy.value = false;
