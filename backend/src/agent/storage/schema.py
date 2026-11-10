@@ -2054,6 +2054,30 @@ MIGRATIONS.append(
     )
 )
 
+# ── R14-B（2026-11-10 第三轮）：恢复记录持久化 + 唯一答案身份 + 迟到答案（F03/F04/F13）──
+# 只追加迁移 79 + 补偿 80；历史迁移一条不动。表/列语义见
+# storage/migration_r14_b_recovery.py 与 services/topic_recovery.py。
+from agent.storage.migration_r14_b_recovery import (  # noqa: E402
+    COMPENSATION_DDL as _R14_B_COMPENSATION_DDL,
+)
+from agent.storage.migration_r14_b_recovery import MIGRATION as _R14_B_RECOVERY_MIGRATION  # noqa: E402
+
+MIGRATIONS.append(_R14_B_RECOVERY_MIGRATION)
+
+# 补偿入口（新，80）：补偿 78 的全部语句 + 迁移 79 的建对象语句。
+# 与 66/68/70/72/74/76/78 同口径：纯追加 DDL（CREATE TABLE/INDEX IF NOT EXISTS +
+# ADD COLUMN）；「版本已登记但对象缺失」的存量库由 migrate.verify_required_objects
+# 重放这里补齐（REQUIRED_OBJECTS 的 7 项由 Lead 在迁移落地后加入），不改任何数据行。
+MIGRATIONS.append(
+    (
+        80,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 78 for stmt in stmts]
+            + list(_R14_B_COMPENSATION_DDL)
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 78
+COMPENSATION_VERSION = 80
 

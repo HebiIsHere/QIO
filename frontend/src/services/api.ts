@@ -700,6 +700,55 @@ export interface IntentExecutionRecord {
   verified_note?: string;
 }
 
+/**
+ * ANCHOR 事件的权威关联字段（F12；Lead 在 `services/app.py` 冻结）。
+ *
+ * * `origin=manual`：普通手动导航 / 内部位置推进 —— `operation_id` 恒为 null，
+ *   前端**不得**据此迁移话题申请的草稿；
+ * * `origin=topic_operation`：本次话题工具真实执行成功 —— 带稳定 operation_id /
+ *   参数版本 / 轮次，以及真实 nav_version 与进程内单调 seq；
+ * * `nav_version` 是导航版本单源；`seq` 用于识别旧 / 重复 / 乱序事件。
+ */
+export interface AnchorEventData {
+  topic_id: string;
+  topic_name?: string | null;
+  fragment_id?: string | null;
+  fragment_title?: string | null;
+  historic?: boolean;
+  pending_intent_id?: string | null;
+  pending_source_title?: string | null;
+  origin: "manual" | "topic_operation" | (string & {});
+  operation_id: string | null;
+  /** 本次确认对应的审批稳定身份（审批确认触发的操作为非空；手动/直接执行为 null）。 */
+  approval_id?: string | null;
+  param_version: number | null;
+  turn_id: string | null;
+  nav_version: number | null;
+  seq: number | null;
+}
+
+/**
+ * 话题申请（APPROVAL_REQUIRED / 审批行 payload）里前端消费的结构化字段。
+ *
+ * 只列契约允许前端读取的字段；未知字段不参与任何判断。旧后端缺失时一律按
+ * null/空处理（不猜、不伪造操作身份）。
+ */
+export interface TopicApprovalPayload {
+  action?: "switch" | "create" | (string & {});
+  turn_id?: string | null;
+  from_topic_id?: string | null;
+  from_topic_name?: string | null;
+  from_fragment_id?: string | null;
+  target_topic_id?: string | null;
+  target_topic_name?: string | null;
+  new_name?: string | null;
+  reason?: string | null;
+  operation_id?: string | null;
+  param_version?: number | null;
+  base_nav_version?: number | null;
+  conflict?: Record<string, unknown> | null;
+}
+
 /** 把可选查询参数拼成 ?a=b（空值不出现；不改变后端默认值）。 */
 function memoryQuery(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams();

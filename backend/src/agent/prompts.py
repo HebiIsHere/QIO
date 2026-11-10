@@ -411,6 +411,12 @@ switch_topic(topic_id, reason?, intent) 与 create_topic(name, reason?, intent) 
 可以按 user_request 直接执行的情形：上下文已经明确指向唯一目标，且用户本轮明确要求现在执行，例如已经讨论过「原神」话题后说「同意，切过去」。
 QIO 自己认为该拆题 / 换题一律用 suggestion，先申请，不替用户做决定；仅讨论主题不一定值得拆题。
 解释文字、过程说明不等于用户确认；用户对解释的追问也不等于确认。
+
+目标不在本轮话题候选里、但用户提到了一个真实话题的名称或 id 时，可以先调用 lookup_topic（只读）查询真实话题，确认真实 topic_id 后再按上面的 intent 规则决定是否调用 switch_topic：
+- 查询本身不等于切换决定，也不等于用户已经确认；查询之后本轮仍可以继续判断或调用话题工具；
+- 同名 / 相似名会全部列出，不擅自挑选；目标不唯一时先向用户澄清，或按 suggestion 走申请；
+- 查不到就如实说明：不编造 topic_id，不为了这次查询自动新建同名话题；确实需要新话题时按 create_topic 的规则处理；
+- 已结束话题会如实标注状态；是否切换按现有产品规则与用户决定。
 """.strip()
 
 
@@ -802,8 +808,9 @@ TOOL_DESCRIPTIONS = {
     "sys_info": "返回当前实现实际提供的平台、Python 和机器标识等信息；未返回的 CPU、内存、磁盘或健康状态不能自行补全。",
     "proc_list": "列出当前可获得的进程信息。进程存在不证明应用正常、响应正常或任务已经完成。",
     "proc_kill": "按 pid 强制结束进程，不是正常关闭应用。只有符合当前目标和实际授权时使用，并说明必要影响；依据返回结果判断是否已经结束。",
-    "switch_topic": "把本轮讨论转到 topic_id 指定的已有话题，reason 一句说明原因。intent 声明这次操作来源：user_request 仅当用户本轮明确要求现在切换，suggestion 用于 QIO 自己建议拆题/换题（缺省与不确定一律按 suggestion，程序会请用户确认）。topic_id 只能来自本轮话题候选。延续、纠正、补充、追问或推进当前话题时不要调用。",
+    "switch_topic": "把本轮讨论转到 topic_id 指定的已有话题，reason 一句说明原因。intent 声明这次操作来源：user_request 仅当用户本轮明确要求现在切换，suggestion 用于 QIO 自己建议拆题/换题（缺省与不确定一律按 suggestion，程序会请用户确认）。topic_id 只能来自本轮话题候选或 lookup_topic 查到的真实 topic_id；目标不在候选里时先调用 lookup_topic 确认真实话题（同名/相似名会全部列出，不擅自挑选）。延续、纠正、补充、追问或推进当前话题时不要调用。",
     "create_topic": "为可独立处理且现有话题无法承接的新目标创建话题；name 简短明确、用户可在确认时修改，reason 一句说明原因。intent 声明这次操作来源：user_request 仅当用户本轮明确要求现在新建，suggestion 用于 QIO 自己建议（缺省与不确定一律按 suggestion，程序会请用户确认）。程序负责确认、重名与相似冲突处理；不要自行声称已确认或已创建，也不要为查重反复调用。",
+    "lookup_topic": "只读查询真实存在的话题对象：按 name（话题名称）或 topic_id（话题 id）找到真实话题节点，返回 topic_id、名称、状态（进行中/已结束）、是否为空话题以及必要的区分信息。name 的同名/相似名会全部列出，不替你挑选；不存在时明确 not_found。查不到不要编造 topic_id，也不要为了这次查询自动新建同名话题。只读查询不改变当前讨论位置、不建立申请、不执行切换；查询本身也不等于切换决定——需要换题时仍按 switch_topic 的 intent 规则判断目标与时机。查到的 topic_id 可以直接用于 switch_topic。",
     "continue_from_fragment": "从 fragment_id 指定的历史片段继续，reason 可选。片段来自实际检索；执行后读取本轮需要的历史细节。只查询历史时使用 memory_search，不改变接续位置。",
     "correct_knowledge": "用户明确纠正或要求撤销已有知识时使用。content 用于定位，修正提供 new_content，撤销使用 delete。优先使用实际返回的稳定知识 ID 和版本；candidate_index 仅用于仍有效的兼容候选。依据实际结果简短确认，不重复要求用户确认同一明确纠正。",
     "correct_entity": "用户明确纠正实体属性、关系或要求撤销实体时使用。entity 指定名称；有稳定 entity_id 和 expected_revision 时优先使用。属性与关系按实际字段修改，身份不明确时不选择同名对象猜测。",
@@ -1240,6 +1247,14 @@ TOOL_ARGUMENT_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "fragment_offset": (
             "行内片段起点（字符，0 起）：配合返回里的 next_fragment_offset，"
             "继续读取被按片段分页的超长行 / 段。"
+        ),
+    },
+    "lookup_topic": {
+        "name": "要查找的真实话题名称；name 与 topic_id 至少提供一个。",
+        "topic_id": "已知的真实话题 id；给了就按 id 精确解析（id 是权威身份）。",
+        "include_ended": (
+            "是否把「包含匹配」的已结束话题也列出来，默认 false；"
+            "精确同名始终返回并标注已结束。"
         ),
     },
 }

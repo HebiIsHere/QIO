@@ -533,6 +533,11 @@ class AppContext:
         self.registry.register(
             CreateTopicTool(conn, approvals=self.approvals, predictor=self.predictor)
         )
+        # R14/F11：只读解析真实话题对象（名称/ID → 真实节点）。只依赖 conn：
+        # 不注入审批/预测器，查询本身不执行切换、不建立申请、不推进导航版本。
+        from agent.tools.topic_lookup import LookupTopicTool
+
+        self.registry.register(LookupTopicTool(conn))
         from agent.tools.continue_tool import ContinueFromFragmentTool
 
         self.registry.register(ContinueFromFragmentTool(conn))
@@ -1293,21 +1298,85 @@ class AppContext:
 
     # -- anchor 事件广播 --------------------------------------------------
 
+    def _anchor_operation_context(self) -> dict:
+        """本次 ANCHOR 是否由一次真实话题操作驱动（F12 权威关联字段）。
+
+        只在工具真实执行期间读取 ContextVar 绑定（services/topic_operation.py），
+        普通 UI 导航 / 内部位置推进没有绑定 → operation 为 None，事件 origin=manual。
+        不按工具名或文本猜操作身份。
+        """
+        operation = None
+        try:
+            from agent.services.topic_operation import current_operation
+
+            operation = current_operation()
+        except Exception:  # noqa: BLE001 - 绑定不可读时如实退回 manual，不伪造身份
+            logger.warning("failed to read current topic operation", exc_info=True)
+        if operation is None:
+            return {
+                "origin": "manual",
+                "operation_id": None,
+                "param_version": None,
+                "turn_id": None,
+                "approval_id": None,
+            }
+        return {
+            "origin": "topic_operation",
+            "operation_id": str(getattr(operation, "operation_id", "") or "") or None,
+            "param_version": getattr(operation, "param_version", None),
+            "turn_id": str(getattr(operation, "turn_id", "") or "") or None,
+            # 用户弹窗里改名后确认：approval payload 里的 param_version 是申请建立时的旧值，
+            # 真实执行版本在操作身份上推进。approval_id 是这条审批的稳定身份，前端据此
+            # 仍能把「本次确认」与该操作的成功事件关联（param_version 变化不代表换操作）。
+            "approval_id": str(getattr(operation, "approval_id", "") or "") or None,
+        }
+
     async def _on_tool_anchor_result(self, data: dict) -> None:
-        """switch_topic / create_topic 成功后广播新锚点（tool/result 策略）。"""
+        """switch_topic / create_topic 成功后广播新锚点（tool/result 策略）。
+
+        话题工具真实执行期间 ContextVar 绑定了操作身份：事件带 operation_id /
+        param_version / turn_id（origin=topic_operation），供前端只按**本次操作**的
+        权威成功结果迁移草稿（F12）；其它导航入口 origin=manual，不携带身份。
+        """
         tool_name = data.get("tool")
         result = data.get("result")
         if tool_name not in ("switch_topic", "create_topic", "continue_from_fragment"):
             return
         if result is None or not getattr(result, "ok", False):
             return
-        await self._publish_anchor_event()
+        context = (
+            self._anchor_operation_context()
+            if tool_name in ("switch_topic", "create_topic")
+            else {
+                "origin": "manual",
+                "operation_id": None,
+                "param_version": None,
+                "turn_id": None,
+                "approval_id": None,
+            }
+        )
+        await self._publish_anchor_event(**context)
 
-    async def _publish_anchor_event(self) -> None:
+    async def _publish_anchor_event(
+        self,
+        *,
+        origin: str = "manual",
+        operation_id: str | None = None,
+        param_version: int | None = None,
+        turn_id: str | None = None,
+        approval_id: str | None = None,
+    ) -> None:
         """把当前 active 锚点（话题 + 片段 + 是否历史位置）以 ANCHOR 事件推给前端。
 
         前端据此更新话题行与「当前从历史位置继续」提示：位置推进到当前片段后
         historic=false，提示自然消失（不会几十轮后还显示旧片段）。
+
+        F12 事件契约（前后端统一）：除既有字段外固定携带
+        * `origin`：manual（用户/内部导航）| topic_operation（本次话题工具真实成功）；
+        * `operation_id` / `param_version` / `turn_id`：仅 topic_operation 非空；
+        * `nav_version`：本次写入后的真实导航版本（navigation_version 单源）；
+        * `seq`：进程内单调事件序号（乱序/重放时可比较）。
+        手动导航不伪造 operation_id；前端不得用 targetTopicId=null 通配跟随。
         """
         from agent.api.events import EventType, make_event
 
@@ -1315,6 +1384,14 @@ class AppContext:
         anchor = anchors.get_active()
         if anchor is None or not anchor.topic_id:
             return
+        try:
+            from agent.services.navigation_version import current as _current_nav_version
+
+            nav_version: int | None = int(_current_nav_version(self.conn))
+        except Exception:  # noqa: BLE001 - 版本读不到时如实 null（不改用猜测数字）
+            logger.warning("failed to read navigation version for anchor event", exc_info=True)
+            nav_version = None
+        self._anchor_event_seq = int(getattr(self, "_anchor_event_seq", 0)) + 1
         node = self.topics.nodes.get_topic(anchor.topic_id)
         topic_name = node.name if node is not None else anchor.topic_id
         historic = anchors.is_historic_position(anchor.topic_id)
@@ -1337,6 +1414,14 @@ class AppContext:
                     "pending_source_title": (
                         self._fragment_title(pending.source_fragment_id) if pending else None
                     ),
+                    # F12：本次事件是否由一次真实话题操作驱动（权威成功关联）。
+                    "origin": str(origin or "manual"),
+                    "operation_id": operation_id,
+                    "param_version": param_version,
+                    "turn_id": turn_id,
+                    "approval_id": approval_id,
+                    "nav_version": nav_version,
+                    "seq": self._anchor_event_seq,
                 },
             )
         )

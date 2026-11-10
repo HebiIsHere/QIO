@@ -181,6 +181,106 @@ async def test_rebind_rejects_missing_target_topic(app, orch, monkeypatch):
     assert binding is not None and binding.topic_id == facts.old_topic
 
 
+# -- 1b. F06 归属恢复：已收尾轮次的受控修复 ---------------------------------
+
+
+async def test_repair_topic_ownership_works_after_turn_write_closed(app, orch, monkeypatch):
+    facts = _turn_facts(app, monkeypatch)
+    app.bindings.mark_write_closed("turn-p1r-a")
+    messages_before = _count(app, "messages")
+    topics_before = _count(app, "nodes")
+
+    repaired = await orch.repair_topic_ownership(
+        turn_id="turn-p1r-a",
+        topic_id=facts.target_topic,
+        user_message_id=facts.message_id,
+    )
+
+    assert repaired == facts.target_topic
+    binding = app.bindings.binding_for("turn-p1r-a")
+    assert binding is not None and binding.topic_id == facts.target_topic
+    assert binding.fragment_id is not None
+    fragment = app.fragments.get(binding.fragment_id)
+    assert fragment is not None and fragment.topic_id == facts.target_topic
+    assert _message_fragment(app, facts.message_id) == binding.fragment_id, (
+        "恢复只搬本轮这一条用户消息"
+    )
+    assert _count(app, "messages") == messages_before, "不得复制用户消息"
+    assert _count(app, "nodes") == topics_before, "不得重建已成功的话题"
+
+    # 幂等：重复恢复不写任何一行。
+    fragments_before = _count(app, "fragments")
+    again = await orch.repair_topic_ownership(
+        turn_id="turn-p1r-a",
+        topic_id=facts.target_topic,
+        user_message_id=facts.message_id,
+    )
+    assert again == facts.target_topic
+    assert _count(app, "fragments") == fragments_before
+    assert _count(app, "messages") == messages_before
+
+
+async def test_repair_topic_ownership_then_prepare_uses_target_context(
+    app, orch, monkeypatch
+):
+    facts = _turn_facts(app, monkeypatch)
+    app.bindings.mark_write_closed("turn-p1r-a")
+
+    await orch.repair_topic_ownership(
+        turn_id="turn-p1r-a",
+        topic_id=facts.target_topic,
+        user_message_id=facts.message_id,
+    )
+    messages = await orch.prepare_topic_answer_messages(
+        turn_id="turn-p1r-a",
+        topic_id=facts.target_topic,
+        user_message_id=facts.message_id,
+    )
+
+    assert getattr(messages[0], "role", "") == "system"
+    assert "目标话题" in (messages[0].content or "")
+    user_messages = [m for m in messages if getattr(m, "role", "") == "user"]
+    assert [m.content for m in user_messages] == ["原来那个问题怎么处理"]
+    assert messages[1].content == "原来那个问题怎么处理"
+
+
+async def test_repair_topic_ownership_refuses_unrelated_message(app, orch, monkeypatch):
+    facts = _turn_facts(app, monkeypatch)
+    other_topic = _topic(app, "无关话题")
+    other_fragment = app.fragments.get_or_create_open(other_topic)
+    other_message, _ = app.memory.append_message(
+        topic_id=other_topic,
+        role="user",
+        content="别的轮次的消息",
+        model="fake-model",
+        turn_id="turn-other",
+    )
+    app.bindings.mark_write_closed("turn-p1r-a")
+
+    with pytest.raises(RuntimeError, match="不一致"):
+        await orch.repair_topic_ownership(
+            turn_id="turn-p1r-a",
+            topic_id=facts.target_topic,
+            user_message_id=other_message,
+        )
+
+    binding = app.bindings.binding_for("turn-p1r-a")
+    assert binding is not None and binding.topic_id == facts.old_topic
+    assert _message_fragment(app, other_message) == other_fragment.id
+
+
+async def test_repair_topic_ownership_rejects_missing_target(app, orch, monkeypatch):
+    facts = _turn_facts(app, monkeypatch)
+    with pytest.raises(RuntimeError, match="目标话题不存在"):
+        await orch.repair_topic_ownership(
+            turn_id="turn-p1r-a",
+            topic_id="topic-does-not-exist",
+            user_message_id=facts.message_id,
+        )
+    binding = app.bindings.binding_for("turn-p1r-a")
+    assert binding is not None and binding.topic_id == facts.old_topic
+
+
 # -- 2. rebuild：失败必须显式抛出，不能返回旧 system ------------------------
 
 

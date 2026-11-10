@@ -1504,15 +1504,19 @@ def create_app(
                 intent = ctx.navigation.register_continuation(
                     topic_id, str(fragment_id), request_id=body.get("request_id")
                 )
-                if intent.get("opens_current"):
-                    result = ctx.navigation.enter_topic(
-                        topic_id, fragment_id=str(fragment_id), relate=False
-                    )
-                else:
-                    # 位置停在所选历史处（historic 提示由 Anchor 事件广播）
-                    result = ctx.navigation.enter_topic(
-                        topic_id, fragment_id=str(fragment_id), relate=False
-                    )
+                # F08：
+                # * 点选已封存历史片段的真实改选，导航版本推进已由 register_continuation
+                #   在同一事务完成（同 request_id 重放 / 重复点同一来源 changed=False 不推进），
+                #   这里只做落位，**不得**再推进第二次版本；
+                # * 点选当前开放片段（opens_current）是「离开历史浏览位置 / 回到真实当前位置」，
+                #   是一次真实位置变化，由 enter_topic 推进一次（重复点击同一位置时
+                #   Anchor 不变，但这是用户显式回到当前位置的动作，保持既有语义）。
+                result = ctx.navigation.enter_topic(
+                    topic_id,
+                    fragment_id=str(fragment_id),
+                    relate=False,
+                    advance_nav_version=bool(intent.get("opens_current")),
+                )
                 await ctx._publish_anchor_event()
                 return {
                     "ok": True,

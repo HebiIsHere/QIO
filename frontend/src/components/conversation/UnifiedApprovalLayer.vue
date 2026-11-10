@@ -60,12 +60,24 @@ const notice = ref("");
 const topicRetrying = ref(false);
 const topicStage = computed(() => session.stage);
 const topicRecovery = computed(() => session.recovery);
+/**
+ * F04：恢复入口不随轮次结束消失。
+ *
+ * 本轮活动阶段优先；本轮已经结束（stage 为 null）但仍有**持久**未完成恢复事项时，
+ * 用同一个提示块按 recoverable_failure 呈现（真实原因 + 重试入口都来自 store，
+ * 组件不伪造阶段、不自行推进）。
+ */
 const stageNoticeVisible = computed(
   () =>
     topicStage.value === "executing" ||
     topicStage.value === "context_preparing" ||
-    topicStage.value === "recoverable_failure",
+    topicStage.value === "recoverable_failure" ||
+    Boolean(topicRecovery.value?.recordId),
 );
+const noticeStage = computed(() => {
+  if (topicStage.value) return topicStage.value;
+  return topicRecovery.value?.recordId ? "recoverable_failure" : null;
+});
 
 async function retryTopicStage(recordId: string) {
   if (topicRetrying.value) return;
@@ -283,7 +295,7 @@ defineExpose({ openApprovals, retryAutoOpen });
     <div v-if="notice || stageNoticeVisible" class="ua-notices" data-test="ua-notices">
       <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>
       <TopicStageNotice
-        :stage="topicStage"
+        :stage="noticeStage"
         :recovery="topicRecovery"
         :retrying="topicRetrying"
         @retry="retryTopicStage"

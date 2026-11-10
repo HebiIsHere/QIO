@@ -23,7 +23,10 @@ import {
   type RecoveryRecordView,
 } from "../services/recoveryApi";
 import { restoreRuntimeState } from "./restore";
-import { retryTopicAnswer as retryTopicAnswerRequest } from "../services/approvalLifecycle";
+import {
+  retryTopicAnswer as retryTopicAnswerRequest,
+  type TopicAnswerRetryResult,
+} from "../services/approvalLifecycle";
 import { useUnifiedApprovalsStore } from "./unifiedApprovals";
 import { newClientRequestId, setNextSendRequestId } from "../services/sendIdentity";
 import { toAttachmentRef, type AttachmentRef } from "../services/attachments";
@@ -877,6 +880,71 @@ export function normalizeTopicRecovery(raw: unknown): TopicAnswerRecovery | null
 }
 
 /**
+ * 话题申请批准后的一次性草稿跟随（F12）。
+ *
+ * 身份绑定：`operation_id + param_version + turn_id + 原话题/片段 + 草稿版本`。
+ * 只有本次话题操作的**权威成功结果**（ANCHOR.origin=topic_operation 且 operation_id
+ * 与武装时一致）才允许迁移一次；目标未知（create）时 expectedTargetTopicId 为 null ——
+ * 这是「待关联」而不是通配：任何手动导航都不得据此搬草稿。
+ */
+export interface TopicDraftFollow {
+  /** 稳定操作身份（权威 ANCHOR 必须带同一个 operation_id）。 */
+  operationId: string;
+  /**
+   * 这条跟随来自哪一次审批确认（F12：用户弹窗里改名后确认，param_version 会推进，
+   * 但 approval_id 不变 —— 同一次确认仍应迁移草稿）。缺失 null（旧后端/旧事件）。
+   */
+  approvalId: string | null;
+  /** 参数版本（非审批路径的匹配依据；approval_id 双方一致时不再要求它相等）。 */
+  paramVersion: number | null;
+  /** 这条操作属于哪一轮。 */
+  turnId: string;
+  kind: "topic_switch" | "topic_create";
+  /** switch 的预期目标（只用于核对展示；create 未知为 null，绝不当作通配）。 */
+  expectedTargetTopicId: string | null;
+  /** 原话题 / 原片段（操作起点身份）。 */
+  fromTopicId: string | null;
+  fromFragmentId: string | null;
+  /** 武装时的草稿版本（草稿保存器的单调序号）。 */
+  draftSeq: number;
+  /** 武装时的草稿正文（迁移前复核「仍是同一份待迁移草稿」）。 */
+  draftText: string;
+  /** 已收到过本次操作的权威结果（无论是否迁移成功都只处理一次）。 */
+  consumed: boolean;
+  /** 已见的最新权威事件 seq（旧 / 重复事件不迁移、不提前消费）。 */
+  lastSeq: number | null;
+}
+
+/**
+ * 一条**持久**话题回答恢复事项（F04：独立于活动轮次）。
+ *
+ * 来源：`GET /api/recovery/records`（kind=topic_answer_recovery，权威清单）与
+ * `TOPIC_PHASE.recoverable_failure` 事件种子（清单到达前也能看到入口）。
+ * 活动轮次阶段（topicStage）与它分开：轮结束只收口活动阶段，不删除这里的未完成事项。
+ */
+export interface TopicRecoveryItem {
+  recordId: string;
+  /** 后端给的真实失败说明（不编造）。 */
+  message: string;
+  retryable: boolean;
+  /** 后端持久状态原文（pending / …）。 */
+  status: string;
+  /** 后端状态分类（answer_pending / answer_in_progress / …）。 */
+  stateClass: string;
+  failedStage: string;
+  turnId: string | null;
+  topicId: string | null;
+  operationId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  attemptCount: number | null;
+  lastError: string | null;
+  source: "listing" | "event";
+  /** 事件种子的本地登记序号（只用于「权威清单里没有它」的竞态判定，不展示）。 */
+  seededSeq?: number;
+}
+
+/**
  * 工具创建流程用到的工具名。
  *
  * 这些调用**不再各出一张普通工具卡**：它们的进度由 `TOOL_CREATE_STATUS` 汇总成
@@ -983,6 +1051,7 @@ export function recoveryActionLabel(actionId: string, label?: string): string {
   if (actionId === "ignore") return "忽略";
   if (actionId === "requeue") return "重新排队";
   if (actionId === "confirm_stopped") return "确认旧执行者已停止";
+  if (actionId === "retry_answer" || actionId === "retry_topic_answer") return "重试回答";
   return "处理";
 }
 
@@ -1019,6 +1088,84 @@ function recoveryInboxSummary(records: RecoveryRecordView[]): string {
   return records.length === 1
     ? "上次有一条记录需要你决定：继续还是忽略"
     : `上次有 ${records.length} 条记录需要你决定：继续还是忽略`;
+}
+
+/* ── F04：持久话题回答恢复事项（独立于活动轮次）────────────────────── */
+
+/** 这些状态说明这条恢复事项已经有权威结局：不再算未完成。 */
+const TOPIC_RECOVERY_DONE_STATUSES: ReadonlySet<string> = new Set([
+  "answered",
+  "done",
+  "completed",
+  "cancelled",
+  "canceled",
+  "ignored",
+  "dismissed",
+  "expired",
+]);
+
+function isTopicRecoveryDoneStatus(status: string): boolean {
+  return TOPIC_RECOVERY_DONE_STATUSES.has(String(status ?? "").trim().toLowerCase());
+}
+
+/** 版本比较用的时间戳（后端 ISO；解析不了按 0，不猜）。 */
+function topicRecoveryTimeOf(item: TopicRecoveryItem): number {
+  const raw = item.updatedAt || item.createdAt || "";
+  const at = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(at) ? at : 0;
+}
+
+/**
+ * 两条同 record_id 的恢复事实谁更新。
+ *
+ * 返回 >0 表示 a 更新。规则：权威清单优先于事件种子；同源比较 updated_at，
+ * 再比较 attempt_count（后端每次重试都会推进），最后保留现有（返回 0）。
+ */
+function compareTopicRecoveryItem(a: TopicRecoveryItem, b: TopicRecoveryItem): number {
+  const sourceRank = (item: TopicRecoveryItem): number => (item.source === "listing" ? 1 : 0);
+  if (sourceRank(a) !== sourceRank(b)) return sourceRank(a) - sourceRank(b);
+  const timeA = topicRecoveryTimeOf(a);
+  const timeB = topicRecoveryTimeOf(b);
+  if (timeA !== timeB) return timeA - timeB;
+  const attemptsA = a.attemptCount ?? 0;
+  const attemptsB = b.attemptCount ?? 0;
+  if (attemptsA !== attemptsB) return attemptsA - attemptsB;
+  return 0;
+}
+
+/** 持久清单里的一条记录 → 话题恢复事项（不是 topic_answer_recovery 时返回 null）。 */
+function topicRecoveryItemFromRecord(record: RecoveryRecordView): TopicRecoveryItem | null {
+  const recordId = String(record?.record_id ?? "").trim();
+  if (!recordId) return null;
+  if (String(record.kind ?? "") !== "topic_answer_recovery") return null;
+  const actions = Array.isArray(record.actions) ? record.actions : [];
+  const retryAction = actions.find((action) => action.id === "retry_answer") ?? null;
+  const status = String(record.status ?? "").trim();
+  const stateClass = String(record.state_class ?? "").trim();
+  const retryable =
+    record.retryable === true
+      ? true
+      : record.retryable === false
+        ? false
+        : retryAction
+          ? retryAction.enabled !== false
+          : stateClass === "answer_pending";
+  return {
+    recordId,
+    message: String(record.message ?? "").trim(),
+    retryable,
+    status,
+    stateClass,
+    failedStage: String(record.failed_stage ?? record.reason ?? "").trim(),
+    turnId: String(record.turn_id ?? "").trim() || null,
+    topicId: String(record.topic_id ?? "").trim() || null,
+    operationId: String(record.operation_id ?? "").trim() || null,
+    createdAt: String(record.created_at ?? "").trim() || null,
+    updatedAt: String(record.updated_at ?? "").trim() || null,
+    attemptCount: typeof record.attempt_count === "number" ? record.attempt_count : null,
+    lastError: String(record.last_error ?? "").trim() || null,
+    source: "listing",
+  };
 }
 
 /**
@@ -2097,6 +2244,9 @@ const sessionStoreDefinition = defineStore("session", {
       /** 参数版本 / 导航版本快照（payload.param_version / base_nav_version；缺失 null）。 */
       paramVersion: number | null;
       baseNavVersion: number | null;
+      /** 申请起点的话题 / 片段（F12 草稿跟随的身份绑定；旧后端缺失 null）。 */
+      fromTopicId: string | null;
+      fromFragmentId: string | null;
     }[],
     /**
      * 话题申请批准后、ANCHOR 真正切换话题前的一次性草稿跟随标记。
@@ -2104,7 +2254,7 @@ const sessionStoreDefinition = defineStore("session", {
      * 只由 events.ts 处理话题申请的 APPROVAL_RESULT 时武装、由草稿保存器在
      * 话题变化时消费；没有这个标记时，普通导航的草稿规则一字不变。
      */
-    _topicDraftFollow: null as { targetTopicId: string | null; turnId: string } | null,
+    _topicDraftFollow: null as TopicDraftFollow | null,
     /**
      * 本轮话题处理阶段（TOPIC_PHASE 唯一来源；只消费、不自行推进）。
      * null = 这一轮没有话题动作 / 旧后端没有该事件 —— 界面不伪造阶段。
@@ -2116,8 +2266,33 @@ const sessionStoreDefinition = defineStore("session", {
     topicStageApprovalId: null as string | null,
     /** 上下文准备失败后的恢复事实（retryAnswer 的入口凭据；非失败阶段为 null）。 */
     topicRecovery: null as TopicAnswerRecovery | null,
+    /**
+     * 持久话题回答恢复事项（F04：独立于活动轮次）。
+     *
+     * 活动轮次结束 / 刷新 / 重启都不删除这里；只有权威成功结果（retry-answer
+     * answered=true / TOPIC_PHASE answerable）或用户主动忽略才关闭。
+     */
+    topicRecoveryItems: [] as TopicRecoveryItem[],
+    /** TOPIC_PHASE 事件种子（清单到达前的待关联事实；清单到达后以清单为准）。 */
+    _topicRecoverySeeds: {} as Record<string, TopicRecoveryItem>,
+    /**
+     * 最近一次恢复清单是否是一份**完整、权威**的未完成清单。
+     * 只有它成立时，「清单里没有某条记录」才等于「这条已经有结局」；
+     * 读取失败 / 截断时保留既有入口（拉不到 ≠ 没有）。
+     */
+    _recoveryListingComplete: false,
+    /** 事件种子的本地单调登记序号 / 发起清单读取时的水位（防「读取期间新到的种子」被误删）。 */
+    _topicRecoverySeedSeq: 0,
+    _recoveryListingSeedSeq: 0,
+    /** 正在重试的恢复记录（按 record_id 单飞；不同记录互不全局串行）。 */
+    _topicRetryingRecords: [] as string[],
     /** 后端若给 seq：同一轮只接受更大的 seq（重放 / 乱序不改状态）。 */
     _topicPhaseSeq: null as number | null,
+    /**
+     * 本轮从 recoverable_failure 重试时对应的恢复记录 id（F04）。
+     * 重试推进到 answerable = 权威成功 → 关闭这条记录；轮次收口时不清（事项是持久的）。
+     */
+    _topicPhaseRecoveryRecordId: "" as string,
     /**
      * 阶段门内暂存的**正式正文**（顺序无关兼容；契约 §3 原文顺序是
      * 「先交付缓冲正文，随后进入 ANSWERABLE」，而 F 观察到另一种顺序也可能出现）。
@@ -2304,9 +2479,45 @@ const sessionStoreDefinition = defineStore("session", {
     stage(): TopicPhase | null {
       return this.topicStage;
     },
-    /** 本轮恢复事实（只有 recoverable_failure 之后非 null）。 */
+    /**
+     * 恢复入口事实（F04）。
+     *
+     * 优先返回**本轮**的 recoverable_failure 事实；本轮已经结束/没有活动阶段时，
+     * 回退到最近一条**持久**未完成恢复事项 —— 恢复入口不随轮次结束消失。
+     * 两者都没有时返回 null（界面不渲染、不伪造）。
+     */
     recovery(): TopicAnswerRecovery | null {
-      return this.topicRecovery;
+      if (this.topicRecovery) return this.topicRecovery;
+      const pending = this.pendingTopicRecovery;
+      if (!pending) return null;
+      return {
+        recordId: pending.recordId,
+        message: pending.message,
+        retryable: pending.retryable,
+      };
+    },
+    /** 全部持久未完成话题恢复事项（新的在前；只读派生，不复制给别的 store）。 */
+    recoveryItems(): TopicRecoveryItem[] {
+      return this.topicRecoveryItems;
+    },
+    /** 最近一条持久未完成恢复事项（界面「还有一条可重试」的唯一来源）。 */
+    pendingTopicRecovery(): TopicRecoveryItem | null {
+      return this.topicRecoveryItems[0] ?? null;
+    },
+    /** 按 record_id 找一条持久恢复事项（没有就是 null，不拿别的凑数）。 */
+    topicRecoveryItemFor(): (recordId: string) => TopicRecoveryItem | null {
+      return (recordId: string): TopicRecoveryItem | null => {
+        const id = String(recordId ?? "").trim();
+        if (!id) return null;
+        return this.topicRecoveryItems.find((item) => item.recordId === id) ?? null;
+      };
+    },
+    /** 这条恢复是否正在重试（单飞；界面据此禁用重复点击）。 */
+    topicRecoveryRetrying(): (recordId: string) => boolean {
+      return (recordId: string): boolean => {
+        const id = String(recordId ?? "").trim();
+        return Boolean(id) && this._topicRetryingRecords.includes(id);
+      };
     },
     /**
      * 「本轮等待话题选择」造成的发送限制（**只**针对这条对话的发送动作）。
@@ -3039,6 +3250,9 @@ const sessionStoreDefinition = defineStore("session", {
       operationId?: string | null;
       paramVersion?: number | null;
       baseNavVersion?: number | null;
+      /** F12：申请起点的话题 / 片段（草稿跟随身份绑定；缺失 null）。 */
+      fromTopicId?: string | null;
+      fromFragmentId?: string | null;
     }) {
       const id = String(entry?.approvalId ?? "");
       if (!id) return;
@@ -3056,6 +3270,8 @@ const sessionStoreDefinition = defineStore("session", {
           typeof entry.baseNavVersion === "number" && Number.isFinite(entry.baseNavVersion)
             ? entry.baseNavVersion
             : null,
+        fromTopicId: String(entry.fromTopicId ?? "").trim() || null,
+        fromFragmentId: String(entry.fromFragmentId ?? "").trim() || null,
       };
       this._topicApplications = [
         ...this._topicApplications.filter((item) => item.approvalId !== id),
@@ -3067,6 +3283,18 @@ const sessionStoreDefinition = defineStore("session", {
       const id = String(approvalId ?? "");
       if (!id) return null;
       return this._topicApplications.find((item) => item.approvalId === id) ?? null;
+    },
+    /**
+     * 按稳定操作身份查本地话题申请登记（F12：TOPIC_PHASE 迟到时补武装草稿跟随）。
+     * 只认**唯一**一条：同一 operation 出现多条时返回最新登记，不合并、不猜。
+     */
+    topicApplicationForOperation(operationId: string) {
+      const id = String(operationId ?? "").trim();
+      if (!id) return null;
+      for (let i = this._topicApplications.length - 1; i >= 0; i -= 1) {
+        if (this._topicApplications[i].operationId === id) return this._topicApplications[i];
+      }
+      return null;
     },
     /** 某个审批 id 已经有结局：本地登记不再需要（幂等）。 */
     dropTopicApplication(approvalId: string) {
@@ -3091,26 +3319,178 @@ const sessionStoreDefinition = defineStore("session", {
       // 阶段只属于这一轮：轮结束 / 权威队列已空闲时收口，避免下一轮读到上一轮的阶段。
       if (!this.topicStageTurnId || this.topicStageTurnId === tid) this.resetTopicPhase();
     },
+    /** 当前草稿版本（草稿保存器的单调写入序号；武装/迁移复核用）。 */
+    _draftVersion(): number {
+      return chatDraftKeeperFor(this as object)?.currentSeq ?? 0;
+    },
     /**
-     * 话题申请已获批准（或正在执行）：武装**一次性**草稿跟随。
+     * 话题申请已获批准（或正在执行）：武装**一次性**草稿跟随（F12）。
      *
-     * 等待期间写在输入框里的草稿，会在 ANCHOR 真的把话题切到目标话题时跟随过去；
-     * 这里不移动任何文字、不改归属。没有这个标记时普通导航的草稿规则一字不变。
+     * 只记录身份与「武装时草稿仍是哪一版」，不移动任何文字、不改归属。
+     * 没有稳定 operation_id（旧后端 / 旧事件）时**不武装**：草稿留在原话题，
+     * 绝不用「目标未知」去通配下一次任意导航。
      */
-    armTopicDraftFollow(input: { targetTopicId?: string | null; turnId?: string | null } = {}) {
+    armTopicDraftFollow(input: {
+      operationId?: string | null;
+      approvalId?: string | null;
+      paramVersion?: number | null;
+      turnId?: string | null;
+      kind?: "topic_switch" | "topic_create";
+      expectedTargetTopicId?: string | null;
+      fromTopicId?: string | null;
+      fromFragmentId?: string | null;
+    } = {}) {
+      const operationId = String(input.operationId ?? "").trim();
+      if (!operationId) {
+        // 没有操作身份：无法与权威结果对应 → 不武装（安全侧：草稿留原话题）
+        this._topicDraftFollow = null;
+        return;
+      }
       this._topicDraftFollow = {
-        targetTopicId: input.targetTopicId ?? null,
-        turnId: input.turnId ?? "",
+        operationId,
+        approvalId: String(input.approvalId ?? "").trim() || null,
+        paramVersion:
+          typeof input.paramVersion === "number" && Number.isFinite(input.paramVersion)
+            ? input.paramVersion
+            : null,
+        turnId: String(input.turnId ?? "").trim(),
+        kind: input.kind === "topic_create" ? "topic_create" : "topic_switch",
+        expectedTargetTopicId: String(input.expectedTargetTopicId ?? "").trim() || null,
+        fromTopicId: String(input.fromTopicId ?? "").trim() || null,
+        fromFragmentId: String(input.fromFragmentId ?? "").trim() || null,
+        draftSeq: this._draftVersion(),
+        draftText: String(this.draft ?? ""),
+        consumed: false,
+        lastSeq: null,
       };
     },
-    /** 清除草稿跟随（拒绝 / 执行失败 / 取消 / 一轮结束）：草稿归属不再改变。 */
+    /** 清除草稿跟随（拒绝 / 失效 / 失败 / 取消 / 一轮结束）：草稿归属不再改变。 */
     clearTopicDraftFollow() {
       this._topicDraftFollow = null;
+    },
+    /**
+     * 按「本次操作失败/失效」收口跟随：只清与这条操作（或这一轮）对应的标记。
+     *
+     * 别的操作/别的轮的跟随不受影响（不误解锁、不误清）。
+     */
+    clearTopicDraftFollowForOperation(input: {
+      operationId?: string | null;
+      turnId?: string | null;
+    } = {}) {
+      const follow = this._topicDraftFollow;
+      if (!follow) return;
+      const operationId = String(input.operationId ?? "").trim();
+      const turnId = String(input.turnId ?? "").trim();
+      if (operationId && follow.operationId && follow.operationId !== operationId) return;
+      if (!operationId && turnId && follow.turnId && follow.turnId !== turnId) return;
+      this._topicDraftFollow = null;
+    },
+    /**
+     * 权威话题操作成功结果（ANCHOR origin=topic_operation）→ 迁移一次草稿。
+     *
+     * 判定顺序（契约 §3.6 + Lead 冻结的 ANCHOR 字段）：
+     * 1. 有已武装的跟随，且尚未消费；
+     * 2. 事件来自真实话题操作（origin=topic_operation），operation_id 与武装时一致
+     *    （手动导航不伪造 operation_id，因此永远不会命中）；
+     * 3. 事件 seq 不旧于已见值（重复 / 乱序不迁移）；
+     * 4. 迁移前复核：草稿仍非空、版本未被用户新编辑覆盖、正文仍是武装时那一份；
+     * 5. 目标以事件给出的**真实目标**为准（create 的目标未知由此补全）。
+     *
+     * 无论迁移是否发生，权威结果只处理一次（consumed）；返回迁移结果供事件层记录。
+     */
+    applyAuthoritativeTopicAnchor(input: {
+      origin?: unknown;
+      operationId?: unknown;
+      approvalId?: unknown;
+      paramVersion?: unknown;
+      turnId?: unknown;
+      topicId?: unknown;
+      fragmentId?: unknown;
+      navVersion?: unknown;
+      seq?: unknown;
+    }): { applied: boolean; migrated: boolean; reason: string } {
+      const follow = this._topicDraftFollow;
+      if (!follow || follow.consumed) return { applied: false, migrated: false, reason: "no_follow" };
+      const origin = String(input.origin ?? "").trim();
+      if (origin !== "topic_operation") {
+        return { applied: false, migrated: false, reason: "not_authoritative" };
+      }
+      const operationId = String(input.operationId ?? "").trim();
+      if (!operationId || !follow.operationId || operationId !== follow.operationId) {
+        return { applied: false, migrated: false, reason: "operation_mismatch" };
+      }
+      /**
+       * 审批确认身份（Lead 裁决 F12）：
+       * * 双方都有 approval_id 且相等 → 同一次确认（即使用户在弹窗里改名让
+       *   param_version 从 v1 推进到 v2，也照常迁移一次）；
+       * * 双方都有 approval_id 但不等 → 不是这次确认，不迁移、不消费；
+       * * 有一方缺失（旧后端 / 直接执行）→ 退回 operation_id + param_version 匹配。
+       */
+      const approvalRaw = input.approvalId;
+      const approvalId = String(approvalRaw ?? "").trim();
+      const armedApprovalId = String(follow.approvalId ?? "").trim();
+      let approvalMatched = false;
+      if (armedApprovalId && approvalId) {
+        if (approvalId !== armedApprovalId) {
+          return { applied: false, migrated: false, reason: "approval_mismatch" };
+        }
+        approvalMatched = true;
+      }
+      /**
+       * 参数版本是批准身份的一部分：同一 operation 的**另一个参数版本**成功
+       * （改名 / 改目标后的新批准）不是本次武装的那一份，不迁移、不消费。
+       * 两边都有版本号才比较（旧后端缺失时不猜）；审批确认已匹配时不比较。
+       */
+      const paramRaw = input.paramVersion;
+      const paramVersion =
+        typeof paramRaw === "number" && Number.isFinite(paramRaw) ? Math.trunc(paramRaw) : null;
+      if (
+        !approvalMatched &&
+        paramVersion !== null &&
+        follow.paramVersion !== null &&
+        paramVersion !== follow.paramVersion
+      ) {
+        return { applied: false, migrated: false, reason: "param_version_mismatch" };
+      }
+      const seqRaw = input.seq;
+      const seq = typeof seqRaw === "number" && Number.isFinite(seqRaw) ? Math.trunc(seqRaw) : null;
+      if (seq !== null && follow.lastSeq !== null && seq <= follow.lastSeq) {
+        return { applied: false, migrated: false, reason: "stale_seq" };
+      }
+      const topicId = String(input.topicId ?? "").trim();
+      if (!topicId) return { applied: false, migrated: false, reason: "no_target" };
+      // 权威结果只处理一次：迟到的重复事件不再迁移
+      follow.consumed = true;
+      if (seq !== null) follow.lastSeq = seq;
+      this._topicDraftFollow = null;
+      // 迁移前复核：仍是同一份「待迁移」草稿，且版本没有被用户新编辑覆盖
+      const draftText = String(this.draft ?? "");
+      if (!draftText.trim()) return { applied: true, migrated: false, reason: "draft_blank" };
+      if (this._draftVersion() !== follow.draftSeq) {
+        return { applied: true, migrated: false, reason: "draft_version_changed" };
+      }
+      if (draftText !== follow.draftText) {
+        return { applied: true, migrated: false, reason: "draft_text_changed" };
+      }
+      const keeper = chatDraftKeeperFor(this as object);
+      if (!keeper) return { applied: true, migrated: false, reason: "no_keeper" };
+      const moved = keeper.migrateFollowedDraft({
+        topicId,
+        expectedText: follow.draftText,
+        expectedSeq: follow.draftSeq,
+      });
+      return { applied: true, migrated: moved.moved, reason: moved.reason };
     },
 
     /* ── 话题阶段（TOPIC_PHASE 唯一消费入口）────────────────────────── */
 
-    /** 新一轮开始 / 本轮收口：阶段与恢复事实一起清空（不让上一轮的状态影响下一轮）。 */
+    /**
+     * 新一轮开始 / 本轮收口：只清**活动轮次**的阶段与失败提示。
+     *
+     * F04：持久恢复事项（topicRecoveryItems / 恢复清单）不在这里删除 ——
+     * 关闭、断连、TURN_END、刷新、重启都不能让未完成事项消失；
+     * 它们只由权威成功结果或用户主动忽略关闭。
+     */
     resetTopicPhase() {
       this.topicStage = null;
       this.topicStageTurnId = null;
@@ -3118,6 +3498,45 @@ const sessionStoreDefinition = defineStore("session", {
       this.topicStageApprovalId = null;
       this.topicRecovery = null;
       this._topicPhaseSeq = null;
+      this._topicPhaseRecoveryRecordId = "";
+    },
+
+    /**
+     * 把一条 recoverable_failure 事件登记成**持久**恢复事项种子（F04）。
+     *
+     * 清单查询到达前，恢复入口也必须已经存在；清单到达后以清单记录为准
+     * （见 _mergeTopicRecoveryItems）。同 record 的重复/乱序事件幂等。
+     */
+    _seedTopicRecoveryFromPhase(
+      input: Record<string, unknown>,
+      turnId: string,
+      operationId: string,
+    ): void {
+      const recovery = normalizeTopicRecovery(input.recovery);
+      if (!recovery || !recovery.recordId) return;
+      if (this._recoveredResolvedIds.includes(recovery.recordId)) return;
+      const existing = this._topicRecoverySeeds[recovery.recordId];
+      if (existing && existing.source === "listing") return;
+      this._topicRecoverySeedSeq += 1;
+      const next: TopicRecoveryItem = {
+        recordId: recovery.recordId,
+        message: recovery.message || existing?.message || "",
+        retryable: recovery.retryable,
+        status: existing?.status || "pending",
+        stateClass: existing?.stateClass || "answer_pending",
+        failedStage: String(input.failed_stage ?? existing?.failedStage ?? "").trim(),
+        turnId: turnId || existing?.turnId || null,
+        topicId: String(input.topic_id ?? existing?.topicId ?? "").trim() || null,
+        operationId: operationId || existing?.operationId || null,
+        createdAt: existing?.createdAt ?? null,
+        updatedAt: existing?.updatedAt ?? null,
+        attemptCount: existing?.attemptCount ?? null,
+        lastError: existing?.lastError ?? null,
+        source: "event",
+        seededSeq: existing?.seededSeq ?? this._topicRecoverySeedSeq,
+      };
+      this._topicRecoverySeeds = { ...this._topicRecoverySeeds, [recovery.recordId]: next };
+      this._mergeTopicRecoveryItems();
     },
 
     /**
@@ -3133,6 +3552,14 @@ const sessionStoreDefinition = defineStore("session", {
     applyTopicPhase(input: Record<string, unknown>): boolean {
       const phase = normalizeTopicPhase(input?.phase);
       if (!phase) return false;
+      /**
+       * F04：这条恢复记录已经由权威结果关闭（answered）→ 迟到/重放的失败事件
+       * 不得把它复活成「还在失败」，也不改活动阶段。
+       */
+      const incomingRecovery = phase === "recoverable_failure" ? normalizeTopicRecovery(input.recovery) : null;
+      if (incomingRecovery?.recordId && this._recoveredResolvedIds.includes(incomingRecovery.recordId)) {
+        return false;
+      }
       const turnId = String(input.turn_id ?? "").trim();
       const operationId = String(input.operation_id ?? "").trim();
       const approvalId = String(input.approval_id ?? "").trim();
@@ -3166,10 +3593,17 @@ const sessionStoreDefinition = defineStore("session", {
           return false;
         }
       }
+      /** 恢复重试成功（推进到 answerable）时要关闭的旧恢复记录（F04）。 */
+      const previousRecovery = current === "recoverable_failure" ? this.topicRecovery : null;
+      const pendingRecoveryId =
+        this._topicPhaseRecoveryRecordId || previousRecovery?.recordId || "";
       if (current === phase && this.topicStageTurnId === turnId) {
         // 同一阶段重复：幂等；恢复信息缺失时补齐，不产生其它状态变化
         if (phase === "recoverable_failure" && !this.topicRecovery) {
-          this.topicRecovery = normalizeTopicRecovery(input.recovery);
+          this.topicRecovery = incomingRecovery;
+        }
+        if (phase === "recoverable_failure") {
+          this._seedTopicRecoveryFromPhase(input, turnId, operationId);
         }
         return false;
       }
@@ -3179,7 +3613,7 @@ const sessionStoreDefinition = defineStore("session", {
       if (approvalId) this.topicStageApprovalId = approvalId;
       if (seq !== null) this._topicPhaseSeq = seq;
       if (phase === "recoverable_failure") {
-        const recovery = normalizeTopicRecovery(input.recovery);
+        const recovery = incomingRecovery;
         this.topicRecovery =
           recovery ??
           ({
@@ -3187,9 +3621,22 @@ const sessionStoreDefinition = defineStore("session", {
             message: "上下文准备失败，正式回答没有生成；可以在恢复入口重试。",
             retryable: false,
           } satisfies TopicAnswerRecovery);
+        this._seedTopicRecoveryFromPhase(input, turnId, operationId);
+        if (this.topicRecovery?.recordId) {
+          this._topicPhaseRecoveryRecordId = this.topicRecovery.recordId;
+        }
       } else {
         // 已经推进（含恢复重试成功）→ 旧的失败说明不再成立
         this.topicRecovery = null;
+        /**
+         * F04：权威事件推进到 answerable = 这次恢复已经成功 → 关闭对应持久记录
+         * （移除旧失败提示与恢复入口；迟到的旧快照/重放不得把它复活）。
+         * 中间经过 context_preparing 也照样收口（同一次恢复重试）。
+         */
+        if (phase === "answerable" && pendingRecoveryId) {
+          this.resolveTopicRecovery(pendingRecoveryId);
+          this._topicPhaseRecoveryRecordId = "";
+        }
       }
       return true;
     },
@@ -3278,40 +3725,64 @@ const sessionStoreDefinition = defineStore("session", {
     },
 
     /**
-     * 恢复入口：只重做本轮还没完成的那一步（不重发用户消息、不重新执行话题操作）。
+     * 恢复入口：只重做还没完成的那一步（不重发用户消息、不重新执行话题操作）。
      *
-     * 走既有恢复通道 POST /api/recovery/records/{id}/retry-answer；
-     * 失败原因原样返回，不假装成功、不改阶段（阶段仍以后端事件为准）。
+     * F04：入口来自**持久恢复事项**（清单 / 事件种子），不依赖活动轮次是否还在；
+     * 成功由权威结果（answered=true）收口：关闭对应记录、移除旧失败提示、
+     * 用既有历史读取把唯一真实答案补回对话。失败/处理中原样返回，不假装成功。
+     * 不激活旧轮次、不重挂当前轮、不跳导航、不动别的申请。
      */
-    async retryTopicAnswer(
-      recordId: string,
-    ): Promise<{ ok: boolean; code: string; message: string }> {
+    async retryTopicAnswer(recordId: string): Promise<TopicAnswerRetryResult> {
       const id = String(recordId ?? "").trim();
       if (!id) {
         return { ok: false, code: "missing_record", message: "没有可重试的恢复记录。" };
       }
-      const current = this.topicRecovery;
-      if (current && !current.retryable) {
+      const item = this._findTopicRecoveryItem(id);
+      const active = this.topicRecovery;
+      const activeMatches = Boolean(active && active.recordId === id);
+      if (!item && !activeMatches) {
+        return {
+          ok: false,
+          code: "not_found",
+          message: "没有这条恢复事项（可能已经处理或已刷新）；没有重发任何消息。",
+        };
+      }
+      const retryable = item ? item.retryable : Boolean(active?.retryable);
+      if (!retryable) {
         return {
           ok: false,
           code: "not_retryable",
-          message: current.message || "这次失败没有可重试的恢复记录。",
+          message:
+            item?.message ||
+            active?.message ||
+            "这次失败没有可重试的恢复记录（正在生成或没有可重试的凭据）。",
         };
       }
+      if (this._topicRetryingRecords.includes(id)) {
+        return {
+          ok: false,
+          code: "recovery_in_progress",
+          message: "这条恢复正在处理中；不会重复生成，也不会重复发送你的消息。",
+          inProgress: true,
+        };
+      }
+      this._topicRetryingRecords = [...this._topicRetryingRecords, id];
       try {
         const result = await retryTopicAnswerRequest(id);
         if (!result.ok) {
-          if (this.topicRecovery) {
+          // 处理中不是成功：记录保留，不关闭、不重复生成
+          if (result.inProgress) return result;
+          if (activeMatches && this.topicRecovery) {
             this.topicRecovery = { ...this.topicRecovery, message: result.message };
           }
           return result;
         }
         /**
-         * 重试成功的回答只由后端持久化（没有 ASSISTANT / TURN_END 事件）：
-         * 用既有的「当前话题历史可能过期 → 一次性补读」入口把它读回对话。
-         * 不轮询、不伪造本地消息；补读失败不影响重试本身，界面沿用既有
-         * history.status / history.error 口径如实显示。
+         * 权威成功：关闭这条恢复事项（旧失败提示随之消失），
+         * 并用既有「当前话题历史可能过期 → 一次性补读」入口把后端已持久化的
+         * **唯一真实答案**读回对话。不轮询、不伪造本地消息；补读失败不把成功改写失败。
          */
+        this.resolveTopicRecovery(id);
         this.markIntentRecordsStale();
         try {
           await this.reloadHistoryIfStale();
@@ -3321,8 +3792,12 @@ const sessionStoreDefinition = defineStore("session", {
         return result;
       } catch (error) {
         const message = "没能重新开始回答：" + ((error as Error)?.message || "未知原因");
-        if (this.topicRecovery) this.topicRecovery = { ...this.topicRecovery, message };
+        if (activeMatches && this.topicRecovery) {
+          this.topicRecovery = { ...this.topicRecovery, message };
+        }
         return { ok: false, code: "network", message };
+      } finally {
+        this._topicRetryingRecords = this._topicRetryingRecords.filter((entry) => entry !== id);
       }
     },
 
@@ -3862,6 +4337,108 @@ const sessionStoreDefinition = defineStore("session", {
       this.recoveryRecords = merged;
       // 收件箱清单变了：入口①「发送异常」与恢复收件箱共用的那份派生清单也要跟着收敛
       this._syncInterruptedTurns();
+      // F04：持久话题恢复事项是同一批事实的另一个出口（独立于活动轮次）
+      this._mergeTopicRecoveryItems();
+    },
+    /**
+     * F04：把「持久清单（权威）」与「TOPIC_PHASE 事件种子」合并成待恢复入口。
+     *
+     * 纪律：
+     * * 已完成 / 已 resolved 的 record_id 一律不进入入口（迟到快照与事件重放不得复活）；
+     * * 同 record_id 按版本合并：清单优先于事件种子，同源比较 updated_at / attempt_count，
+     *   更旧的迟到数据不覆盖较新事实；
+     * * 活动轮次的旧失败提示（topicRecovery）对应的记录已不存在时一并收口。
+     */
+    _mergeTopicRecoveryItems() {
+      const resolved = new Set(this._recoveredResolvedIds);
+      const byId = new Map<string, TopicRecoveryItem>();
+      for (const record of this.recoveryRecords) {
+        const item = topicRecoveryItemFromRecord(record);
+        if (!item) continue;
+        if (resolved.has(item.recordId)) continue;
+        if (isTopicRecoveryDoneStatus(item.status)) {
+          this.noteRecoveryResolved(item.recordId);
+          continue;
+        }
+        byId.set(item.recordId, item);
+      }
+      for (const seed of Object.values(this._topicRecoverySeeds)) {
+        if (!seed?.recordId || resolved.has(seed.recordId) || byId.has(seed.recordId)) continue;
+        if (isTopicRecoveryDoneStatus(seed.status)) {
+          this.noteRecoveryResolved(seed.recordId);
+          continue;
+        }
+        /**
+         * 权威完整清单里没有它 = 这条已经有结局；只对**读取开始前**登记的种子生效，
+         * 读取期间新到的失败事件不能被旧清单误删（拉不到/截断时同样保留）。
+         */
+        if (
+          this._recoveryListingComplete &&
+          (seed.seededSeq ?? 0) <= this._recoveryListingSeedSeq
+        ) {
+          this.noteRecoveryResolved(seed.recordId);
+          continue;
+        }
+        byId.set(seed.recordId, seed);
+      }
+      // 与本地较新事实合并：更旧的迟到数据不覆盖
+      for (const existing of this.topicRecoveryItems) {
+        if (resolved.has(existing.recordId)) continue;
+        const incoming = byId.get(existing.recordId);
+        if (!incoming) {
+          /**
+           * 一份完整权威清单里没有它 = 这条已经有结局（answered / 已被处理）。
+           * 本地记入 resolved，旧事件/旧快照不得把它复活；读取失败/截断时保留入口。
+           */
+          if (this._recoveryListingComplete) {
+            this.noteRecoveryResolved(existing.recordId);
+            continue;
+          }
+          byId.set(existing.recordId, existing);
+          continue;
+        }
+        if (compareTopicRecoveryItem(incoming, existing) < 0) {
+          byId.set(existing.recordId, existing);
+        }
+      }
+
+      this.topicRecoveryItems = [...byId.values()].sort((a, b) => {
+        const timeDiff = topicRecoveryTimeOf(b) - topicRecoveryTimeOf(a);
+        if (timeDiff !== 0) return timeDiff;
+        return String(b.recordId).localeCompare(String(a.recordId));
+      });
+      // 活动轮次的失败提示若对应的记录已经有结局（成功 / 不存在），旧提示不再成立
+      const active = this.topicRecovery;
+      if (active?.recordId) {
+        const stillPending = this.topicRecoveryItems.some(
+          (item) => item.recordId === active.recordId,
+        );
+        if (!stillPending) this.topicRecovery = null;
+      }
+    },
+    /** 按 record_id 找一条持久恢复事项（内部用；没有就是 null）。 */
+    _findTopicRecoveryItem(recordId: string): TopicRecoveryItem | null {
+      const id = String(recordId ?? "").trim();
+      if (!id) return null;
+      return this.topicRecoveryItems.find((item) => item.recordId === id) ?? null;
+    },
+    /**
+     * 关闭一条话题恢复事项（F04：权威成功 / 用户主动处理）。
+     *
+     * 本地记入已 resolved（迟到的清单快照与事件重放不得复活）、从两个入口移除、
+     * 清掉对应的旧失败提示；不触碰别的记录、不改活动轮次、不动导航与审批队列。
+     */
+    resolveTopicRecovery(recordId: string) {
+      const id = String(recordId ?? "").trim();
+      if (!id) return;
+      this._syncRecoveryHandled(id);
+      if (this._topicRecoverySeeds[id]) {
+        const next = { ...this._topicRecoverySeeds };
+        delete next[id];
+        this._topicRecoverySeeds = next;
+      }
+      this.topicRecoveryItems = this.topicRecoveryItems.filter((item) => item.recordId !== id);
+      if (this.topicRecovery?.recordId === id) this.topicRecovery = null;
     },
     /**
      * 从 `_rawInterruptedTurns` 派生出界面渲染的 `interruptedTurns`。
@@ -3920,11 +4497,16 @@ const sessionStoreDefinition = defineStore("session", {
       this._recoveryLoadingInstance = instanceAtStart;
       this.recoveryLoading = true;
       this.recoveryError = "";
+      // 读取在飞期间不把「清单里没有」当成「已经有结局」（拉不到 ≠ 没有）
+      this._recoveryListingComplete = false;
+      this._recoveryListingSeedSeq = this._topicRecoverySeedSeq;
       try {
         const listing = await fetchRecoveryRecords();
         // 迟到响应（实例已切换 / 已有更新的请求）：整段丢弃，一个字段都不许写
         if (!this._recoveryResultBelongs(seq, instanceAtStart)) return;
         this.recoveryRecords = listing.records ?? [];
+        // 完整且未截断的清单才是权威：缺席的记录 = 已经有结局
+        this._recoveryListingComplete = listing.truncated !== true;
         this.recoveryTotal =
           typeof listing.total === "number" && Number.isFinite(listing.total)
             ? listing.total
@@ -7431,9 +8013,10 @@ interface SessionDraftHost {
   }): void;
   /**
    * 话题申请批准后的一次性草稿跟随标记（session._topicDraftFollow）。
-   * 只由本保存器在话题变化时消费；不存在时普通导航规则一字不变。
+   * F12：只由**权威成功结果**（ANCHOR origin=topic_operation + operation 匹配）驱动；
+   * 普通话题变化（bind）不再消费它，也不再有 targetTopicId=null 的通配。
    */
-  _topicDraftFollow?: { targetTopicId: string | null; turnId: string } | null;
+  _topicDraftFollow?: TopicDraftFollow | null;
 }
 
 /** 话题 → 存储键；话题还没确定（currentTopicId 为 null）时用占位键，等话题确定后迁移。 */
@@ -7724,17 +8307,10 @@ const sendTopicByDraftId = new Map<string, string | null>();
     const previousUnbound = previousKey === chatDraftKeyFor(null);
     const buffer = host.draft;
     /**
-     * 话题申请批准后的一次性草稿跟随：等待期间写在输入框里的草稿跟着用户
-     * 进入**本次申请的目标话题**（switch 目标已知；create 由随后的 ANCHOR 决定）。
-     * 目标不符 / 没有草稿时按普通导航处理；标记无论是否命中都只作用于这一次话题变化。
+     * F12：话题申请批准后的草稿跟随**不在 bind 里消费** —— 只有本次操作的权威成功
+     * 结果（ANCHOR origin=topic_operation + operation 匹配）才允许迁移一次。
+     * 普通话题变化（手动导航 / 重复 / 乱序事件）按既有规则各存各的草稿，不搬文字。
      */
-    const follow = host._topicDraftFollow ?? null;
-    const followHere = Boolean(
-      follow &&
-        !isBlankText(buffer) &&
-        (follow.targetTopicId === null || follow.targetTopicId === topicId),
-    );
-    if (follow) host._topicDraftFollow = null;
     flushNow();
     /**
      * 反例 03 / 14：话题变了，指向旧话题的显式重发关联一并失效
@@ -7746,9 +8322,7 @@ const sendTopicByDraftId = new Map<string, string | null>();
     const candidate = memoryCandidates.get(nextKey);
     const carry = previousUnbound
       ? (isBlankText(buffer) ? (readDraft(previousKey)?.text ?? "") : buffer)
-      : followHere
-        ? buffer
-        : "";
+      : "";
     /**
      * 这次迁移搬的是不是「已经点过发送、还在等回执」的那一份原文（契约 §11.5）。
      *
@@ -7822,7 +8396,7 @@ const sendTopicByDraftId = new Map<string, string | null>();
      * 用户刚输入的新稿。不拼接、不自动发送、也不静默覆盖。
      */
     if (
-      (previousUnbound || followHere) &&
+      previousUnbound &&
       !isBlankText(carry) &&
       stored &&
       !isBlankText(stored.text) &&
@@ -7862,7 +8436,7 @@ const sendTopicByDraftId = new Map<string, string | null>();
         carrySaved = commit(seq, nextKey, carry);
       }
     }
-    if (previousUnbound || followHere) {
+    if (previousUnbound) {
       const source = readDraft(previousKey);
       if (!carrySaved) {
         /**
@@ -7886,6 +8460,69 @@ const sendTopicByDraftId = new Map<string, string | null>();
     // 存储不可用要立刻说清，而不是等用户打了字再发现
     const available = draftStorageAvailable();
     if (!available.ok) setStatus("error", available.error ?? "本地存储不可用，草稿无法保存");
+  }
+
+  /**
+   * F12：把等待期间的草稿迁移到本次话题操作的**真实目标话题**。
+   *
+   * 只由权威成功结果（ANCHOR origin=topic_operation + operation 匹配）调用；
+   * 只搬运输入框里**仍是武装时那一份**的草稿（版本 + 正文复核在调用方与这里各一次）。
+   * 目标已有不同草稿时沿用既有保护：登记为「被让位草稿」并写进本机，不静默覆盖；
+   * 不发送、不改归属之外的任何状态，迁移失败时原文仍留在原话题。
+   */
+  function migrateFollowedDraft(input: {
+    topicId: string;
+    expectedText: string;
+    expectedSeq: number;
+  }): { moved: boolean; reason: string } {
+    const topicId = String(input.topicId ?? "").trim();
+    if (!topicId) return { moved: false, reason: "no_target" };
+    if (seq !== input.expectedSeq) return { moved: false, reason: "draft_version_changed" };
+    const text = String(host.draft ?? "");
+    if (isBlankText(text)) return { moved: false, reason: "draft_blank" };
+    if (text !== input.expectedText) return { moved: false, reason: "draft_text_changed" };
+    const nextKey = chatDraftKeyFor(topicId);
+    if (nextKey === key) return { moved: false, reason: "already_there" };
+    const previousKey = key;
+    cancelTimer();
+    // 旧键先落盘：即使迁移失败，原文也还在原话题（不双输）
+    flushNow();
+    disarmResend();
+    const stored = readDraft(nextKey);
+    const candidate = memoryCandidates.get(nextKey);
+    if (
+      stored &&
+      !isBlankText(stored.text) &&
+      normalizeSendText(stored.text) !== normalizeSendText(text)
+    ) {
+      host._registerDisplacedChatDraft?.({
+        topicId,
+        key: nextKey,
+        text: stored.text,
+        seq: stored.seq,
+      });
+    }
+    key = nextKey;
+    keyTopics.set(nextKey, topicId);
+    savedText = stored ? stored.text : null;
+    seq = Math.max(seq, stored?.seq ?? 0, candidate?.seq ?? 0);
+    seq += 1;
+    const saved = commit(seq, nextKey, text);
+    if (!saved) {
+      const source = readDraft(previousKey);
+      if (source && !isBlankText(source.text)) {
+        pendingSourceCleanup = { key: previousKey, text: source.text, seq: source.seq };
+      }
+      return { moved: true, reason: "target_save_failed" };
+    }
+    // 目标确实保存成功：按版本清理原话题的副本（删不掉如实说，不静默当完成）
+    const removal = draftRemoveOutcome(removeDraft(previousKey));
+    if (removal.reason === "storage-failure") {
+      setStatus("error", removal.error ?? "原话题的旧草稿没有从本机删除（原因未知）");
+    }
+    const available = draftStorageAvailable();
+    if (!available.ok) setStatus("error", available.error ?? "本地存储不可用，草稿无法保存");
+    return { moved: true, reason: "" };
   }
 
   /**
@@ -8132,6 +8769,7 @@ const sendTopicByDraftId = new Map<string, string | null>();
       return keyTopics.get(target);
     },
     bind,
+    migrateFollowedDraft,
     restore,
     onDraftChanged,
     flushNow,

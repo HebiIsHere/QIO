@@ -35,6 +35,10 @@ CORE_TOOLS = [
     "continue_from_fragment",
     "switch_topic",
     "create_topic",
+    # R14/F11：只读解析真实话题对象。它和话题工具同属决策期必需路径：
+    # 目标不在前五候选里时，模型必须先 lookup_topic 拿到真实 topic_id 才能
+    # 调用 switch_topic；被 top_n 截掉就等于没有解析路径（契约 §3.8 路由可见性）。
+    "lookup_topic",
 ]
 
 # 条件暴露：仅在对应条件成立时可见

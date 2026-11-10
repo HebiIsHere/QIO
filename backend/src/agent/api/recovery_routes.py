@@ -35,10 +35,19 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from agent.services.recovery import (
+    ALL_KINDS,
+    ALL_STATES,
+    DEFAULT_LIMIT,
+    MAX_LIMIT,
     RecoveryConflict,
     RecoveryDispatchError,
     RecoveryInbox,
     RecoveryReadError,
+)
+from agent.services.topic_recovery import (
+    RECOVERY_KIND as TOPIC_RECOVERY_KIND,
+    inbox_record,
+    list_pending_inbox_records,
 )
 
 __all__ = ["build_router"]
@@ -136,18 +145,40 @@ def build_router(ctx: Any) -> APIRouter:
         kinds: str | None = None,
         classes: str | None = None,
     ) -> Any:
-        """只读清单：六类历史状态分开表达，unknown 绝不被当成「死」。
+        """只读清单：历史恢复事项分类表达，unknown 绝不被当成「死」。
 
-        F05：**读失败绝不伪装成空清单**。`list_records` 在任一来源读不动时抛
-        `RecoveryReadError` → 这里回 503 + 可读原因；前端保留上一次可见的内容、
-        显示可重试原因，而不是把「读失败」显示成「没有记录」。
+        F05：**读失败绝不伪装成空清单**。任一来源读不动 → 503 + 可读原因；
+        前端保留上一次可见的内容、显示可重试原因，而不是把「读失败」显示成
+        「没有记录」。
+
+        R14-B / F04-backend：持久化的 `topic_answer_recovery` 记录并入同一清单
+        （kind 独立、动作 id=`retry_answer`；只列未完成 pending，answered 不进清单）。
+        它和活动轮次（user_turn）/ 派生任务（derived_task）是**不同种类**，互不覆盖。
         """
+        raw_kinds = _split(kinds)
+        raw_classes = _split(classes)
+        include_topic = raw_kinds is None or TOPIC_RECOVERY_KIND in raw_kinds
+        inbox_kinds = (
+            None
+            if raw_kinds is None
+            else [kind for kind in raw_kinds if kind in ALL_KINDS]
+        )
+        # 只保留已知 class：否则 RecoveryInbox._normalise 会把「未知 class」当成
+        # 不过滤，调用方以为筛掉了、实际拿到全量。
+        inbox_classes = (
+            None
+            if raw_classes is None
+            else [state for state in raw_classes if state in ALL_STATES]
+        )
         try:
-            listing = _inbox().list_records(
-                limit=limit,
-                kinds=_split(kinds),
-                classes=_split(classes),
-            )
+            listing = None
+            if inbox_kinds is None or inbox_kinds:
+                if inbox_classes is None or inbox_classes:
+                    listing = _inbox().list_records(
+                        limit=limit,
+                        kinds=inbox_kinds,
+                        classes=inbox_classes,
+                    )
         except RecoveryReadError as exc:
             return JSONResponse(
                 status_code=503,
@@ -161,7 +192,110 @@ def build_router(ctx: Any) -> APIRouter:
                     "truncated": False,
                 },
             )
-        return listing.to_dict()
+        payload = (
+            listing.to_dict()
+            if listing is not None
+            else {"records": [], "total": 0, "shown": 0, "truncated": False}
+        )
+        if include_topic:
+            try:
+                topic_items = list_pending_inbox_records(ctx.conn)
+            except Exception as exc:  # noqa: BLE001 - 读失败绝不伪装成空清单
+                from agent.trace.redact import sanitize_error_text
+
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "ok": False,
+                        "incomplete": True,
+                        "reason": sanitize_error_text(str(exc))
+                        or "话题回答恢复记录读取失败",
+                        "records": [],
+                        "total": None,
+                        "shown": 0,
+                        "truncated": False,
+                    },
+                )
+            if raw_classes is not None:
+                allowed_classes = set(raw_classes)
+                topic_items = [
+                    item
+                    for item in topic_items
+                    if item.get("state_class") in allowed_classes
+                ]
+            if topic_items:
+                merged = list(payload.get("records") or []) + list(topic_items)
+                merged.sort(
+                    key=lambda item: (
+                        str(item.get("created_at") or ""),
+                        str(item.get("record_id") or ""),
+                    ),
+                    reverse=True,
+                )
+                try:
+                    limit_value = int(limit)
+                except (TypeError, ValueError):
+                    limit_value = DEFAULT_LIMIT
+                limit_value = max(1, min(limit_value, MAX_LIMIT))
+                total = int(payload.get("total") or 0) + len(topic_items)
+                shown = merged[:limit_value]
+                payload = {
+                    "records": shown,
+                    "total": total,
+                    "shown": len(shown),
+                    "truncated": total > len(shown)
+                    or bool(payload.get("truncated")),
+                }
+        return payload
+
+    @router.get("/records/{record_id}")
+    async def get_record_detail(record_id: str) -> Any:
+        """单条恢复事项详情（F04）：与清单同形状，刷新后按身份收口用。
+
+        * 话题回答恢复（pending / answered）从持久记录读（answered 也回真实状态，
+          便于前端按身份过滤本地已 resolved 的记录）；
+        * 既有种类从同一份只读清单按身份取（记录总数有界）；
+        * 读失败明确 503，不伪装成「没有这条记录」。
+        """
+        try:
+            item = inbox_record(ctx.conn, record_id)
+        except Exception as exc:  # noqa: BLE001 - 读失败绝不伪装成 404
+            from agent.trace.redact import sanitize_error_text
+
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "incomplete": True,
+                    "reason": sanitize_error_text(str(exc))
+                    or "话题回答恢复记录读取失败",
+                },
+            )
+        if item is not None:
+            return {"ok": True, **item}
+        try:
+            listing = _inbox().list_records(limit=MAX_LIMIT)
+        except RecoveryReadError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "incomplete": True,
+                    "reason": str(exc),
+                },
+            )
+        for record in listing.to_dict()["records"]:
+            if str(record.get("record_id") or "") == str(record_id):
+                return {"ok": True, **record}
+        return JSONResponse(
+            status_code=404,
+            content={
+                "ok": False,
+                "code": "recovery_not_found",
+                "message": "没有这条恢复记录",
+                "record_id": record_id,
+            },
+        )
 
     @router.post("/records/{record_id}/confirm-stopped")
     async def confirm_stopped(
@@ -236,7 +370,8 @@ def build_router(ctx: Any) -> APIRouter:
             expected_status=payload.expected_status,
         )
         status_code = int(result.pop("status_code", 200) or 200)
-        if not result.get("ok"):
+        if not result.get("ok") or status_code != 200:
+            # 失败如实给非 2xx；并发「处理中」是 202（结构化 recovery_in_progress）。
             return JSONResponse(status_code=status_code, content=result)
         return result
 

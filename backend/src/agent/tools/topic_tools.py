@@ -19,6 +19,7 @@ ToolRegistry.execute 之前拦截同名工具：用户确认之后才以（可�
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 from agent.graph.nodes import NodeService
@@ -113,6 +114,12 @@ class SwitchTopicTool(Tool):
             return _nav_conflict_result(exc)
         # 本轮是模型自己换的话题：整轮归属跟着走（用户导航不会走到这里）。
         note_tool_navigation(topic_id)
+        # 权威导航结果（F05/F12）：真实目标 + 写入后的导航版本。只报真实值，不猜。
+        facts = {
+            "topic_id": result.topic_id,
+            "fragment_id": result.fragment_id,
+            "nav_version": result.nav_version,
+        }
         if result.fragment_id:
             return ToolResult(
                 ok=True,
@@ -120,8 +127,13 @@ class SwitchTopicTool(Tool):
                     f"已切换到话题「{node.name}」（{topic_id}）；"
                     "已回到该话题上次讨论的位置，下一轮会带上那段历史。"
                 ),
+                facts=facts,
             )
-        return ToolResult(ok=True, content=f"已切换到话题「{node.name}」（{topic_id}）")
+        return ToolResult(
+            ok=True,
+            content=f"已切换到话题「{node.name}」（{topic_id}）",
+            facts=facts,
+        )
 
     async def run(self, **kwargs) -> ToolResult:
         return self.run_sync(**kwargs)
@@ -149,9 +161,10 @@ class CreateTopicTool(Tool):
         self.conn = conn
         self.approvals = approvals  # ApprovalService（二次申请人工审批）
         self.predictor = predictor  # TopicPredictor（embedding 模糊带判定）
-        # 冲突身份 = (operation_id, param_version)；没有操作绑定时退回空操作 + 规范化名称
-        # （旧路径兼容），**不再**只按名称建批准 key。
-        self._conflicted: dict[tuple[str, int], str] = {}
+        # 冲突身份 = (operation_id, param_version)；没有操作绑定时退回空操作 + 精确名称
+        # （旧路径兼容），**不再**只按名称建批准 key，也**不再**用查重归一化当身份
+        # （F07：宽松归一化只作证据）。
+        self._conflicted: dict[tuple[str, int], dict] = {}
         # 用户拒绝过这次查重冲突的版本：同版本再重试不再重复弹窗。
         self._declined: set[tuple[str, int]] = set()
 
@@ -185,14 +198,17 @@ class CreateTopicTool(Tool):
 
     @staticmethod
     def _conflict_identity(operation, name: str) -> tuple[str, int]:
-        """冲突身份：优先稳定操作身份；没有绑定才退回规范化名称（旧路径）。"""
+        """冲突身份：优先稳定操作身份；没有绑定才退回**精确名称**（旧路径）。
+
+        有操作绑定时永远用 (operation_id, param_version)。旧路径没有操作身份，
+        只能用精确名称兜底；**不用** normalize_topic_name —— 那是查重证据口径，
+        不是批准身份（F07）。
+        """
         if operation is not None:
             return (str(operation.operation_id), int(operation.param_version))
-        # 旧路径（工具被直接调用、没有操作绑定）：只能退回规范化名称作为冲突身份；
-        # 有操作绑定时永远用 (operation_id, param_version)，不按名称建批准 key。
-        return ("name:" + normalize_topic_name(name), 0)
+        return ("name:" + name, 0)
 
-    def _conflict_payload(self, name: str, kwargs: dict) -> dict:
+    def _conflict_payload(self, name: str, kwargs: dict, dup: dict | None = None) -> dict:
         operation = current_operation()
         payload: dict = {
             "name": name,
@@ -204,7 +220,97 @@ class CreateTopicTool(Tool):
             payload["param_version"] = int(operation.param_version)
             payload["conflict"] = "conflict_pending"
             payload["target_name"] = name
+        if dup:
+            payload["similar_topic_id"] = dup.get("similar_topic_id")
+            # 展示事实：前端查重冲突区块显示「已有相似话题「X」」；不参与任何身份判断。
+            payload["similar_topic_name"] = dup.get("similar_topic_name")
+            payload["score"] = dup.get("score")
         return payload
+
+    def _conflict_facts(
+        self, dup: dict | None, *, conflict: str
+    ) -> dict:
+        """结构化冲突事实（含**具体对象**：新名称 + 相似话题 id），不按文本猜。"""
+        operation = current_operation()
+        facts: dict = {
+            "topic_application": (
+                "stale" if conflict == "conflict_stale" else "conflict"
+            ),
+            "conflict": conflict,
+        }
+        if dup:
+            facts["similar_topic_id"] = dup.get("similar_topic_id")
+            facts["similar_topic_name"] = dup.get("similar_topic_name")
+            facts["score"] = dup.get("score")
+            facts["target_name"] = dup.get("name")
+            # 查重归一化只作证据（F07），不参与身份。
+            facts["dedup_name"] = normalize_topic_name(dup.get("name"))
+        if operation is not None:
+            facts["operation_id"] = str(operation.operation_id)
+            facts["param_version"] = int(operation.param_version)
+            facts["attempt"] = getattr(
+                getattr(operation, "attempt", None), "value", None
+            )
+        return facts
+
+    def _declined_result(self, dup: dict | None) -> ToolResult:
+        """用户明确拒绝这次具体查重冲突：同一版本不再重复弹窗（F10）。"""
+        return ToolResult(
+            ok=False,
+            content=(
+                "用户没有确认这次查重冲突，话题没有创建。"
+                "请直接在当前话题回答用户原来的问题，不要重复申请。"
+            ),
+            error="topic creation declined",
+            recoverable=False,
+            facts=self._conflict_facts(dup, conflict="conflict_declined"),
+            code="topic_create_conflict_declined",
+        )
+
+    def _resolve_conflict_stale_result(self, dup: dict | None) -> ToolResult:
+        """冲突确认期间申请失效：失效 ≠ 拒绝（不写拒绝证据、不重弹）。"""
+        return ToolResult(
+            ok=False,
+            content=(
+                "这次查重冲突确认已失效（等待期间话题位置已改变），话题没有创建。"
+                "请直接在当前话题回答用户原来的问题，不要重复申请。"
+            ),
+            error="topic conflict application stale",
+            recoverable=False,
+            facts=self._conflict_facts(dup, conflict="conflict_stale"),
+            code="topic_create_conflict_stale",
+        )
+
+    def _resolve_conflict_timeout_result(self, dup: dict | None) -> ToolResult:
+        """冲突确认超时：不是主动拒绝，同一版本可再次进入具体冲突确认（F02/F10）。"""
+        return ToolResult(
+            ok=False,
+            content=(
+                "用户还没有处理这次查重冲突确认（等待超时），这不是拒绝，话题没有创建。"
+                "如确属不同话题，可以再次调用 create_topic 重新发起确认；"
+                "否则请直接在当前话题回答用户原来的问题。"
+            ),
+            error="topic conflict confirmation timed out",
+            recoverable=True,
+            facts=self._conflict_facts(dup, conflict="conflict_pending"),
+            code="topic_create_conflict_timeout",
+        )
+
+    def _resolve_conflict_failed_result(
+        self, dup: dict | None, detail: str
+    ) -> ToolResult:
+        """冲突确认的技术错误：与「用户拒绝」分开表示，如实说明可再试。"""
+        return ToolResult(
+            ok=False,
+            content=(
+                "查重冲突的二次审批没有完成（技术错误：" + detail[:120] + "），"
+                "这次话题没有创建，也没有被当成用户拒绝。"
+            ),
+            error="topic conflict confirmation failed: " + detail[:160],
+            recoverable=True,
+            facts=self._conflict_facts(dup, conflict="conflict_pending"),
+            code="topic_create_conflict_failed",
+        )
 
     async def run(self, **kwargs) -> ToolResult:
         name = (kwargs.get("name") or "").strip()
@@ -216,16 +322,25 @@ class CreateTopicTool(Tool):
 
         # 同操作同参数版本的合法重试（含用户改名后最终确认的版本）：进入二次审批。
         if identity in self._conflicted:
-            return await self._resolve_conflict(name, identity, kwargs)
+            return await self._resolve_conflict(
+                name, identity, kwargs, self._conflicted.get(identity)
+            )
 
-        # 首次申请：去重硬限制
+        # 首次申请：去重硬限制（查重归一化只是证据，不改变执行名称）
         dup = self._duplicate(name)
         if dup is not None:
             dup_id, score, _why = dup
-            self._conflicted[identity] = name
             from agent.graph.topics import TopicService
 
             fp = TopicService(self.conn).fingerprint(dup_id)
+            record = {
+                "name": name,
+                "similar_topic_id": dup_id,
+                "similar_topic_name": (getattr(fp, "title", None) or ""),
+                "score": score,
+                "dedup_name": normalize_topic_name(name),
+            }
+            self._conflicted[identity] = record
             return ToolResult(
                 ok=False,
                 content=(
@@ -234,73 +349,70 @@ class CreateTopicTool(Tool):
                     f"如确属不同话题，请再次调用 create_topic（将进入人工审批）。"
                 ),
                 error="similar topic exists",
-                facts={
-                    "topic_application": "conflict",
-                    "conflict": "conflict_pending",
-                    "similar_topic_id": dup_id,
-                    "score": score,
-                    "operation_id": (
-                        str(operation.operation_id) if operation is not None else None
-                    ),
-                    "param_version": (
-                        int(operation.param_version) if operation is not None else None
-                    ),
-                },
+                facts=self._conflict_facts(record, conflict="conflict_pending"),
                 code="topic_create_conflict",
             )
         return await self._create(name, expected_nav_version, turn_id)
 
     async def _resolve_conflict(
-        self, name: str, identity: tuple[str, int], kwargs: dict
+        self,
+        name: str,
+        identity: tuple[str, int],
+        kwargs: dict,
+        dup: dict | None = None,
     ) -> ToolResult:
-        """用户处理查重冲突：同一操作同一参数版本走工具内部的二次人工审批。"""
+        """用户处理查重冲突：同一操作同一参数版本走工具内部的二次人工审批。
+
+        F10：拒绝 / 超时 / 失效 / 技术错误**分别表示**，不把任何一种默认当成
+        用户拒绝；超时与可重试技术错误允许同版本再次进入本确认（F02）。
+        """
         if identity in self._declined:
+            return self._declined_result(dup)
+        if self.approvals is None:
             return ToolResult(
                 ok=False,
-                content=(
-                    "用户没有确认这次查重冲突，话题没有创建。"
-                    "请直接在当前话题回答用户原来的问题，不要重复申请。"
-                ),
-                error="topic creation declined",
-                recoverable=False,
-                facts={
-                    "topic_application": "conflict",
-                    "conflict": "conflict_declined",
-                },
-                code="topic_create_conflict_declined",
+                error="重复话题需人工审批，但审批服务不可用",
+                recoverable=True,
+                facts=self._conflict_facts(dup, conflict="conflict_pending"),
+                code="topic_create_conflict_failed",
             )
-        if self.approvals is None:
-            return ToolResult(ok=False, error="重复话题需人工审批，但审批服务不可用")
-        payload = self._conflict_payload(name, kwargs)
+        payload = self._conflict_payload(name, kwargs, dup)
         try:
             result = await self.approvals.request("create_topic", payload)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - 审批失败如实失败，不假装已创建
-            return ToolResult(
-                ok=False,
-                error="查重冲突的二次审批失败：" + str(exc)[:160],
-                recoverable=False,
+            # 技术错误 ≠ 用户拒绝：不写拒绝证据、不阻断同版本重试（F10）。
+            from agent.trace.redact import sanitize_error_text
+
+            return self._resolve_conflict_failed_result(
+                dup, sanitize_error_text(str(exc))
             )
         decision = str(getattr(result, "decision", "") or "")
-        if decision != "approved":
-            self._declined.add(identity)
+        if decision == "approved":
+            self._conflicted.pop(identity, None)
+            self._declined.discard(identity)
+            expected_nav_version, turn_id = _operation_nav_binding()
+            return await self._create(name, expected_nav_version, turn_id)
+        if decision == "stale":
+            # 失效 ≠ 拒绝：不加入 _declined，不写拒绝证据。
+            return self._resolve_conflict_stale_result(dup)
+        if decision == "timeout":
+            # 超时 ≠ 主动拒绝：不加入 _declined，同版本可再次进入确认。
+            return self._resolve_conflict_timeout_result(dup)
+        if decision == "cancelled":
             return ToolResult(
                 ok=False,
-                content=(
-                    "用户没有确认这次查重冲突，话题没有创建。"
-                    "请直接在当前话题回答用户原来的问题，不要重复申请。"
-                ),
-                error="topic creation declined",
-                recoverable=False,
-                facts={
-                    "topic_application": "conflict",
-                    "conflict": "conflict_declined",
-                },
-                code="topic_create_conflict_declined",
+                content="本轮已停止，查重冲突确认没有执行。",
+                error="turn cancelled",
+                category="cancelled",
+                status="cancelled",
+                facts=self._conflict_facts(dup, conflict="conflict_pending"),
+                code="topic_create_conflict_cancelled",
             )
-        self._conflicted.pop(identity, None)
-        self._declined.discard(identity)
-        expected_nav_version, turn_id = _operation_nav_binding()
-        return await self._create(name, expected_nav_version, turn_id)
+        # rejected / 其它显式否定：这是**具体对象**的拒绝，同版本不再重复弹。
+        self._declined.add(identity)
+        return self._declined_result(dup)
 
     async def _create(
         self,
@@ -319,4 +431,13 @@ class CreateTopicTool(Tool):
             return _nav_conflict_result(exc)
         # 新话题此刻还没有片段，由本轮收尾时把整轮消息搬进它的开放片段。
         note_tool_navigation(result.topic_id)
-        return ToolResult(ok=True, content=f"已创建并切换到话题「{name}」（{result.topic_id}）")
+        return ToolResult(
+            ok=True,
+            content=f"已创建并切换到话题「{name}」（{result.topic_id}）",
+            facts={
+                "topic_id": result.topic_id,
+                "fragment_id": None,
+                "nav_version": result.nav_version,
+                "dedup_name": normalize_topic_name(name),
+            },
+        )

@@ -713,12 +713,24 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   不经过模型，也不因本轮改造被破坏。
 - 判断规则（含否定、引用、解释、条件、改口、指代等反例）单源在 `prompts.TOPIC_SEMANTIC_POLICY`；
   `services/topic_decision.py` 只注入证据（当前话题/范围/目标/已确认信息/未完成事项/候选/拒绝范围）。
+- 当目标不在本轮候选里（相似度前五仍只作自动建议证据）或用户直接提到真实话题名称 / id 时，
+  主模型可先调用只读工具 `lookup_topic` 解析真实话题节点（见 21.10），再用 `switch_topic`。
+  查询本身**不**是切换决定、不代表用户确认，也不关闭本轮后续话题决策。
 
 ### 21.2 操作身份、申请起点与执行
 
 - **操作身份**：一次逻辑话题操作有稳定 `operation_id`（`services/topic_operation.py` 的
-  `TopicOperation`/`TopicOperationRegistry`）；名称/目标是**带版本的参数**（`param_version`，
-  规范形见 `canonical_params`）。用户改名/改目标推进参数版本，旧版本的批准不能迁移到新版本。
+  `TopicOperation`/`TopicOperationRegistry`）；名称/目标是**带版本的执行参数**（`param_version`，
+  规范形见 `execution_params`）。执行参数只清洗执行路径真正统一处理的外层空白：create 名称的
+  内部空格、全角空格、引号、冒号等任何实际落库会变化的字符都算参数变化。宽松归一化
+  （`normalize_topic_name` / `dedup_key`）只用于查重与相似**证据**，**不得**决定批准身份。
+- **决定层与执行层分开**：`decided = none|pending|approved|refused|stale` 记录用户/程序做过什么决定，
+  `attempt = none|executing|retryable_failure|conflict_pending|succeeded|terminal_failure` 记录原工具
+  执行到哪一步；`status` 只是两层状态的只读投影。主动要求（user_request）进入直接执行不等于执行成功；
+  用户拒绝/失效不会被执行结果覆盖。
+- **重试**：同 `operation_id` + 同 `param_version`，只有已批准且上次为可重试失败 / 查重冲突待确认时
+  才允许再次进入**原工具**与既有具体冲突确认；成功后的同版本重放只返回既有目标与结果；
+  拒绝 / 失效 / 不可重试失败不重试。稳定操作 ID **不延长**有效期。
 - **申请记录**：复用 legacy `ApprovalService.request(kind=topic_switch|topic_create)`
   （approval_id / 有效期 / 单次消费 / `pending_approvals` 持久化 / `APPROVAL_REQUIRED`）。
   payload 保存足以识别真实起点的快照：`operation_id`、`turn_id`、`user_message_id`、
@@ -748,8 +760,15 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   失败走 `recoverable_failure`（不得发布正式回答）。
 - **`decision_open` 期间不发布任何正式正文**（不发明细 delta、不 one-shot、不写正式消息）。
   后端缓冲该次模型调用响应，直到知道工具集合：含话题工具调用 → 整段丢弃（不改成「过程说明」发出）；
-  不含 → 一次性 `streaming=false` 交付，随后转 `answerable`，之后的回答调用恢复流式。
+  **只有普通工具调用（搜索/读取等）或过程说明 → 仍是工作轮，保持决策开放**：正文按既有过程区
+  口径交付，本轮不进入 `answerable`（普通检索不等于话题决策完成，后续话题工具不被当迟到调用）。
+  只有准备发布正式答案（无工具调用 / 已声明回答）时才检查发布前提，满足才一次性
+  `streaming=false` 交付并转 `answerable`，之后的回答调用恢复流式。
   原生工具模式与 text 兼容档都覆盖；无法在流中途知道工具集合的适配器整段缓冲（时延取舍如实记录）。
+- **发布前提**：进入 `answerable` 前必须确认没有未完成话题操作（等待确认 / 已批准未执行 /
+  执行中 / 查重冲突待确认 / 同参数版本待合法重试）、没有未消费的待重建上下文；若发生过真实
+  话题操作，`navigation_applied && turn_ownership && context_ready` 必须全部为真。
+  前提不满足时不发布正式正文，按真实原因收口（不伪造回答）。
 - 事件顺序由后端保证：`TOPIC_PHASE(answerable)` **先于**对应的正式正文事件。
   `answerable` 后本轮归属固定：迟到的话题工具调用不执行（可观察 WARNING），只按既有正文收尾。
 - 拒绝 → 立即 `answerable`，在原话题回答原问题；批准 → 工具成功 + 上下文就绪后才 `answerable`，
@@ -762,9 +781,14 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 - 上下文装配异常/超时/空/不完整 → **不得**继续用旧 system 上下文回答，不清空待重建记录，
   进入 `recoverable_failure`，发 `ERROR`（code=`topic_context_prepare_failed`，带
   operation_id / topic_id / failed_stage / recovery）并写恢复记录；本轮不写正式消息。
+- **归属失败**（工具/导航已成功，但本轮归属搬迁 rebind 失败或话题后置处理异常）：统一进入
+  `recoverable_failure`，`stages.failed_stage="ownership"`，写持久恢复记录并发
+  `ERROR(code=topic_ownership_failed)`，**零正式答案**；不得 `warn` 后继续用旧 system 上下文回答，
+  也不得清空已完成事实。非话题工具的普通后置异常沿用既有容错，不误标为话题迁移失败。
 - 恢复入口复用既有错误/恢复通道：`POST /api/recovery/records/{id}/retry-answer` 只重做未完成部分
-  （context_prepare 失败→只重装配+回答，不重跑 create/switch、不新增用户消息；answer 失败→只重做回答），
-  幂等；恢复前用导航版本复核最新位置，不覆盖用户后来的手动选择。
+  （ownership 失败→先修归属再装配目标上下文再回答，不重跑已成功工具、不重建话题、不复制用户消息；
+  context_prepare 失败→只重装配+回答；answer 失败→只重做回答），幂等；恢复前用导航版本复核最新位置，
+  不覆盖用户后来的手动选择。恢复记录持久化见 21.7。
 - 已成功的话题操作不回滚、不谎称未发生；消息/轮次最终只有一份正确归属。
 
 ### 21.5 前端
@@ -776,7 +800,15 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   不伪造模型生成中；`TOPIC_PHASE` 事件按 `operation_id` + 当前轮绑定消费，旧轮/旧操作事件丢弃。
 - 失效：409 `topic_application_stale` 或 `APPROVAL_RESULT decision=stale` → 原确认不可执行、
   给可读原因、保留恢复入口；不改当前位置、不误解锁别的申请、不覆盖草稿。
-- 恢复：上下文准备失败显示真实原因 + 重试入口，保留原问题、草稿与已成功的话题操作。
+- 恢复：上下文准备失败 / 归属失败显示真实原因 + 重试入口，保留原问题、草稿与已成功的话题操作。
+  待恢复事项**持久化**并进入既有恢复事项查询/详情/重试入口：`TURN_END`、关闭、断连、刷新、
+  进程重启都不删除未完成事项；活动轮次状态、申请状态与历史恢复事项分离；成功由权威结果/事件
+  关闭对应记录并移除旧失败提示，显示唯一真实答案；恢复旧轮次不激活它、不重挂当前轮、不跳当前导航。
+- 草稿跟随（F12）：不再有 `targetTopicId=null` 通配。跟随身份至少绑定具体操作
+  `operation_id + param_version + turn_id` 与原话题/片段及草稿版本；目标未知时只保留待关联状态；
+  只有权威成功结果（ANCHOR `origin=topic_operation` 且操作身份匹配）到达才迁移一次，迁移前
+  复核草稿仍待迁移且未被用户新编辑覆盖。无关手动导航、旧/重复/乱序事件不迁移、不提前消费；
+  操作失效按失效收口，不被迟到成功事件再带走草稿；目标已有草稿沿用既有保护，不静默覆盖。
 - 决定走既有 `POST /api/approvals/{id}/respond`（唯一提交入口，topic_create 可带 `edits.name`）；
   名称贯穿关闭/恢复/失败/查重冲突，衔接既有冲突确认，不生成第二份独立申请。
 - 等待期间：该对话发送按钮与快捷键禁用（可写草稿），不锁死整个应用；确认后草稿跟随确认后话题
@@ -789,4 +821,91 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   状态传递、证据来源与分支衔接；不得把预设输出包装成真实模型准确率。
 - 后端重启后未处理申请不续期；无等待者时决定返回 409 `topic_application_stale`（不执行、不假成功）。
 - 申请记录沿用既有审批表（无 schema 变更）；导航版本是 2026-11-10 追加迁移引入的单行表，
-  只存单调版本，不存位置或授权。日志/事件/Trace 一律走既有脱敏路径。
+  只存单调版本，不存位置或授权。恢复记录与迟到答案标识是同日第三轮追加迁移（79 + 补偿 80），
+  只追加、不改历史迁移。日志/事件/Trace 一律走既有脱敏路径。
+- 外部模型调用**不保证** exactly-once：恢复可能在「模型调用完成、正文尚未暂存」之间崩溃从而
+  再次调用模型；已实现的是「同一逻辑答案唯一持久化 / 已暂存正文只补存」。不得把该边界写成已消除。
+- 执行租约默认 600s 且无心跳续租：生成中途进程崩溃时，新进程在租约到期前重试会得到
+  202 `recovery_in_progress`（事项可见性已恢复、但暂不可重领）；到期后可重新领取。
+  按实例归属提前收回租约属后续增强，本轮如实保留该窗口。
+- 迟到答案排序：迟到答案用真实 `created_at` 追加在原片段末尾。封存片段场景中原问题就是该片段
+  最后一条消息，因此天然在原问题之后；若同片段在封存后仍有更晚消息，答案排在末尾而不紧贴原问题
+  （不伪造插队，属如实时序）。
+- 只读查询与结构化校验不是自然语言授权判断：`lookup_topic` 只解析真实对象，不做意图判断；
+  程序不新增关键词/正则/相似度阈值的授权识别，也不新增第二模型审查层。
+
+### 21.7 恢复持久化、执行租约、唯一答案与封存后迟到答案（F03/F04/F13）
+
+- 恢复记录从 app 内存字典改为 SQLite 持久表 `topic_recovery_records`（迁移 79，补偿 80）：
+  `record_id / kind=topic_answer_recovery / status / turn_id / topic_id / from_topic_id /
+  fragment_id / user_message_id / operation_id / param_version / base_nav_version /
+  recovery_nav_version / failed_stage / message / stages_json / answer_key / answer_id /
+  answer_text / last_error / claim_owner / claim_until / attempt_count / created_at / updated_at`。
+  读侧兼容旧内存记录（仅无 conn 的纯替身 scope 使用内存回退）。
+- **执行占用/租约**：`retry_topic_answer` 先原子领取（条件更新 `status='pending'` 且租约为空或已过期），
+  领取成功才生成；外部模型调用期间不持有 SQLite 写事务。并发请求：已完成 → 返回同一 `answer_id`；
+  正在执行 → 明确返回处理中（结构化 code，不重复生成）；租约过期可被重新领取；不同恢复事项
+  互不全局串行。
+- **唯一逻辑答案**：`answer_key = sha256(turn_id + ":" + user_message_id)`（无 user_message_id 时
+  退化为 turn_id + operation_id）；答案行以 `answer_key` 唯一约束。多个恢复记录 / 并发请求 /
+  重复回调最终只产生一份正式答案。
+- **事务收口**：答案写入与恢复记录置 `answered`（含 answer_id）在同一事务提交；已成功重复请求
+  返回同一 answer_id。生成成功但保存失败时把正文暂存到记录 `answer_text`，后续重试只补存、
+  不重复生成；成功收口后清空暂存，正文只保留在唯一权威 messages 行（记录不再留第二份副本）。
+- **接口形状**：`GET /api/recovery/records` 默认合并 `kind=topic_answer_recovery` 的 pending 记录
+  （`state_class=answer_pending|answer_in_progress`、`actions id=retry_answer`、含
+  turn/failed_stage/operation/param_version/base_nav_version/recovery_nav_version/answer_id/
+  attempt_count/claim_until/retryable/answered 等身份与版本字段）；`GET /api/recovery/records/{id}`
+  返回真实详情（已完成也如实返回）；`POST /api/recovery/records/{id}/retry-answer` 返回
+  200 answered（含 answer_id）/ 202 `recovery_in_progress` / 404 / 409（class、status、
+  `topic_application_stale`）/ 503 可恢复失败（带 failed_stage）。
+- **封存后的迟到答案**：答案写入普通 messages 行（不重开已封存片段、`closed_at` 不变、不写当前
+  新片段、不搬动原用户问题、不新建重复轮次），并带 `answer_key` 唯一身份与
+  `late_answer_of_message_id`（原用户消息）。迟到答案只有一份权威正文；历史加载/当前对话/
+  检索/导出/冷归档都按同一 messages 表读取，不需要第二份副本。封存摘要保留原版本，但后续检索
+  不会漏掉新增答案。排序按真实时间追加在原问题之后（容量封存的常规场景中原问题就是该片段最后
+  一条消息）；若封存后仍有更晚消息则按真实时序排在末尾，不伪造插队。
+
+### 21.8 导航版本推进、权威 ANCHOR 关联与草稿跟随（F08/F12）
+
+- 推进来源仍只有真实位置变化：用户手动进入/切回话题、选历史片段、改接续位置、工具真实导航成功。
+  渲染、重复事件、仅编辑草稿、仅收起/打开弹窗、无关后台状态**不**推进版本。
+- `register_continuation` 在同一事务里得出「新建/替换选择」或「幂等复用」事实：只有真实选择改变
+  才推进导航版本；同 `request_id` 重放、重复点同一待接续来源返回相同选择与版本；重放已消费或
+  已被替换的旧请求**不**重新激活旧选择、不覆盖当前选择，也不让申请/恢复误失效。
+- 生产与测试均使用「`register_continuation`（点击只登记）→ `apply_continuation`（真正有消息执行时
+  落实）」两阶段契约；旧的 `continue_from_history` 组合便捷入口已删除（原审查未发现生产调用），
+  既有测试改为两阶段，不保留只推进登记的旁路。
+- **ANCHOR 事件**在既有权威字段（topic/fragment/historic/pending_*）外固定携带：
+  `origin = manual | topic_operation`、`operation_id`、`param_version`、`turn_id`（仅
+  topic_operation 非空）、`nav_version`（本次写入后的真实版本）、`seq`（进程内单调事件序号）。
+  普通手动导航不伪造 operation_id；话题工具真实执行期间由 ContextVar 绑定操作身份，
+  只有 `origin=topic_operation` 的成功事件才是草稿跟随的权威依据。
+- 草稿跟随不再使用「目标未知就匹配下一次任意导航」的通配语义：目标未知只保留待关联状态，
+  不迁移任何草稿；权威成功事件到达后只迁移一次，迁移前复核草稿版本未被用户新编辑覆盖；
+  无关手动导航、旧/重复/乱序事件不消费；操作失效按失效收口；目标已有草稿沿用既有保护/恢复机制。
+
+### 21.9 拒绝范围与具体冲突拒绝（F09/F10）
+
+- 拒绝证据复用既有 `same_stage / source_fragment_id` 连续关系沿来源链收集：有界（上限 64 个片段）、
+  防环、去重；容量分段后的新片段继承原讨论的拒绝范围；`same_stage` 明确不同的来源链不盲目继承。
+  不得用固定「忽略 N 轮」替代语义。拒绝记录保留真实动作/对象（话题或新名称）/原因/范围
+  （话题、片段、轮次、用户消息），跨轮作为证据注入 `topic_decision` 固定小节；是否重新提出由
+  主模型判断，程序不做语义分类。
+- 查重冲突确认的拒绝（`topic_create_conflict_declined` 等结构化结果）进入统一终态：
+  `decided=refused`、`conflict=conflict_declined`、清除待确认冲突、进入原话题正式回答；
+  同一版本不再重复弹冲突；拒绝范围只覆盖该具体对象，不扩大为「永远拒绝任何新话题」。
+  普通拒绝 / 具体冲突拒绝 / 超时 / 失效 / 技术错误分别表示：超时不得写成主动拒绝，
+  失效不写用户拒绝证据。
+
+### 21.10 只读话题解析 `lookup_topic`（F11）
+
+- 新增只读工具 `lookup_topic`（始终可见的 core 工具）：入参 `name?`、`topic_id?`
+  （至少一个）、`include_ended?`；返回真实话题节点的 `topic_id/name/status` 与必要区分信息
+  （是否空话题、片段/消息计数、最近活动、摘要预览、是否当前话题、已结束原因）。
+- 同名 / 归一化同名 / 包含匹配的**全部**真实候选都列出，不擅自挑选；按 ID 查询是权威身份。
+  不存在 → 明确 `not_found`，不编造 `topic_id`、不自动新建；空话题与已结束话题如实标注状态，
+  是否可切换按现有产品规则（`switch_topic` 只校验存在，已结束话题仍按 ID 可达）。
+- 零副作用：不改 Anchor、不建片段、不登记接续、不推进导航版本、不建立申请、不执行切换。
+  查询本身不是切换决定，也不关闭本轮后续话题决策；相似度前五仍只作自动建议证据，初始提示词
+  候选上限不变。工具说明与使用规则单源在 `prompts.py`。

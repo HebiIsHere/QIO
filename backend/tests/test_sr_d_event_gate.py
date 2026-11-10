@@ -75,6 +75,7 @@ def _specs(n: int = 12) -> list[ToolSpec]:
         ToolSpec(name="memory_search", description="检索历史记忆", parameters={}),
         ToolSpec(name="switch_topic", description="切换话题", parameters={}),
         ToolSpec(name="create_topic", description="创建话题", parameters={}),
+        ToolSpec(name="lookup_topic", description="查找真实话题", parameters={}),
         ToolSpec(name="continue_from_fragment", description="从片段继续", parameters={}),
     ]
     for i in range(n):

@@ -24,7 +24,11 @@ export type RecoveryActionId =
   | "confirm_stopped";
 
 /** 后端 `RecoveryRecord.kind`。 */
-export type RecoveryKind = "user_turn" | "derived_task";
+export type RecoveryKind =
+  | "user_turn"
+  | "derived_task"
+  /** F04：话题回答恢复（持久恢复事项；重试入口是 retry-answer，不是继续/重发）。 */
+  | "topic_answer_recovery";
 
 /**
  * 后端 `RecoveryRecord.state_class`。
@@ -41,6 +45,9 @@ export type RecoveryStateClass =
   | "derived_legacy"
   /** F03：后继已落库、派发没做成 —— 可原地重试的明确状态。 */
   | "dispatch_failed"
+  /** F04：话题回答恢复可重试 / 正在生成（后端租约）。 */
+  | "answer_pending"
+  | "answer_in_progress"
   | (string & {});
 
 /** 后台执行单元的归属状态。`unknown` **不是**死（不许当死处理）。 */
@@ -75,6 +82,23 @@ export interface RecoveryRecordView {
   last_error: string | null;
   /** F01：这条记录的「旧执行者已停止」是否已被用户显式确认过（旧后端没有这个字段）。 */
   confirmed_stopped?: boolean;
+  /**
+   * F04：话题回答恢复（kind=topic_answer_recovery）的额外事实。
+   * 其余 kind 没有这些字段；缺失时一律按 null/空处理（不猜）。
+   */
+  turn_id?: string | null;
+  from_topic_id?: string | null;
+  fragment_id?: string | null;
+  failed_stage?: string | null;
+  operation_id?: string | null;
+  param_version?: number | null;
+  base_nav_version?: number | null;
+  recovery_nav_version?: number | null;
+  answer_id?: string | null;
+  /** 已尝试次数（后端 attempt_count；旧字段 attempts 也兼容）。 */
+  attempt_count?: number | null;
+  /** 服务端自述「这条记录现在能不能重试」（缺失时按 actions 的 retry_answer.enabled 判断）。 */
+  retryable?: boolean;
   actions: RecoveryActionView[];
 }
 
@@ -142,6 +166,36 @@ function requireRecordId(recordId: string): string {
   return id;
 }
 
+/** 可选的字符串事实：缺失/null 一律 null，空串按「没有」处理（不猜）。 */
+function optionalTextFields(
+  row: Record<string, unknown>,
+  keys: string[],
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const key of keys) {
+    const value = row[key];
+    if (value === undefined || value === null) out[key] = null;
+    else {
+      const text = String(value).trim();
+      out[key] = text || null;
+    }
+  }
+  return out;
+}
+
+/** 可选的数值事实：只有真正的有限数字才保留，其它一律 null（不猜）。 */
+function optionalNumberFields(
+  row: Record<string, unknown>,
+  keys: string[],
+): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  for (const key of keys) {
+    const value = row[key];
+    out[key] = typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  return out;
+}
+
 /** 一条记录在列举结果里被无条件要求的字段（形状不对就是坏响应，不猜）。 */
 function normalizeRecord(raw: unknown): RecoveryRecordView {
   const row = (raw ?? {}) as Record<string, unknown>;
@@ -172,6 +226,27 @@ function normalizeRecord(raw: unknown): RecoveryRecordView {
       row.last_error === undefined || row.last_error === null ? null : String(row.last_error),
     // 旧后端没有这个字段时按「未确认」处理：拿不到证据就不放行。
     confirmed_stopped: row.confirmed_stopped === true,
+    // F04：话题回答恢复的额外字段（其余 kind 没有 → 一律 null，不猜）
+    ...optionalTextFields(row, [
+      "turn_id",
+      "from_topic_id",
+      "fragment_id",
+      "failed_stage",
+      "operation_id",
+      "answer_id",
+    ]),
+    ...optionalNumberFields(row, [
+      "param_version",
+      "base_nav_version",
+      "recovery_nav_version",
+    ]),
+    attempt_count:
+      typeof row.attempt_count === "number"
+        ? row.attempt_count
+        : typeof row.attempts === "number"
+          ? row.attempts
+          : null,
+    ...(typeof row.retryable === "boolean" ? { retryable: row.retryable } : {}),
     actions: actions.map((item) => {
       const a = (item ?? {}) as Record<string, unknown>;
       return {

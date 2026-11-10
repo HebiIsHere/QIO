@@ -1,4 +1,4 @@
-﻿"""Tool routing: selective tool spec delivery per turn."""
+"""Tool routing: selective tool spec delivery per turn."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ def _specs() -> list[ToolSpec]:
         ),
         ToolSpec("switch_topic", "切换话题", {"type": "object", "properties": {}}),
         ToolSpec("create_topic", "创建话题", {"type": "object", "properties": {}}),
+        ToolSpec("lookup_topic", "查找真实话题", {"type": "object", "properties": {}}),
         ToolSpec("await_task", "等待子任务", {"type": "object", "properties": {}}),
         ToolSpec("read_task_result", "读取子任务结果", {"type": "object", "properties": {}}),
         ToolSpec("web_search", "联网搜索", {"type": "object", "properties": {}}),

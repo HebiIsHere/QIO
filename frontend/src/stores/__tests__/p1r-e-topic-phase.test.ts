@@ -140,6 +140,10 @@ function approvalResult(events: EventStore, approvalId: string, phase: string, e
   );
 }
 
+/**
+ * 权威成功结果（F12）：话题工具真实执行成功后的 ANCHOR（带 operation 身份）。
+ * 草稿跟随只消费这种事件；手动导航不迁移、不提前消费。
+ */
 function anchor(events: EventStore, topicId: string, name = "目标话题") {
   events.route(
     ev("ANCHOR", {
@@ -148,6 +152,12 @@ function anchor(events: EventStore, topicId: string, name = "目标话题") {
       fragment_id: null,
       fragment_title: null,
       historic: false,
+      origin: "topic_operation",
+      operation_id: "op-1",
+      param_version: 1,
+      turn_id: "turn_1",
+      nav_version: 7,
+      seq: 5,
     }),
   );
 }
@@ -566,14 +576,15 @@ describe("恢复入口：retryTopicAnswer", () => {
     // 成功 → 触发一次既有历史补读（回答已在后端持久化，前端没有事件）
     expect(vi.mocked(api.getSessionContext).mock.calls.length).toBe(before + 1);
 
-    // 失败 → 不补读（构造一次新的失败调用）
+    // 失败 → 不补读：另一条（尚未成功的）恢复事项走同一入口，失败原因如实返回
     const afterSuccess = vi.mocked(api.getSessionContext).mock.calls.length;
+    session.topicRecovery = { recordId: "rec-fail", message: "上下文准备失败", retryable: true };
     vi.mocked(retryTopicAnswer).mockResolvedValueOnce({
       ok: false,
       code: "not_found",
       message: "恢复入口暂不可用",
     });
-    expect(await unified.retryTopicAnswer("rec-backfill")).toBe(false);
+    expect(await unified.retryTopicAnswer("rec-fail")).toBe(false);
     expect(vi.mocked(api.getSessionContext).mock.calls.length).toBe(afterSuccess);
     expect(unified.submitError).toContain("恢复入口暂不可用");
   });
@@ -581,6 +592,13 @@ describe("恢复入口：retryTopicAnswer", () => {
   it("重复点击：请求在飞时不再发第二次", async () => {
     const { session, events, unified } = setup();
     startTurn(session, events);
+    // F04：恢复入口来自真实恢复事项（持久/事件种子），不能凭任意 recordId 直接重试
+    phase(events, {
+      phase: "recoverable_failure",
+      operation_id: "op-1",
+      turn_id: "turn_1",
+      recovery: { record_id: "rec-3", message: "上下文准备失败", retryable: true },
+    });
     const gate: { release?: (value: { ok: boolean; code: string; message: string }) => void } = {};
     vi.mocked(retryTopicAnswer).mockImplementationOnce(
       () =>

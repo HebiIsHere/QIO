@@ -238,6 +238,24 @@ class TurnContext:
     bound_topic: str | None = None
     bound_fragment_id: str | None = None
     bound_intent_version: int | None = None
+    # P102-F05（契约 §3.1）：本轮**决策依据形成时**的真实位置快照。begin 落实
+    # 绑定、build_context 写入本轮用户消息之后，首次模型调用之前一次性写入；
+    # 本轮话题操作继承它（base_nav_version / from_topic / from_fragment），
+    # **不在工具返回时**随当前 Anchor 重绑（那会让旧模型结果覆盖用户后来的选择）。
+    # 旧测试替身没有这些字段：所有读取方一律用 getattr(..., None) 兼容。
+    decision_nav_version: int | None = None
+    decision_topic_id: str | None = None
+    decision_fragment_id: str | None = None
+    # 本轮是否在受理时就已排队（事实标记，不参与任何判断）。
+    decision_queued: bool = False
+
+    def __post_init__(self) -> None:
+        # F05 事实：受理那一刻就已经在排队（前面还有主 turn / 队列非空）。
+        # 只记录事实、不参与语义判断；之后状态改成 running 不改写这个事实。
+        # 预留-放行路径（reserve → _enqueue_reserved）在创建时状态还是 accepted，
+        # 这里如实为 False（不猜）；目前聊天主路径在 submit 时已确定队列状态。
+        if str(self.status) == "queued":
+            self.decision_queued = True
     # P1-01/P1-02：轮前语义识别已删除。explicit_target / explicit_create_name
     # 不再存在（同一事实只接受模型工具参数的 intent 声明，见 topic_operation.py）。
     # 放行执行的事实（审计 F04）：reserve 只是「预留」，只有真正入队（submit /

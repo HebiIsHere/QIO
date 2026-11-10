@@ -264,6 +264,9 @@ _USER_REFUSAL_REASONS = {
     "denied",
     "declined",
     "user_rejected",
+    # F10：查重冲突确认里用户选择「不新建」是**用户自己的决定**（只覆盖这个
+    # 具体对象），不是超时 / 技术错误；证据文案按用户拒绝渲染。
+    "conflict_declined",
 }
 
 # 未知内部代码的形态：纯小写 ASCII 标识符（不把这类原始字符串写进证据）。
@@ -395,6 +398,142 @@ def normalize_refused_attempts(
             break
     return attempts
 
+
+# ---------------------------------------------------------------------------
+# 拒绝证据的讨论范围（F09）：沿 fragments 的 same_stage / source_fragment_id
+# 来源链收集「同一段讨论」的片段集合，再把跨轮拒绝证据限制在该集合内。
+# ---------------------------------------------------------------------------
+
+#: 来源链上限（契约 §3.7：有界，如 64 个片段）；环与重复由 seen 集合挡住。
+DISCUSSION_CHAIN_LIMIT = 64
+
+
+def _same_stage_true(value: Any) -> bool:
+    """片段事实 `same_stage` 是否明确表示「同一阶段延续」（1 / True）。
+
+    NULL / 缺失 / 明确 False 都**不**当作同阶段：宁可不继承，也不把另一段
+    讨论里的拒绝硬套到当前讨论上（契约 §3.7：same_stage 明确不同不盲目继承）。
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    return _string(value) in ("1", "true", "True")
+
+
+def discussion_fragment_ids(
+    fragments: Any,
+    fragment_id: str | None,
+    *,
+    max_fragments: int = DISCUSSION_CHAIN_LIMIT,
+) -> list[str]:
+    """沿来源链收集「同一段讨论」的片段 id（有界 / 防环 / 去重）。
+
+    只读 `fragments.get(fragment_id)` 的真实字段（FragmentManager 的接口）：
+
+    * 当前片段本身一定算；
+    * 只有**容量分段**（当前片段 same_stage 明确为 1）才继续继承它的来源；
+      same_stage 为 0 / NULL（阶段变化 / 历史重新展开 / 未知旧数据）就停 ——
+      不同讨论的拒绝范围不盲目继承；
+    * 最多 `max_fragments` 个（契约建议 64），环与重复由 seen 集合挡住。
+
+    没有 fragments 服务 / 片段不存在时如实返回空列表（不猜）。
+    """
+    cap = max(1, int(max_fragments))
+    current = _string(fragment_id)
+    getter = _get_attr(fragments, "get")
+    chain: list[str] = []
+    seen: set[str] = set()
+    while current and current not in seen and len(chain) < cap:
+        chain.append(current)
+        seen.add(current)
+        if not callable(getter):
+            break
+        try:
+            node = getter(current)
+        except Exception:  # noqa: BLE001 - 只读证据：读不到就停在已知事实
+            break
+        if node is None:
+            break
+        if not _same_stage_true(_get_attr(node, "same_stage")):
+            break
+        current = _string(_get_attr(node, "source_fragment_id"))
+    return chain
+
+
+_REFUSAL_IDENTITY_FIELDS = (
+    "fragment_id",
+    "turn_id",
+    "topic_id",
+    "topic_name",
+    "action",
+    "reason",
+    "operation_id",
+    "param_version",
+)
+
+
+def _refusal_identity(raw: Mapping) -> tuple[str, ...]:
+    return tuple(_string(raw.get(name)) for name in _REFUSAL_IDENTITY_FIELDS)
+
+
+def collect_refusal_evidence(
+    app: Any,
+    ctx: Any,
+    *,
+    fragment_id: str | None = None,
+    same_turn_scope: Any = None,
+    max_fragments: int = DISCUSSION_CHAIN_LIMIT,
+) -> list[dict]:
+    """本轮可见的拒绝证据（F09）：同一段讨论的跨轮记录 + 本轮自己的记录。
+
+    跨轮证据只来自 `TopicDiscussionGuard`（C 的只读接口 `refusals_within`；
+    旧替身没有它时退回 `refused_attempts` 按片段集合过滤），并且只保留
+    `discussion_fragment_ids` 算出的同一段讨论片段。不同讨论不继承；
+    容量分段由 same_stage 来源链自然继承。
+
+    这是纯读函数：不改任何状态、不按文本猜语义。
+    """
+    entries: list[Any] = []
+    if same_turn_scope is not None:
+        entries.extend(_refusal_entries(same_turn_scope))
+    fragments = _get_attr(app, "fragments")
+    chain = discussion_fragment_ids(
+        fragments,
+        fragment_id or _get_attr(ctx, "bound_fragment_id"),
+        max_fragments=max_fragments,
+    )
+    if chain:
+        wanted = set(chain)
+        guard = _get_attr(app, "topic_application_state")
+        records: list[Any] = []
+        reader = _get_attr(guard, "refusals_within")
+        if callable(reader):
+            try:
+                records = list(reader(chain) or [])
+            except Exception:  # noqa: BLE001 - 证据读取失败不挡一轮
+                records = []
+        if not records:
+            records = [
+                item
+                for item in (_get_attr(guard, "refused_attempts") or [])
+                if isinstance(item, Mapping)
+                and _string(item.get("fragment_id")) in wanted
+            ]
+        entries.extend(records)
+    out: list[dict] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw in entries:
+        if not isinstance(raw, Mapping):
+            continue
+        key = _refusal_identity(raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(raw))
+    return out
 
 # ---------------------------------------------------------------------------
 # 讨论状态：只从真实消息 / 片段 / 操作结果取证据

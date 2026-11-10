@@ -48,6 +48,10 @@ class IntentNotFound(ValueError):
     """接续意图不存在。"""
 
 
+class IntentNotActive(ValueError):
+    """接续意图已不是当前有效选择（已被替换 / 取消）：重放不能重新激活它。"""
+
+
 @dataclass(frozen=True)
 class TurnBinding:
     turn_id: str
@@ -57,6 +61,20 @@ class TurnBinding:
     intent_version: int | None
     write_state: str
     status: str | None
+
+
+@dataclass(frozen=True)
+class IntentRegistration:
+    """一次接续登记的**事实**：是否真实改变了选择（F08）。
+
+    * changed=True  → 新建了一条意图（旧选择被替换），导航版本需要推进；
+    * changed=False → 同 request_id 重放 / 重复点同一来源，选择没有变化，
+      导航版本不得推进（否则会让等待中的申请 / 恢复误失效）。
+    """
+
+    intent: "ContinuationIntent"
+    changed: bool
+    reused: bool
 
 
 @dataclass(frozen=True)
@@ -205,6 +223,31 @@ class TurnBindingService:
         )
         return self.binding_for(turn_id)  # type: ignore[return-value]
 
+    def rebind_topic_from_recovery(self, turn_id: str, topic_id: str) -> TurnBinding:
+        """受控例外：**恢复入口**修复已归档轮次的错误归属（F06）。
+
+        归属失败后轮次已经收尾（write_state='closed'），普通改向入口会拒绝；
+        但「工具/导航已成功、归属没搬过去」是真实错误，恢复时必须能修：
+
+        * 只允许恢复记录明确 failed_stage=ownership 的原轮次调用（调用方保证）；
+        * 允许 write_state='closed' —— 这是修归属，不是新导航；
+        * 只改 topic_id 并清空 fragment_id（随后由 record_binding 的懒创建补全），
+          不改 intent / 不重开片段 / 不新建片段 / 不动其它轮次；
+        * 幂等：已经是目标话题直接返回；
+        * 不推进导航版本（由调用方保证：这里不做任何版本写入）。
+        """
+        existing = self.binding_for(turn_id)
+        if existing is None:
+            raise BindingConflict(f"turn {turn_id} 还没有绑定，不能修归属")
+        if existing.topic_id == topic_id:
+            return existing
+        self.conn.execute(
+            "UPDATE turn_bindings SET topic_id = ?, fragment_id = NULL, updated_at = ? "
+            "WHERE turn_id = ?",
+            (topic_id, _now(), turn_id),
+        )
+        return self.binding_for(turn_id)  # type: ignore[return-value]
+
     def mark_status(self, turn_id: str, status: str) -> None:
         """记录终态（completed/failed/cancelled/unavailable），供恢复时判断。"""
         self.conn.execute(
@@ -247,19 +290,36 @@ class TurnBindingService:
     def register_intent(
         self, topic_id: str, source_fragment_id: str | None, *, request_id: str | None = None
     ) -> ContinuationIntent:
-        """登记「下一次发送要从这段历史继续」。
+        """登记「下一次发送要从这段历史继续」（兼容入口，返回意图本身）。
 
-        - 同一个 request_id 重发：返回既有意图（传输重试不制造第二条路径）；
-        - 重复点击同一段历史：返回既有意图，版本不涨（避免无意义的历史）；
-        - 发送前改选另一段历史：旧的登记态标 replaced，新意图版本 +1。
+        F08：真实改变与否由 :meth:`register_intent_ex` 返回；导航版本只应在
+        changed=True 时推进。
+        """
+        return self.register_intent_ex(
+            topic_id, source_fragment_id, request_id=request_id
+        ).intent
+
+    def register_intent_ex(
+        self, topic_id: str, source_fragment_id: str | None, *, request_id: str | None = None
+    ) -> IntentRegistration:
+        """登记接续意图并返回**同一事务内的 changed 事实**（F08）。
+
+        - 同一个 request_id 重发：返回既有意图（含已 replaced/cancelled 的旧请求，
+          但不重新激活），changed=False；
+        - 重复点击同一段历史：返回既有意图，版本不涨，changed=False；
+        - 发送前改选另一段历史：旧的登记态标 replaced，新意图版本 +1，changed=True。
         """
         if request_id:
             existing = self.intent_by_request(request_id)
             if existing is not None:
-                return existing
+                return IntentRegistration(existing, changed=False, reused=True)
         current = self.peek_intent()
-        if current is not None and current.topic_id == topic_id and current.source_fragment_id == source_fragment_id:
-            return current
+        if (
+            current is not None
+            and current.topic_id == topic_id
+            and current.source_fragment_id == source_fragment_id
+        ):
+            return IntentRegistration(current, changed=False, reused=True)
 
         now = _now()
         version = (current.version + 1) if current is not None else 1
@@ -277,7 +337,8 @@ class TurnBindingService:
                 "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
                 (intent_id, topic_id, source_fragment_id, version, INTENT_REGISTERED, request_id, now, now),
             )
-        return self.intent_by_id(intent_id)  # type: ignore[return-value]
+        created = self.intent_by_id(intent_id)
+        return IntentRegistration(created, changed=True, reused=False)  # type: ignore[arg-type]
 
     def resolve_intent(self, intent_id: str, fragment_id: str) -> ContinuationIntent:
         """落实：这条意图真正对应到某个 Fragment（首轮还没成功）。"""

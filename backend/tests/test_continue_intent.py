@@ -156,13 +156,25 @@ def test_register_rejects_foreign_fragment_and_unknown_topic(db_conn):
         nav.register_continuation("topic_ghost", "frag_a")
 
 
-def test_continue_from_history_shim_still_works(db_conn):
-    """旧的组合入口保留：登记 + 立即落实，行为与旧版一致（既有调用方不受影响）。"""
+def test_two_phase_contract_replaces_the_old_combined_entry(db_conn):
+    """F14：组合入口 continue_from_history 已删除，改为两阶段显式契约。
+
+    register_continuation（只登记，返回 changed / nav_version）→
+    apply_continuation（有消息要执行时才落实）。旧的「一步组合」不再存在，
+    避免把「点击」和「落实」混成一个不可审计的入口。
+    """
     _topic(db_conn)
     _fragment(db_conn, "frag_a", "topic_a", closed=True)
     nav = TopicNavigationService(db_conn)
+    assert not hasattr(nav, "continue_from_history"), "旧组合入口必须删除（F14）"
 
-    result = nav.continue_from_history("topic_a", "frag_a")
+    registered = nav.register_continuation("topic_a", "frag_a")
+    assert registered["changed"] is True
+    assert registered["intent_id"]
+    # 登记阶段零片段创建
+    assert _open_fragments(db_conn, "topic_a") == []
 
+    result = nav.apply_continuation("topic_a", registered["intent_id"])
     assert result.created_fragment_id is not None
     assert result.source_fragment_id == "frag_a"
+    assert _open_fragments(db_conn, "topic_a") == [result.created_fragment_id]

@@ -186,6 +186,14 @@ def _first_formal_assistant_index(events: list) -> int | None:
     )
 
 
+def _warning_codes(events: list) -> list[str]:
+    return [
+        str((getattr(event, "data", None) or {}).get("code"))
+        for event in events
+        if getattr(event, "type", None) == EventType.WARNING
+    ]
+
+
 def _error_codes(events: list) -> list[str]:
     return [
         str((getattr(event, "data", None) or {}).get("code"))
@@ -503,7 +511,10 @@ async def test_empty_rebuilt_context_is_recoverable_failure():
 # ---------------------------------------------------------------------------
 
 
-async def test_late_topic_tool_call_after_answerable_is_not_executed():
+# F01（2026-11-10 第三轮）：普通工具调用**不**再打开 ANSWERABLE。因此
+# 「普通检索 → 话题工具」是正常决策链，不是迟到调用；迟到只发生在已经
+# ANSWERABLE（决策已解决 / 正式答案已发布）之后。
+async def test_topic_tool_call_after_ordinary_retrieval_is_not_late():
     adapter = FakeStreamAdapter(
         [
             StreamScript(
@@ -511,6 +522,46 @@ async def test_late_topic_tool_call_after_answerable_is_not_executed():
                 tool_calls=[
                     ScriptedToolCall(
                         id="c1", name="lookup", arguments={"query": "x"}
+                    )
+                ],
+            ),
+            StreamScript(
+                tool_calls=[
+                    ScriptedToolCall(
+                        id="c2",
+                        name="switch_topic",
+                        arguments={"topic_id": "topic-target"},
+                    )
+                ],
+            ),
+            StreamScript(text=ANSWER_MARKER + "\n就在当前话题回答"),
+        ]
+    )
+    registry, topic_tool, lookup_tool = _registry()
+    bridge = FakeTopicBridge()
+    loop = _make_loop(adapter, registry, bridge)
+    bridge.loop = loop
+    events = _record_events(loop.bus)
+
+    result = await asyncio.wait_for(loop.run("先查资料再决定换不换话题"), timeout=15)
+
+    assert lookup_tool.executed == 1
+    assert len(bridge.requests) == 1, "普通工具调用之后的话题工具必须正常进入决策链"
+    assert topic_tool.executed == 0, "用户拒绝后话题工具不得执行"
+    assert result.final_content == "就在当前话题回答"
+    assert not any(
+        code == "answer_declared_with_tool_calls" for code in _warning_codes(events)
+    ), "普通检索之后的话题工具不是迟到调用"
+    assert loop.topic_phase is TopicPhase.ANSWERABLE
+
+
+async def test_late_topic_tool_call_after_answerable_is_not_executed():
+    adapter = FakeStreamAdapter(
+        [
+            StreamScript(
+                tool_calls=[
+                    ScriptedToolCall(
+                        id="c1", name="switch_topic", arguments={"topic_id": "topic-target"}
                     )
                 ],
             ),
@@ -526,18 +577,17 @@ async def test_late_topic_tool_call_after_answerable_is_not_executed():
             ),
         ]
     )
-    registry, topic_tool, lookup_tool = _registry()
+    registry, topic_tool, _lookup = _registry()
     bridge = FakeTopicBridge()
     loop = _make_loop(adapter, registry, bridge)
     bridge.loop = loop
     events = _record_events(loop.bus)
 
-    result = await asyncio.wait_for(loop.run("先查资料再回答"), timeout=15)
+    result = await asyncio.wait_for(loop.run("换个话题再回答"), timeout=15)
 
     assert result.final_content == "最终回答"
-    assert lookup_tool.executed == 1
     assert topic_tool.executed == 0, "ANSWERABLE 之后迟到的导航请求不得执行"
-    assert bridge.requests == [], "迟到的导航请求不进入申请流程"
+    assert len(bridge.requests) == 1, "迟到的导航请求不再进入申请流程"
     assert bridge.rebuilds == []
     warnings = [
         event.data

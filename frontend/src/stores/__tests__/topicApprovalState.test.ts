@@ -94,6 +94,10 @@ function topicApprovalRequired(
     from_topic_name: "当前话题",
     reason: "这段内容更像目标话题",
     source: "model",
+    // F12：草稿跟随的身份绑定（稳定 operation + 参数版本 + 起点）
+    operation_id: "op-1",
+    param_version: 1,
+    base_nav_version: 1,
   };
   if (kind === "topic_create") {
     payload.new_name = opts.newName ?? "新话题";
@@ -131,6 +135,12 @@ function approvalResult(
   );
 }
 
+/**
+ * 权威成功结果（F12）：话题工具真实执行成功后的 ANCHOR。
+ *
+ * 草稿跟随只消费这种带 operation 身份的事件；普通手动导航（origin=manual /
+ * operation_id=null）永远不迁移草稿。
+ */
 function anchor(
   events: ReturnType<typeof useEventStore>,
   topicId: string,
@@ -143,6 +153,12 @@ function anchor(
       fragment_id: null,
       fragment_title: null,
       historic: false,
+      origin: "topic_operation",
+      operation_id: "op-1",
+      param_version: 1,
+      turn_id: "turn_1",
+      nav_version: 7,
+      seq: 5,
     }),
   );
 }

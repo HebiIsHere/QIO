@@ -321,7 +321,9 @@ async def test_turn_refusal_scope_is_passed_and_rendered(ctx: AppContext, monkey
     result = await ctx.run_turn("继续当前这个", topic_id=current)
 
     assert result["ok"] is True
-    assert recorded == [refused_scope], "拒绝范围必须作为证据传入 build_topic_decision_state"
+    # F09：本轮自己的拒绝记录作为证据列表传入（跨轮证据由同一讨论来源链另行
+    # 收集，见 test_r14_a_f09.py）；同一份记录只出现一次。
+    assert recorded == [[refused_scope]], "拒绝范围必须作为证据传入 build_topic_decision_state"
     system = _system_text(adapter)
     assert "申请切换到已有话题「橡胶实验」，用户选择在当前话题回答" in system
     # 当前话题仍是原话题（拒绝不等于切走）

@@ -804,16 +804,39 @@ export const useEventStore = defineStore("events", {
               break;
             }
             /**
-             * 已在执行 = 用户已经选过话题：等待期间写的草稿要跟着本轮进入目标话题。
-             * switch 必须知道目标 id（不知道就不武装，绝不把草稿带错话题）；
-             * create 的目标话题由随后的 ANCHOR 决定（targetTopicId=null）。
+             * 已在执行 = 用户已经选过话题：等待期间写的草稿只跟随**本次操作**的
+             * 权威成功结果（F12）。身份绑定 operation_id + param_version + turn_id +
+             * 原话题/片段；create 的目标未知只保留待关联，绝不当作通配。
+             * 旧后端没有 operation_id → 不武装（草稿留原话题，安全侧）。
              */
             if (phase === "approved" || phase === "executing") {
-              if (topicKind === "topic_create" || targetTopicId) {
+              const operationId = String(registered?.operationId ?? eventOperationId ?? "").trim();
+              if (operationId) {
                 session.armTopicDraftFollow({
-                  targetTopicId,
+                  operationId,
+                  // 审批稳定身份：用户弹窗里改名后确认时 param_version 会推进，
+                  // 但 approval_id 不变 —— 权威 ANCHOR 据此仍认出「同一次确认」。
+                  approvalId: registered?.approvalId ?? approvalId,
+                  // 事件若带最新参数版本（用户改名后确认的新版本）优先于申请登记时的旧版本
+                  paramVersion:
+                    typeof d.param_version === "number" && Number.isFinite(d.param_version)
+                      ? d.param_version
+                      : typeof payload.param_version === "number" &&
+                          Number.isFinite(payload.param_version)
+                        ? payload.param_version
+                        : registered?.paramVersion ?? null,
                   turnId: registered?.turnId ?? String(d.turn_id ?? ""),
+                  kind: topicKind,
+                  expectedTargetTopicId: targetTopicId,
+                  fromTopicId:
+                    registered?.fromTopicId ??
+                    (String(payload.from_topic_id ?? "").trim() || session.currentTopicId),
+                  fromFragmentId:
+                    registered?.fromFragmentId ??
+                    (String(payload.from_fragment_id ?? "").trim() || session.anchorFragmentId),
                 });
+              } else {
+                session.clearTopicDraftFollow();
               }
             } else {
               // executed / rejected / cancelled / expired / invalidated / failed：登记收口。
@@ -849,6 +872,16 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const advanced = session.applyTopicPhase(d);
           /**
+           * F12：本次操作进入 recoverable_failure = 没有成功 → 草稿跟随按失败收口，
+           * 不被迟到的成功事件再带走（草稿留在原话题）。
+           */
+          if (String(d.phase ?? "").trim() === "recoverable_failure") {
+            session.clearTopicDraftFollowForOperation({
+              operationId: d.operation_id as string | null,
+              turnId: d.turn_id as string | null,
+            });
+          }
+          /**
            * answerable = 允许发布正式正文：把顺序容错暂存的那份按原事件回放
            * （只有真的推进到 answerable 才回放；旧 / 乱序事件不放行）。
            */
@@ -864,7 +897,55 @@ export const useEventStore = defineStore("events", {
           if (!topicId) break;
           const fragmentId = (d.fragment_id as string | null) ?? null;
           const fragmentTitle = (d.fragment_title as string | null) ?? null;
+          /**
+           * F12：旧 / 别的操作的权威 ANCHOR 不得跳当前导航，也不得提前消费跟随。
+           *
+           * 判据只来自事件自带的受控字段：
+           * * origin=topic_operation 且 operation_id 与已武装跟随的操作不同 → 别的操作
+           *   的迟到结果，整条不应用（手动导航没有 operation_id，不受影响）；
+           * * origin=topic_operation 且 turn_id 属于**另一个**已知活动轮 → 旧轮迟到事件，
+           *   整条不应用（不把当前位置跳回旧轮）。
+           */
+          const anchorOrigin = String(d.origin ?? "").trim();
+          const anchorOperationId = String(d.operation_id ?? "").trim();
+          const anchorTurnId = String(d.turn_id ?? "").trim();
+          const armedFollow = session._topicDraftFollow;
+          const armedOperationId = String(armedFollow?.operationId ?? "").trim();
+          if (
+            anchorOrigin === "topic_operation" &&
+            armedFollow &&
+            armedOperationId &&
+            anchorOperationId !== armedOperationId
+          ) {
+            break;
+          }
+          if (
+            anchorOrigin === "topic_operation" &&
+            anchorTurnId &&
+            session.activeTurnId &&
+            anchorTurnId !== session.activeTurnId
+          ) {
+            break;
+          }
           const beforeKey = `${session.currentTopicId ?? ""}|${session.anchorFragmentId ?? ""}|${session.anchorHistoric}`;
+          /**
+           * F12：本次 ANCHOR 是否是「本次话题操作的权威成功结果」。
+           *
+           * 只有 origin=topic_operation 且 operation_id 与武装草稿跟随时绑定的一致，
+           * 才允许迁移一次；普通手动导航（origin=manual / operation_id=null）永远不消费。
+           * 旧 / 重复 / 乱序事件由 session 按 operation + seq 丢弃（不提前消费）。
+           */
+          session.applyAuthoritativeTopicAnchor({
+            origin: d.origin,
+            operationId: d.operation_id,
+            approvalId: d.approval_id,
+            paramVersion: d.param_version,
+            turnId: d.turn_id,
+            topicId,
+            fragmentId,
+            navVersion: d.nav_version,
+            seq: d.seq,
+          });
           session.setAnchor(
             topicId,
             fragmentId,
@@ -873,14 +954,6 @@ export const useEventStore = defineStore("events", {
             // historic=false（位置推进到当前片段）→ UI 收起「从…继续」提示
             Boolean(d.historic),
           );
-          /**
-           * 话题申请批准后的草稿跟随：锚点已经落到目标话题、但话题 id 没变时
-           * bind 不会触发（同键早退）—— 一次性标记在这里收口，不跨导航残留。
-           */
-          const follow = session._topicDraftFollow;
-          if (follow && (follow.targetTopicId === null || follow.targetTopicId === topicId)) {
-            session.clearTopicDraftFollow();
-          }
           // 「已登记但还没落实」的接续选择：界面据此显示「将从所选记录继续」，
           // 而不是让人以为已经建了新片段（阶段 1 的两步语义）。
           const pendingIntent = (d.pending_intent_id as string | null) ?? null;
@@ -945,6 +1018,21 @@ export const useEventStore = defineStore("events", {
           if (!belongsToMainTurn(session, tid)) break;
           if (tid && session.activeTurnId && tid !== session.activeTurnId) break;
           session.lastError = String(d.message ?? "agent error");
+          /**
+           * F12：话题操作失败的可观察错误 = 没有成功 → 草稿跟随按失败收口，
+           * 不被迟到的成功事件再带走（草稿留在原话题）。
+           */
+          const failureCode = String(d.code ?? "").trim();
+          if (
+            failureCode === "topic_ownership_failed" ||
+            failureCode === "topic_context_prepare_failed" ||
+            failureCode === "topic_operation_failed"
+          ) {
+            session.clearTopicDraftFollowForOperation({
+              operationId: d.operation_id as string | null,
+              turnId: tid,
+            });
+          }
           break;
         }
         case "WARNING": {
@@ -1074,6 +1162,9 @@ export const useEventStore = defineStore("events", {
           operationId: String(payload.operation_id ?? approval.operation_id ?? "").trim(),
           paramVersion: numberField(payload.param_version ?? approval.param_version),
           baseNavVersion: numberField(payload.base_nav_version ?? approval.base_nav_version),
+          // F12：申请起点（草稿跟随的身份绑定；旧后端缺失 → null，不猜）
+          fromTopicId: String(payload.from_topic_id ?? "").trim() || null,
+          fromFragmentId: String(payload.from_fragment_id ?? "").trim() || null,
         });
         return;
       }

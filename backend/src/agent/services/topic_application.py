@@ -26,6 +26,20 @@
 5. **阶段**：通过注入的 `set_phase` 回调（loop.set_topic_phase）报告
    AWAITING_CONFIRMATION / EXECUTING / CONTEXT_PREPARING；只有 loop 在上下文准备
    成功后进入 ANSWERABLE。
+6. **决定层 / 执行层分开（F02）**：`TopicOperation.decided` 记录用户 / 程序决定，
+   `attempt` 记录原工具执行到哪一步。主动要求（direct）只写决定层；工具失败不会
+   被当成「本轮已处理过」——只有 `retryable_failure / conflict_pending` 允许同版本
+   再次进入原工具及既有冲突确认，成功后的重放只返回既有结果，`stale / refused /
+   terminal_failure` 不重试且不续期。
+7. **精确执行参数（F07）**：`execution_params`（只外层 strip）决定 param_version
+   与批准身份；`normalize_topic_name` 宽松归一化只作查重证据。用户弹窗编辑确认的
+   最终名称写入同一操作新版本；模型自行改名会推进版本、旧批准失效。
+8. **具体冲突拒绝（F10）**：消费工具结构化结果 `topic_create_conflict_declined` →
+   REFUSED + CONFLICT_DECLINED、清 pending conflict、进入原话题回答、同版本不再弹；
+   超时 / 失效 / 技术错误分别表示，超时不得写成主动拒绝、失效不写拒绝证据。
+9. **未完成事实（F02 给 loop）**：`operation_progress()` / `has_incomplete_operation()`
+   以操作**当前终态**回答本轮能否发布正式回答；被拦截的 ToolResult.facts 同时带
+   `keep_decision_open` / `operation_progress`，旧批次的 keep 事实不能拦住新版本终态。
 
 设计边界：
 * 本模块**不**直接执行话题工具、不写 topic/fragment/anchor —— 执行仍走 registry，
@@ -47,14 +61,19 @@ from typing import Any, Awaitable, Callable
 
 from agent.services.navigation_version import current as current_nav_version
 from agent.services.topic_operation import (
+    AttemptStatus,
     ConflictStatus,
+    DecisionStatus,
     IntentSource,
     OperationStatus,
     TopicOperation,
     TopicOperationRegistry,
     TopicPhase,
+    dedup_key,
+    execution_params,
     intent_from_arguments,
     normalize_topic_name,
+    strip_outer,
 )
 from agent.tools.base import ToolResult
 from agent.trace.redact import redact_text, sanitize_error_text
@@ -142,18 +161,29 @@ def _phase_cm(ctx: Any, name: str, detail: str):
 class RefusedAttempt:
     """一次被拒绝 / 重复的话题申请（供 A 的 topic_decision 作为证据读取）。
 
-    只记录真实发生过的事实：哪个话题方向、哪种动作、为什么没成、属于哪一轮 /
-    哪条用户消息 / 哪个绑定片段。**不是**对用户语义的猜测。失效（stale）**不**
-    写进这里（契约 P1-04：失效 ≠ 拒绝）。
+    只记录真实发生过的事实：哪个对象、哪种动作、为什么没成、属于哪一轮 /
+    哪条用户消息 / 哪个绑定片段，以及操作身份（便于按同一讨论分段继承）。
+    **不是**对用户语义的猜测。失效（stale）/ 超时（timeout）**不**写进这里
+    （契约 P1-04 / F10：失效 ≠ 拒绝，超时 ≠ 主动拒绝）。
     """
 
     topic_id: str
     topic_name: str
     action: str  # "switch" | "create"
-    reason: str  # rejected / timeout / cancelled / duplicate
+    #: rejected / cancelled / duplicate / conflict_declined
+    reason: str
     turn_id: str
     user_message_id: str | None = None
+    #: 记录时本轮绑定的片段（A 沿 same_stage / source_fragment_id 来源链判断
+    #: 「同一段讨论」的范围，本模块不做语义分类、也不读 fragments）。
     fragment_id: str | None = None
+    #: 操作身份（同一逻辑操作的拒绝证据可按它去重 / 关联）。
+    operation_id: str | None = None
+    param_version: int | None = None
+    #: 具体冲突拒绝时的独立状态（F10）；普通拒绝为 None。
+    conflict: str | None = None
+    #: 具体查重冲突拒绝时**真正被拒绝的对象**（相似话题 id），不扩大为全局拒绝。
+    similar_topic_id: str | None = None
     created_at: str = field(default_factory=_now_iso)
 
     def as_dict(self) -> dict[str, Any]:
@@ -165,6 +195,10 @@ class RefusedAttempt:
             "turn_id": self.turn_id,
             "user_message_id": self.user_message_id,
             "fragment_id": self.fragment_id,
+            "operation_id": self.operation_id,
+            "param_version": self.param_version,
+            "conflict": self.conflict,
+            "similar_topic_id": self.similar_topic_id,
             "created_at": self.created_at,
         }
 
@@ -217,6 +251,10 @@ class TopicDiscussionGuard:
         turn_id: str,
         user_message_id: str | None = None,
         fragment_id: str | None = None,
+        operation_id: str | None = None,
+        param_version: int | None = None,
+        conflict: str | None = None,
+        similar_topic_id: str | None = None,
     ) -> RefusedAttempt:
         attempt = RefusedAttempt(
             topic_id=str(topic_id or ""),
@@ -226,6 +264,10 @@ class TopicDiscussionGuard:
             turn_id=str(turn_id or ""),
             user_message_id=user_message_id,
             fragment_id=fragment_id,
+            operation_id=operation_id,
+            param_version=param_version,
+            conflict=conflict,
+            similar_topic_id=similar_topic_id,
         )
         self._refusals.append(attempt)
         if len(self._refusals) > self._max_refusals:
@@ -238,6 +280,51 @@ class TopicDiscussionGuard:
 
     def refusals_for(self, topic_id: str) -> list[dict[str, Any]]:
         return [item.as_dict() for item in self._refusals if item.topic_id == topic_id]
+
+    # -- F09-record：稳定的只读读取面（A 的 topic_decision 消费）------------
+    def refusal_entries(
+        self, *, topic_id: str | None = None, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """全部拒绝证据（旧 -> 新，跨轮有界内存），只读。
+
+        topic_id 非空时只返回该话题的条目（创建类拒绝的 topic_id 可能为空，
+        调用方需要「按讨论」证据时用 refusals_within 传片段集合）。
+        """
+        items = [
+            item.as_dict()
+            for item in self._refusals
+            if topic_id is None or item.topic_id == str(topic_id)
+        ]
+        if limit is not None:
+            items = items[-max(0, int(limit)) :]
+        return items
+
+    def refusals_within(
+        self,
+        fragment_ids: Any,
+        *,
+        topic_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """只返回属于给定片段集合的拒绝证据（F09 容量分段继承的统一入口）。
+
+        调用方（A）负责沿 fragments 的 same_stage / source_fragment_id 来源链
+        算出「同一段讨论」的 fragment_id 集合（有界 / 防环 / 去重）；本方法只做
+        集合过滤，不做语义分类、不读数据库、不修改任何状态。
+        """
+        wanted = {str(value) for value in (fragment_ids or ()) if str(value or "")}
+        if not wanted:
+            return []
+        items: list[dict[str, Any]] = []
+        for item in self._refusals:
+            if item.fragment_id is None or str(item.fragment_id) not in wanted:
+                continue
+            if topic_id is not None and item.topic_id != str(topic_id):
+                continue
+            items.append(item.as_dict())
+        if limit is not None:
+            items = items[-max(0, int(limit)) :]
+        return items
 
     def refusal_scope(self, topic_id: str | None = None) -> dict[str, Any] | None:
         for item in reversed(self._refusals):
@@ -311,10 +398,11 @@ class TopicApplicationBridge:
         self.registry = _operation_registry_for(app)
         # 审批已消费、工具执行结果还没回来的申请。
         self._approved: dict[str, _PendingApplication] = {}
-        # (operation_id, param_version) → pending/approved/refused/stale/direct
-        self._decisions: dict[tuple[str, int], str] = {}
-        # (operation_id, param_version) → 工具真实成功结果（幂等重放返回它）
+        # (operation_id, param_version) → 工具真实成功结果（幂等重放只返回它）
         self._results: dict[tuple[str, int], ToolResult] = {}
+        # (operation_id, param_version) → 终态失败结果（拒绝 / 失效 / 不可重试失败）。
+        # 同版本重放返回**既有结构化结果**，绝不重新执行、也不改成成功（F02）。
+        self._terminal_results: dict[tuple[str, int], ToolResult] = {}
         # (operation_id, param_version) → approval_id（真实执行结果回写历史用）
         self._approval_ids: dict[tuple[str, int], str] = {}
         # call_id → 本次调用对应的操作（after_tool 用）与 ContextVar token
@@ -322,6 +410,8 @@ class TopicApplicationBridge:
         self._bind_tokens: dict[str, Any] = {}
         self._turn_applications = 0
         self.last_rebind_topic: str | None = None
+        # 最近一次真实导航结果（F05/F12：A 从 directive 读不到时才用它兜底，不猜）。
+        self.last_navigation: dict[str, Any] = {}
         # 最近一次操作（loop 的恢复记录用：current_operation()）。
         self._active_operation: TopicOperation | None = None
 
@@ -404,6 +494,74 @@ class TopicApplicationBridge:
     def _fragment_id(self) -> str | None:
         return getattr(self.ctx, "bound_fragment_id", None)
 
+    # -- 决策位置快照（F05，A 在 TurnContext 写，C 只读）--------------------
+
+    def _decision_snapshot(self) -> dict[str, Any]:
+        """读取本轮决策依据形成时冻结的真实位置。
+
+        * 有快照（A 的 begin 写入 decision_* 任一非 None）：严格用快照，
+          None 就是 None，**不**在工具返回后用当前版本补；
+        * 没有快照（旧测试替身 / 子任务 / 旧路径）：退回既有「当前值」口径，
+          保持旧行为不破坏。
+
+        返回 dict：topic_id / fragment_id / nav_version / queued / available。
+        """
+        ctx = self.ctx
+        raw = [
+            getattr(ctx, "decision_nav_version", None),
+            getattr(ctx, "decision_topic_id", None),
+            getattr(ctx, "decision_fragment_id", None),
+        ]
+        available = any(value is not None for value in raw)
+        if available:
+            return {
+                "available": True,
+                "topic_id": getattr(ctx, "decision_topic_id", None),
+                "fragment_id": getattr(ctx, "decision_fragment_id", None),
+                "nav_version": getattr(ctx, "decision_nav_version", None),
+                "queued": bool(getattr(ctx, "decision_queued", False)),
+            }
+        return {
+            "available": False,
+            "topic_id": self._from_topic() or None,
+            "fragment_id": self._fragment_id(),
+            "nav_version": self._nav_version(),
+            "queued": False,
+        }
+
+    def note_decision_navigation(
+        self,
+        topic_id: str,
+        fragment_id: str | None = None,
+        nav_version: int | None = None,
+    ) -> dict[str, Any]:
+        """同轮自己成功导航后的**因果更新**（A 在 orchestrator/loop 调用）。
+
+        只把 ctx 的决策快照写成这次操作的真实结果：不推进导航版本、不写 Anchor、
+        不算外来手动导航；重复调用同值幂等。ctx 只读时返回快照而不抛异常。
+        """
+        snapshot = {
+            "topic_id": str(topic_id or "") or None,
+            "fragment_id": fragment_id,
+            "nav_version": int(nav_version) if nav_version is not None else None,
+        }
+        for name, value in (
+            ("decision_topic_id", snapshot["topic_id"]),
+            ("decision_fragment_id", snapshot["fragment_id"]),
+            ("decision_nav_version", snapshot["nav_version"]),
+        ):
+            try:
+                setattr(self.ctx, name, value)
+            except Exception:  # noqa: BLE001 - 只读 ctx 退化：不改变真实导航结果
+                logger.warning("failed to update decision snapshot", exc_info=True)
+                break
+        _trace(
+            self.ctx,
+            "topic_application_causal_navigation",
+            f"{snapshot['topic_id']}:v{snapshot['nav_version']}",
+        )
+        return snapshot
+
     # -- 阶段回调（loop.set_topic_phase 的 sync 包装）-----------------------
 
     def _set_phase(self, phase: TopicPhase) -> None:
@@ -462,12 +620,15 @@ class TopicApplicationBridge:
             payload["operation_id"] = operation.operation_id
             payload["param_version"] = int(operation.param_version)
             payload["base_nav_version"] = operation.base_nav_version
+        # F07：批准身份用**执行参数**（只做外层 strip）；查重归一化只作证据。
+        params = execution_params(kind, arguments)
+        payload["dedup_key"] = dedup_key(kind, arguments)
         if kind == "topic_switch":
-            target_id = str(arguments.get("topic_id") or "").strip()
+            target_id = params["topic_id"]
             payload["target_topic_id"] = target_id
             payload["target_topic_name"] = self._node_name(self._node(target_id))
         else:
-            payload["new_name"] = str(arguments.get("name") or "").strip()
+            payload["new_name"] = params["name"]
         return payload
 
     # -- 当前操作（loop / 恢复记录只读）------------------------------------
@@ -477,6 +638,56 @@ class TopicApplicationBridge:
 
     def operation_for_approval(self, approval_id: str | None) -> TopicOperation | None:
         return self.registry.by_approval_id(approval_id)
+
+    # -- 未完成操作事实（F02：给 loop 的发布前提一个**当前终态**查询）--------
+
+    def operation_progress(self) -> str:
+        """本轮最近一次话题操作的真实进度（只读程序事实，不按文本猜）。
+
+        * "none"     —— 本轮还没有话题操作；
+        * "pending"  —— 仍未完成（等待用户决定 / 已批准未执行 / 执行中 /
+                        冲突待确认 / 可重试失败）：loop 不得发布正式回答；
+        * "terminal" —— 已终结（拒绝 / 失效 / 不可重试失败）：不得借旧批次
+                        的 keep_decision_open 拦住本轮回答；
+        * "success"  —— 工具真实成功（上下文准备由 loop 的待重建记录负责）。
+
+        旧批次遗留的 keep 事实因此不能单独决定新 param_version 的终态。
+        """
+        operation = self._active_operation
+        if operation is None:
+            operation = self.registry.for_turn(self.turn_id)
+        if operation is None:
+            return "none"
+        if operation.decided in (DecisionStatus.REFUSED, DecisionStatus.STALE):
+            return "terminal"
+        if (
+            operation.decided is DecisionStatus.PENDING
+            and operation.failure_code == "approval_timeout"
+        ):
+            # 申请超时：本轮已终结（不重弹、不执行），但决定层没有用户拒绝。
+            return "terminal"
+        if operation.attempt is AttemptStatus.SUCCEEDED:
+            return "success"
+        if operation.attempt is AttemptStatus.TERMINAL_FAILURE:
+            return "terminal"
+        if operation.decided is DecisionStatus.PENDING:
+            return "pending"
+        if operation.decided is DecisionStatus.APPROVED:
+            return "pending"
+        return "none"
+
+    def has_incomplete_operation(self) -> bool:
+        """是否存在「等待用户决定 / 执行中 / 冲突待确认 / 可重试失败」的操作。"""
+        return self.operation_progress() == "pending"
+
+    def _progress_facts(self, operation: TopicOperation | None = None) -> dict[str, Any]:
+        """终态事实：供 loop 在被拦截的结果上刷新本轮发布前提（F02）。"""
+        self._active_operation = operation or self._active_operation
+        progress = self.operation_progress()
+        return {
+            "keep_decision_open": progress == "pending",
+            "operation_progress": progress,
+        }
 
     # -- 拒绝范围 ----------------------------------------------------------
 
@@ -488,8 +699,17 @@ class TopicApplicationBridge:
         topic_name: str,
         reason: str,
         turn_id: str | None = None,
+        operation: TopicOperation | None = None,
+        conflict: ConflictStatus | str | None = None,
+        similar_topic_id: str | None = None,
     ) -> RefusedAttempt:
-        """记录一次**用户拒绝 / 重复 / 取消**的话题申请（stale 不记录）。"""
+        """记录一次**用户拒绝 / 重复 / 取消**的话题申请（失效 / 超时不记录）。"""
+        operation = operation or self._active_operation
+        conflict_value: str | None = None
+        if isinstance(conflict, ConflictStatus):
+            conflict_value = conflict.value
+        elif conflict is not None:
+            conflict_value = str(conflict)
         attempt = self.guard.record_refusal(
             topic_id=topic_id,
             topic_name=topic_name,
@@ -498,6 +718,14 @@ class TopicApplicationBridge:
             turn_id=str(turn_id or self.turn_id),
             user_message_id=self._user_message_id(),
             fragment_id=self._fragment_id(),
+            operation_id=(
+                operation.operation_id if operation is not None else None
+            ),
+            param_version=(
+                int(operation.param_version) if operation is not None else None
+            ),
+            conflict=conflict_value,
+            similar_topic_id=similar_topic_id,
         )
         scope = attempt.as_dict()
         try:
@@ -543,9 +771,22 @@ class TopicApplicationBridge:
         key = (operation.operation_id, int(operation.param_version))
         cached = self._results.get(key)
         if cached is not None and cached.ok:
-            # 已成功过：重复确认 / 重放 / 工具重试返回既有结果，不再执行。
+            # 已成功过：重复确认 / 重放 / 工具重试只返回既有目标与结果，不再执行。
             _trace(self.ctx, "topic_application_idempotent", f"{kind}:{key[0]}:v{key[1]}")
             return cached
+
+        # F02：失效 / 拒绝 / 不可重试失败 = 终态：同版本重放返回**既有结构化结果**，
+        # 既不重新执行，也不会被改成成功。
+        terminal = self._terminal_results.get(key)
+        if terminal is not None and not operation.can_retry():
+            if operation.decided is DecisionStatus.REFUSED:
+                self._record_duplicate_refusal(kind, arguments)
+            _trace(
+                self.ctx,
+                "topic_application_terminal_replay",
+                f"{kind}:{key[0]}:v{key[1]}:{operation.retry_block_reason()}",
+            )
+            return terminal
 
         if intent is IntentSource.USER_REQUEST:
             return self._route_direct(call, operation, kind, arguments)
@@ -556,13 +797,27 @@ class TopicApplicationBridge:
     def _operation_for_call(
         self, kind: str, arguments: dict[str, Any], intent: IntentSource, *, call_id: str
     ) -> TopicOperation:
+        snapshot = self._decision_snapshot()
         existing = self.registry.for_turn(self.turn_id, kind=kind)
         if existing is not None:
-            # 同一轮同一 kind 是同一逻辑操作：参数实质变化才推进 param_version。
-            existing.update_params(arguments)
+            # 同一轮同一 kind 是同一逻辑操作：**执行参数**实质变化才推进参数版本。
+            changed = existing.update_params(arguments)
             existing.remember_call(call_id)
-            if existing.base_nav_version is None:
-                existing.base_nav_version = self._nav_version()
+            if changed:
+                # F05：参数版本推进 = 新决定。起点快照必须换成**当前决策快照**
+                # （同轮自己成功导航后的因果更新由 A 通过 note_decision_navigation
+                # 写回 ctx），否则新版本会拿旧 base_nav_version 去做 CAS，被错误判失效。
+                # 同一 param_version 的合法重试不刷新：保持原起点校验语义。
+                if snapshot["available"]:
+                    existing.base_nav_version = snapshot["nav_version"]
+                    if snapshot["topic_id"]:
+                        existing.from_topic = snapshot["topic_id"]
+                    existing.from_fragment = snapshot["fragment_id"]
+                elif existing.base_nav_version is None:
+                    # 无快照的旧路径：保持原「首次补当前值」语义。
+                    existing.base_nav_version = snapshot["nav_version"]
+            if existing.base_nav_version is None and not changed:
+                existing.base_nav_version = snapshot["nav_version"]
             if existing.user_message_id is None:
                 existing.user_message_id = self._user_message_id()
             return existing
@@ -572,9 +827,9 @@ class TopicApplicationBridge:
             route=("direct" if intent is IntentSource.USER_REQUEST else "application"),
             intent_source=intent,
             arguments=arguments,
-            from_topic=self._from_topic(),
-            from_fragment=self._fragment_id(),
-            base_nav_version=self._nav_version(),
+            from_topic=(snapshot["topic_id"] or self._from_topic()),
+            from_fragment=snapshot["fragment_id"],
+            base_nav_version=snapshot["nav_version"],
             user_message_id=self._user_message_id(),
         )
 
@@ -583,22 +838,51 @@ class TopicApplicationBridge:
     def _route_direct(
         self, call: Any, operation: TopicOperation, kind: str, arguments: dict[str, Any]
     ) -> ToolResult | None:
-        key = (operation.operation_id, int(operation.param_version))
-        decision = self._decisions.get(key)
-        if decision in ("pending", "refused", "stale"):
-            # 同一版本已经被用户处理过：模型不能在同一个版本上「改口」绕过用户决定。
-            return self._duplicate_result(kind, arguments)
-        if decision == "direct":
-            result = self._results.get(key)
-            if result is not None and result.ok:
-                return result
+        """用户明确要求：直接进原工具。
+
+        F02：**「直接要求」只是决定层，不等于执行成功**。工具失败（含查重冲突 /
+        可重试失败）后，同 operation + 同 param_version 必须允许再次进入原工具；
+        只有真实成功才返回既有结果，拒绝 / 失效 / 不可重试失败返回终态结果。
+        """
+        if operation.decided is DecisionStatus.STALE:
+            return self._stale_result(
+                kind, arguments, operation.failure_code or "nav_version_changed",
+                operation=operation,
+            )
+        if operation.attempt is AttemptStatus.EXECUTING:
+            # 同一批里的重复调用：第一次还在执行，不能重复执行第二次。
+            return self._executing_result(kind, arguments)
+        if operation.can_retry():
+            # 冲突待确认 / 可重试失败：同版本合法重试，再次进入原工具。
+            operation.route = "direct"
+            operation.intent_source = IntentSource.USER_REQUEST
+            operation.begin_attempt()
+            if operation.base_nav_version is None:
+                operation.base_nav_version = self._decision_snapshot()["nav_version"]
+            self._remember(call, self._pending_from_operation(operation, kind, arguments))
+            self._bind(call, operation)
+            self._set_phase(TopicPhase.EXECUTING)
+            _trace(
+                self.ctx,
+                "topic_application_direct_retry",
+                f"{kind}:{operation.operation_id}:{operation.retry_block_reason()}",
+            )
+            return None
+        if not operation.decided is DecisionStatus.NONE:
+            # pending / refused / 终态失败：同一版本不能「改口」绕过已发生的决定。
             return self._duplicate_result(kind, arguments, direct=True)
+
         operation.route = "direct"
         operation.intent_source = IntentSource.USER_REQUEST
+        operation.decide(DecisionStatus.APPROVED)
+        operation.begin_attempt()
+        snapshot = self._decision_snapshot()
         if operation.base_nav_version is None:
-            operation.base_nav_version = self._nav_version()
-        self._decisions[key] = "direct"
-        operation.status = OperationStatus.EXECUTING
+            operation.base_nav_version = snapshot["nav_version"]
+        if not operation.from_topic:
+            operation.from_topic = snapshot["topic_id"] or self._from_topic()
+        if operation.from_fragment is None:
+            operation.from_fragment = snapshot["fragment_id"]
         self._remember(call, self._pending_from_operation(operation, kind, arguments))
         self._bind(call, operation)
         self._set_phase(TopicPhase.EXECUTING)
@@ -610,40 +894,46 @@ class TopicApplicationBridge:
     async def _route_application(
         self, call: Any, operation: TopicOperation, kind: str, arguments: dict[str, Any]
     ) -> ToolResult | None:
-        key = (operation.operation_id, int(operation.param_version))
-        decision = self._decisions.get(key)
-        if decision == "approved":
-            # 同 operation + 同 param_version 的合法重试：再次进入既有流程
-            # （create 的查重 / 相似冲突二次审批仍在工具内部保留，不跳过）。
-            result = self._results.get(key)
-            if result is not None and result.ok:
-                return result
+        """QIO 建议：先建立申请，用户批准后才执行原工具（F02 状态机入口）。"""
+        if operation.decided is DecisionStatus.STALE:
+            return self._stale_result(
+                kind, arguments, operation.failure_code or "nav_version_changed",
+                operation=operation,
+            )
+        if operation.attempt is AttemptStatus.EXECUTING:
+            return self._executing_result(kind, arguments)
+        if operation.can_retry():
+            # 同 operation + 同 param_version 的合法重试：已批准（含冲突待确认 /
+            # 可重试失败）直接再次进入原工具，不重复发起普通申请。
+            operation.route = "application"
+            operation.begin_attempt()
             _trace(
                 self.ctx,
                 "topic_application_reuse_approval",
-                f"{kind}:{operation.operation_id}",
+                f"{kind}:{operation.operation_id}:{operation.retry_block_reason()}",
             )
             self._remember(
                 call,
                 self._pending_from_operation(
-                    operation, kind, arguments, approval_id=self._approval_ids.get(key)
+                    operation, kind, arguments, approval_id=self._approval_ids.get(
+                        (operation.operation_id, int(operation.param_version))
+                    )
                 ),
             )
             self._bind(call, operation)
-            operation.status = OperationStatus.EXECUTING
             self._set_phase(TopicPhase.EXECUTING)
             return None
-        if decision == "direct":
-            result = self._results.get(key)
-            if result is not None:
-                return result
-            return self._duplicate_result(kind, arguments, direct=True)
-        if decision in ("pending", "refused"):
-            return self._duplicate_result(kind, arguments)
-        if decision == "stale":
-            return self._stale_result(
-                kind, arguments, "nav_version_changed", operation=operation
-            )
+        if operation.decided is DecisionStatus.PENDING:
+            # 申请等待中 / 申请超时后同版本重放：不再次弹窗（有效期不续期）。
+            return self._terminal_results.get(
+                (operation.operation_id, int(operation.param_version))
+            ) or self._duplicate_result(kind, arguments)
+        if operation.decided is DecisionStatus.REFUSED or operation.attempt is (
+            AttemptStatus.TERMINAL_FAILURE
+        ):
+            return self._terminal_results.get(
+                (operation.operation_id, int(operation.param_version))
+            ) or self._duplicate_result(kind, arguments)
         if self._turn_applications >= MAX_APPLICATIONS_PER_TURN:
             _trace_warning(
                 self.ctx,
@@ -652,15 +942,16 @@ class TopicApplicationBridge:
             )
             return self._duplicate_result(kind, arguments)
 
-        # 新申请：起点快照（导航版本 / 话题 / 片段）只在这里取一次。
+        # 新申请：起点快照（导航版本 / 话题 / 片段）只在这里取一次（F05）。
+        snapshot = self._decision_snapshot()
         operation.route = "application"
         operation.intent_source = IntentSource.SUGGESTION
         if operation.base_nav_version is None:
-            operation.base_nav_version = self._nav_version()
+            operation.base_nav_version = snapshot["nav_version"]
         if not operation.from_topic:
-            operation.from_topic = self._from_topic()
+            operation.from_topic = snapshot["topic_id"] or self._from_topic()
         if operation.from_fragment is None:
-            operation.from_fragment = self._fragment_id()
+            operation.from_fragment = snapshot["fragment_id"]
         return await self._request_application(call, operation, kind, arguments)
 
     async def _request_application(
@@ -677,13 +968,14 @@ class TopicApplicationBridge:
                 arguments,
                 reason="no_approval_channel",
                 content=self._no_channel_content(kind, arguments),
+                record_evidence=False,
+                operation=operation,
             )
 
         key = (operation.operation_id, int(operation.param_version))
         payload = self.payload(kind, arguments, operation=operation)
         self._turn_applications += 1
-        self._decisions[key] = "pending"
-        operation.status = OperationStatus.AWAITING_CONFIRMATION
+        operation.decide(DecisionStatus.PENDING)
         self.guard.note_application(self.turn_id, kind, self._target_key(kind, arguments))
         _trace(
             self.ctx,
@@ -697,74 +989,137 @@ class TopicApplicationBridge:
             with _phase_cm(self.ctx, "approval_wait", f"topic_application:{kind}"):
                 result = await requester(kind, payload)
         except asyncio.CancelledError:
-            self._decisions[key] = "refused"
-            operation.status = OperationStatus.REFUSED
+            # 本轮被用户停止：不是对话题申请的主动拒绝（不写拒绝证据）。
+            operation.decide(DecisionStatus.REFUSED)
+            operation.fail_attempt(AttemptStatus.TERMINAL_FAILURE, code="cancelled")
             self.guard.note_decision(
                 self.turn_id, kind, self._target_key(kind, arguments), "cancelled"
             )
             _trace(self.ctx, "topic_application_cancelled", f"{kind}:{operation.operation_id}")
-            return ToolResult(
+            cancelled_result = ToolResult(
                 ok=False,
                 content="本轮已停止，话题申请没有执行。",
                 error="turn cancelled",
                 category="cancelled",
                 status="cancelled",
+                code="topic_application_cancelled",
+                facts={
+                    "topic_application": "cancelled",
+                    "kind": kind,
+                    **self._progress_facts(operation),
+                },
             )
+            self._terminal_results[key] = cancelled_result
+            return cancelled_result
 
         decision = str(getattr(result, "decision", "") or "")
         if decision == "stale":
             # 确认前校验（respond 端点）已发现起点改变：失效 ≠ 拒绝。
-            self._decisions[key] = "stale"
-            operation.status = OperationStatus.STALE
+            operation.decide(DecisionStatus.STALE)
+            operation.fail_attempt(
+                AttemptStatus.TERMINAL_FAILURE, code="nav_version_changed"
+            )
             why = self._stale_why_for(operation)
             _trace(
                 self.ctx,
                 "topic_application_stale",
                 f"{kind}:{operation.operation_id}:{why}",
             )
-            return self._stale_result(kind, arguments, why, operation=operation)
+            stale_result = self._stale_result(kind, arguments, why, operation=operation)
+            self._terminal_results[key] = stale_result
+            return stale_result
+
+        if decision == "timeout":
+            # 超时 ≠ 主动拒绝（F10）：不写拒绝证据、不改成拒绝状态；
+            # 本轮不再重复弹窗（稳定操作 ID 不延长有效期），在原话题回答。
+            operation.decide(DecisionStatus.PENDING)
+            operation.failure_code = "approval_timeout"
+            _trace(
+                self.ctx,
+                "topic_application_timeout",
+                f"{kind}:{operation.operation_id}",
+            )
+            timeout_result = ToolResult(
+                ok=False,
+                content=(
+                    "等待用户确认超时，这次话题操作没有执行（也不是用户拒绝）。"
+                    "本轮不会再次弹出同一个申请；请直接在当前话题回答用户原来的问题。"
+                ),
+                error="topic application confirmation timed out",
+                category="timeout",
+                recoverable=True,
+                facts={
+                    "topic_application": "timeout",
+                    "kind": kind,
+                    "operation_id": operation.operation_id,
+                    "param_version": operation.param_version,
+                    **self._progress_facts(operation),
+                },
+                code="topic_application_timeout",
+            )
+            self._terminal_results[key] = timeout_result
+            return timeout_result
 
         if decision != "approved":
-            self._decisions[key] = "refused"
-            operation.status = OperationStatus.REFUSED
+            # 用户明确拒绝（rejected 等）：拒绝证据只覆盖本次具体对象。
+            operation.decide(DecisionStatus.REFUSED)
+            operation.fail_attempt(AttemptStatus.TERMINAL_FAILURE, code="rejected")
             self.guard.note_decision(
                 self.turn_id, kind, self._target_key(kind, arguments), "refused"
             )
             reason = decision or "rejected"
-            return self._refusal_result(kind, arguments, reason=reason)
+            refused_result = self._refusal_result(
+                kind, arguments, reason=reason, operation=operation
+            )
+            self._terminal_results[key] = refused_result
+            return refused_result
 
-        # 已批准：把用户就地修改（edits）写进**同一操作**的参数版本，再校验起点。
+        # 已批准：把用户就地修改（edits）写进**同一操作**的新参数版本（F07）。
+        # 用户刚确认的最终名称就是执行名称；模型后来自行改成别的名称会推进版本、
+        # 需要新申请，不能借用这次批准。
         approval_id = str(getattr(result, "approval_id", "") or "") or None
         effective = dict(arguments)
         edits = getattr(result, "edits", None)
         edited_name: str | None = None
         if kind == "topic_create" and isinstance(edits, dict):
-            name = str(edits.get("name") or "").strip()
+            name = strip_outer(edits.get("name"))
             if name:
                 effective["name"] = name
                 edited_name = name
-        if operation.update_params(effective):
-            operation.conflict = ConflictStatus.NONE
+        operation.update_params(effective)
+        operation.decide(DecisionStatus.APPROVED)
+        operation.begin_attempt()
         new_key = (operation.operation_id, int(operation.param_version))
         pending = self._pending_from_operation(
             operation, kind, effective, approval_id=approval_id
         )
         if edited_name:
-            pending.edits_applied = edited_name != str(arguments.get("name") or "").strip()
+            pending.edits_applied = edited_name != strip_outer(arguments.get("name"))
 
         conflict = await self.execute_approved(
             kind, effective, pending, result, operation=operation
         )
         if conflict is not None:
-            stale = str(getattr(conflict, "code", "")) == "topic_application_stale"
-            self._decisions[new_key] = "stale" if stale else "refused"
-            operation.status = OperationStatus.STALE if stale else OperationStatus.FAILED
+            code = str(getattr(conflict, "code", "") or "")
+            stale = code == "topic_application_stale" or code in (
+                "topic_application_topic_target_missing",
+                "topic_application_topic_name_required",
+            )
+            if stale:
+                operation.decide(DecisionStatus.STALE)
+                operation.fail_attempt(
+                    AttemptStatus.TERMINAL_FAILURE, code=code or "stale"
+                )
+            else:
+                operation.decide(DecisionStatus.REFUSED)
+                operation.fail_attempt(
+                    AttemptStatus.TERMINAL_FAILURE, code=code or "refused"
+                )
+            self._terminal_results[new_key] = conflict
             if approval_id:
                 await self._settle_legacy(approval_id, ok=False, error=conflict.error)
             return conflict
 
-        self._decisions[new_key] = "approved"
-        operation.status = OperationStatus.APPROVED
         if approval_id:
             self._approval_ids[new_key] = approval_id
             self.registry.bind_approval(operation, approval_id)
@@ -854,11 +1209,11 @@ class TopicApplicationBridge:
 
     def _apply_edited_arguments(self, call: Any, pending: _PendingApplication) -> None:
         """把用户批准的新名称写回 call.arguments（原地改 dict，事件/历史同源）。"""
-        name = str(pending.new_name or "").strip()
+        name = strip_outer(pending.new_name)
         arguments = getattr(call, "arguments", None)
         if not name or not isinstance(arguments, dict):
             return
-        if str(arguments.get("name") or "").strip() == name:
+        if strip_outer(arguments.get("name")) == name:
             return
         arguments["name"] = name
         _trace(self.ctx, "topic_application_edited", f"create:{name}")
@@ -902,10 +1257,8 @@ class TopicApplicationBridge:
         facts = facts if isinstance(facts, dict) else {}
         if not code:
             code = str(facts.get("code") or "")
-        if code != "topic_create_conflict":
-            # 查重冲突不是最终失败：审批历史保持「已批准（等待用户处理冲突）」，
-            # 由同版本重试后的真实执行结果收口，不能写成用户拒绝或执行失败。
-            await self._settle_legacy(pending.approval_id, ok=False, error=result.error)
+        key = (pending.operation_id, int(pending.param_version))
+        failure_text = redact_text(str(result.error or result.content or ""))[:200]
         _trace(
             self.ctx,
             "topic_application_tool_failed",
@@ -913,31 +1266,114 @@ class TopicApplicationBridge:
         )
         if operation is not None:
             operation.stages.tool_success = False
-            operation.stages.failure = redact_text(
-                str(result.error or result.content or "")
-            )[:200]
+            operation.stages.failure = failure_text
+
+        # 冲突类失败不是终态：审批历史保持「已批准（等待用户处理冲突）」，
+        # 由同版本重试后的真实执行结果收口，不能写成用户拒绝或执行失败。
+        pending_codes = {
+            "topic_create_conflict",
+            "topic_create_conflict_timeout",
+            "topic_create_conflict_failed",
+        }
+        if code not in pending_codes:
+            await self._settle_legacy(pending.approval_id, ok=False, error=result.error)
+
         if code == "nav_version_conflict":
             # 实际写入前的 CAS 失败：起点已经变了，绝不执行；失效 ≠ 拒绝。
             if operation is not None:
-                operation.status = OperationStatus.STALE
+                operation.decide(DecisionStatus.STALE)
                 operation.conflict = ConflictStatus.NONE
+                operation.fail_attempt(AttemptStatus.TERMINAL_FAILURE, code=code)
                 operation.stages.failed_stage = "navigation"
+            self._terminal_results[key] = result
             self._set_phase(TopicPhase.ANSWERABLE)
             return self._directive(
                 operation, pending, keep_decision_open=False, target=None
             )
         if code == "topic_create_conflict":
-            # 查重冲突独立状态：冲突 ≠ 创建成功 ≠ 整轮结束。
+            # 查重冲突独立状态：冲突 ≠ 创建成功 ≠ 整轮结束（同版本可重试确认）。
             if operation is not None:
-                operation.status = OperationStatus.APPROVED
                 operation.conflict = ConflictStatus.CONFLICT_PENDING
+                operation.fail_attempt(
+                    AttemptStatus.CONFLICT_PENDING,
+                    conflict=ConflictStatus.CONFLICT_PENDING,
+                    code=code,
+                )
                 operation.stages.failed_stage = "conflict"
             return self._directive(
                 operation, pending, keep_decision_open=True, target=None
             )
+        if code in ("topic_create_conflict_timeout", "topic_create_conflict_failed"):
+            # 超时 / 技术错误 ≠ 主动拒绝（F10）：不写拒绝证据；同版本可再次进入
+            # 具体冲突确认（F02），所以保持决策开放而不是收口成正式回答。
+            if operation is not None:
+                operation.conflict = ConflictStatus.CONFLICT_PENDING
+                operation.fail_attempt(
+                    AttemptStatus.RETRYABLE_FAILURE,
+                    conflict=ConflictStatus.CONFLICT_PENDING,
+                    code=code,
+                )
+                operation.stages.failed_stage = "conflict"
+            return self._directive(
+                operation, pending, keep_decision_open=True, target=None
+            )
+        if code == "topic_create_conflict_declined":
+            # F10：具体冲突的拒绝进入统一终态 —— REFUSED + CONFLICT_DECLINED、
+            # 清待处理冲突、进入原话题回答；证据只覆盖**这个具体对象**。
+            if operation is not None:
+                operation.decide(DecisionStatus.REFUSED)
+                operation.fail_attempt(
+                    AttemptStatus.TERMINAL_FAILURE,
+                    conflict=ConflictStatus.CONFLICT_DECLINED,
+                    code=code,
+                )
+                operation.stages.failed_stage = "conflict_declined"
+            self.record_refusal(
+                kind=pending.kind,
+                topic_id=str(facts.get("similar_topic_id") or ""),
+                topic_name=str(pending.new_name or facts.get("target_name") or ""),
+                reason="conflict_declined",
+                operation=operation,
+                conflict=ConflictStatus.CONFLICT_DECLINED,
+                similar_topic_id=(
+                    str(facts.get("similar_topic_id")) if facts.get("similar_topic_id") else None
+                ),
+            )
+            self._terminal_results[key] = result
+            self._set_phase(TopicPhase.ANSWERABLE)
+            return self._directive(
+                operation, pending, keep_decision_open=False, target=None
+            )
+        if code == "topic_create_conflict_stale":
+            # 冲突确认期间的失效：失效 ≠ 拒绝，不写拒绝证据、不重弹。
+            if operation is not None:
+                operation.decide(DecisionStatus.STALE)
+                operation.conflict = ConflictStatus.NONE
+                operation.fail_attempt(AttemptStatus.TERMINAL_FAILURE, code=code)
+                operation.stages.failed_stage = "conflict"
+            self._terminal_results[key] = result
+            self._set_phase(TopicPhase.ANSWERABLE)
+            return self._directive(
+                operation, pending, keep_decision_open=False, target=None
+            )
+        if code == "topic_create_conflict_cancelled":
+            # 本轮被用户停止：不是对这次话题申请的主动拒绝。
+            if operation is not None:
+                operation.decide(DecisionStatus.REFUSED)
+                operation.conflict = ConflictStatus.CONFLICT_PENDING
+                operation.fail_attempt(AttemptStatus.TERMINAL_FAILURE, code=code)
+                operation.stages.failed_stage = "conflict"
+            self._terminal_results[key] = result
+            return self._directive(
+                operation, pending, keep_decision_open=False, target=None
+            )
+        # 普通工具失败：工具已经执行并失败，不可重试 —— 在原话题回答（不搬归属）。
         if operation is not None:
-            operation.status = OperationStatus.FAILED
+            operation.decide(DecisionStatus.APPROVED)
+            operation.fail_attempt(AttemptStatus.TERMINAL_FAILURE, code=code or "tool_failure")
             operation.stages.failed_stage = "tool"
+        self._terminal_results[key] = result
+        self._set_phase(TopicPhase.ANSWERABLE)
         return self._directive(operation, pending, keep_decision_open=False, target=None)
 
     async def _after_tool_success(
@@ -946,12 +1382,22 @@ class TopicApplicationBridge:
         operation: TopicOperation | None,
         result: ToolResult,
     ) -> dict[str, Any]:
+        facts = getattr(result, "facts", None)
+        facts = facts if isinstance(facts, dict) else {}
+        key = (pending.operation_id, int(pending.param_version))
         if operation is not None:
             operation.stages.tool_success = True
             operation.stages.failed_stage = ""
             operation.stages.failure = ""
         topic_id = self._new_topic_after(pending)
         if not topic_id:
+            if operation is not None:
+                # 工具真实成功（不可回滚），但本轮归属没搬过去：这是归属失败。
+                operation.fail_attempt(
+                    AttemptStatus.SUCCEEDED, code="topic_target_missing"
+                )
+                operation.stages.failed_stage = "ownership"
+                operation.stages.failure = "工具报告成功，但找不到目标话题"
             return await self._rebind_failure(
                 pending,
                 "工具报告成功，但找不到目标话题（未搬迁本轮归属）",
@@ -962,6 +1408,12 @@ class TopicApplicationBridge:
             operation.stages.navigation_applied = True
         rebinder = self.rebind_turn
         if not callable(rebinder):
+            if operation is not None:
+                operation.fail_attempt(
+                    AttemptStatus.SUCCEEDED, code="rebind_unavailable"
+                )
+                operation.stages.failed_stage = "ownership"
+                operation.stages.failure = "没有可用的本轮归属搬迁入口"
             return await self._rebind_failure(
                 pending,
                 "没有可用的本轮归属搬迁入口（未搬迁本轮归属）",
@@ -978,7 +1430,10 @@ class TopicApplicationBridge:
                 summary=f"话题已变更，但本轮归属迁移失败：{detail[:160]}",
             )
             if operation is not None:
-                operation.status = OperationStatus.FAILED
+                # 工具真实成功（不可回滚），归属迁移失败：两层状态分开记录。
+                operation.fail_attempt(
+                    AttemptStatus.SUCCEEDED, code="rebind_failed"
+                )
                 operation.stages.failed_stage = "ownership"
                 operation.stages.failure = detail[:200]
             return await self._rebind_failure(
@@ -990,12 +1445,22 @@ class TopicApplicationBridge:
             )
         self.last_rebind_topic = topic_id
         if operation is not None:
-            operation.status = OperationStatus.EXECUTED
+            operation.succeed_attempt()
             operation.stages.turn_ownership = True
             operation.target_topic_id = topic_id
             if pending.kind == "topic_create":
                 operation.new_name = pending.new_name
-        key = (pending.operation_id, int(pending.param_version))
+        # F05/F12：真实导航结果（写入后的版本 / 目标 / 片段）随 directive 回传，
+        # A 用它调用 note_decision_navigation；读不到就 None，绝不猜一个版本。
+        nav_version = facts.get("nav_version")
+        fragment_id = facts.get("fragment_id")
+        if nav_version is None:
+            nav_version = self._nav_version()
+        self.last_navigation = {
+            "topic_id": topic_id,
+            "fragment_id": fragment_id,
+            "nav_version": nav_version,
+        }
         self._results[key] = result
         _trace(
             self.ctx,
@@ -1009,13 +1474,17 @@ class TopicApplicationBridge:
         )
         # 话题已换、上下文未装配：只有 loop 的 build_system 成功后才 ANSWERABLE。
         self._set_phase(TopicPhase.CONTEXT_PREPARING)
-        return self._directive(
+        directive = self._directive(
             operation,
             pending,
             keep_decision_open=False,
             target=topic_id,
             rebind_topic_id=topic_id,
         )
+        directive["nav_version"] = nav_version
+        directive["topic_id"] = topic_id
+        directive["fragment_id"] = fragment_id
+        return directive
 
     async def _rebind_failure(
         self,
@@ -1029,7 +1498,7 @@ class TopicApplicationBridge:
         _trace_warning(self.ctx, code, message)
         if settle:
             await self._settle_legacy(pending.approval_id, ok=False, error=message)
-        return self._directive(
+        directive = self._directive(
             operation,
             pending,
             keep_decision_open=False,
@@ -1042,8 +1511,23 @@ class TopicApplicationBridge:
                 category="unknown",
                 recoverable=False,
                 code=code,
+                facts={
+                    "topic_application": "ownership_failed",
+                    "failed_stage": "ownership",
+                    "ownership_failed": True,
+                    "operation_id": pending.operation_id,
+                    "param_version": int(pending.param_version),
+                },
             ),
         )
+        # F06：结构化事实 —— 工具/导航成功但归属没搬过去。A 据此停止本轮、
+        # 进入可恢复失败（不按错误文本猜）。
+        directive["ownership_failed"] = True
+        directive["failed_stage"] = "ownership"
+        if operation is not None:
+            operation.stages.failed_stage = "ownership"
+            operation.stages.failure = operation.stages.failure or redact_text(message)[:200]
+        return directive
 
     def _directive(
         self,
@@ -1075,6 +1559,9 @@ class TopicApplicationBridge:
         }
         if rebind_topic_id:
             directive["rebind_topic_id"] = rebind_topic_id
+        if operation is not None:
+            directive["decided"] = operation.decided.value
+            directive["attempt"] = operation.attempt.value
         if result is not None:
             directive["result"] = result
         return directive
@@ -1179,7 +1666,8 @@ class TopicApplicationBridge:
         *,
         approval_id: str | None = None,
     ) -> _PendingApplication:
-        """按操作身份 + 本次参数构造「待执行申请」。"""
+        """按操作身份 + 本次**执行参数**构造「待执行申请」（F07）。"""
+        params = execution_params(kind, arguments)
         return _PendingApplication(
             kind=kind,
             operation_id=operation.operation_id,
@@ -1187,16 +1675,8 @@ class TopicApplicationBridge:
             key=self._target_key(kind, arguments),
             from_topic=operation.from_topic or self._from_topic(),
             base_nav_version=operation.base_nav_version,
-            target_topic_id=(
-                str(arguments.get("topic_id") or "").strip()
-                if kind == "topic_switch"
-                else None
-            ),
-            new_name=(
-                str(arguments.get("name") or "").strip()
-                if kind == "topic_create"
-                else None
-            ),
+            target_topic_id=(params["topic_id"] if kind == "topic_switch" else None),
+            new_name=(params["name"] if kind == "topic_create" else None),
             approval_id=approval_id,
         )
 
@@ -1228,7 +1708,11 @@ class TopicApplicationBridge:
             error="topic_application_duplicate",
             category="unknown",
             recoverable=False,
-            facts={"topic_application": "duplicate", "kind": kind},
+            facts={
+                "topic_application": "duplicate",
+                "kind": kind,
+                **self._progress_facts(),
+            },
             code="topic_application_duplicate",
         )
 
@@ -1241,6 +1725,7 @@ class TopicApplicationBridge:
             topic_id=topic_id,
             topic_name=name,
             reason="duplicate",
+            operation=self._active_operation,
         )
 
     def _refusal_result(
@@ -1250,6 +1735,8 @@ class TopicApplicationBridge:
         *,
         reason: str,
         content: str | None = None,
+        record_evidence: bool = True,
+        operation: TopicOperation | None = None,
     ) -> ToolResult:
         current = self._from_topic_name() or self._from_topic() or "当前话题"
         target = self._display_target(kind, arguments)
@@ -1261,13 +1748,14 @@ class TopicApplicationBridge:
                 )
             else:
                 content = REFUSAL_INSTRUCTION.format(what=target, current=current)
-        if not stale_like:
+        if not stale_like and record_evidence:
             # 失效 ≠ 拒绝：目标/名称失效不写拒绝范围，避免污染「用户拒绝过」的证据。
             self.record_refusal(
                 kind=kind,
                 topic_id=self._target_key(kind, arguments),
                 topic_name=target,
                 reason=reason,
+                operation=operation,
             )
         return ToolResult(
             ok=False,
@@ -1275,8 +1763,39 @@ class TopicApplicationBridge:
             error=f"topic_application_{reason}",
             category=_category_for_reason(reason),
             recoverable=False,
-            facts={"topic_application": reason, "kind": kind},
+            facts={
+                "topic_application": reason,
+                "kind": kind,
+                "operation_id": (
+                    (operation or self._active_operation).operation_id
+                    if (operation or self._active_operation) is not None
+                    else None
+                ),
+                **self._progress_facts(operation),
+            },
             code=f"topic_application_{reason}",
+        )
+
+    def _executing_result(
+        self, kind: str, arguments: dict[str, Any]
+    ) -> ToolResult:
+        """同一版本正在执行（同批重复调用）：不重复执行，也不伪造结果。"""
+        current = self._from_topic_name() or self._from_topic() or "当前话题"
+        return ToolResult(
+            ok=False,
+            content=(
+                "这次话题操作正在执行中，不能重复执行；请等结果返回后基于真实结果回答。"
+                f"当前话题「{current}」。"
+            ),
+            error="topic application executing",
+            category="unknown",
+            recoverable=True,
+            facts={
+                "topic_application": "executing",
+                "kind": kind,
+                **self._progress_facts(),
+            },
+            code="topic_application_executing",
         )
 
     def _stale_result(
@@ -1309,6 +1828,7 @@ class TopicApplicationBridge:
                 "param_version": operation.param_version if operation is not None else None,
                 "base_nav_version": base,
                 "current_nav_version": actual,
+                **self._progress_facts(operation),
             },
             code="topic_application_stale",
         )

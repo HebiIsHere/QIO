@@ -361,6 +361,9 @@ class TurnOrchestrator:
         if ctx.cancelled:
             app.bindings.mark_status(ctx.turn_id, "cancelled")
             return
+        # P102-F05：判断上下文已经建立（绑定 + 本轮用户消息都落定）、任何模型调用
+        # 之前，一次性冻结真实位置快照；本轮后续话题操作只继承它。
+        self._snapshot_decision_context(ctx)
         with tracer.phase("agent_loop"):
             result = await self.execute_loop(ctx, adapter, plan)
         if result is None:
@@ -529,6 +532,51 @@ class TurnOrchestrator:
                 await app._publish_anchor_event()
         return adapter
 
+    def _snapshot_decision_context(self, ctx) -> None:
+        """P102-F05：冻结本轮「判断依据形成时」的真实位置（契约 §3.1）。
+
+        时机：begin 已落实绑定、build_context 已写入本轮用户消息、**首次模型调用
+        之前**，且整轮只写一次。之后用户手动导航 / 草稿编辑 / 弹窗收起重开都
+        不改变这份快照（旧模型结果不能借此覆盖用户后来的选择）。
+
+        * decision_nav_version —— 真实导航版本（读不到如实 None，不猜数字）；
+        * decision_topic_id / decision_fragment_id —— 本轮真实绑定的话题 / 片段；
+        * decision_queued —— 受理时是否已排队（TurnContext 的事实标记）。
+        本轮用户消息 id 就是 ctx.user_message_id（不再重复存一份）。
+        """
+        app = self.app
+        version: int | None = None
+        conn = getattr(app, "conn", None)
+        if conn is not None:
+            try:
+                from agent.services.navigation_version import current as _current
+
+                version = int(_current(conn))
+            except Exception:  # noqa: BLE001 - 迁移/模块未就绪：如实 None，不猜
+                version = None
+                logging.getLogger(__name__).warning(
+                    "failed to read navigation version for decision snapshot",
+                    exc_info=True,
+                )
+        ctx.decision_nav_version = version
+        ctx.decision_topic_id = getattr(ctx, "bound_topic", None) or getattr(
+            ctx, "current_topic", None
+        )
+        ctx.decision_fragment_id = getattr(ctx, "bound_fragment_id", None)
+        ctx.decision_queued = bool(getattr(ctx, "decision_queued", False))
+        tracer = getattr(ctx, "trace", None)
+        if tracer is not None:
+            tracer.write(
+                "decision_snapshot",
+                "nav=%s topic=%s fragment=%s queued=%s"
+                % (
+                    ctx.decision_nav_version,
+                    ctx.decision_topic_id,
+                    ctx.decision_fragment_id,
+                    ctx.decision_queued,
+                ),
+            )
+
     async def build_context(self, ctx, adapter) -> _Plan:
         from agent.core.message_assembly import ContextBlock
         from agent.entities.cards import EntityCardService
@@ -597,28 +645,28 @@ class TurnOrchestrator:
                 render_topic_decision_note,
             )
 
-            # 拒绝范围有两个来源：B 在本轮申请流程里写到 ctx 的记录，以及
-            # app 级 TopicDiscussionGuard 里跨轮保留的真实拒绝（同一开放片段
-            # 视为同一段讨论）。只把**同一段讨论**的记录当证据，不跨话题臆测。
+            # 拒绝范围有两个来源：B/C 在本轮申请流程里写到 ctx 的记录，以及
+            # app 级 TopicDiscussionGuard 里跨轮保留的真实拒绝。跨轮证据**只**
+            # 继承同一段讨论：沿 fragments 的 same_stage / source_fragment_id
+            # 来源链（有界 64、防环、去重）收集片段集合（F09）——容量分段继承
+            # 原拒绝范围；same_stage 明确不同的来源链不盲目继承；不同话题的
+            # 旧拒绝不会变成当前讨论的证据，也不做任何语义猜测。
             refuse_scope = getattr(ctx, "topic_refusal_scope", None)
-            if refuse_scope is None:
-                try:
-                    from agent.services.topic_application import (
-                        get_topic_application_state,
-                    )
+            try:
+                from agent.services.topic_decision import collect_refusal_evidence
 
-                    guard = get_topic_application_state(app)
-                    fragment_id = getattr(ctx, "bound_fragment_id", None)
-                    if fragment_id:
-                        refuse_scope = [
-                            item
-                            for item in guard.refused_attempts
-                            if item.get("fragment_id") == fragment_id
-                        ][-4:] or None
-                except Exception:  # noqa: BLE001 - 证据缺失不能挡住一轮
-                    logging.getLogger(__name__).warning(
-                        "topic refusal scope unavailable", exc_info=True
-                    )
+                evidence = collect_refusal_evidence(
+                    app,
+                    ctx,
+                    fragment_id=getattr(ctx, "bound_fragment_id", None),
+                    same_turn_scope=refuse_scope,
+                )
+                if evidence:
+                    refuse_scope = evidence
+            except Exception:  # noqa: BLE001 - 证据缺失不能挡住一轮
+                logging.getLogger(__name__).warning(
+                    "topic refusal scope unavailable", exc_info=True
+                )
             _decision_state = build_topic_decision_state(
                 app,
                 ctx,
@@ -1331,6 +1379,62 @@ class TurnOrchestrator:
         # 旧申请/旧建议不能覆盖用户的新选择：锚点已由原工具写入，这里广播真实结果。
         await app._publish_anchor_event()
         return target_topic
+
+    async def repair_topic_ownership(
+        self, *, turn_id: str, topic_id: str, user_message_id: str | None = None
+    ) -> str:
+        """F06 恢复：只修归属（先修归属 → 再装配上下文 → 再回答 的第一步）。
+
+        由恢复入口在记录 failed_stage=="ownership" 时调用：
+        * 不重跑已经成功的 create/switch（话题本身已经真实存在）；
+        * 不复制用户消息（只把**本轮这一条**原消息搬到目标话题片段）；
+        * 不重开已封存片段、不新建重复轮次、不推进导航版本；
+        * 幂等：已经归属目标话题时不写任何一行。
+
+        归属修好后由调用方继续装配目标上下文并生成回答（见
+        prepare_topic_answer_messages）。失败如实 raise，记录保持可恢复。
+        """
+        from agent.storage.db import transaction
+
+        app = self.app
+        turn = str(turn_id or "").strip()
+        target = str(topic_id or "").strip()
+        if not turn or not target:
+            raise RuntimeError("归属恢复参数不完整（turn_id/topic_id 必填）")
+        if app.topics.nodes.get_topic(target) is None:
+            raise RuntimeError(f"目标话题不存在：{target}")
+        binding = app.bindings.binding_for(turn)
+        if binding is None:
+            raise RuntimeError("本轮没有绑定，不能修复归属")
+        if binding.topic_id == target and binding.fragment_id:
+            return target  # 已修好：重复恢复不写任何一行
+        repairer = getattr(app.bindings, "rebind_topic_from_recovery", None)
+        if not callable(repairer):
+            raise RuntimeError(
+                "没有可用的归属恢复入口（TurnBindingService.rebind_topic_from_recovery）"
+            )
+        user_message = str(user_message_id or "").strip() or None
+        with transaction(app.conn):
+            target_fragment = app.fragments.get_or_create_open(target)
+            repairer(turn, target)
+            if user_message:
+                row = app.conn.execute(
+                    "SELECT turn_id FROM messages WHERE id = ?", (user_message,)
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError(f"本轮用户消息不存在：{user_message}")
+                if str(row["turn_id"] or "") not in ("", turn):
+                    raise RuntimeError("恢复参数与本轮用户消息不一致（不搬动别的轮次）")
+                app.memory.move_message(user_message, to_fragment_id=target_fragment.id)
+            app.bindings.record_binding(
+                turn,
+                target,
+                fragment_id=target_fragment.id,
+                intent_id=getattr(binding, "intent_id", None),
+                intent_version=getattr(binding, "intent_version", None),
+            )
+        await app._publish_anchor_event()
+        return target
 
     def _topic_specs(self, *, interactive: bool) -> list:
         return [

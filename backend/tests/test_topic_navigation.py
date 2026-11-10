@@ -106,7 +106,10 @@ def test_continue_from_history_creates_new_fragment_and_keeps_the_source_intact(
     source = _seed_fragment(ctx, topic_id, closed=True)
     before = dict(ctx.conn.execute("SELECT * FROM fragments WHERE id = ?", (source,)).fetchone())
 
-    result = nav.continue_from_history(topic_id, source)
+    # F14：两阶段契约（点击只登记；有消息要执行时才落实）。
+    registered = nav.register_continuation(topic_id, source)
+    assert registered["changed"] is True
+    result = nav.apply_continuation(topic_id, registered["intent_id"])
 
     assert result.created_fragment_id is not None
     assert result.created_fragment_id != source
@@ -126,7 +129,8 @@ def test_continue_from_history_keeps_the_source_history_in_focus(ctx: AppContext
     payload = "PAYLOAD-CONTINUATION"
     source = _seed_fragment(ctx, topic_id, closed=True, payload=payload)
 
-    nav.continue_from_history(topic_id, source)
+    registered = nav.register_continuation(topic_id, source)
+    nav.apply_continuation(topic_id, registered["intent_id"])
 
     anchors = AnchorService(ctx.conn)
     assert anchors.focus_fragment(topic_id) == source, "接续片段本身是空的，Focus 必须回到来源历史"
@@ -138,7 +142,11 @@ def test_continue_from_history_on_open_fragment_is_a_plain_enter(ctx: AppContext
     topic_id = ctx.topics.nodes.create_topic("甲话题").id
     open_frag = _seed_fragment(ctx, topic_id, closed=False)
 
-    result = nav.continue_from_history(topic_id, open_frag)
+    registered = nav.register_continuation(topic_id, open_frag)
+    assert registered["opens_current"] is True
+    assert registered["intent_id"] is None
+    assert registered["changed"] is False
+    result = nav.enter_topic(topic_id, fragment_id=open_frag)
 
     assert result.created_fragment_id is None
     assert result.fragment_id == open_frag

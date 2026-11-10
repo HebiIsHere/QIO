@@ -118,7 +118,10 @@ function statusOf(record: RecoveryRecordView): string {
 }
 
 function kindLabel(record: RecoveryRecordView): string {
-  return record.kind === "derived_task" ? "后台任务" : "你的消息";
+  if (record.kind === "derived_task") return "后台任务";
+  // F04：话题回答恢复是「话题操作成功但回答没生成」的可重试事项，不是一条待重发的消息
+  if (record.kind === "topic_answer_recovery") return "话题回答恢复";
+  return "你的消息";
 }
 
 function actionsOf(record: RecoveryRecordView): RecoveryActionView[] {
@@ -145,7 +148,11 @@ async function run(record: RecoveryRecordView, action: RecoveryActionView) {
   else if (action.id === "repair") outcome = await session.repairOrphan(id);
   else if (action.id === "ignore") outcome = await session.ignoreRecovery(id);
   else if (action.id === "requeue") outcome = await session.requeueDerived(id);
-  else {
+  else if (action.id === "retry_answer" || action.id === "retry_topic_answer") {
+    // F04：话题回答恢复只走 store 的唯一 retry 入口（不重发消息、不重跑话题工具）
+    const result = await session.retryTopicAnswer(id);
+    outcome = { ok: result.ok, message: result.message };
+  } else {
     // 认不出的动作：如实说，不给一个点了没效果的按钮
     localErrors.value = {
       ...localErrors.value,

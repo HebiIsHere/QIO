@@ -178,7 +178,10 @@ async def test_retry_after_context_prepare_failure_generates_answer_once(app: Ap
     assert topics_after == topics_before, "恢复不得重跑 create/switch（不新建话题）"
     stored = topic_recovery.get_record(app, record["record_id"])
     assert stored["status"] == "answered"
-    assert stored["answer"] == "恢复后的回答"
+    # R14-B / F03：答案正文只有一个权威位置（messages 行）；记录只保存 answer_id，
+    # 成功收口后不长期保留第二份正文。旧断言按内存记录形状写，已按新语义更新。
+    assert stored["answer_id"] == result["answer_id"]
+    assert stored.get("answer_text") in (None, "")
 
     # 幂等：重复调用直接返回既有结果，不重复生成、不复制消息
     again = await retry_topic_answer(app, record["record_id"])

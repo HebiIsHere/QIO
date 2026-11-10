@@ -17,6 +17,7 @@ TOOL_LABELS: dict[str, str] = {
     "continue_from_fragment": "接续历史片段",
     "switch_topic": "切换话题",
     "create_topic": "创建话题",
+    "lookup_topic": "查找话题",
     # 联网
     "web_search": "网络搜索",
     "web_fetch": "抓取网页",

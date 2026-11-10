@@ -16,6 +16,11 @@
     Predictor 判断属于别的话题 → 直接改 Anchor
 
 所有真正的 Topic Switch 都从这里走：进入话题 / 创建话题 / 确认切换 / 从历史继续。
+
+两阶段接续契约（F14）：`register_continuation`（点击时只登记，返回 changed 事实，
+F08 语义下重复登记不推进导航版本）→ `apply_continuation`（真正有消息要执行时才落实，
+唯一创建片段的位置）。旧的 `continue_from_history` 组合入口已删除（仅测试调用、
+无生产依赖）。
 """
 
 from __future__ import annotations
@@ -29,7 +34,13 @@ from agent.graph.anchors import AnchorService
 from agent.graph.edges import EdgeService
 from agent.graph.nodes import NodeService
 from agent.memory.fragment import FragmentManager, new_id
-from agent.services.binding import IntentNotFound, TurnBindingService
+from agent.services.binding import (
+    INTENT_CANCELLED,
+    INTENT_REPLACED,
+    IntentNotActive,
+    IntentNotFound,
+    TurnBindingService,
+)
 from agent.services.navigation_version import (
     NavigationVersionConflict,
     cas_or_advance,
@@ -148,7 +159,8 @@ class TopicNavigationService:
         """进入一个话题：Anchor 移到该话题（有历史位置就恢复它）。
 
         `fragment_id=None` 表示「进入这个话题的最新位置」，与
-        「从某段历史继续」是两个明确不同的动作（见 continue_from_history）。
+        「从某段历史继续」是两个明确不同的动作（见 register_continuation /
+        apply_continuation 两阶段契约）。
 
         `restore_position=False` 用于「用户明确选择从最新位置开始」：
         此时不恢复该话题保存过的旧位置，而是把位置直接落到最新（None）。
@@ -188,41 +200,6 @@ class TopicNavigationService:
             relate_topics(self.conn, previous.topic_id, topic_id)
         return self._result(topic_id, fragment_id, nav_version=nav_version)
 
-    def continue_from_history(
-        self,
-        topic_id: str,
-        fragment_id: str,
-        *,
-        relate: bool = True,
-        expected_nav_version: int | None = None,
-        turn_id: str | None = None,
-        advance_nav_version: bool = True,
-    ) -> NavigationResult:
-        """从一段历史接续（两步语义的便捷入口：登记 + 立即落实）。
-
-        规范要求的两步语义见 `register_continuation`（点击时只登记）与
-        `apply_continuation`（真正有消息要执行时才落实）。这个方法是二者的组合，
-        供「确实要立刻落实」的调用方使用，行为与旧版保持一致。
-        """
-        intent = self.register_continuation(topic_id, fragment_id, turn_id=turn_id)
-        if not intent.get("intent_id"):
-            # 来源就是当前开放片段：普通继续，没有可落实的意图
-            return self.enter_topic(
-                topic_id,
-                fragment_id=fragment_id,
-                relate=relate,
-                expected_nav_version=expected_nav_version,
-                turn_id=turn_id,
-                advance_nav_version=advance_nav_version,
-            )
-        return self.apply_continuation(
-            topic_id,
-            intent["intent_id"],
-            relate=relate,
-            expected_nav_version=expected_nav_version,
-            turn_id=turn_id,
-        )
-
     def register_continuation(
         self,
         topic_id: str,
@@ -234,9 +211,15 @@ class TopicNavigationService:
     ) -> dict:
         """登记「下一次发送要从这段历史继续」。**不创建任何片段。**
 
-        - 点击已封存的历史 A：登记可替换的接续选择，界面据此显示「将从 A 继续」；
-        - 点击当前开放片段：视为继续现有位置（`opens_current=True`），不登记接续意图；
-        - 只浏览、发送前改选、取消：都不产生片段（落实发生在真正有消息执行时）。
+        F08：返回值带 changed 事实 —— 只有真实选择改变才推进导航版本：
+
+        * 点击已封存的历史 A：首次登记 changed=True（改选则 +1 版本）；
+        * 同 request_id 重放 / 重复点同一来源：changed=False，返回既有选择与
+          相同 nav_version，**不推进**（否则会让等待中的申请 / 恢复误失效）；
+        * 重放已被替换 / 取消的旧请求：不重新激活旧选择，返回 intent_id=None
+          且 changed=False（当前选择保持不变）；
+        * 点击当前开放片段：视为继续现有位置（opens_current=True），不登记意图，
+          也不推进版本。
         """
         node = self.nodes.get_topic(topic_id)
         if node is None:
@@ -257,14 +240,18 @@ class TopicNavigationService:
                 "intent_version": None,
                 "source_fragment_id": fragment_id,
                 "nav_version": current_nav_version(self.conn),
+                "changed": False,
+                "state": None,
             }
 
         # 选历史片段 / 改接续位置是一次真实的位置变化（P1-04）：登记意图与推进
         # 导航版本放在同一个事务里，失败时登记不会留下半截状态。
         with transaction(self.conn):
-            intent = TurnBindingService(self.conn).register_intent(
+            registration = TurnBindingService(self.conn).register_intent_ex(
                 topic_id, fragment_id, request_id=request_id
             )
+            intent = registration.intent
+            changed = bool(registration.changed)
             nav_version = (
                 cas_or_advance(
                     self.conn,
@@ -274,19 +261,24 @@ class TopicNavigationService:
                     fragment_id=fragment_id,
                     turn_id=turn_id,
                 )
-                if advance_nav_version
+                if changed and advance_nav_version
                 else current_nav_version(self.conn)
             )
+        # 重放已失效的旧请求（被替换 / 取消）：不重新激活、不覆盖当前选择。
+        inactive = intent.state in (INTENT_REPLACED, INTENT_CANCELLED)
         return {
             "topic_id": topic_id,
             "fragment_id": fragment_id,
             "fragment_title": self.fragment_title(fragment_id),
             "historic": True,
             "opens_current": False,
-            "intent_id": intent.intent_id,
-            "intent_version": intent.version,
+            "intent_id": (None if inactive else intent.intent_id),
+            "intent_version": (None if inactive else intent.version),
             "source_fragment_id": fragment_id,
             "nav_version": nav_version,
+            "changed": changed,
+            "state": intent.state,
+            "inactive": inactive,
         }
 
     def apply_continuation(
@@ -316,6 +308,11 @@ class TopicNavigationService:
         if intent.topic_id != topic_id:
             raise FragmentNotInTopic(
                 f"接续意图 {intent_id} 属于话题 {intent.topic_id}，与 {topic_id} 不一致"
+            )
+        if intent.state in (INTENT_REPLACED, INTENT_CANCELLED):
+            # F08/F14：旧请求重放不能重新激活被替换 / 取消的选择。
+            raise IntentNotActive(
+                f"接续意图 {intent_id} 已失效（{intent.state}），不能重新落实"
             )
 
         # 已落实过：复用同一个片段（重试不新建路径）

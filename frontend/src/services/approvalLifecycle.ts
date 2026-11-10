@@ -345,6 +345,87 @@ export interface TopicAnswerRetryResult {
   code: string;
   /** 人话结果（失败时是真实原因，不包装成成功）。 */
   message: string;
+  /**
+   * 权威成功标志：后端确认「回答已经生成并保存」。
+   * 只有它成立才允许关闭本地恢复事项、移除旧失败提示。
+   */
+  answered?: boolean;
+  /** 后端正在生成（202 recovery_in_progress）：处理中，不是成功，不重复生成。 */
+  inProgress?: boolean;
+  /** 恢复记录身份（成功/幂等返回时由后端回带）。 */
+  recordId?: string;
+  turnId?: string | null;
+  topicId?: string | null;
+  /** 唯一逻辑答案 id（与 TURN_END.answer_id 同一口径；不伪造）。 */
+  answerId?: string | null;
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * `retry-answer` 响应体 → 前端唯一判定（B 定稿形状，F04）。
+ *
+ * 纪律：
+ * * 只有 `answered=true` 才算权威成功（关闭恢复事项的唯一依据）；
+ * * 202 + `in_progress/code=recovery_in_progress` = 处理中（不关闭、不重复生成）；
+ * * 其它 `ok:false` 原样带出后端 code/message（stale ≠ 拒绝，不包装成成功）。
+ */
+export function topicRetryResultFromBody(
+  rawBody: unknown,
+  httpStatus = 200,
+): TopicAnswerRetryResult {
+  const body = asObject(rawBody);
+  const code = String(body.code ?? "").trim();
+  const message = String(body.message ?? "").trim();
+  const recordId = String(body.record_id ?? "").trim();
+  const turnId = body.turn_id === undefined || body.turn_id === null ? null : String(body.turn_id);
+  const topicId =
+    body.topic_id === undefined || body.topic_id === null ? null : String(body.topic_id);
+  const answerId =
+    body.answer_id === undefined || body.answer_id === null ? null : String(body.answer_id);
+  const inProgress =
+    body.in_progress === true || code === "recovery_in_progress" || httpStatus === 202;
+  if (inProgress) {
+    return {
+      ok: false,
+      code: "recovery_in_progress",
+      message:
+        message ||
+        "这条恢复正在处理中，请稍后刷新；不会重复生成，也不会重复发送你的消息。",
+      answered: false,
+      inProgress: true,
+      ...(recordId ? { recordId } : {}),
+    };
+  }
+  if (body.ok === false || (httpStatus >= 400 && body.ok !== true)) {
+    return {
+      ok: false,
+      code: code || (httpStatus ? `failed_${httpStatus}` : "failed"),
+      message: message || "没能重新开始回答（后端没有确认结果）；没有重发任何消息。",
+      answered: false,
+      ...(recordId ? { recordId } : {}),
+    };
+  }
+  const answered = body.answered === true;
+  return {
+    ok: true,
+    code: "",
+    message:
+      message ||
+      (answered
+        ? "已按原问题重新生成回答。"
+        : "已请求重新回答；本轮会继续完成未做完的步骤。"),
+    answered,
+    inProgress: false,
+    ...(recordId ? { recordId } : {}),
+    ...(turnId !== null ? { turnId } : {}),
+    ...(topicId !== null ? { topicId } : {}),
+    ...(answerId !== null ? { answerId } : {}),
+  };
 }
 
 /**
@@ -362,51 +443,47 @@ export async function retryTopicAnswer(recordId: string): Promise<TopicAnswerRet
   try {
     /**
      * Lead 冻结的约定：body 可选 {expected_class, expected_status}；
-     * 这里没有可核对的 class/status 就不带（不猜），200 返回
-     * {ok, record_id, turn_id, topic_id, answered, answer_id?}。
+     * 这里没有可核对的 class/status 就不带（不猜）。
      */
-    const body = await request<{
-      ok?: boolean;
-      message?: string;
-      record_id?: string;
-      turn_id?: string;
-      answered?: boolean;
-    }>(path, {
+    const body = await request<Record<string, unknown>>(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
       timeoutMs: 20_000,
     });
-    const answered = body?.answered === true;
-    return {
-      ok: true,
-      code: "",
-      message:
-        text(body?.message) ||
-        (answered
-          ? "已按原问题重新生成回答。"
-          : "已请求重新回答；本轮会继续完成未做完的步骤。"),
-    };
+    return topicRetryResultFromBody(body, 200);
   } catch (error) {
     const status = Number((error as ApprovalRequestError)?.status ?? 0);
     const detail = (error as Error)?.message || "未知原因";
+    const errorBody = asObject((error as ApprovalRequestError)?.body);
+    const serverCode = String(errorBody.code ?? "").trim();
     if (status === 404) {
       return {
         ok: false,
-        code: "not_found",
-        message: "恢复入口暂不可用（后端没有这条重试通道，或记录已不存在）；没有重发任何消息。",
+        code: serverCode || "not_found",
+        message:
+          serverCode === "recovery_not_found"
+            ? detail
+            : "恢复入口暂不可用（后端没有这条重试通道，或记录已不存在）；没有重发任何消息。",
       };
     }
     if (status === 409) {
       return {
         ok: false,
-        code: "conflict",
+        code: serverCode || "conflict",
         message: "这条恢复记录的状态已经变化，不能在当前状态下重试：" + detail,
+      };
+    }
+    if (status === 503) {
+      return {
+        ok: false,
+        code: serverCode || "recovery_unavailable",
+        message: detail || "恢复入口暂时不可用；没有重发任何消息。",
       };
     }
     return {
       ok: false,
-      code: status ? "failed_" + status : "network",
+      code: status ? serverCode || "failed_" + status : "network",
       message: "没能重新开始回答：" + detail + "（没有重发任何消息）",
     };
   }

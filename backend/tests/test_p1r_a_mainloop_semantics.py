@@ -7,7 +7,8 @@
 * 程序不再做轮前语义识别：否定 / 解释 / 引用 / 条件 / 改口 / 仅讨论 / 指代不清
   的句子不会触发程序导航或程序授权登记；
 * 用户原话完整进入主循环（不截断、不改写）；程序不替模型执行明确请求；
-* 直接 UI 导航入口（enter_topic / continue_from_history / 默认话题）不受破坏；
+* 直接 UI 导航入口（enter_topic / 两阶段续作 register_continuation→apply_continuation /
+  默认话题）不受破坏；
 * prompts.py 的唯一语义规则区块包含契约 §7 全部反例与两个工具的 intent 说明。
 """
 from __future__ import annotations
@@ -212,9 +213,14 @@ async def test_direct_ui_navigation_entries_still_work(ctx: AppContext, monkeypa
     assert result["ok"] is True
     assert _anchor(ctx) == b, "默认话题入口仍应把本轮归属放到指定话题"
 
-    # 4.2 从历史片段继续：来源是开放片段时就是普通进入，不创建新片段。
+    # 4.2 从历史片段继续：F14 之后只有两阶段契约（登记 → 落实）。来源是开放
+    # 片段时 register_continuation 返回 opens_current=True / intent_id=None，
+    # 之后按普通进入落实（不创建新片段）。
     open_fragment = ctx.fragments.get_or_create_open(a)
-    applied = ctx.navigation.continue_from_history(a, open_fragment.id)
+    registered = ctx.navigation.register_continuation(a, open_fragment.id)
+    assert registered["opens_current"] is True
+    assert registered["intent_id"] is None
+    applied = ctx.navigation.enter_topic(a, fragment_id=open_fragment.id)
     assert applied.topic_id == a
     assert _anchor(ctx) == a
 

@@ -29,13 +29,13 @@ from agent.config import Settings
 from agent.core.loop import AgentLoop
 from agent.core.turn import TurnContext
 from agent.credentials.store import MemoryKeyring
-from agent.services import navigation_version
+from agent.services import navigation_version, topic_recovery
 from agent.services.app import AppContext
 from agent.services.topic_application import TopicApplicationBridge
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 from agent.tools.approval import ApprovalResult
-from agent.tools.base import ToolResult
+from agent.tools.base import Tool, ToolResult
 
 # 本文件验证话题申请的真实审批交互：关闭 conftest 的旧测试自动批准兜底。
 pytestmark = pytest.mark.topic_application
@@ -597,10 +597,12 @@ async def test_navigation_while_waiting_makes_application_stale(app: AppContext)
 
 
 # ---------------------------------------------------------------------------
-# 6) 超时 / 过期：按拒绝处理，不执行、不标用户停止
+# 6) 超时 / 过期：**不是**用户主动拒绝（F10），不执行、不标用户停止、照常回答
 # ---------------------------------------------------------------------------
 
-async def test_timeout_is_treated_as_refusal_and_tool_is_not_executed(app: AppContext):
+async def test_timeout_is_not_treated_as_user_refusal_and_answers_in_current_topic(
+    app: AppContext,
+):
     old_topic = _topic(app, "旧话题")
     target_topic = _topic(app, "目标话题")
     app.fragments.get_or_create_open(target_topic)
@@ -619,11 +621,24 @@ async def test_timeout_is_treated_as_refusal_and_tool_is_not_executed(app: AppCo
     )
 
     assert result.final_content == "超时后原话题回答"
+    assert result.formal_answer is True
     assert result.cancelled is False and result.stopped_by is None
+    assert result.stop_reason_code == "none"
     assert app.navigation.anchors.get_active().topic_id == old_topic
-    assert captured["rebind"] == []
+    assert captured["rebind"] == [], "超时后话题工具不得执行"
+    # F10：超时 **不是** 主动拒绝 —— 不写拒绝证据、不污染「用户拒绝过」的范围，
+    # 也不伪装成用户拒绝的文案；本轮照常在原话题回答。
     reasons = [item["reason"] for item in app.topic_application_state.refused_attempts]
-    assert "timeout" in reasons
+    assert "timeout" not in reasons
+    assert getattr(ctx, "topic_refusal_scope", None) is None
+    assert not any("over timeout" in w for w in result.warnings)
+    second = adapter.requests[1]["messages"]
+    tool_messages = [m for m in second if m.role == "tool"]
+    assert tool_messages, "被拦截的超时调用必须有真实工具结果"
+    feedback = tool_messages[-1].content or ""
+    assert "超时" in feedback
+    assert "不是用户拒绝" in feedback, "超时不得被描述成用户拒绝"
+    assert "topic_application_timeout" in feedback or "没有执行" in feedback
 
 
 # ---------------------------------------------------------------------------
@@ -739,22 +754,41 @@ async def test_rebind_failure_is_reported_as_failure_not_success(app: AppContext
     bridge, captured = _make_bridge(app, ctx, approvals, rebind_fail=True)
     loop = _make_loop(app, adapter, approvals, bridge)
 
+    events = _record_events(app)
     result = await asyncio.wait_for(
         loop.run(question, initial_messages=_initial_messages(question)), timeout=15
     )
 
-    # 工具本身执行了（用户批准的操作不回滚），但整条流程如实失败：不重建、不搬归属
+    # F06：工具本身执行了（用户批准的操作不回滚），但归属迁移失败 = 本轮归属事实
+    # 不可信：进入可恢复失败，不重建上下文、不用旧 system 发布正式回答。
     assert app.navigation.anchors.get_active().topic_id == target_topic
     assert _binding(app, ctx.turn_id).topic_id == old_topic
-    assert captured["systems"] == []
-    second = adapter.requests[1]["messages"]
-    tool_messages = [m for m in second if m.role == "tool"]
-    assert any("归属迁移失败" in (m.content or "") for m in tool_messages)
+    assert captured["systems"] == [], "归属失败后不得重建目标上下文"
+    assert adapter.calls == 1, "归属失败后不得再发起模型调用"
+    assert result.final_content is None, "归属失败必须零正式答案"
+    assert result.formal_answer is False
+    assert loop.topic_phase.value == "recoverable_failure"
+    assert loop.topic_stages is not None and loop.topic_stages.failed_stage == "ownership"
     assert any("失败" in w for w in result.warnings)
     # 审批历史：工具执行成功但迁移失败，有一句真实说明（不是裸的「已执行」）
     assert approvals.executions[-1]["ok"] is True
     assert "迁移失败" in (approvals.executions[-1]["summary"] or "")
-    assert result.final_content == "仍然给出回答"
+    # 可观察错误 + 恢复记录（failed_stage=ownership，可重试）
+    errors = [
+        event.data
+        for event in events
+        if getattr(event, "type", None) == EventType.ERROR
+        and (event.data or {}).get("code") == "topic_ownership_failed"
+    ]
+    assert errors, "归属失败必须发出可观察 ERROR(topic_ownership_failed)"
+    recovery = errors[0]["recovery"]
+    assert recovery["failed_stage"] == "ownership" and recovery["retryable"] is True
+    stored = topic_recovery.get_record(app, recovery["record_id"])
+    assert stored is not None and stored["status"] == "pending"
+    assert stored["failed_stage"] == "ownership"
+    assert stored["turn_id"] == ctx.turn_id
+    assert stored["user_message_id"] == ctx.user_message_id
+    assert stored["topic_id"] == target_topic
 
 
 # ---------------------------------------------------------------------------
@@ -950,3 +984,285 @@ async def test_answer_failure_after_switch_does_not_rollback_the_topic(app: AppC
     assert stored["status"] == "pending"
     assert stored["failed_stage"] == "answer"
     assert stored["topic_id"] == target_topic
+
+
+# ---------------------------------------------------------------------------
+# 13) F01：普通检索 → 话题工具 → 确认执行 → 目标上下文 → 正式回答（完整链路）
+# ---------------------------------------------------------------------------
+
+
+class _LookupTool(Tool):
+    """只读检索类普通工具（F01 场景里的「普通工具调用」）。"""
+
+    name = "lookup"
+    description = "fake read-only lookup"
+    parameters = {"type": "object", "properties": {"query": {"type": "string"}}}
+
+    def __init__(self) -> None:
+        self.executed = 0
+
+    async def run(self, **kwargs):
+        self.executed += 1
+        return ToolResult(ok=True, content="查到的资料")
+
+
+def _phase_names(events: list) -> list[str]:
+    return [
+        str((getattr(event, "data", None) or {}).get("phase"))
+        for event in events
+        if getattr(event, "type", None) == EventType.TOPIC_PHASE
+    ]
+
+
+def _first_index(events: list, predicate) -> int | None:
+    for index, event in enumerate(events):
+        if predicate(event):
+            return index
+    return None
+
+
+def _warning_codes(events: list) -> list[str]:
+    return [
+        str((getattr(event, "data", None) or {}).get("code"))
+        for event in events
+        if getattr(event, "type", None) == EventType.WARNING
+    ]
+
+
+def _error_codes(events: list) -> list[str]:
+    return [
+        str((getattr(event, "data", None) or {}).get("code"))
+        for event in events
+        if getattr(event, "type", None) == EventType.ERROR
+    ]
+
+
+async def test_ordinary_retrieval_then_topic_flow_full_chain(app: AppContext):
+    old_topic = _topic(app, "旧话题")
+    target_topic = _topic(app, "目标话题")
+    target_fragment = app.fragments.get_or_create_open(target_topic).id
+    question = "先查一下资料，再换到目标话题回答"
+    ctx, old_fragment = _prepare_turn(app, message=question, topic_id=old_topic)
+    lookup = _LookupTool()
+    app.registry.register(lookup)
+    adapter = ScriptedAdapter(
+        [
+            ("我先查一下资料。", [ToolCall(id="r1", name="lookup", arguments={"query": "x"})]),
+            (None, [_switch_call("c1", target_topic)]),
+            (ANSWER_MARKER + "\n这是目标话题里的正式回答", None),
+        ]
+    )
+    approvals = FakeApprovals(decisions=[{"decision": "approved"}])
+    bridge, captured = _make_bridge(app, ctx, approvals)
+    loop = _make_loop(app, adapter, approvals, bridge)
+    events = _record_events(app)
+
+    result = await asyncio.wait_for(
+        loop.run(question, initial_messages=_initial_messages(question)), timeout=20
+    )
+
+    # 普通检索真实执行过一次；后续话题工具正常进入申请（不是迟到调用）
+    assert lookup.executed == 1
+    assert len(approvals.requests) == 1, "普通检索之后的话题工具必须正常进入申请流程"
+    assert captured["rebind"] == [target_topic]
+    assert captured["systems"] == [target_topic]
+    assert not any(
+        code == "answer_declared_with_tool_calls" for code in _warning_codes(events)
+    )
+    # 归属与回答都落到目标话题
+    assert _binding(app, ctx.turn_id).topic_id == target_topic
+    assert _binding(app, ctx.turn_id).fragment_id == target_fragment
+    assert _message_fragment(app, ctx.user_message_id) == target_fragment
+    assert result.final_content == "这是目标话题里的正式回答"
+    assert result.formal_answer is True
+
+    # 普通检索的正文只进过程区（零正式正文泄露）
+    formal = _assistant(events, interim=False)
+    assert {item["content"] for item in formal} == {"这是目标话题里的正式回答"}
+    assert all(
+        "我先查一下资料" not in (item.get("content") or "") for item in formal
+    )
+    assert any(
+        "我先查一下资料" in (item.get("content") or "")
+        for item in _assistant(events, interim=True)
+    ), "普通工具轮的过程说明应进过程区"
+    # 事件顺序：TOPIC_PHASE(answerable) 必须先于正式正文
+    phases = _phase_names(events)
+    assert phases[0] == "decision_open"
+    assert "answerable" in phases
+    answerable_at = _first_index(
+        events,
+        lambda event: getattr(event, "type", None) == EventType.TOPIC_PHASE
+        and (event.data or {}).get("phase") == "answerable",
+    )
+    formal_at = _first_index(
+        events,
+        lambda event: getattr(event, "type", None) == EventType.ASSISTANT
+        and (event.data or {}).get("interim") is False
+        and str((event.data or {}).get("content") or "").strip(),
+    )
+    assert answerable_at is not None and formal_at is not None
+    assert answerable_at < formal_at
+
+
+# ---------------------------------------------------------------------------
+# 14) F06：归属失败的三种注入 → 零正式答案 + 可见恢复记录
+# ---------------------------------------------------------------------------
+
+
+async def test_move_user_message_failure_is_ownership_failure(app: AppContext):
+    old_topic = _topic(app, "旧话题")
+    target_topic = _topic(app, "目标话题")
+    app.fragments.get_or_create_open(target_topic)
+    question = "换到目标话题再回答"
+    ctx, _ = _prepare_turn(app, message=question, topic_id=old_topic)
+    adapter = ScriptedAdapter(
+        [
+            (None, [_switch_call("c1", target_topic)]),
+            (ANSWER_MARKER + "\n不该出现的回答", None),
+        ]
+    )
+    approvals = FakeApprovals(decisions=[{"decision": "approved"}])
+    app.approvals = approvals
+    captured: dict[str, list] = {"rebind": [], "systems": []}
+
+    async def _rebuild(topic_id: str) -> str:
+        captured["systems"].append(topic_id)
+        return f"SYS_FOR:{topic_id}"
+
+    async def _rebind(topic_id: str) -> str:
+        captured["rebind"].append(topic_id)
+        # 生产里的归属搬迁是事务化的：任何一步失败都整体回滚（绑定保持旧值）。
+        return await app.turn_orchestrator.rebind_turn_to_topic(ctx, topic_id)
+
+    bridge = TopicApplicationBridge(
+        app, ctx, rebind_turn=_rebind, rebuild_system=_rebuild
+    )
+    loop = _make_loop(app, adapter, approvals, bridge)
+    events = _record_events(app)
+
+    def _move_boom(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        raise RuntimeError("move user message failed")
+
+    app.memory.move_message = _move_boom
+
+    result = await asyncio.wait_for(
+        loop.run(question, initial_messages=_initial_messages(question)), timeout=15
+    )
+
+    # 工具与导航已经真实发生（不回滚），但归属搬迁失败：本轮归属事实不可信
+    assert app.navigation.anchors.get_active().topic_id == target_topic
+    assert _binding(app, ctx.turn_id).topic_id == old_topic
+    assert captured["systems"] == [], "归属失败后不得装配目标上下文"
+    assert adapter.calls == 1, "归属失败后不得再发起模型调用"
+    assert result.final_content is None and result.formal_answer is False
+    assert _assistant(events, interim=False) == []
+    assert loop.topic_phase.value == "recoverable_failure"
+    assert loop.topic_stages is not None and loop.topic_stages.failed_stage == "ownership"
+    assert "topic_ownership_failed" in _error_codes(events)
+    recovery = loop._topic_recovery
+    assert recovery is not None and recovery["failed_stage"] == "ownership"
+    stored = topic_recovery.get_record(app, recovery["record_id"])
+    assert stored is not None and stored["status"] == "pending"
+    assert stored["topic_id"] == target_topic
+    assert stored["user_message_id"] == ctx.user_message_id
+
+
+async def test_after_tool_exception_after_success_is_ownership_failure(
+    app: AppContext, monkeypatch
+):
+    old_topic = _topic(app, "旧话题")
+    target_topic = _topic(app, "目标话题")
+    app.fragments.get_or_create_open(target_topic)
+    question = "换到目标话题再回答"
+    ctx, _ = _prepare_turn(app, message=question, topic_id=old_topic)
+    adapter = ScriptedAdapter(
+        [
+            (None, [_switch_call("c1", target_topic)]),
+            (ANSWER_MARKER + "\n不该出现的回答", None),
+        ]
+    )
+    approvals = FakeApprovals(decisions=[{"decision": "approved"}])
+    bridge, captured = _make_bridge(app, ctx, approvals)
+    loop = _make_loop(app, adapter, approvals, bridge)
+    events = _record_events(app)
+    original_after = bridge.after_tool
+
+    async def _boom(call, result):  # noqa: ANN001
+        if call.name == "switch_topic" and getattr(result, "ok", False):
+            raise RuntimeError("topic post-processing boom")
+        return await original_after(call, result)
+
+    monkeypatch.setattr(bridge, "after_tool", _boom)
+
+    result = await asyncio.wait_for(
+        loop.run(question, initial_messages=_initial_messages(question)), timeout=15
+    )
+
+    assert app.navigation.anchors.get_active().topic_id == target_topic
+    assert _binding(app, ctx.turn_id).topic_id == old_topic
+    assert captured["rebind"] == []
+    assert captured["systems"] == []
+    assert adapter.calls == 1
+    assert result.final_content is None and result.formal_answer is False
+    assert _assistant(events, interim=False) == []
+    errors = [
+        event.data
+        for event in events
+        if getattr(event, "type", None) == EventType.ERROR
+        and (event.data or {}).get("code") == "topic_ownership_failed"
+    ]
+    assert errors, "话题后置处理异常必须收口成可观察的归属失败"
+    assert errors[0]["failed_stage"] == "ownership"
+    stored = topic_recovery.get_record(app, errors[0]["recovery"]["record_id"])
+    assert stored is not None and stored["failed_stage"] == "ownership"
+
+
+async def test_normal_tool_after_tool_exception_keeps_tolerance(
+    app: AppContext, monkeypatch
+):
+    topic = _topic(app, "普通话题")
+    fragment = app.fragments.get_or_create_open(topic)
+    app.navigation.enter_topic(topic)
+    question = "查一下资料再回答"
+    turn_id = "turn_topic_app"
+    ctx = TurnContext(turn_id=turn_id, message=question)
+    message_id, _ = app.memory.append_message(
+        topic_id=topic, role="user", content=question, model="fake", turn_id=turn_id
+    )
+    app.bindings.record_binding(turn_id, topic, fragment_id=fragment.id)
+    ctx.user_message_id = message_id
+    ctx.current_topic = topic
+    ctx.bound_topic = topic
+    ctx.bound_fragment_id = fragment.id
+    lookup = _LookupTool()
+    app.registry.register(lookup)
+    adapter = ScriptedAdapter(
+        [
+            (None, [ToolCall(id="r1", name="lookup", arguments={"query": "x"})]),
+            (ANSWER_MARKER + "\n正常回答", None),
+        ]
+    )
+    approvals = FakeApprovals()
+    bridge, _captured = _make_bridge(app, ctx, approvals)
+    loop = _make_loop(app, adapter, approvals, bridge)
+    events = _record_events(app)
+    original_after = bridge.after_tool
+
+    async def _boom(call, result):  # noqa: ANN001
+        if call.name == "lookup":
+            raise RuntimeError("normal post-processing boom")
+        return await original_after(call, result)
+
+    monkeypatch.setattr(bridge, "after_tool", _boom)
+
+    result = await asyncio.wait_for(
+        loop.run(question, initial_messages=_initial_messages(question)), timeout=15
+    )
+
+    assert lookup.executed == 1
+    assert result.final_content == "正常回答", "非话题工具的普通后置异常仍应容错"
+    assert loop.topic_phase.value == "answerable"
+    assert "topic_ownership_failed" not in _error_codes(events)
+    assert any("后置处理失败" in item for item in result.warnings)
+

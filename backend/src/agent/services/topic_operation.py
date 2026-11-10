@@ -10,9 +10,14 @@
 三层事实分开记录，任何一层失败都不允许被另一层的成功覆盖：
 
 1. `TopicOperation`：一次逻辑话题操作的**身份**（operation_id 稳定，参数带版本）；
+   状态拆两层（F02）：`DecisionStatus.decided`（用户 / 程序决定）与
+   `AttemptStatus.attempt`（原工具执行到哪一步），任何一层成功都不能覆盖另一层；
 2. `TopicStages`：这一步真实走到了哪里（工具成功 / 导航落实 / 归属搬迁 /
    上下文就绪 / 回答完成）；
 3. `TopicPhase`：本轮输出边界（只有 ANSWERABLE 允许发布正式回答）。
+
+参数口径（F07）：`execution_params`（只外层 strip）决定 param_version / 批准身份；
+`normalize_topic_name` / `dedup_key` 宽松归一化只作查重证据，禁止用于身份判断。
 """
 
 from __future__ import annotations
@@ -130,6 +135,56 @@ class ConflictStatus(str, Enum):
     CONFLICT_DECLINED = "conflict_declined"
 
 
+class DecisionStatus(str, Enum):
+    """决定层（F02）：用户 / 程序对这次操作做过什么决定。
+
+    与执行层分开记录 —— 「用户明确要求执行」不等于「执行成功」，
+    「用户拒绝」也不等于「工具失败」。只有这里的状态才决定旧批准能不能复用。
+    """
+
+    NONE = "none"
+    """还没有任何决定（新操作 / 参数版本刚推进）。"""
+
+    PENDING = "pending"
+    """等待用户决定（普通申请等待中 / 申请超时后没有新决定）。"""
+
+    APPROVED = "approved"
+    """已批准（用户点同意，或本轮用户明确要求直接执行）。"""
+
+    REFUSED = "refused"
+    """用户拒绝 / 取消（含具体查重冲突被拒绝）。"""
+
+    STALE = "stale"
+    """申请失效：等待期间真实位置已改变。失效 ≠ 拒绝，不写拒绝证据。"""
+
+
+class AttemptStatus(str, Enum):
+    """执行层（F02）：原工具这次到底执行到哪一步。
+
+    同 operation_id + 同 param_version 的合法重试只允许在
+    RETRYABLE_FAILURE / CONFLICT_PENDING 上再次进入原工具；
+    SUCCEEDED 只重放既有结果；REFUSED / STALE / TERMINAL_FAILURE 不重试。
+    """
+
+    NONE = "none"
+    """尚未开始执行。"""
+
+    EXECUTING = "executing"
+    """原工具执行中。"""
+
+    RETRYABLE_FAILURE = "retryable_failure"
+    """可重试失败（如具体冲突确认超时 / 审批通道技术错误）：同一版本可再次进入原工具。"""
+
+    CONFLICT_PENDING = "conflict_pending"
+    """查重冲突待用户确认（同版本重试会再次进入工具内的具体冲突确认）。"""
+
+    SUCCEEDED = "succeeded"
+    """原工具真实成功；成功后的同版本重放只返回既有目标与结果。"""
+
+    TERMINAL_FAILURE = "terminal_failure"
+    """不可重试失败（技术错误 / 失效 / 具体冲突被拒绝由决定层表达）。"""
+
+
 # ── 3. 操作身份 ─────────────────────────────────────────────────────────
 
 def new_operation_id(turn_id: str, kind: str) -> str:
@@ -138,27 +193,57 @@ def new_operation_id(turn_id: str, kind: str) -> str:
     return f"topop-{str(turn_id or 'turn')[:24]}-{str(kind or 'topic')[:16]}-{suffix}"
 
 
+def strip_outer(value: Any) -> str:
+    """只去掉外层空白（含首尾全角空格）；内部字符一个都不动。
+
+    这是**执行参数**的清洗口径：真正落库 / 真正导航用的名称必须保留内部空格、
+    引号、冒号等实际字符——它们变化时创建出来的话题就是另一个话题。
+    """
+    return str(value or "").strip()
+
+
+def execution_params(kind: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """执行参数的规范形（F07）：决定 param_version 与批准身份。
+
+    只保留真正影响执行结果的字段（reason / intent 等展示字段不参与版本）：
+
+    * topic_switch → {"topic_id": <strip 后>}；
+    * topic_create → {"name": <仅外层 strip 后的真实名称>}。
+
+    内部空格、全角空格、引号、冒号等**任何实际存储会变化的字符都算参数变化**，
+    旧版本的批准 / 冲突决定不能迁移到新版本。
+    """
+    arguments = arguments if isinstance(arguments, dict) else {}
+    if kind == "topic_switch":
+        return {"topic_id": strip_outer(arguments.get("topic_id"))}
+    return {"name": strip_outer(arguments.get("name"))}
+
+
 def normalize_topic_name(value: Any) -> str:
-    """名称比较口径（只用于查重 / 幂等键，不改变真实落库名字）。"""
+    """宽松归一化：只用于查重 / 相似 / 幂等**证据**（F07）。
+
+    会去掉空格、全角空格、引号、冒号等字符 —— 因此**禁止**用它决定
+    param_version 或批准匹配（那会让「Data Science」与「DataScience」共享
+    同一个批准身份，等于无确认地创建了另一个真实名称）。
+    执行身份的唯一口径是 :func:`execution_params`。
+    """
     text = str(value or "").strip()
     for ch in " 　\t\r\n\"'“”「」『』《》：:":
         text = text.replace(ch, "")
     return text
 
 
-def canonical_params(kind: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
-    """逻辑参数的规范形：决定「参数版本」是否变化。
-
-    只保留真正影响执行结果的字段（reason 等展示字段不参与版本）。
-    """
+def dedup_key(kind: str, arguments: dict[str, Any] | None) -> str:
+    """查重归一化键（证据）：只在相似 / 幂等判断里用，不参与批准身份。"""
     arguments = arguments if isinstance(arguments, dict) else {}
     if kind == "topic_switch":
-        return {"topic_id": str(arguments.get("topic_id") or "").strip()}
-    return {"name": normalize_topic_name(arguments.get("name"))}
+        return strip_outer(arguments.get("topic_id"))
+    return normalize_topic_name(arguments.get("name"))
 
 
 def param_digest(kind: str, arguments: dict[str, Any] | None) -> str:
-    params = canonical_params(kind, arguments)
+    """执行参数摘要（F07）：参数实质变化 → 值变化 → param_version 推进。"""
+    params = execution_params(kind, arguments)
     return "|".join(f"{key}={params[key]}" for key in sorted(params))
 
 
@@ -186,18 +271,130 @@ class TopicOperation:
     approval_id: str | None = None
     target_topic_id: str | None = None
     new_name: str | None = None
-    status: OperationStatus = OperationStatus.PENDING
+    #: 决定层（F02）：用户 / 程序做过什么决定。与执行层分开，互不覆盖。
+    decided: DecisionStatus = DecisionStatus.NONE
+    #: 执行层（F02）：原工具执行到哪一步。
+    attempt: AttemptStatus = AttemptStatus.NONE
+    #: 最近一次参数的查重归一化（宽松形）：只作证据，不参与身份（F07）。
+    dedup_name: str = ""
+    #: 最近一次失败 / 等待的结构化代码（审批超时 / 冲突超时等），只作事实说明。
+    failure_code: str = ""
     conflict: ConflictStatus = ConflictStatus.NONE
     stages: "TopicStages" = field(default_factory=lambda: TopicStages())
 
+    # -- 状态投影（兼容既有读取方：loop 的发布前提 / 恢复记录）----------
+    @property
+    def status(self) -> OperationStatus:
+        """把两层状态投影成既有 OperationStatus（只读；唯一事实仍是两层字段）。
+
+        * 决定层失效 / 拒绝优先（即使之前执行过，也不能被说成成功）；
+        * 执行层成功后按分步事实区分 EXECUTED / CONTEXT_READY / ANSWERED；
+        * 执行中 / 待确认 / 已批准未执行 → 既有等待类状态（loop 据此阻止发布）。
+        """
+        if self.decided is DecisionStatus.STALE:
+            return OperationStatus.STALE
+        if self.decided is DecisionStatus.REFUSED:
+            return OperationStatus.REFUSED
+        if self.attempt is AttemptStatus.SUCCEEDED:
+            if self.stages.answer_complete:
+                return OperationStatus.ANSWERED
+            if self.stages.context_ready:
+                return OperationStatus.CONTEXT_READY
+            return OperationStatus.EXECUTED
+        if (
+            self.decided is DecisionStatus.PENDING
+            and self.failure_code == "approval_timeout"
+        ):
+            # 审批超时：本轮已终结（不会再弹、也不再执行），但**不是用户拒绝**，
+            # 决定层仍如实记为 pending（没有新决定）。
+            return OperationStatus.FAILED
+        if self.attempt is AttemptStatus.TERMINAL_FAILURE:
+            return OperationStatus.FAILED
+        if self.attempt is AttemptStatus.EXECUTING:
+            return OperationStatus.EXECUTING
+        if self.decided is DecisionStatus.APPROVED:
+            # 已批准但尚未真实执行（含冲突待确认 / 可重试失败）：仍算未完成。
+            return OperationStatus.APPROVED
+        if self.decided is DecisionStatus.PENDING:
+            return OperationStatus.AWAITING_CONFIRMATION
+        return OperationStatus.PENDING
+
+    # -- 状态迁移（只在这里写两层字段，避免两处真相）--------------------
+    def decide(self, decision: DecisionStatus) -> None:
+        self.decided = DecisionStatus(decision)
+        if self.decided is not DecisionStatus.APPROVED:
+            self.failure_code = ""
+
+    def begin_attempt(self) -> None:
+        """原工具即将执行（同一版本重试也从这里进入）。"""
+        self.attempt = AttemptStatus.EXECUTING
+        self.failure_code = ""
+
+    def fail_attempt(
+        self,
+        attempt: AttemptStatus,
+        *,
+        conflict: ConflictStatus | None = None,
+        code: str = "",
+    ) -> None:
+        self.attempt = AttemptStatus(attempt)
+        self.failure_code = str(code or "")
+        if conflict is not None:
+            self.conflict = ConflictStatus(conflict)
+
+    def succeed_attempt(self) -> None:
+        self.attempt = AttemptStatus.SUCCEEDED
+        self.failure_code = ""
+        self.conflict = ConflictStatus.NONE
+
+    # -- 重试判定（F02 唯一口径）----------------------------------------
+    def can_retry(self) -> bool:
+        """同 operation + 同 param_version 是否允许再次进入原工具。
+
+        只有「已批准（用户明确要求 / 用户点过同意）」且上次执行是
+        可重试失败 / 冲突待确认时才允许；成功只重放、拒绝 / 失效不重试。
+        """
+        if self.decided is not DecisionStatus.APPROVED:
+            return False
+        return self.attempt in (
+            AttemptStatus.NONE,
+            AttemptStatus.RETRYABLE_FAILURE,
+            AttemptStatus.CONFLICT_PENDING,
+        )
+
+    def retry_block_reason(self) -> str:
+        """不允许重试时的结构化原因（给桥生成诚实的终态结果，不按文本猜）。"""
+        if self.decided is DecisionStatus.STALE:
+            return "stale"
+        if self.decided is DecisionStatus.REFUSED:
+            if self.conflict is ConflictStatus.CONFLICT_DECLINED:
+                return "conflict_declined"
+            return "refused"
+        if self.attempt is AttemptStatus.SUCCEEDED:
+            return "succeeded"
+        if self.attempt is AttemptStatus.TERMINAL_FAILURE:
+            return self.failure_code or "terminal_failure"
+        if self.attempt is AttemptStatus.EXECUTING:
+            return "executing"
+        return "unavailable"
+
     # -- 参数版本 ------------------------------------------------------
     def update_params(self, arguments: dict[str, Any] | None) -> bool:
-        """用新参数更新同一操作；参数实质变化才推进 param_version。"""
-        params = canonical_params(self.kind, arguments)
+        """用新参数更新同一操作；**执行参数**实质变化才推进 param_version。
+
+        F07：内部空格 / 全角空格 / 引号 / 冒号的实际变化都算参数变化；
+        查重归一化（dedup_name）只更新证据，不参与比较。
+        """
+        params = execution_params(self.kind, arguments)
+        self.dedup_name = dedup_key(self.kind, arguments)
         if params == self.params:
             return False
         self.params = params
         self.param_version += 1
+        # 新版本 = 新身份：旧批准 / 旧冲突决定一律失效（F02/F07）。
+        self.decided = DecisionStatus.NONE
+        self.attempt = AttemptStatus.NONE
+        self.failure_code = ""
         self.conflict = ConflictStatus.NONE
         return True
 
@@ -226,7 +423,12 @@ class TopicOperation:
             "base_nav_version": self.base_nav_version,
             "approval_id": self.approval_id,
             "status": self.status.value,
+            "decided": self.decided.value,
+            "attempt": self.attempt.value,
+            "failure_code": self.failure_code,
             "conflict": self.conflict.value,
+            "dedup_name": self.dedup_name,
+            "params": dict(self.params),
             "stages": self.stages.as_dict(),
         }
 
@@ -309,7 +511,8 @@ class TopicOperationRegistry:
             turn_id=turn_id,
             kind=kind,
             intent_source=intent_source,
-            params=canonical_params(kind, arguments),
+            params=execution_params(kind, arguments),
+            dedup_name=dedup_key(kind, arguments),
             route=route,
             from_topic=from_topic,
             from_fragment=from_fragment,

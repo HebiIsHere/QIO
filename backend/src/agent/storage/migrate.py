@@ -165,6 +165,9 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 申请无法判断「等待期间位置是否已变」，旧申请可能覆盖用户的新选择；
         # 补偿迁移 78 里有对应的建表语句。
         "navigation_version",
+        # R14-B（迁移 79）：话题回答恢复记录持久化（F03/F04）。缺表时恢复事项在
+        # 进程重启后消失；补偿迁移 80 里有对应 CREATE TABLE。
+        "topic_recovery_records",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -267,6 +270,10 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "subtask_notifications.attempts",
         "subtask_notifications.last_error",
         "subtask_notifications.last_attempt_at",
+        # R14-B（迁移 79）：封存后迟到答案（F13）——普通 messages 行的专用标记；
+        # answer_key 唯一保证同一逻辑答案只有一份权威正文。补偿 80 有 ADD COLUMN。
+        "messages.answer_key",
+        "messages.late_answer_of_message_id",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -318,6 +325,13 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_credential_models_credential",
         "idx_credential_models_model",
         "idx_model_usages_usage_key",
+        # R14-B（迁移 79）：恢复记录状态/租约/答案身份查询 + 迟到答案关联。
+        # 补偿迁移 80 里有对应 CREATE INDEX。
+        "idx_topic_recovery_status",
+        "idx_topic_recovery_claim",
+        "idx_topic_recovery_answer_key",
+        "idx_messages_answer_key",
+        "idx_messages_late_answer",
     ),
 }
 
