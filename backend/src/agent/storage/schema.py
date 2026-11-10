@@ -2104,6 +2104,33 @@ MIGRATIONS.append(
     )
 )
 
+# ── R16-A（2026-11-11 第五轮）：完整位置状态 + 导航命令身份 + 逻辑答案暂存 ──
+# 只追加迁移 83 + 补偿 84；历史迁移一条不动。表/列语义见
+# storage/migration_r16_position_state.py 与 services/position_state.py。
+# 补偿 84 = 补偿 82 的全部语句 + 迁移 83 的建对象语句（CREATE / ALTER）；
+# 种子行与 phase 回填只在迁移 83 里执行一次（migrate 的补偿口径只建对象、不改数据）。
+from agent.storage.migration_r16_position_state import (  # noqa: E402
+    COMPENSATION_DDL as _R16_A_COMPENSATION_DDL,
+)
+from agent.storage.migration_r16_position_state import MIGRATION as _R16_A_POSITION_MIGRATION  # noqa: E402
+
+MIGRATIONS.append(_R16_A_POSITION_MIGRATION)
+
+# 补偿入口（新，84）：补偿 82 的全部语句 + 迁移 83 的建对象语句。
+# 与 66/68/70/72/74/76/78/80/82 同口径：纯追加 DDL（CREATE TABLE/INDEX IF NOT EXISTS +
+# ADD COLUMN）；「版本已登记但对象缺失」的存量库由 migrate.verify_required_objects
+# 重放这里补齐，不改任何数据行。
+MIGRATIONS.append(
+    (
+        84,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 82 for stmt in stmts]
+            + list(_R16_A_COMPENSATION_DDL)
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 82
+# R16-A 契约 §8/§14.9：补偿版本 = max(MIGRATIONS 版本)（与 76/78/80/82 同口径）。
+COMPENSATION_VERSION = 84
 

@@ -258,6 +258,18 @@ class AppContext:
         # 阶段 1：轮次归属（Turn → Topic/Fragment）与用户的历史接续意图。
         self.bindings = TurnBindingService(conn)
         self.memory.bindings = self.bindings
+        # R16-A（契约 §4）：完整位置状态的唯一权威与统一变更入口。所有生产位置写入
+        #（TopicNavigationService 的薄包装 / orchestrator / 工具 / HTTP）都经
+        # position_state.apply()；启动期只在这里做一次数据库身份的权威重建。
+        from agent.services.position_state import PositionStateService
+
+        self.position_state = PositionStateService(conn)
+        try:
+            self.position_state.ensure_identity()
+        except Exception:  # noqa: BLE001 - 迁移未就绪的库如实降级，不静默假装有版本
+            logging.getLogger(__name__).warning(
+                "position_state ensure_identity failed", exc_info=True
+            )
         from agent.services.context import ContextAssembler
 
         self.context_assembler = ContextAssembler(
@@ -1332,11 +1344,12 @@ class AppContext:
         }
 
     async def _on_tool_anchor_result(self, data: dict) -> None:
-        """switch_topic / create_topic 成功后广播新锚点（tool/result 策略）。
+        """话题工具真实成功后广播权威位置（tool/result 策略）。
 
-        话题工具真实执行期间 ContextVar 绑定了操作身份：事件带 operation_id /
-        param_version / turn_id（origin=topic_operation），供前端只按**本次操作**的
-        权威成功结果迁移草稿（F12）；其它导航入口 origin=manual，不携带身份。
+        R16（契约 §14.7）：工具结果 facts 里带 command_id / position（B 写），
+        这里优先用 facts 的 position 广播，不再二次读 Anchor。只广播**真实 applied**
+        （且非 replay）一次；重放 / 拒绝 / 冲突零广播。continue_from_fragment 的
+        pending 变化也广播（既有 test_continue_tool_publishes_anchor_event 依赖）。
         """
         tool_name = data.get("tool")
         result = data.get("result")
@@ -1344,6 +1357,16 @@ class AppContext:
             return
         if result is None or not getattr(result, "ok", False):
             return
+        facts = getattr(result, "facts", None)
+        facts = facts if isinstance(facts, dict) else {}
+        if facts.get("replay") is True:
+            # 命令身份命中既有结果：零写入、零广播（§5）。
+            return
+        if "changed" in facts and facts.get("changed") is False:
+            # 无真实位置状态变化（例如「点当前开放片段」只是普通继续）：零广播。
+            return
+        position = facts.get("position")
+        command_id = facts.get("command_id")
         context = (
             self._anchor_operation_context()
             if tool_name in ("switch_topic", "create_topic")
@@ -1355,7 +1378,11 @@ class AppContext:
                 "approval_id": None,
             }
         )
-        await self._publish_anchor_event(**context)
+        await self._publish_anchor_event(
+            **context,
+            position=position if isinstance(position, dict) else None,
+            command_id=str(command_id) if command_id else None,
+        )
 
     async def _publish_anchor_event(
         self,
@@ -1365,67 +1392,62 @@ class AppContext:
         param_version: int | None = None,
         turn_id: str | None = None,
         approval_id: str | None = None,
+        position: dict | None = None,
+        command_id: str | None = None,
     ) -> None:
-        """把当前 active 锚点（话题 + 片段 + 是否历史位置）以 ANCHOR 事件推给前端。
+        """把**同源完整位置状态**以 ANCHOR 事件推给前端（契约 §3.1/§14.7）。
+
+        position 非空：直接使用调用方刚提交的命令结果里的同一份 wire 对象（不再二次读取，
+        避免「事件与快照不同源」）；position 为空：回退 self.position_state.read()
+        （单一读事务内一次读完 Anchor + pending + 两类版本 + identity）。
 
         前端据此更新话题行与「当前从历史位置继续」提示：位置推进到当前片段后
         historic=false，提示自然消失（不会几十轮后还显示旧片段）。
 
-        F12 事件契约（前后端统一）：除既有字段外固定携带
-        * `origin`：manual（用户/内部导航）| topic_operation（本次话题工具真实成功）；
-        * `operation_id` / `param_version` / `turn_id`：仅 topic_operation 非空；
-        * `nav_version`：本次写入后的真实导航版本（navigation_version 单源）；
-        * `seq`：进程内单调事件序号（乱序/重放时可比较）。
-        * instance_id：进程实例身份（R2：跨重启/重连时 seq 会归零，靠它区分实例）。
+        事件字段冻结：
+        * 既有扁平字段全部保留（topic_id/topic_name/fragment_id/fragment_title/historic/
+          pending_*/origin/operation_id/param_version/turn_id/approval_id/nav_version/seq/instance_id）；
+        * 新增 position_version / position_identity / command_id / position（§3.1 wire 整份）。
         手动导航不伪造 operation_id；前端不得用 targetTopicId=null 通配跟随。
         """
         from agent.api.events import EventType, make_event
 
-        anchors = AnchorService(self.conn)
-        anchor = anchors.get_active()
-        if anchor is None or not anchor.topic_id:
+        if position is None:
+            position = self.position_state.read()
+        position = dict(position or {})
+        if not position.get("topic_id"):
             return
-        try:
-            from agent.services.navigation_version import current as _current_nav_version
-
-            nav_version: int | None = int(_current_nav_version(self.conn))
-        except Exception:  # noqa: BLE001 - 版本读不到时如实 null（不改用猜测数字）
-            logger.warning("failed to read navigation version for anchor event", exc_info=True)
-            nav_version = None
         self._anchor_event_seq = int(getattr(self, "_anchor_event_seq", 0)) + 1
-        node = self.topics.nodes.get_topic(anchor.topic_id)
-        topic_name = node.name if node is not None else anchor.topic_id
-        historic = anchors.is_historic_position(anchor.topic_id)
-        fragment_title = self._fragment_title(anchor.fragment_id)
-        # 阶段 1：把「已登记但还没落实」的接续选择一并广播。
-        # 界面据此显示「将从所选记录继续」；落实之后（consumed）这段字段消失。
-        pending = self.bindings.peek_intent()
         await self.bus.publish(
             make_event(
                 EventType.ANCHOR,
                 {
-                    "topic_id": anchor.topic_id,
-                    "topic_name": topic_name,
-                    "fragment_id": anchor.fragment_id,
-                    "fragment_title": fragment_title,
-                    "historic": historic,
-                    "pending_intent_id": pending.intent_id if pending else None,
-                    "pending_intent_version": pending.version if pending else None,
-                    "pending_source_fragment_id": pending.source_fragment_id if pending else None,
-                    "pending_source_title": (
-                        self._fragment_title(pending.source_fragment_id) if pending else None
-                    ),
+                    # 既有扁平字段（兼容；全部取自同一份 position）
+                    "topic_id": position.get("topic_id"),
+                    "topic_name": position.get("topic_name"),
+                    "fragment_id": position.get("fragment_id"),
+                    "fragment_title": position.get("fragment_title"),
+                    "historic": bool(position.get("historic")),
+                    "pending_intent_id": position.get("pending_intent_id"),
+                    "pending_intent_version": position.get("pending_intent_version"),
+                    "pending_source_fragment_id": position.get("pending_source_fragment_id"),
+                    "pending_source_title": position.get("pending_source_title"),
                     # F12：本次事件是否由一次真实话题操作驱动（权威成功关联）。
                     "origin": str(origin or "manual"),
                     "operation_id": operation_id,
                     "param_version": param_version,
                     "turn_id": turn_id,
                     "approval_id": approval_id,
-                    "nav_version": nav_version,
+                    "nav_version": position.get("nav_version"),
                     "seq": self._anchor_event_seq,
                     # R2：位置事件的实例身份。跨重启/重连时 seq 会归零，
                     # 前端靠 instance_id 判断「seq 只在同一实例内可比」。
                     "instance_id": self.instance_id,
+                    # R16（§3.1/§14.7）：完整位置状态整份 + 两类版本 + DB 身份 + 命令身份。
+                    "position_version": position.get("position_version"),
+                    "position_identity": position.get("position_identity"),
+                    "command_id": command_id,
+                    "position": position,
                 },
             )
         )
