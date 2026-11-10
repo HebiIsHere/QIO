@@ -247,7 +247,8 @@ describe("明确改变起点时原子取消旧的接续选择", () => {
     await clickOverviewContinue(w);
 
     expect(mocks.apiMock.cancelContinuation).toHaveBeenCalledTimes(1);
-    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null);
+    // R16：手动导航必须带显式身份（request_id）与依据（base_nav_version）。
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null, expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
     // 顺序：取消必须发生在改起点之前
     const cancelOrder = mocks.apiMock.cancelContinuation.mock.invocationCallOrder[0];
     const anchorOrder = mocks.apiMock.setAnchor.mock.invocationCallOrder[0];
@@ -280,7 +281,7 @@ describe("明确改变起点时原子取消旧的接续选择", () => {
     await clickRecordContinue(w);
 
     expect(mocks.apiMock.cancelContinuation).toHaveBeenCalledTimes(1);
-    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f20");
+    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f20", expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
     expect(session.anchorHistoric).toBe(false);
     w.unmount();
   });
@@ -299,7 +300,7 @@ describe("明确改变起点时原子取消旧的接续选择", () => {
     await clickRecordContinue(w);
 
     expect(mocks.apiMock.cancelContinuation).not.toHaveBeenCalled();
-    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f13");
+    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f13", expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
     w.unmount();
   });
 
@@ -358,7 +359,8 @@ describe("只浏览不取消用户的选择", () => {
     await clickOverviewContinue(w);
 
     expect(mocks.apiMock.cancelContinuation).not.toHaveBeenCalled();
-    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null);
+    // R16：手动导航必须带显式身份（request_id）与依据（base_nav_version）。
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null, expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
     w.unmount();
   });
 });

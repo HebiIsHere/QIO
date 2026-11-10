@@ -572,7 +572,8 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
 
     w.findComponent(ManagementArea).vm.$emit("continue", { topicId: "t2", fragmentId: null });
     await flushPromises();
-    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t2", null);
+    // R16：手动导航必须带显式身份（request_id）与依据（base_nav_version）。
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t2", null, expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
     expect(session.currentTopicId).toBe("t2");
     expect(w.classes()).toContain("settling");
     await vi.advanceTimersByTimeAsync(620);
