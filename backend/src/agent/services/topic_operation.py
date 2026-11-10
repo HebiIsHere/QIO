@@ -187,6 +187,12 @@ class AttemptStatus(str, Enum):
 
 # ── 3. 操作身份 ─────────────────────────────────────────────────────────
 
+#: R16（契约 §5）：continue_from_fragment 的工具导航命令 kind。它不是
+#: topic_switch/topic_create 那种需要用户审批的话题申请，但同样需要稳定的
+#: operation_id + param_version 命令身份（同 operation 参数变化推进 param_version）。
+HISTORY_CONTINUE_KIND = "history_continue"
+
+
 def new_operation_id(turn_id: str, kind: str) -> str:
     """一次逻辑话题操作的稳定身份（与名称无关；名称只是带版本的参数）。"""
     suffix = uuid.uuid4().hex[:12]
@@ -208,7 +214,8 @@ def execution_params(kind: str, arguments: dict[str, Any] | None) -> dict[str, A
     只保留真正影响执行结果的字段（reason / intent 等展示字段不参与版本）：
 
     * topic_switch → {"topic_id": <strip 后>}；
-    * topic_create → {"name": <仅外层 strip 后的真实名称>}。
+    * topic_create → {"name": <仅外层 strip 后的真实名称>}；
+    * history_continue → {"fragment_id": <strip 后>}（R16：工具 continue 的命令身份参数）。
 
     内部空格、全角空格、引号、冒号等**任何实际存储会变化的字符都算参数变化**，
     旧版本的批准 / 冲突决定不能迁移到新版本。
@@ -216,6 +223,8 @@ def execution_params(kind: str, arguments: dict[str, Any] | None) -> dict[str, A
     arguments = arguments if isinstance(arguments, dict) else {}
     if kind == "topic_switch":
         return {"topic_id": strip_outer(arguments.get("topic_id"))}
+    if kind == HISTORY_CONTINUE_KIND:
+        return {"fragment_id": strip_outer(arguments.get("fragment_id"))}
     return {"name": strip_outer(arguments.get("name"))}
 
 
@@ -615,6 +624,21 @@ def operation_scope(operation: TopicOperation | None):
             unbind_operation(token)
 
     return _scope()
+
+
+# ── 5.5 导航命令身份（契约 §5/§14.8；工具路径复用 operation_id+param_version）──
+
+def navigation_identity(operation: TopicOperation):
+    """工具真实执行的导航命令身份：operation:<operation_id>:<param_version>。
+
+    返回 A 的 `NavCommandIdentity`（frozen）。延迟导入：position_state 是 R16 新模块，
+    旧代码路径（迁移未就绪/旧测试替身）不应因为 import 本模块而失败。
+    """
+    from agent.services.position_state import NavCommandIdentity
+
+    return NavCommandIdentity.operation(
+        str(operation.operation_id), int(operation.param_version)
+    )
 
 
 # ── 6. 恢复入口的身份 ─────────────────────────────────────────────────

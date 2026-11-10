@@ -20,6 +20,7 @@ Phase 1 新增：登记成功的**同一轮**就把该片段的相关上下文�
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import Any
 
@@ -32,6 +33,7 @@ from agent.services.navigation import (
     TopicNotFound,
 )
 from agent.services.params import FOCUS
+from agent.services.topic_operation import current_operation, navigation_identity
 from agent.tools.base import Tool, ToolResult
 
 
@@ -72,16 +74,33 @@ class ContinueFromFragmentTool(Tool):
         if not (fragment.summary or "").strip() and not messages:
             return ToolResult(ok=False, error=f"片段内容不可用（无摘要也无消息）：{fragment_id}")
 
-        try:
-            # 阶段 1：Agent 在执行中调用接续工具时**只登记意图**，不改变当前轮绑定，
-            # 也不改写已经提交的排队消息。接续片段在这之后提交的消息真正执行时才落实。
-            result = TopicNavigationService(self.conn).register_continuation(
-                fragment.topic_id, fragment_id
-            )
-        except TopicNotFound as exc:
-            return ToolResult(ok=False, error=str(exc))
-        except FragmentNotInTopic as exc:
-            return ToolResult(ok=False, error=str(exc))
+        operation = current_operation()
+        if operation is not None:
+            # R16（契约 §4/§5/§14.4）：工具 continue 复用 operation:<opID>:<pv> 命令身份，
+            # 经 PositionStateService.apply()。登记路径**不改 Anchor**（§14.5），落在
+            # 当前开放片段时用 open_fragment（结束不再适用的旧 registered）。
+            outcome = self._apply_command(fragment, operation)
+            if isinstance(outcome, ToolResult):
+                return outcome
+        else:
+            # 旧路径（无命令身份的单元测试 / 子任务直接调用）：保留既有行为。
+            try:
+                legacy = TopicNavigationService(self.conn).register_continuation(
+                    fragment.topic_id, fragment_id
+                )
+            except TopicNotFound as exc:
+                return ToolResult(ok=False, error=str(exc))
+            except FragmentNotInTopic as exc:
+                return ToolResult(ok=False, error=str(exc))
+            outcome = {
+                "result": dict(legacy),
+                "command_id": None,
+                "changed": bool(legacy.get("changed")),
+                "replay": False,
+                "position": None,
+                "position_version": None,
+                "nav_version": legacy.get("nav_version"),
+            }
 
         title = self._title(fragment_id, fragment.summary)
         context = self._focus_context(
@@ -95,17 +114,44 @@ class ContinueFromFragmentTool(Tool):
         context_text = context_heading("history_focus") + "\n" + json.dumps(
             context, ensure_ascii=False, sort_keys=True
         )
+        result = dict(outcome.get("result") or {})
         data = {
             "fragment_id": fragment_id,
             "topic_id": fragment.topic_id,
             "topic_name": node.name,
             "title": title,
             "source_fragment_id": result.get("source_fragment_id") or fragment_id,
-            "opens_current": bool(result.get("opens_current")),
+            "opens_current": bool(
+                outcome.get("opens_current", result.get("opens_current"))
+            ),
             "context": context,
         }
+        facts: dict[str, Any] = {
+            "fragment_id": fragment_id,
+            "topic_id": fragment.topic_id,
+            "fragment_title": title,
+            "source_fragment_id": data["source_fragment_id"],
+            "opens_current": data["opens_current"],
+            "command_id": outcome.get("command_id"),
+            "position": outcome.get("position"),
+            "position_version": outcome.get("position_version"),
+            "nav_version": outcome.get("nav_version"),
+            "changed": bool(outcome.get("changed")),
+            "replay": bool(outcome.get("replay")),
+            "code": None,
+            "inactive": False,
+            "conflict": False,
+        }
+        if operation is not None:
+            facts.update(
+                {
+                    "operation_id": str(operation.operation_id),
+                    "param_version": int(operation.param_version),
+                }
+            )
 
-        if result.get("opens_current"):
+        if data["opens_current"]:
+            facts["replay"] = bool(outcome.get("replay"))
             return ToolResult(
                 ok=True,
                 content=(
@@ -116,6 +162,7 @@ class ContinueFromFragmentTool(Tool):
                 status="completed",
                 code="continuation_already_current",
                 data=data,
+                facts=facts,
             )
         return ToolResult(
             ok=True,
@@ -124,7 +171,7 @@ class ContinueFromFragmentTool(Tool):
                 f"（fragment_id={fragment_id}，话题「{node.name}」）继续。"
                 "这条登记只对之后提交的消息生效：本轮归属不变，已经排队但还没开始的消息也不改向。"
                 "那段历史保持原样，接续片段会记下它的来源（source_fragment_id="
-                f"{result.get('source_fragment_id') or fragment_id}）。"
+                f"{data['source_fragment_id']}）。"
                 "本轮需要引用那段讨论的细节时，下面已给出该片段的相关上下文；"
                 "仍需要更多细节时再用 memory_search 继续查。"
                 f"\n\n{context_text}"
@@ -133,7 +180,107 @@ class ContinueFromFragmentTool(Tool):
             status="completed",
             code="continuation_registered",
             data=data,
+            facts=facts,
         )
+
+    def _apply_command(self, fragment, operation) -> dict | ToolResult:
+        """经统一入口执行工具 continue（契约 §4/§5/§14.4）。"""
+        from agent.services.position_state import PositionStateService, PositionTransition
+
+        fragment_id = str(fragment.id)
+        open_fragment = fragment.closed_at is None
+        common: dict[str, Any] = {
+            "source": "tool.continue_from_fragment",
+            "identity": navigation_identity(operation),
+            "initiator": "tool",
+            "base_nav_version": operation.base_nav_version,
+            "nav_decision": True,
+            "turn_id": str(operation.turn_id or "") or None,
+            "operation_id": str(operation.operation_id),
+            "param_version": int(operation.param_version),
+        }
+        if open_fragment:
+            transition = PositionTransition(
+                kind="open_fragment",
+                target_topic_id=fragment.topic_id,
+                target_fragment_id=fragment_id,
+                **common,
+            )
+        else:
+            # 工具登记路径不改 Anchor（§14.5）：target_topic_id=None + pending register。
+            transition = PositionTransition(
+                kind="select_history",
+                target_topic_id=None,
+                pending="register",
+                pending_topic_id=fragment.topic_id,
+                pending_fragment_id=fragment_id,
+                **common,
+            )
+        try:
+            result = PositionStateService(self.conn).apply(transition)
+        except Exception:  # noqa: BLE001 - 统一入口不可用时如实失败，不绕过写位置
+            logging.getLogger(__name__).warning(
+                "continue_from_fragment navigation command failed", exc_info=True
+            )
+            return ToolResult(
+                ok=False,
+                error=(
+                    "导航命令入口不可用（完整位置状态未就绪），这次接续登记没有执行。"
+                ),
+                recoverable=False,
+                code="navigation_command_unavailable",
+            )
+        if result.status == "conflict":
+            return ToolResult(
+                ok=False,
+                content=(
+                    "同一个导航命令身份被用于不同参数，这次接续登记没有执行，"
+                    "也没有改动当前对话位置。"
+                ),
+                error=result.reason or "导航命令身份参数冲突",
+                recoverable=False,
+                facts={
+                    "topic_application": "stale",
+                    "code": result.code or "navigation_command_conflict",
+                    "command_id": result.command_id,
+                    "position": result.position,
+                },
+                code="navigation_command_conflict",
+            )
+        if result.status in ("rejected", "superseded"):
+            stored = dict(result.result or {})
+            facts: dict[str, Any] = {
+                "topic_application": "stale",
+                "code": result.code or "navigation_command_stale",
+                "command_id": result.command_id,
+                "position": result.position,
+                "nav_version": result.nav_version,
+                "position_version": result.position_version,
+            }
+            for key in ("expected_nav_version", "actual_nav_version", "state", "intent_id"):
+                if key in stored:
+                    facts[key] = stored[key]
+            return ToolResult(
+                ok=False,
+                content=(
+                    "这次接续登记已失效（导航位置已经改变），没有执行，"
+                    "也没有改动当前对话位置。"
+                ),
+                error=result.reason or "导航命令依据已改变",
+                recoverable=False,
+                facts=facts,
+                code=result.code or "navigation_command_stale",
+            )
+        return {
+            "result": dict(result.result or {}),
+            "command_id": result.command_id,
+            "changed": bool(result.changed),
+            "replay": bool(result.replay),
+            "position": result.position,
+            "position_version": result.position_version,
+            "nav_version": result.nav_version,
+            "opens_current": open_fragment,
+        }
 
     def _focus_context(
         self,

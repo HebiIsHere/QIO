@@ -16,6 +16,7 @@ from agent.api.server import create_app
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
 from agent.services.app import AppContext
+from agent.services.navigation_version import current as current_nav_version
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
@@ -54,20 +55,38 @@ def test_cancel_continuation_leaves_no_trace(client: TestClient):
     # 点击历史：只登记意图，不建片段
     registered = client.post(
         "/api/anchor",
-        json={"topic_id": topic, "fragment_id": "frag_old", "continue_from_history": True},
+        json={
+            "topic_id": topic,
+            "fragment_id": "frag_old",
+            "continue_from_history": True,
+            "request_id": "req-cancel-trace",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
     ).json()
     assert registered["pending"] is True
     assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1
 
     # 发送前取消：意图作废，仍然没有任何新片段
-    cancelled = client.post("/api/anchor/continue/cancel").json()
-    assert cancelled == {"ok": True, "cancelled": True}
+    cancelled = client.post(
+        "/api/anchor/continue/cancel",
+        json={
+            "request_id": "req-cancel-trace-cancel",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
+    ).json()
+    assert cancelled["ok"] is True and cancelled["cancelled"] is True
     assert ctx.bindings.peek_intent() is None
     assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1
 
     # 再取消一次：幂等，不报错
-    again = client.post("/api/anchor/continue/cancel").json()
-    assert again == {"ok": True, "cancelled": False}
+    again = client.post(
+        "/api/anchor/continue/cancel",
+        json={
+            "request_id": "req-cancel-trace-again",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
+    ).json()
+    assert again["ok"] is True and again["cancelled"] is False
 
 
 def test_cancel_broadcasts_anchor_event_so_the_hint_can_disappear(client: TestClient):
@@ -84,11 +103,23 @@ def test_cancel_broadcasts_anchor_event_so_the_hint_can_disappear(client: TestCl
     _seed_closed_fragment(ctx, topic)
     client.post(
         "/api/anchor",
-        json={"topic_id": topic, "fragment_id": "frag_old", "continue_from_history": True},
+        json={
+            "topic_id": topic,
+            "fragment_id": "frag_old",
+            "continue_from_history": True,
+            "request_id": "req-cancel-broadcast",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
     )
     before = len(ctx.bus._history)  # noqa: SLF001 - 测试直接读总线历史，避免再开一条 SSE
 
-    client.post("/api/anchor/continue/cancel")
+    client.post(
+        "/api/anchor/continue/cancel",
+        json={
+            "request_id": "req-cancel-broadcast-cancel",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
+    )
 
     published = [e for e in list(ctx.bus._history)[before:] if e.type == EventType.ANCHOR]
     assert published, "取消之后必须广播 ANCHOR"

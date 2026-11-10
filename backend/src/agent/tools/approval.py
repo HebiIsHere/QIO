@@ -1678,6 +1678,7 @@ class ApprovalService:
         ok: bool,
         error: str | None = None,
         summary: str | None = None,
+        navigation: dict | None = None,
     ) -> dict | None:
         """旧审批保护的**真实执行结果**：写 approval_history 并发布 APPROVAL_RESULT。
 
@@ -1734,6 +1735,16 @@ class ApprovalService:
             "kind": kind,
             "label": label,
         }
+        # R16（契约 §14.8）：话题导航命令的同源 position/command_id 并入审批结果事件，
+        # 前端按操作身份消费一次（这里只透传，不改审批状态机）。
+        if isinstance(navigation, dict):
+            event["command_id"] = navigation.get("command_id")
+            event["position"] = navigation.get("position")
+            event["position_version"] = navigation.get("position_version")
+            event["nav_version"] = navigation.get("nav_version")
+            event["changed"] = navigation.get("changed")
+            event["replay"] = navigation.get("replay")
+            detail["navigation"] = navigation
         await self.bus.publish(make_event(EventType.APPROVAL_RESULT, event))
         return event
 

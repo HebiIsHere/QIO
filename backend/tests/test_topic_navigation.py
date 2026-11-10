@@ -222,7 +222,12 @@ def test_anchor_writes_are_centralized_in_the_navigator():
     import re
 
     src = Path(__file__).resolve().parents[1] / "src" / "agent"
-    allowed = {"graph/anchors.py", "services/navigation.py"}
+    # R16（契约 §4）：唯一写者从 Navigator 收口到统一变更入口 PositionStateService。
+    allowed = {
+        "graph/anchors.py",
+        "services/navigation.py",
+        "services/position_state.py",
+    }
     offenders: list[str] = []
     for path in src.rglob("*.py"):
         rel = path.relative_to(src).as_posix()
@@ -250,9 +255,17 @@ def test_anchor_api_continue_from_history_creates_a_continuation(client):
     topic_id = ctx.topics.nodes.create_topic("甲话题").id
     source = _seed_fragment(ctx, topic_id, closed=True)
 
+    from agent.services.navigation_version import current as current_nav_version
+
     resp = client.post(
         "/api/anchor",
-        json={"topic_id": topic_id, "fragment_id": source, "continue_from_history": True},
+        json={
+            "topic_id": topic_id,
+            "fragment_id": source,
+            "continue_from_history": True,
+            "request_id": "req-nav-continue",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
     )
 
     assert resp.status_code == 200
@@ -276,8 +289,16 @@ def test_anchor_api_continue_from_history_requires_a_fragment(client):
     ctx = client.app.state.ctx
     topic_id = ctx.topics.nodes.create_topic("甲话题").id
 
+    from agent.services.navigation_version import current as current_nav_version
+
     resp = client.post(
-        "/api/anchor", json={"topic_id": topic_id, "continue_from_history": True}
+        "/api/anchor",
+        json={
+            "topic_id": topic_id,
+            "continue_from_history": True,
+            "request_id": "req-nav-no-fragment",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
     )
 
     assert resp.status_code == 400
@@ -289,7 +310,17 @@ def test_anchor_api_enter_topic_starts_from_the_latest_position(client):
     historical = _seed_fragment(ctx, topic_id, closed=True)
     AnchorService(ctx.conn).set_active(topic_id, historical)
 
-    resp = client.post("/api/anchor", json={"topic_id": topic_id, "fragment_id": None})
+    from agent.services.navigation_version import current as current_nav_version
+
+    resp = client.post(
+        "/api/anchor",
+        json={
+            "topic_id": topic_id,
+            "fragment_id": None,
+            "request_id": "req-nav-enter",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
+    )
 
     assert resp.status_code == 200
     assert AnchorService(ctx.conn).get_active().fragment_id is None, "进入话题＝从最新位置继续"

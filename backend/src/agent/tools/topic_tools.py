@@ -20,8 +20,10 @@ ToolRegistry.execute 之前拦截同名工具：用户确认之后才以（可�
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 
+from agent.graph.anchors import AnchorService
 from agent.graph.nodes import NodeService
 from agent.prompts import TOOL_DESCRIPTIONS
 from agent.services.navigation import (
@@ -32,6 +34,7 @@ from agent.services.navigation import (
 from agent.services.topic_operation import (
     INTENT_PARAM,
     current_operation,
+    navigation_identity,
     normalize_topic_name,
 )
 from agent.tools.base import Tool, ToolResult
@@ -61,6 +64,91 @@ def _nav_conflict_result(exc: NavigationVersionConflict) -> ToolResult:
         facts=facts,
         code="nav_version_conflict",
     )
+
+
+def _navigation_command_failure(result) -> ToolResult | None:
+    """把 PositionStateService 的拒绝/冲突结果映射成既有 ToolResult（零副作用）。
+
+    * I05 同身份不同参数 → code=navigation_command_conflict；
+    * CAS/前提不满足（superseded/rejected）→ 保持既有工具错误码 nav_version_conflict
+      （既有测试 tests/test_p1r_c_topic_identity.py 断言它），事实里带新的结构化 code。
+    """
+    if result.status == "conflict":
+        return ToolResult(
+            ok=False,
+            content=(
+                "同一个导航命令身份被用于不同参数，这次话题操作没有执行，"
+                "也没有改动当前对话位置。请直接在当前话题回答用户原来的问题。"
+            ),
+            error=result.reason or "导航命令身份参数冲突",
+            category="unknown",
+            recoverable=False,
+            facts={
+                "topic_application": "stale",
+                "code": result.code or "navigation_command_conflict",
+                "command_id": result.command_id,
+                "position": result.position,
+                "nav_version": result.nav_version,
+                "position_version": result.position_version,
+            },
+            code="navigation_command_conflict",
+        )
+    if result.status in ("rejected", "superseded"):
+        stored = dict(result.result or {})
+        facts = {
+            "topic_application": "stale",
+            "code": result.code or "navigation_command_stale",
+            "command_id": result.command_id,
+            "position": result.position,
+            "nav_version": result.nav_version,
+            "position_version": result.position_version,
+        }
+        for key in (
+            "expected_nav_version",
+            "actual_nav_version",
+            "expected_position_version",
+            "actual_position_version",
+            "state",
+            "intent_id",
+        ):
+            if key in stored:
+                facts[key] = stored[key]
+        code = "nav_version_conflict"
+        if result.code == "continuation_request_inactive":
+            code = "continuation_request_inactive"
+        return ToolResult(
+            ok=False,
+            content=(
+                "导航位置已经改变（申请绑定的依据与实际位置不一致），这次话题操作没有执行，"
+                "也没有改动当前对话位置。请直接在当前话题回答用户原来的问题，不要重复调用话题工具。"
+            ),
+            error=result.reason or "导航命令依据已改变",
+            category="unknown",
+            recoverable=False,
+            facts=facts,
+            code=code,
+        )
+    return None
+
+
+def _command_success_facts(result, **extra) -> dict:
+    """工具成功结果里的命令事实：同源 position + 两类版本 + 命令身份/幂等标记。"""
+    position = dict(result.position or {})
+    facts: dict = {
+        "topic_id": position.get("topic_id"),
+        "fragment_id": position.get("fragment_id"),
+        "nav_version": result.nav_version,
+        "position_version": result.position_version,
+        "position": position,
+        "command_id": result.command_id,
+        "changed": bool(result.changed),
+        "replay": bool(result.replay),
+        "code": result.code,
+        "inactive": bool(result.inactive),
+        "conflict": bool(result.conflict),
+    }
+    facts.update(extra)
+    return facts
 
 
 def _operation_nav_binding() -> tuple[int | None, str | None]:
@@ -99,11 +187,15 @@ class SwitchTopicTool(Tool):
         node = nodes.get_topic(topic_id)
         if node is None:
             return ToolResult(ok=False, error=f"话题不存在: {topic_id}")
+        operation = current_operation()
+        if operation is not None:
+            # R16（契约 §4/§5）：生产工具路径必须经 PositionStateService.apply()，
+            # 身份 = operation:<operation_id>:<param_version>。既有恢复语义保持不变：
+            # 切回话题时恢复它保存的位置（在写入前解析成显式 target_fragment_id）。
+            return self._run_with_identity(topic_id, node, operation)
         expected_nav_version, turn_id = _operation_nav_binding()
         try:
-            # 切回已有话题时恢复它保存的位置（不覆盖用户明确选择：用户选择本身
-            # 就是 active，因此在同一话题内它永远优先）。写 anchor 只走 Navigator，
-            # 且 Anchor 写入与导航版本 CAS 在同一个事务里（P1-04）。
+            # 旧路径（无命令身份的单元测试 / 子任务直接调用）：保留既有行为。
             result = TopicNavigationService(self.conn).enter_topic(
                 topic_id,
                 relate=True,
@@ -121,6 +213,74 @@ class SwitchTopicTool(Tool):
             "nav_version": result.nav_version,
         }
         if result.fragment_id:
+            return ToolResult(
+                ok=True,
+                content=(
+                    f"已切换到话题「{node.name}」（{topic_id}）；"
+                    "已回到该话题上次讨论的位置，下一轮会带上那段历史。"
+                ),
+                facts=facts,
+            )
+        return ToolResult(
+            ok=True,
+            content=f"已切换到话题「{node.name}」（{topic_id}）",
+            facts=facts,
+        )
+
+    def _run_with_identity(self, topic_id: str, node, operation) -> ToolResult:
+        from agent.services.position_state import PositionStateService, PositionTransition
+
+        try:
+            target_fragment = AnchorService(self.conn).position_fragment(topic_id)
+            transition = PositionTransition(
+                kind="enter_topic",
+                source="tool.switch_topic",
+                identity=navigation_identity(operation),
+                initiator="tool",
+                target_topic_id=topic_id,
+                target_fragment_id=target_fragment,
+                base_nav_version=operation.base_nav_version,
+                nav_decision=True,
+                turn_id=str(operation.turn_id or "") or None,
+                operation_id=operation.operation_id,
+                param_version=int(operation.param_version),
+            )
+            result = PositionStateService(self.conn).apply(transition)
+        except Exception:  # noqa: BLE001 - 统一入口不可用时如实失败，不绕过写位置
+            logging.getLogger(__name__).warning(
+                "switch_topic navigation command failed", exc_info=True
+            )
+            return ToolResult(
+                ok=False,
+                content=(
+                    "导航命令入口不可用（完整位置状态未就绪），这次话题操作没有执行。"
+                    "请直接在当前话题回答用户原来的问题。"
+                ),
+                error="navigation command unavailable",
+                category="unknown",
+                recoverable=False,
+                code="navigation_command_unavailable",
+            )
+        failure = _navigation_command_failure(result)
+        if failure is not None:
+            return failure
+        # 本轮是模型自己换的话题：整轮归属跟着走（用户导航不会走到这里）。
+        note_tool_navigation(topic_id)
+        facts = _command_success_facts(
+            result,
+            operation_id=str(operation.operation_id),
+            param_version=int(operation.param_version),
+        )
+        if result.replay:
+            return ToolResult(
+                ok=True,
+                content=(
+                    f"已切换到话题「{node.name}」（{topic_id}）；"
+                    "该命令此前已经执行过，这里重放既有结果，没有重复导航。"
+                ),
+                facts=facts,
+            )
+        if result.position.get("fragment_id"):
             return ToolResult(
                 ok=True,
                 content=(
@@ -195,6 +355,19 @@ class CreateTopicTool(Tool):
                 if self.EMBED_LO <= top < self.EMBED_HI:
                     return (top_id, top, "embedding")
         return None
+
+    def _identity_already_applied(self, operation) -> bool:
+        """该 operation:<opID>:<pv> 是否已有命令行（重试只重放，不再建申请）。"""
+        try:
+            from agent.services.position_state import PositionStateService
+
+            key = navigation_identity(operation).identity_key
+            return PositionStateService(self.conn).lookup(key) is not None
+        except Exception:  # noqa: BLE001 - 读取失败按「没有」处理（仍走真实执行/失败）
+            logging.getLogger(__name__).warning(
+                "read navigation command row failed", exc_info=True
+            )
+            return False
 
     @staticmethod
     def _conflict_identity(operation, name: str) -> tuple[str, int]:
@@ -317,6 +490,9 @@ class CreateTopicTool(Tool):
         if not name:
             return ToolResult(ok=False, error="name 必填")
         operation = current_operation()
+        if operation is not None and self._identity_already_applied(operation):
+            # 同 operation+param_version 的真实重试：只重放既有命令结果，不再走查重弹窗。
+            return self._create_with_identity(name, operation)
         identity = self._conflict_identity(operation, name)
         expected_nav_version, turn_id = _operation_nav_binding()
 
@@ -420,6 +596,9 @@ class CreateTopicTool(Tool):
         expected_nav_version: int | None,
         turn_id: str | None,
     ) -> ToolResult:
+        operation = current_operation()
+        if operation is not None:
+            return self._create_with_identity(name, operation)
         try:
             result = TopicNavigationService(self.conn).create_topic(
                 name,
@@ -440,4 +619,69 @@ class CreateTopicTool(Tool):
                 "nav_version": result.nav_version,
                 "dedup_name": normalize_topic_name(name),
             },
+        )
+
+    def _create_with_identity(self, name: str, operation) -> ToolResult:
+        """R16（契约 §4/§5）：create_topic 经统一入口，身份 = operation:<opID>:<pv>。"""
+        from agent.services.position_state import PositionStateService, PositionTransition
+
+        try:
+            result = PositionStateService(self.conn).apply(
+                PositionTransition(
+                    kind="create_topic",
+                    source="tool.create_topic",
+                    identity=navigation_identity(operation),
+                    initiator="tool",
+                    new_topic_name=name,
+                    base_nav_version=operation.base_nav_version,
+                    nav_decision=True,
+                    turn_id=str(operation.turn_id or "") or None,
+                    operation_id=operation.operation_id,
+                    param_version=int(operation.param_version),
+                    result_extra={"tool": "create_topic"},
+                )
+            )
+        except Exception:  # noqa: BLE001 - 统一入口不可用时如实失败，不绕过写位置
+            logging.getLogger(__name__).warning(
+                "create_topic navigation command failed", exc_info=True
+            )
+            return ToolResult(
+                ok=False,
+                content=(
+                    "导航命令入口不可用（完整位置状态未就绪），这次话题没有创建，"
+                    "也没有改动当前对话位置。请直接在当前话题回答用户原来的问题。"
+                ),
+                error="navigation command unavailable",
+                category="unknown",
+                recoverable=False,
+                code="navigation_command_unavailable",
+            )
+        failure = _navigation_command_failure(result)
+        if failure is not None:
+            return failure
+        stored = dict(result.result or {})
+        topic_id = stored.get("new_topic_id") or stored.get("topic_id") or result.position.get("topic_id")
+        note_tool_navigation(str(topic_id))
+        facts = _command_success_facts(
+            result,
+            topic_id=str(topic_id),
+            fragment_id=None,
+            dedup_name=normalize_topic_name(name),
+            new_name=name,
+            operation_id=str(operation.operation_id),
+            param_version=int(operation.param_version),
+        )
+        if result.replay:
+            return ToolResult(
+                ok=True,
+                content=(
+                    f"已创建并切换到话题「{name}」（{topic_id}）；"
+                    "该命令此前已经执行过，这里重放既有结果，没有重复创建。"
+                ),
+                facts=facts,
+            )
+        return ToolResult(
+            ok=True,
+            content=f"已创建并切换到话题「{name}」（{topic_id}）",
+            facts=facts,
         )
