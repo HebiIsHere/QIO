@@ -45,6 +45,9 @@ RUNTIME_ANCHOR_FIELDS = {
     "pending_intent_version",
     "pending_source_fragment_id",
     "pending_source_title",
+    # R16（契约 §3.1）：完整位置状态 wire 追加两类版本与 DB 身份。
+    "position_version",
+    "position_identity",
 }
 
 
@@ -123,6 +126,9 @@ def _continue(
     }
     if request_id is not None:
         payload["request_id"] = request_id
+    # 契约 §14.2：手动导航必须携带客户端最近已接受的 nav 依据（缺失 → 400）。
+    ctx = client.app.state.ctx
+    payload["base_nav_version"] = navigation_version.current(ctx.conn)
     return client.post("/api/anchor", json=payload)
 
 
@@ -246,9 +252,15 @@ def test_runtime_state_anchor_snapshot_matches_anchor_event_facts(client: TestCl
     for key in RUNTIME_ANCHOR_FIELDS:
         assert anchor[key] == event.data[key], key
 
-    # 取消待接续：pending 字段清空，位置与版本不变（仅取消动作本身不推进版本）。
+    # 取消待接续：pending 字段清空，位置与版本不变（§14.9：取消不推进 nav_version）。
     version_before = _nav(ctx)
-    cancelled = client.post("/api/anchor/continue/cancel")
+    cancelled = client.post(
+        "/api/anchor/continue/cancel",
+        json={
+            "request_id": "req-snapshot-cancel",
+            "base_nav_version": navigation_version.current(ctx.conn),
+        },
+    )
     assert cancelled.status_code == 200, cancelled.text
     after_cancel = client.get("/api/runtime/state").json()["anchor"]
     assert after_cancel["pending_intent_id"] is None
@@ -332,13 +344,15 @@ def test_a_to_repeat_a_is_zero_write_replay(client: TestClient):
     assert ctx.bindings.intent_by_request("req-a").state == "registered"
     _assert_zero_write(ctx, before, anchor_events=events_after_first)
 
-    # 重复点同一来源（不带 request_id）：仍是零写入幂等复用。
-    repeat = _continue(client, topic, hist_a)
+    # 新 request_id 重复点同一来源：真实新命令但零变化（changed=False, replay=False），
+    # 零位置写入、零版本推进、零广播；命令行仍保留一次（§14.1/§14.4）。
+    repeat = _continue(client, topic, hist_a, request_id="req-a-repeat")
     assert repeat.status_code == 200, repeat.text
     body3 = repeat.json()
-    assert body3["replay"] is True and body3["changed"] is False
+    assert body3["replay"] is False and body3["changed"] is False
     assert body3["intent_id"] == body1["intent_id"]
-    _assert_zero_write(ctx, before, anchor_events=events_after_first)
+    assert _nav(ctx) == before["nav_version"]
+    assert _anchor_event_count(ctx) == events_after_first
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +389,7 @@ def test_replay_of_replaced_request_is_inactive_and_keeps_newer_selection(client
     assert replay.status_code == 409, replay.text
     body = replay.json()
     assert body["ok"] is False
-    assert body["conflict"] is True
+    assert body["inactive"] is True
     assert body["code"] == "continuation_request_inactive"
     assert body["state"] == "replaced"
 
@@ -404,9 +418,16 @@ def test_replay_after_cancel_is_inactive_and_changes_nothing(client: TestClient)
     first = _continue(client, topic, hist_a, request_id="req-cancel")
     assert first.status_code == 200, first.text
     version_after_click = _nav(ctx)
-    cancelled = client.post("/api/anchor/continue/cancel")
-    assert cancelled.status_code == 200
-    assert cancelled.json() == {"ok": True, "cancelled": True}
+    cancelled = client.post(
+        "/api/anchor/continue/cancel",
+        json={
+            "request_id": "req-cancel-call",
+            "base_nav_version": navigation_version.current(ctx.conn),
+        },
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["ok"] is True
+    assert cancelled.json()["cancelled"] is True
     assert _pending(ctx) is None
     assert _intent_state(ctx, "req-cancel") == "cancelled"
     assert _nav(ctx) == version_after_click, "取消待接续不推进导航版本"
@@ -418,7 +439,7 @@ def test_replay_after_cancel_is_inactive_and_changes_nothing(client: TestClient)
     replay = _continue(client, topic, hist_a, request_id="req-cancel")
     assert replay.status_code == 409, replay.text
     body = replay.json()
-    assert body["ok"] is False and body["conflict"] is True
+    assert body["ok"] is False and body["inactive"] is True
     assert body["code"] == "continuation_request_inactive"
     assert body["state"] == "cancelled"
 
@@ -545,7 +566,8 @@ def test_request_id_reused_with_different_params_is_conflict(client: TestClient)
     body = conflict.json()
     assert body["ok"] is False
     assert body["conflict"] is True
-    assert body["code"] == "continuation_request_conflict"
+    # R16（契约 §5/§14.4）：同一命令身份用于不同参数 → navigation_command_conflict。
+    assert body["code"] == "navigation_command_conflict"
 
     # 不得返回旧意图冒充成功，也不得留下任何写入。
     assert _intent_state(ctx, "req-shared") == "registered"
@@ -604,7 +626,15 @@ def test_non_continue_anchor_path_is_unchanged(client: TestClient):
 
     version0 = _nav(ctx)
     events0 = _anchor_event_count(ctx)
-    entered = client.post("/api/anchor", json={"topic_id": topic, "fragment_id": None})
+    entered = client.post(
+        "/api/anchor",
+        json={
+            "topic_id": topic,
+            "fragment_id": None,
+            "request_id": "req-plain-enter",
+            "base_nav_version": navigation_version.current(ctx.conn),
+        },
+    )
     assert entered.status_code == 200, entered.text
     assert entered.json()["ok"] is True
     assert _anchor_topic(ctx) == topic
@@ -612,7 +642,23 @@ def test_non_continue_anchor_path_is_unchanged(client: TestClient):
     assert _nav(ctx) == version0 + 1
     assert _anchor_event_count(ctx) == events0 + 1
 
-    explicit = client.post("/api/anchor", json={"topic_id": topic, "fragment_id": hist_a})
+    # 契约 §14.2/§14.4：显式封存片段必须走 continue/select_history（非 continue 路径 → 400）。
+    forbidden = client.post(
+        "/api/anchor",
+        json={
+            "topic_id": topic,
+            "fragment_id": hist_a,
+            "request_id": "req-plain-hist",
+            "base_nav_version": navigation_version.current(ctx.conn),
+        },
+    )
+    assert forbidden.status_code == 400, forbidden.text
+    assert forbidden.json()["code"] == "historic_fragment_requires_continuation"
+    assert _anchor_fragment(ctx) is None
+    assert _nav(ctx) == version0 + 1
+    assert _anchor_event_count(ctx) == events0 + 1
+
+    explicit = _continue(client, topic, hist_a, request_id="req-plain-continue")
     assert explicit.status_code == 200, explicit.text
     assert _anchor_fragment(ctx) == hist_a
     assert explicit.json()["historic"] is True

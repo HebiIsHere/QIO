@@ -101,20 +101,61 @@ def test_focus_block_invalid_and_cross_topic(ctx: AppContext):
 
 def test_anchor_api_set_and_clear(client):
     # 建话题
+    from agent.services.navigation_version import current as current_nav_version
+
     ctx = client.app.state.ctx
     node = ctx.topics.nodes.create_topic("锚点话题")
     frag_id = _seed_fragment(ctx.conn, node.id, closed=True)
-    resp = client.post("/api/anchor", json={"topic_id": node.id, "fragment_id": frag_id})
+    # 契约 §14.2：手动导航必须携带 request_id + base_nav_version；显式封存片段必须走 continue。
+    resp = client.post(
+        "/api/anchor",
+        json={
+            "topic_id": node.id,
+            "fragment_id": frag_id,
+            "continue_from_history": True,
+            "request_id": "req-focus-continue",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
+    )
     assert resp.status_code == 200
     active = AnchorService(ctx.conn).get_active()
     assert active.topic_id == node.id and active.fragment_id == frag_id
-    resp = client.post("/api/anchor", json={"topic_id": node.id, "fragment_id": None})
+    resp = client.post(
+        "/api/anchor",
+        json={
+            "topic_id": node.id,
+            "fragment_id": None,
+            "request_id": "req-focus-enter",
+            "base_nav_version": current_nav_version(ctx.conn),
+        },
+    )
     assert resp.status_code == 200
     active = AnchorService(ctx.conn).get_active()
     assert active.fragment_id is None
     # 非法话题 / 跨话题片段
-    assert client.post("/api/anchor", json={"topic_id": "ghost"}).status_code == 404
-    assert client.post("/api/anchor", json={"topic_id": node.id, "fragment_id": "ghost"}).status_code == 400
+    assert (
+        client.post(
+            "/api/anchor",
+            json={
+                "topic_id": "ghost",
+                "request_id": "req-focus-ghost",
+                "base_nav_version": current_nav_version(ctx.conn),
+            },
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            "/api/anchor",
+            json={
+                "topic_id": node.id,
+                "fragment_id": "ghost",
+                "request_id": "req-focus-ghost-frag",
+                "base_nav_version": current_nav_version(ctx.conn),
+            },
+        ).status_code
+        == 400
+    )
 
 
 def test_injection_focus_before_short_term(ctx: AppContext):

@@ -123,13 +123,22 @@ async def test_anchor_api_publishes_authoritative_anchor(ctx: AppContext):
     ctx.conn.commit()
 
     # /api/anchor 走真实 HTTP 路由（ASGITransport：与订阅者在同一个事件循环里）
+    from agent.services.navigation_version import current as current_nav_version
+
     app = create_app(ctx.settings, ctx.conn)
     app_ctx = app.state.ctx
     collected, finish = await _collect_anchor(app_ctx)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/api/anchor", json={"topic_id": node.id, "fragment_id": frag}
+            "/api/anchor",
+            json={
+                "topic_id": node.id,
+                "fragment_id": frag,
+                "continue_from_history": True,
+                "request_id": "req-anchor-event",
+                "base_nav_version": current_nav_version(app_ctx.conn),
+            },
         )
     assert resp.status_code == 200
     # 响应直接给出权威标题与 historic：前端不需要用摘要自己拼标题，也不受事件到达顺序影响

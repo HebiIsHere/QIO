@@ -348,50 +348,146 @@ def _dev_task_row(workspaces, task) -> dict:
     }
 
 
+def _position_snapshot(ctx) -> dict:
+    """完整位置状态 wire 对象（契约 §3.1/§14.7）：runtime 快照与 ANCHOR 事件唯一来源。"""
+    service = getattr(ctx, "position_state", None)
+    if service is None:
+        # 迁移未就绪/旧测试替身：如实走 A 的同一读取函数，不在这里拼接第二份事实。
+        from agent.services.position_state import PositionStateService
+
+        service = PositionStateService(ctx.conn)
+    return service.read()
+
+
 def _authoritative_anchor_snapshot(ctx) -> dict:
-    """当前权威位置快照（R2 契约 §4.2(b)）：与 _publish_anchor_event **同一数据源**。
+    """当前权威位置快照（契约 §3.1/§14.7）：与 _publish_anchor_event 同一数据源。
 
-    GET /api/runtime/state 是 RESYNC 之后的权威快照。前端只允许用「ANCHOR 事件」
-    或「这份快照」更新位置，所以两边必须来自同一处读取：AnchorService + 单源
-    navigation_version + bindings.peek_intent + 片段标题。任何一边另读一份都可能
-    出现「事件说 A、快照说 B」的双权威 —— 正是 R2 要消灭的问题。
-
-    读不到的事实如实给 None（不猜）；还没有 Anchor 时字段全为 null / False，
-    不伪造一个位置。
+    GET /api/runtime/state 是 RESYNC 之后的权威快照。R16 起停止在这里分别读
+    Anchor + pending 再拼接：整份 position 对象由 PositionStateService.read()
+    在单一读事务内产出（含两类版本与 db identity），与 ANCHOR 事件、HTTP 命令
+    结果完全同源。
     """
-    from agent.graph.anchors import AnchorService
-    from agent.services.navigation_version import current as current_nav_version
+    return _position_snapshot(ctx)
 
-    anchors = AnchorService(ctx.conn)
-    anchor = anchors.get_active()
-    topic_id = anchor.topic_id if anchor is not None else None
-    fragment_id = anchor.fragment_id if anchor is not None else None
-    topic_name = None
-    if topic_id:
-        node = ctx.topics.nodes.get_topic(topic_id)
-        topic_name = node.name if node is not None else topic_id
+
+def _nav_request_error(ctx, status_code: int, code: str, **extra) -> JSONResponse:
+    """导航入口的请求级拒绝（缺身份/缺依据）：结构化 code + 当前只读 position。"""
     try:
-        nav_version: int | None = int(current_nav_version(ctx.conn))
-    except Exception:  # noqa: BLE001 - 版本读不到时如实 null（与 ANCHOR 事件同口径）
+        position = _position_snapshot(ctx)
+    except Exception:  # noqa: BLE001 - 位置读不到时如实 null（拒绝本身与位置无关）
         logging.getLogger(__name__).warning(
-            "failed to read navigation version for runtime anchor snapshot", exc_info=True
+            "failed to read position for navigation rejection", exc_info=True
         )
-        nav_version = None
-    pending = ctx.bindings.peek_intent()
-    return {
-        "topic_id": topic_id,
-        "topic_name": topic_name,
-        "fragment_id": fragment_id,
-        "fragment_title": ctx._fragment_title(fragment_id),
-        "historic": bool(anchors.is_historic_position(topic_id)) if topic_id else False,
-        "nav_version": nav_version,
-        "pending_intent_id": pending.intent_id if pending is not None else None,
-        "pending_intent_version": pending.version if pending is not None else None,
-        "pending_source_fragment_id": pending.source_fragment_id if pending is not None else None,
-        "pending_source_title": (
-            ctx._fragment_title(pending.source_fragment_id) if pending is not None else None
-        ),
+        position = None
+    content = {
+        "ok": False,
+        "code": code,
+        "detail": code,
+        "changed": False,
+        "replay": False,
+        "inactive": status_code == 409,
+        "conflict": code == "navigation_command_conflict",
+        "command_id": None,
+        "nav_version": (position or {}).get("nav_version"),
+        "position_version": (position or {}).get("position_version"),
+        "position": position,
     }
+    content.update(extra)
+    return JSONResponse(status_code=status_code, content=content)
+
+
+def _select_history_invalid_state(ctx, command) -> str | None:
+    """已 applied 的 select_history 命令是否因后续选择/取消而失效（§5 明确拒绝）。"""
+    stored = dict(getattr(command, "result", None) or {})
+    intent_id = stored.get("intent_id")
+    if not intent_id:
+        return None
+    try:
+        intent = ctx.bindings.intent_by_id(str(intent_id))
+    except Exception:  # noqa: BLE001 - 读不到意图时不猜测失效
+        logging.getLogger(__name__).warning(
+            "failed to read continuation intent for replay", exc_info=True
+        )
+        return None
+    if intent is not None and intent.state in ("replaced", "cancelled"):
+        return intent.state
+    return None
+
+
+def _manual_navigation_response(ctx, command) -> JSONResponse:
+    """手动导航命令结果 → 既有响应字段 + §5 冻结新字段（同源完整 position）。"""
+    stored = dict(getattr(command, "result", None) or {})
+    position = dict(getattr(command, "position", None) or {})
+    invalid_state = None
+    status = str(getattr(command, "status", "") or "")
+    if status == "applied" and getattr(command, "replay", False):
+        invalid_state = _select_history_invalid_state(ctx, command)
+    pending = False
+    try:
+        current = ctx.bindings.peek_intent()
+    except Exception:  # noqa: BLE001
+        current = None
+    intent_id = stored.get("intent_id")
+    if current is not None and intent_id and current.intent_id == intent_id:
+        pending = current.state == "registered"
+    body = {
+        "ok": status == "applied" and invalid_state is None,
+        "status": "superseded" if invalid_state else status,
+        "changed": bool(getattr(command, "changed", False)),
+        "replay": bool(getattr(command, "replay", False)),
+        "inactive": bool(getattr(command, "inactive", False)) or invalid_state is not None,
+        "conflict": bool(getattr(command, "conflict", False)),
+        "code": (
+            "continuation_request_inactive"
+            if invalid_state
+            else getattr(command, "code", None)
+        ),
+        "command_id": getattr(command, "command_id", None),
+        "nav_version": getattr(command, "nav_version", None),
+        "position_version": getattr(command, "position_version", None),
+        "position": position,
+        "topic_id": position.get("topic_id"),
+        "topic_name": position.get("topic_name"),
+        "fragment_id": position.get("fragment_id"),
+        "fragment_title": position.get("fragment_title"),
+        "historic": bool(position.get("historic")),
+        "created_fragment_id": stored.get("created_fragment_id"),
+        "source_fragment_id": stored.get("source_fragment_id"),
+        "intent_id": stored.get("intent_id"),
+        "intent_version": stored.get("intent_version"),
+        "state": invalid_state or stored.get("state"),
+        "opens_current": bool(stored.get("opens_current")),
+        "pending": bool(pending and not invalid_state),
+        "cancelled": stored.get("cancelled"),
+        "cancelled_intent_id": stored.get("cancelled_intent_id"),
+    }
+    if invalid_state is not None:
+        return JSONResponse(status_code=409, content=body)
+    if status in ("rejected", "superseded", "conflict"):
+        return JSONResponse(status_code=409, content=body)
+    return JSONResponse(status_code=200, content=body)
+
+
+async def _run_manual_navigation(ctx, transition) -> JSONResponse:
+    """手动导航唯一执行路径：apply（内含身份重放/冲突/CAS）→ 真实成功才广播一次。"""
+    from agent.services.position_state import PositionStateService
+
+    service = getattr(ctx, "position_state", None)
+    if service is None:
+        service = PositionStateService(ctx.conn)
+    command = service.apply(transition)
+    status = str(getattr(command, "status", "") or "")
+    if (
+        status == "applied"
+        and getattr(command, "changed", False)
+        and not getattr(command, "replay", False)
+    ):
+        await ctx._publish_anchor_event(
+            origin="manual",
+            position=command.position,
+            command_id=command.command_id,
+        )
+    return _manual_navigation_response(ctx, command)
 
 
 def create_app(
@@ -1533,120 +1629,92 @@ def create_app(
 
     @app.post("/api/anchor")
     async def set_anchor(body: dict) -> dict:
-        from agent.services.navigation import FragmentNotInTopic, TopicNotFound
+        """手动导航唯一入口（契约 §5/§14.2）：必须携带 request_id + base_nav_version。"""
+        from agent.services.position_state import NavCommandIdentity, PositionTransition
 
         topic_id = str(body.get("topic_id") or "").strip()
         if not topic_id:
             raise HTTPException(status_code=400, detail="topic_id required")
-        fragment_id = body.get("fragment_id")
-        # 两个明确不同的动作：进入话题（最新位置）与从历史继续（新建接续片段）。
-        # 具体规则都在 TopicNavigationService 里，路由不自己写 anchor。
-        try:
-            if body.get("continue_from_history"):
-                if not fragment_id:
-                    raise HTTPException(status_code=400, detail="fragment_id required to continue")
-                raw_request_id = body.get("request_id")
-                request_id = (
-                    str(raw_request_id).strip() if raw_request_id is not None else None
-                ) or None
-                # 阶段 1：点击历史**只登记接续意图**，不创建片段（真正的新片段在消息执行时落实）。
-                # R3（契约 §5）：路由必须消费服务层的**有效性结果**。旧请求重放 / 幂等复用 /
-                # 参数冲突都不能只取 fragment_id 再落位 —— 那会让 A→B→重放 A 把 Anchor 改回 A、
-                # pending 留在 B。登记、有效性判断、Anchor 落位与版本推进都在服务层同一事务里。
-                outcome = ctx.navigation.register_and_position_continuation(
-                    topic_id, str(fragment_id), request_id=request_id
+        request_id = str(body.get("request_id") or "").strip()
+        if not request_id:
+            return _nav_request_error(ctx, 400, "navigation_request_id_required")
+        base_nav_version = body.get("base_nav_version")
+        if isinstance(base_nav_version, bool) or not isinstance(base_nav_version, int):
+            return _nav_request_error(ctx, 400, "navigation_basis_required")
+
+        topic = ctx.topics.nodes.get_topic(topic_id)
+        if topic is None:
+            raise HTTPException(status_code=404, detail="topic not found")
+        fragment = None
+        raw_fragment = body.get("fragment_id")
+        if raw_fragment:
+            fragment = ctx.fragments.get(str(raw_fragment))
+            if fragment is None or fragment.topic_id != topic_id:
+                raise HTTPException(
+                    status_code=400, detail="fragment not found in topic"
                 )
-                if outcome.get("conflict"):
-                    # 同一 request_id 已用于不同选择：不拿旧意图冒充成功（零写入）。
-                    return JSONResponse(
-                        status_code=409,
-                        content={
-                            "ok": False,
-                            "conflict": True,
-                            "code": "continuation_request_conflict",
-                            "request_id": request_id,
-                            "topic_id": outcome["topic_id"],
-                            "fragment_id": outcome["fragment_id"],
-                        },
-                    )
-                if outcome.get("inactive"):
-                    # 旧选择已被替换 / 取消：保持用户后来的选择与当前 Anchor，零写入。
-                    return JSONResponse(
-                        status_code=409,
-                        content={
-                            "ok": False,
-                            "conflict": True,
-                            "code": "continuation_request_inactive",
-                            "state": outcome.get("state"),
-                            "topic_id": outcome["topic_id"],
-                            "fragment_id": outcome["fragment_id"],
-                            "fragment_title": outcome["fragment_title"],
-                            "historic": outcome["historic"],
-                            "nav_version": outcome["nav_version"],
-                            "source_fragment_id": outcome["source_fragment_id"],
-                        },
-                    )
-                if outcome.get("replay"):
-                    # 幂等复用（同 request_id 参数一致 / 重复点同一来源）：
-                    # 零位置写入、零版本推进、零 ANCHOR 广播，只回放既有事实。
-                    return {
-                        "ok": True,
-                        "changed": False,
-                        "replay": True,
-                        "inactive": False,
-                        "topic_id": outcome["topic_id"],
-                        "fragment_id": outcome["fragment_id"],
-                        "fragment_title": outcome["fragment_title"],
-                        "historic": outcome["historic"],
-                        "nav_version": outcome["nav_version"],
-                        "created_fragment_id": None,
-                        "source_fragment_id": outcome["source_fragment_id"] or str(fragment_id),
-                        "intent_id": outcome["intent_id"],
-                        "intent_version": outcome["intent_version"],
-                        "pending": outcome.get("state") == "registered",
-                    }
-                # 真实新选择 / 点当前开放片段：落位与版本推进已在服务层同一事务完成，
-                # 这里只广播**一次**权威 ANCHOR（不重复推进版本）。
-                await ctx._publish_anchor_event()
-                return {
-                    "ok": True,
-                    "changed": True,
-                    "replay": False,
-                    "inactive": False,
-                    "topic_id": outcome["topic_id"],
-                    "fragment_id": outcome["fragment_id"],
-                    "fragment_title": outcome["fragment_title"],
-                    "historic": outcome["historic"],
-                    "nav_version": outcome["nav_version"],
-                    "created_fragment_id": None,
-                    "source_fragment_id": outcome["source_fragment_id"] or str(fragment_id),
-                    "intent_id": outcome["intent_id"],
-                    "intent_version": outcome["intent_version"],
-                    "pending": outcome.get("state") == "registered",
-                }
+
+        identity = NavCommandIdentity.request(request_id)
+        result_extra = {"origin": "manual"}
+        if body.get("continue_from_history"):
+            if fragment is None:
+                raise HTTPException(
+                    status_code=400, detail="fragment_id required to continue"
+                )
+            if fragment.closed_at is None:
+                # 点击当前开放片段 = 普通继续（结束不再适用的旧 registered）。
+                transition = PositionTransition(
+                    kind="open_fragment",
+                    source="manual.open_fragment",
+                    identity=identity,
+                    initiator="user",
+                    target_topic_id=topic_id,
+                    target_fragment_id=fragment.id,
+                    base_nav_version=base_nav_version,
+                    nav_decision=True,
+                    result_extra=result_extra,
+                )
             else:
-                # 用户明确点「进入这个话题」＝从最新位置继续，不恢复旧位置。
-                result = ctx.navigation.enter_topic(
-                    topic_id,
-                    fragment_id=str(fragment_id) if fragment_id else None,
-                    restore_position=False,
+                # 点击历史只登记接续，Anchor 落到所选历史片段（§3.3/§14.5）。
+                transition = PositionTransition(
+                    kind="select_history",
+                    source="manual.select_history",
+                    identity=identity,
+                    initiator="user",
+                    target_topic_id=topic_id,
+                    target_fragment_id=fragment.id,
+                    base_nav_version=base_nav_version,
+                    pending="register",
+                    pending_topic_id=topic_id,
+                    pending_fragment_id=fragment.id,
+                    pending_request_id=request_id,
+                    nav_decision=True,
+                    result_extra=result_extra,
                 )
-        except TopicNotFound:
-            raise HTTPException(status_code=404, detail="topic not found") from None
-        except FragmentNotInTopic:
-            raise HTTPException(status_code=400, detail="fragment not found in topic") from None
-        # 广播权威锚点：标题 / historic 只能有一个来源（后端），
-        # 前端不用摘要自己拼标题，也不会在位置推进后继续显示旧提示。
-        await ctx._publish_anchor_event()
-        return {
-            "ok": True,
-            "topic_id": result.topic_id,
-            "fragment_id": result.fragment_id,
-            "fragment_title": result.fragment_title,
-            "historic": result.historic,
-            "created_fragment_id": result.created_fragment_id,
-            "source_fragment_id": result.source_fragment_id,
-        }
+        else:
+            if fragment is not None and fragment.closed_at is not None:
+                # 显式封存片段必须走 continue/select_history，不在进入话题路径留下半态。
+                return _nav_request_error(
+                    ctx, 400, "historic_fragment_requires_continuation"
+                )
+            transition = PositionTransition(
+                kind=(
+                    "open_fragment" if fragment is not None else "enter_topic"
+                ),
+                source=(
+                    "manual.open_fragment"
+                    if fragment is not None
+                    else "manual.enter_topic"
+                ),
+                identity=identity,
+                initiator="user",
+                target_topic_id=topic_id,
+                target_fragment_id=fragment.id if fragment is not None else None,
+                base_nav_version=base_nav_version,
+                nav_decision=True,
+                result_extra=result_extra,
+            )
+        return await _run_manual_navigation(ctx, transition)
 
     # -- attachments -------------------------------------------------------
 
@@ -2484,18 +2552,27 @@ def create_app(
     # -- turns -------------------------------------------------------------
 
     @app.post("/api/anchor/continue/cancel")
-    async def cancel_continuation() -> dict:
-        """取消「下一条消息从某段历史继续」的登记。
+    async def cancel_continuation(body: dict | None = None) -> dict:
+        """取消待落实接续（契约 §5/§14.2）：命令身份 request:<id> + 依据版本。"""
+        from agent.services.position_state import NavCommandIdentity, PositionTransition
 
-        阶段 1 的两步语义：点击历史只登记意图，真正的新片段要等消息执行时才落实。
-        所以用户在发送前取消是零成本的：不发消息就不留痕迹（不产生空片段）。
-        """
-        pending = ctx.bindings.peek_intent()
-        if pending is None:
-            return {"ok": True, "cancelled": False}
-        ctx.bindings.cancel_intent(pending.intent_id)
-        await ctx._publish_anchor_event()
-        return {"ok": True, "cancelled": True}
+        body = body if isinstance(body, dict) else {}
+        request_id = str(body.get("request_id") or "").strip()
+        if not request_id:
+            return _nav_request_error(ctx, 400, "navigation_request_id_required")
+        base_nav_version = body.get("base_nav_version")
+        if isinstance(base_nav_version, bool) or not isinstance(base_nav_version, int):
+            return _nav_request_error(ctx, 400, "navigation_basis_required")
+        transition = PositionTransition(
+            kind="cancel_continuation",
+            source="manual.cancel_continuation",
+            identity=NavCommandIdentity.request(request_id),
+            initiator="user",
+            base_nav_version=base_nav_version,
+            pending="cancel",
+            result_extra={"origin": "manual"},
+        )
+        return await _run_manual_navigation(ctx, transition)
 
     @app.post("/api/turns")
     async def start_turn(request: Request, body: dict) -> dict:

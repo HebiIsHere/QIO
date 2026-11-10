@@ -66,11 +66,26 @@ async def settle(approvals: Any, result: Any) -> list[dict]:
         return []
     ok = bool(getattr(result, "ok", False))
     error = getattr(result, "error", None)
+    # R16（契约 §14.8/§14.10）：话题导航命令的同源 position 随审批执行结果透传，
+    # 前端迟到的 APPROVAL_RESULT 据此按操作身份迁移草稿（不二次读 Anchor）。
+    facts = getattr(result, "facts", None)
+    facts = facts if isinstance(facts, dict) else {}
+    navigation: dict | None = None
+    position = facts.get("position")
+    if facts.get("command_id") or isinstance(position, dict):
+        navigation = {
+            "command_id": facts.get("command_id"),
+            "position": position if isinstance(position, dict) else None,
+            "position_version": facts.get("position_version"),
+            "nav_version": facts.get("nav_version"),
+            "changed": bool(facts.get("changed", ok)),
+            "replay": bool(facts.get("replay", False)),
+        }
     settled: list[dict] = []
     for approval_id in ids:
         try:
             event = await approvals.record_legacy_execution(
-                approval_id, ok=ok, error=error
+                approval_id, ok=ok, error=error, navigation=navigation
             )
         except Exception:  # noqa: BLE001 - 收尾失败不能改变工具结果
             logger.warning(

@@ -61,6 +61,7 @@ from typing import Any, Awaitable, Callable
 
 from agent.services.navigation_version import current as current_nav_version
 from agent.services.topic_operation import (
+    HISTORY_CONTINUE_KIND,
     AttemptStatus,
     ConflictStatus,
     DecisionStatus,
@@ -86,6 +87,11 @@ TOPIC_TOOL_KINDS = {
     "create_topic": "topic_create",
 }
 TOPIC_APPLICATION_KINDS = frozenset(TOPIC_TOOL_KINDS.values())
+
+#: R16（契约 §5/§14.4）：continue_from_fragment 也要有 operation:<opID>:<pv> 命令身份。
+#: 它不弹审批（与用户点击历史同级），但仍需稳定身份做重放/参数版本；因此 bridge
+#: 只建立并绑定身份，不进入申请状态机。
+HISTORY_CONTINUE_TOOL = "continue_from_fragment"
 
 #: 申请原因只用于展示，最多 80 字。
 REASON_LIMIT = 80
@@ -756,6 +762,8 @@ class TopicApplicationBridge:
         name = str(getattr(call, "name", "") or "")
         kind = TOPIC_TOOL_KINDS.get(name)
         if kind is None:
+            if name == HISTORY_CONTINUE_TOOL:
+                return self._bind_history_continue(call)
             return None
         arguments = dict(getattr(call, "arguments", None) or {})
         if not self._arguments_usable(kind, arguments):
@@ -838,6 +846,47 @@ class TopicApplicationBridge:
             base_nav_version=snapshot["nav_version"],
             user_message_id=self._user_message_id(),
         )
+
+    # -- 工具 continue 的命令身份（契约 §5/§14.4）-------------------------
+
+    def _bind_history_continue(self, call: Any) -> None:
+        """continue_from_fragment：只建立/复用 operation:<id>:<pv> 命令身份。
+
+        不弹审批（与用户点击历史同级），不改 Anchor、不写位置：真正的登记由工具经
+        PositionStateService.apply(select_history/open_fragment) 完成。同轮内参数
+        （fragment_id）实质变化 → param_version +1（旧身份不再可用）；同参重试复用同一身份。
+        """
+        arguments = dict(getattr(call, "arguments", None) or {})
+        snapshot = self._decision_snapshot()
+        operation = self.registry.for_turn(self.turn_id, kind=HISTORY_CONTINUE_KIND)
+        if operation is None:
+            operation = self.registry.begin(
+                turn_id=self.turn_id,
+                kind=HISTORY_CONTINUE_KIND,
+                route="direct",
+                intent_source=IntentSource.USER_REQUEST,
+                arguments=arguments,
+                from_topic=(snapshot["topic_id"] or self._from_topic() or None),
+                from_fragment=snapshot["fragment_id"],
+                base_nav_version=snapshot["nav_version"],
+                user_message_id=self._user_message_id(),
+            )
+        else:
+            operation.update_params(arguments)
+            if operation.base_nav_version is None:
+                operation.base_nav_version = snapshot["nav_version"]
+            if operation.user_message_id is None:
+                operation.user_message_id = self._user_message_id()
+        self._active_operation = operation
+        operation.decide(DecisionStatus.APPROVED)
+        operation.begin_attempt()
+        self._bind(call, operation)
+        _trace(
+            self.ctx,
+            "topic_application_history_continue",
+            f"{operation.operation_id}:v{operation.param_version}",
+        )
+        return None
 
     # -- 直接执行（user_request）------------------------------------------
 
@@ -1482,10 +1531,17 @@ class TopicApplicationBridge:
         fragment_id = facts.get("fragment_id")
         if nav_version is None:
             nav_version = self._nav_version()
+        # R16（契约 §5/§14.7）：命令结果里的同源 position 随 directive 回传，
+        # 供前端迟到的 APPROVAL_RESULT / 操作结果按**本次操作身份**迁移草稿。
         self.last_navigation = {
             "topic_id": topic_id,
             "fragment_id": fragment_id,
             "nav_version": nav_version,
+            "position_version": facts.get("position_version"),
+            "position": facts.get("position"),
+            "command_id": facts.get("command_id"),
+            "changed": bool(facts.get("changed", True)),
+            "replay": bool(facts.get("replay", False)),
         }
         self._results[key] = result
         _trace(
@@ -1510,6 +1566,15 @@ class TopicApplicationBridge:
         directive["nav_version"] = nav_version
         directive["topic_id"] = topic_id
         directive["fragment_id"] = fragment_id
+        # R16：审批结果/恢复入口消费的命令结果事实（同源 position，不二次读 Anchor）。
+        for key in (
+            "position_version",
+            "position",
+            "command_id",
+            "changed",
+            "replay",
+        ):
+            directive[key] = self.last_navigation.get(key)
         return directive
 
     async def _rebind_failure(
