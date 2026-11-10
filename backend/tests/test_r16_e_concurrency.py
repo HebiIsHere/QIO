@@ -72,10 +72,7 @@ class _TwoBackends:
         self.conn1 = connect(self.path)
         apply_migrations(self.conn1)
         self.conn2 = connect(self.path)
-        self.ctx1 = AppContext(self.settings, self.conn1, EventBus())
-        self.ctx1.credentials._kr = MemoryKeyring()
-        self.ctx2 = AppContext(self.settings, self.conn2, EventBus())
-        self.ctx2.credentials._kr = MemoryKeyring()
+        # 两个独立连接 → 两套真实应用（各自 AppContext / EventBus / 实例身份）
         self.app1 = create_app(self.settings, self.conn1)
         self.app2 = create_app(self.settings, self.conn2)
         self.ctx1 = self.app1.state.ctx
