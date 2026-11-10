@@ -17,18 +17,39 @@ import { nextTick } from "vue";
 const mocks = vi.hoisted(() => ({
   cancelTurn: vi.fn(async (turnId: string) => ({ ok: true, cancelled: true, turn_id: turnId })),
   cancelContinuation: vi.fn(async () => ({ ok: true, cancelled: true })),
+  sendTurn: vi.fn(async () => ({
+    ok: true,
+    accepted: true,
+    turn_id: "turn_9",
+    status: "accepted",
+    topic_id: null,
+  })),
+  getSessionContext: vi.fn(async () => ({
+    topic_id: "t1",
+    topic_name: "当前话题",
+    anchor_fragment: null,
+    messages: [],
+  })),
+  loadHistory: vi.fn(async () => ({ messages: [], anchor: null })),
 }));
 
 vi.mock("../../../services/api", () => ({
   api: {
     cancelTurn: mocks.cancelTurn,
     cancelContinuation: mocks.cancelContinuation,
+    sendTurn: mocks.sendTurn,
+    getSessionContext: mocks.getSessionContext,
+    loadHistory: mocks.loadHistory,
   },
 }));
 
 import ComposerEntries from "../ComposerEntries.vue";
+import Composer from "../../Composer.vue";
 import { useSessionStore } from "../../../stores/session";
 import { useApprovalsStore } from "../../../stores/approvals";
+import { useUnifiedApprovalsStore } from "../../../stores/unifiedApprovals";
+import { useEventStore } from "../../../stores/events";
+import type { AgentEvent } from "../../../services/events";
 
 function freshPinia(): Pinia {
   const pinia = createPinia();
@@ -70,7 +91,53 @@ beforeEach(() => {
   localStorage.clear();
   mocks.cancelTurn.mockClear();
   mocks.cancelContinuation.mockClear();
+  mocks.sendTurn.mockClear();
 });
+
+let eventSeq = 0;
+function ev(type: string, data: Record<string, unknown>): AgentEvent {
+  eventSeq += 1;
+  return { type, id: `e-${type}-${eventSeq}`, ts: "", data } as AgentEvent;
+}
+
+/**
+ * 造一个「本对话正在等待选择话题」的真实状态：
+ * 当前话题 t1、turn_1 正在跑，后端发来 topic_switch 申请（统一审批队列）。
+ */
+function seedTopicApplication(opts: {
+  /** 正在跑的那一轮（决定本对话的等待状态） */
+  activeTurnId?: string;
+  /** 申请归属的轮次（默认同 active） */
+  approvalTurnId?: string;
+} = {}): string {
+  const session = useSessionStore();
+  const events = useEventStore();
+  const activeTurnId = opts.activeTurnId ?? "turn_1";
+  const approvalTurnId = opts.approvalTurnId ?? activeTurnId;
+  session.setAnchor("t1", null, "当前话题", null, false);
+  events.route(ev("TURN_START", { turn_id: activeTurnId }));
+  const approvalId = "ap-topic-1";
+  events.route(
+    ev("APPROVAL_REQUIRED", {
+      approval: {
+        approval_id: approvalId,
+        kind: "topic_switch",
+        payload: {
+          action: "switch",
+          turn_id: approvalTurnId,
+          from_topic_id: "t1",
+          from_topic_name: "当前话题",
+          target_topic_id: "t2",
+          target_topic_name: "另一个话题",
+          reason: "关键词更像它",
+          source: "model",
+        },
+        turn_id: approvalTurnId,
+      },
+    }),
+  );
+  return approvalId;
+}
 
 describe("五入口：出现、互斥展开、再点收起", () => {
   it("没有任何事项时不渲染入口行（不常驻空入口）", async () => {
@@ -271,38 +338,123 @@ describe("发送异常入口与草稿恢复", () => {
     w.unmount();
   });
 
-  it("话题切换建议只给选择，不自动切换", async () => {
+});
+
+describe("话题申请入口：打开同一申请的统一弹窗（旧确认条退役）", () => {
+  it("本对话有 pending 话题申请时出现入口③；点击调用 openTopicApproval，不展开本地面板", async () => {
     const pinia = freshPinia();
     const w = mount(ComposerEntries, { global: { plugins: [pinia] } });
     const session = useSessionStore();
-    session.pendingSwitch = { topicId: "t2", topicName: "另一个话题", reason: "关键词更像它" };
-    const confirm = vi.spyOn(session, "confirmPendingSwitch").mockResolvedValue(undefined as never);
+    const unified = useUnifiedApprovalsStore();
+    seedTopicApplication();
     await nextTick();
 
+    expect(entries(w)).toContain("topicSwitch");
+    const key = session.topicApprovalKey;
+    expect(key).toBeTruthy();
+    const open = vi.spyOn(unified, "openTopicApproval");
+
     await w.find('.entry-btn[data-entry="topicSwitch"]').trigger("click");
-    expect(w.find(".panel").text()).toContain("另一个话题");
-    expect(w.find(".panel").text()).toContain("不会自行切换");
-    expect(confirm).not.toHaveBeenCalled();
-    await w.find(".panel .qio-btn.primary").trigger("click");
     await flushPromises();
-    expect(confirm).toHaveBeenCalledTimes(1);
+
+    // 同一份申请：入口只打开统一弹窗，没有本地方案/独立提交
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open.mock.calls[0]?.[0]).toBe(key);
+    expect(openPanel(w)).toBeNull();
     w.unmount();
   });
 
-  // 迁移自已删除的 components/TopicSwitchPrompt.vue 用例（2026-10-26 合并后清理 · C1）：
-  // 「保留当前」必须真的走拒绝接口，而不是只改本机状态。
-  it("话题切换建议的「保留当前」走到拒绝接口", async () => {
+  it("只有旧 TOPIC_SWITCH_SUGGESTED 事件时不出现入口（旧建议不再有可执行状态）", async () => {
+    const w = await mountEntries();
+    const events = useEventStore();
+    events.route(
+      ev("TOPIC_SWITCH_SUGGESTED", {
+        topic_id: "t2",
+        topic_name: "另一个话题",
+        reason: "关键词更像它",
+      }),
+    );
+    await nextTick();
+    expect(entries(w)).not.toContain("topicSwitch");
+    expect(useSessionStore().topicApprovalPending).toBe(false);
+    w.unmount();
+  });
+});
+
+describe("发送限制：等待选择话题时只禁用本对话的发送动作", () => {
+  async function mountComposer(pinia = freshPinia()) {
+    const w = mount(Composer, { global: { plugins: [pinia] } });
+    await nextTick();
+    return w;
+  }
+
+  it("等待期间：草稿仍可写，发送按钮与 Enter 快捷发送都不可用，且不自动发送", async () => {
     const pinia = freshPinia();
-    const w = mount(ComposerEntries, { global: { plugins: [pinia] } });
+    const w = mount(Composer, { global: { plugins: [pinia] } });
     const session = useSessionStore();
-    session.pendingSwitch = { topicId: "t2", topicName: "另一个话题", reason: "" };
-    const reject = vi.spyOn(session, "rejectPendingSwitch").mockResolvedValue(undefined as never);
+    seedTopicApplication();
     await nextTick();
 
-    await w.find('.entry-btn[data-entry="topicSwitch"]').trigger("click");
-    await w.find(".panel .qio-btn.quiet").trigger("click");
+    const ta = w.find("textarea");
+    await ta.setValue("等待期间写的草稿");
+    expect(session.draft).toBe("等待期间写的草稿");
+
+    const send = w.find(".send-btn");
+    expect(send.attributes("disabled")).toBeDefined();
+    await ta.trigger("keydown", { key: "Enter" });
     await flushPromises();
-    expect(reject).toHaveBeenCalledTimes(1);
+    expect(mocks.sendTurn).not.toHaveBeenCalled();
+    // 草稿不丢、不被清空、不进入排队
+    expect(session.draft).toBe("等待期间写的草稿");
+    w.unmount();
+  });
+
+  it("别的轮次 / 别的对话的申请不影响本对话发送（只禁用对应对话）", async () => {
+    const pinia = freshPinia();
+    const w = mount(Composer, { global: { plugins: [pinia] } });
+    const session = useSessionStore();
+    seedTopicApplication({ activeTurnId: "turn_self", approvalTurnId: "turn_other" });
+    await nextTick();
+
+    expect(session.topicApprovalPending).toBe(false);
+    await w.find("textarea").setValue("别的对话不受影响");
+    expect(w.find(".send-btn").attributes("disabled")).toBeUndefined();
+    await w.find("textarea").trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(mocks.sendTurn).toHaveBeenCalledTimes(1);
+    w.unmount();
+  });
+
+  it("处理后恢复既有发送规则：拒绝后可编辑并主动发送，不自动发送", async () => {
+    const pinia = freshPinia();
+    const w = mount(Composer, { global: { plugins: [pinia] } });
+    const session = useSessionStore();
+    const events = useEventStore();
+    const approvalId = seedTopicApplication();
+    await nextTick();
+
+    const ta = w.find("textarea");
+    await ta.setValue("处理完再发的话");
+    expect(w.find(".send-btn").attributes("disabled")).toBeDefined();
+
+    events.route(
+      ev("APPROVAL_RESULT", {
+        approval_id: approvalId,
+        phase: "rejected",
+        decision: "rejected",
+        turn_id: "turn_1",
+      }),
+    );
+    await nextTick();
+
+    expect(session.topicApprovalPending).toBe(false);
+    expect(w.find(".send-btn").attributes("disabled")).toBeUndefined();
+    // 仍然要用户主动发送（没有被自动发出）
+    expect(mocks.sendTurn).not.toHaveBeenCalled();
+    await ta.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(mocks.sendTurn).toHaveBeenCalledTimes(1);
+    expect(mocks.sendTurn).toHaveBeenCalledWith("处理完再发的话", expect.anything(), expect.anything());
     w.unmount();
   });
 });

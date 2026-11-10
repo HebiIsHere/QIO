@@ -112,6 +112,14 @@ const stopTitle = computed(() => {
  */
 const hasText = computed(() => text.value.trim().length > 0);
 const hasContent = computed(() => hasText.value || pending.value.length > 0);
+/**
+ * 本对话正在等待用户选择话题（有 pending 话题申请）。
+ *
+ * 只影响**本对话的发送动作**：发送按钮与 Enter 快捷发送暂不可用，
+ * 草稿仍可写；处理后（申请有结局 / 队列变化）派生值自然消失，
+ * 恢复既有发送与排队规则。不锁输入框、不影响其他对话与页面功能。
+ */
+const topicApprovalWaiting = computed(() => session.topicApprovalPending);
 type PrimaryMode = "send" | "stop" | "disabled";
 const primaryMode = computed<PrimaryMode>(() => {
   if (hasContent.value) return "send";
@@ -141,12 +149,17 @@ const primaryLabel = computed(() => {
 const primaryTitle = computed(() => {
   if (primaryMode.value === "stop") return stopTitle.value;
   if (primaryMode.value === "disabled") return "输入内容或添加附件后可以发送";
+  if (topicApprovalWaiting.value) {
+    return "正在等待你选择话题：先处理这次话题申请；草稿会保留，不会自动发送";
+  }
   if (sendGateReason.value) return `暂时不能发送：${sendGateReason.value}`;
   return session.turnRunning ? "排队发送（Enter）：QIO 正在回复，这条会进入队列" : "发送（Enter）";
 });
 const primaryDisabled = computed(() => {
   if (primaryMode.value === "stop") return !session.canStopTurn || stopping.value;
   if (primaryMode.value === "disabled") return true;
+  // 等待选择话题：当前对话的发送按钮不可用（草稿仍可写，不自动发送）
+  if (topicApprovalWaiting.value) return true;
   return false;
 });
 function primaryAction() {
@@ -195,6 +208,11 @@ async function removeRejectedAndSend() {
 }
 
 async function submit() {
+  /**
+   * 等待选择话题：本对话的发送动作暂不可用（按钮 / Enter 已禁用的兜底）。
+   * 不清空草稿、不进入排队、不自动发送 —— 处理后由用户主动发送。
+   */
+  if (topicApprovalWaiting.value) return;
   const value = text.value.trim();
   // 「存在内容」≠「满足发送条件」：只带附件（没有文字）时后端不会受理，
   // 这里如实说清卡在哪一步，文字与附件都留在输入区（不丢能力、不假装已发出）。
@@ -1200,6 +1218,11 @@ function onKeydown(e: KeyboardEvent) {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
+    /**
+     * 等待选择话题期间：Enter（含 Ctrl/Cmd+Enter）的快捷发送同样不可用 ——
+     * 只拦截发送动作，输入框与草稿不受影响。
+     */
+    if (topicApprovalWaiting.value) return;
     void submit();
   }
 }

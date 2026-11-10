@@ -14,6 +14,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -97,6 +99,7 @@ def _app(tmp_path: Path) -> AppContext:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_migrations
 def test_migration_44_is_append_only_and_idempotent(db_conn):
     from agent.storage.schema import COMPENSATION_VERSION, MIGRATIONS, SCHEMA_VERSION
 
@@ -132,6 +135,7 @@ def test_migration_44_is_append_only_and_idempotent(db_conn):
     assert set(ROLLING_STATE_KEYS) <= _columns(db_conn)
 
 
+@pytest.mark.real_migrations
 def test_migration_44_preserves_existing_rows(db_conn):
     now = "2026-10-21T00:00:00+00:00"
     db_conn.execute(

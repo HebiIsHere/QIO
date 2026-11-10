@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from agent.storage.migration_r9h3_review_records import REVOKE_DATA
 from agent.storage.schema import COMPENSATION_VERSION, MIGRATIONS, SCHEMA_VERSION
 
@@ -22,6 +24,7 @@ def _seed_record(conn, *, mode: str, source: str, revoked_at=None) -> str:
     return rid
 
 
+@pytest.mark.real_migrations
 def test_revoke_only_targeted_unrestricted_review_records(db_conn):
     targeted = _seed_record(db_conn, mode="unrestricted", source="model_review")
     restricted = _seed_record(db_conn, mode="restricted", source="model_review")

@@ -23,6 +23,7 @@ import {
   type RecoveryRecordView,
 } from "../services/recoveryApi";
 import { restoreRuntimeState } from "./restore";
+import { useUnifiedApprovalsStore } from "./unifiedApprovals";
 import { newClientRequestId, setNextSendRequestId } from "../services/sendIdentity";
 import { toAttachmentRef, type AttachmentRef } from "../services/attachments";
 
@@ -791,6 +792,16 @@ export type Activity =
   | "approval"
   | "subagent"
   | "notify";
+
+/**
+ * 本对话 pending 话题申请的最小只读视图。
+ *
+ * 只借统一队列的稳定身份（key），不复制 payload、不缓存申请正文 ——
+ * 等待状态与入口都由 unifiedApprovals 的真身决定，处理完自然消失。
+ */
+export interface TopicApplicationPendingView {
+  key: string;
+}
 
 /**
  * 工具创建流程用到的工具名。
@@ -1995,12 +2006,27 @@ const sessionStoreDefinition = defineStore("session", {
      */
     lastTurnOutcome: null as { turnId: string; status: string } | null,
     /**
-     * 待确认切换（spec 第 29~30 条）：内容看起来属于另一个话题时的建议。
-     * 它只是「建议」—— Anchor 没有被改，用户点「转到这里」才真的切。
+     * 本轮话题申请（topic_switch / topic_create）的本地登记（有界）。
+     *
+     * 旧 `TOPIC_SWITCH_SUGGESTED` 的可执行确认路径已经退役：这里**不保存**
+     * 任何可执行建议，只记「哪个 approval_id 是话题申请」，让 APPROVAL_RESULT
+     * （legacy 事件不带 kind / payload）也能认出结局并驱动草稿跟随。
+     * 真正的申请正文与决定入口在统一审批队列（unifiedApprovals）里，本 store 不复制。
      */
-    pendingSwitch: null as { topicId: string; topicName: string; reason?: string } | null,
-    /** 待确认切换正在提交（按钮防重复） */
-    pendingSwitchBusy: false,
+    _topicApplications: [] as {
+      approvalId: string;
+      kind: "topic_switch" | "topic_create";
+      turnId: string | null;
+      /** switch 的目标话题（create 由随后的 ANCHOR 决定，为 null） */
+      targetTopicId: string | null;
+    }[],
+    /**
+     * 话题申请批准后、ANCHOR 真正切换话题前的一次性草稿跟随标记。
+     *
+     * 只由 events.ts 处理话题申请的 APPROVAL_RESULT 时武装、由草稿保存器在
+     * 话题变化时消费；没有这个标记时，普通导航的草稿规则一字不变。
+     */
+    _topicDraftFollow: null as { targetTopicId: string | null; turnId: string } | null,
   /**
    * 一轮的可观察阶段（不猜测后台在干什么）：
    * idle 未在跑 / waiting 已提交但还没有任何助手内容 / generating 已有增量内容到达
@@ -2133,6 +2159,27 @@ const sessionStoreDefinition = defineStore("session", {
      * 停止动作会退化为「取消后端当前的 active turn」，同样不会打到排队项。
      */
     canStopTurn: (state): boolean => state.turnRunning,
+    /**
+     * 本对话当前 pending 的话题申请（等待用户选择话题）。
+     *
+     * 只读引用统一审批队列（unifiedApprovals.topicPendingForTurn，契约 §2.4）：
+     * 本 store 不建立第二套申请状态，处理完 / 队列变化后它自然消失。
+     */
+    topicPendingApproval(): TopicApplicationPendingView | null {
+      const turnId = this.activeTurnId || this.turnQueue.running?.turn_id || "";
+      if (!turnId) return null;
+      const pending = useUnifiedApprovalsStore().topicPendingForTurn(turnId) ?? null;
+      // 只借稳定身份（key），申请正文与决定入口仍只在统一审批队列里
+      return pending ? { key: pending.key } : null;
+    },
+    /** 本对话是否存在等待选择话题的申请（发送限制与等待状态只读这一个派生值）。 */
+    topicApprovalPending(): boolean {
+      return Boolean(this.topicPendingApproval);
+    },
+    /** 等待中的话题申请在统一队列里的稳定 key（旧入口用它打开同一申请）。 */
+    topicApprovalKey(): string | null {
+      return this.topicPendingApproval?.key ?? null;
+    },
     /**
      * 没做完的开发任务 = 还没提交、也还没被放弃的。
      *
@@ -2823,11 +2870,70 @@ const sessionStoreDefinition = defineStore("session", {
       if (before !== after) await this.loadHistory();
     },
     /**
-     * 登记「待确认切换」建议：只记录，不动 Anchor（spec 第 29 条）。
-     * 新一轮用户消息开始时清掉旧建议（TURN_START 处理），避免跨轮堆积。
+     * 登记一个话题申请（来自 APPROVAL_REQUIRED / RESYNC 恢复）。
+     *
+     * 只记身份、动作与目标，供 APPROVAL_RESULT（legacy 事件不带 kind / payload）
+     * 认结局并驱动一次性草稿跟随；**不产生任何可执行建议** ——
+     * 申请正文与决定入口都在统一审批队列（unifiedApprovals）里。
      */
-    setPendingSwitch(payload: { topicId: string; topicName: string; reason?: string } | null) {
-      this.pendingSwitch = payload;
+    registerTopicApplication(entry: {
+      approvalId: string;
+      kind: "topic_switch" | "topic_create";
+      turnId?: string | null;
+      targetTopicId?: string | null;
+    }) {
+      const id = String(entry?.approvalId ?? "");
+      if (!id) return;
+      const record = {
+        approvalId: id,
+        kind: entry.kind,
+        turnId: entry.turnId ?? null,
+        targetTopicId: entry.targetTopicId ?? null,
+      };
+      this._topicApplications = [
+        ...this._topicApplications.filter((item) => item.approvalId !== id),
+        record,
+      ].slice(-20);
+    },
+    /** 查（不消费）某个审批 id 的话题申请登记；不是话题申请时返回 null。 */
+    topicApplicationFor(approvalId: string) {
+      const id = String(approvalId ?? "");
+      if (!id) return null;
+      return this._topicApplications.find((item) => item.approvalId === id) ?? null;
+    },
+    /** 某个审批 id 已经有结局：本地登记不再需要（幂等）。 */
+    dropTopicApplication(approvalId: string) {
+      const id = String(approvalId ?? "");
+      if (!id) return;
+      this._topicApplications = this._topicApplications.filter((item) => item.approvalId !== id);
+    },
+    /** 一轮结束 / 重置：清掉这一轮的话题申请登记与未消费的草稿跟随。 */
+    clearTopicApplicationsForTurn(turnId?: string | null) {
+      const tid = String(turnId ?? "").trim();
+      if (!tid) {
+        this._topicApplications = [];
+        this._topicDraftFollow = null;
+        return;
+      }
+      this._topicApplications = this._topicApplications.filter((item) => item.turnId !== tid);
+      const follow = this._topicDraftFollow;
+      if (follow && (!follow.turnId || follow.turnId === tid)) this._topicDraftFollow = null;
+    },
+    /**
+     * 话题申请已获批准（或正在执行）：武装**一次性**草稿跟随。
+     *
+     * 等待期间写在输入框里的草稿，会在 ANCHOR 真的把话题切到目标话题时跟随过去；
+     * 这里不移动任何文字、不改归属。没有这个标记时普通导航的草稿规则一字不变。
+     */
+    armTopicDraftFollow(input: { targetTopicId?: string | null; turnId?: string | null } = {}) {
+      this._topicDraftFollow = {
+        targetTopicId: input.targetTopicId ?? null,
+        turnId: input.turnId ?? "",
+      };
+    },
+    /** 清除草稿跟随（拒绝 / 执行失败 / 取消 / 一轮结束）：草稿归属不再改变。 */
+    clearTopicDraftFollow() {
+      this._topicDraftFollow = null;
     },
 
     /**
@@ -2893,53 +2999,11 @@ const sessionStoreDefinition = defineStore("session", {
         capturedAt: Date.now(),
       };
     },
-    /** 用户点「转到这里」：只有这一步会真的改变 Anchor。 */
-    async confirmPendingSwitch() {
-      const pending = this.pendingSwitch;
-      if (!pending || this.pendingSwitchBusy) return;
-      this.pendingSwitchBusy = true;
-      try {
-        /**
-         * M01：确认「转到这里」= 明确改变起点 → 旧的未落实接续选择必须一起取消。
-         * 否则切换之后的第一条消息仍会被旧登记带偏（起点与界面显示不一致）。
-         * 取消失败就不切换：宁可不动，也不把消息送到错误的起点。
-         */
-        if (!(await this.cancelPendingContinuation())) {
-          return;
-        }
-        const res = await api.confirmTopicSwitch();
-        if (!res.ok || !res.topic_id) {
-          this.lastError = "后端没有确认这次切换，未切换话题";
-          return;
-        }
-        await this.setAnchorAndSync(
-          res.topic_id,
-          res.fragment_id ?? null,
-          pending.topicName,
-          res.fragment_id ? { id: res.fragment_id, title: res.fragment_title ?? null } : undefined,
-          Boolean(res.historic),
-        );
-        this.pendingSwitch = null;
-      } catch (e) {
-        // 失败必须如实说「未切换」，不能留下一个看起来已经生效的状态
-        this.lastError = `切换失败，未切换话题：${(e as Error).message}`;
-      } finally {
-        this.pendingSwitchBusy = false;
-      }
-    },
-    /** 用户点「保留当前」：拒绝建议，Anchor 一动不动。 */
-    async rejectPendingSwitch() {
-      if (!this.pendingSwitch || this.pendingSwitchBusy) return;
-      this.pendingSwitchBusy = true;
-      this.pendingSwitch = null;
-      try {
-        await api.rejectTopicSwitch();
-      } catch (e) {
-        this.lastError = `未能通知后端保留当前话题：${(e as Error).message}`;
-      } finally {
-        this.pendingSwitchBusy = false;
-      }
-    },
+    /**
+     * 旧话题切换确认路径（confirmPendingSwitch / rejectPendingSwitch）本轮**退役**：
+     * 话题申请只走统一审批弹窗（unifiedApprovals.decideTopic），
+     * 不再存在任何独立的切换/保留提交入口，也不再调用 /api/topic-switch/*。
+     */
     /**
      * 一轮开始。
      * `notify=true` 是系统驱动的轮（例如独立任务完成后的收尾），
@@ -2952,8 +3016,6 @@ const sessionStoreDefinition = defineStore("session", {
       this.lastError = null;
       this.warning = null;
       this.cancelling = null;
-      // 新一轮开始：上一轮的切换建议不再相关，避免跨轮堆积
-      this.pendingSwitch = null;
       if (notify) return;
       // 队列中的最早一条开始执行：清除「等待中」标记（后端 TURN_QUEUE 事件负责其余展示）
       const nextQueued = this.queuedMessageIds.shift();
@@ -6977,6 +7039,11 @@ interface SessionDraftHost {
     text: string;
     seq: number;
   }): void;
+  /**
+   * 话题申请批准后的一次性草稿跟随标记（session._topicDraftFollow）。
+   * 只由本保存器在话题变化时消费；不存在时普通导航规则一字不变。
+   */
+  _topicDraftFollow?: { targetTopicId: string | null; turnId: string } | null;
 }
 
 /** 话题 → 存储键；话题还没确定（currentTopicId 为 null）时用占位键，等话题确定后迁移。 */
@@ -7266,6 +7333,18 @@ const sendTopicByDraftId = new Map<string, string | null>();
     const previousKey = key;
     const previousUnbound = previousKey === chatDraftKeyFor(null);
     const buffer = host.draft;
+    /**
+     * 话题申请批准后的一次性草稿跟随：等待期间写在输入框里的草稿跟着用户
+     * 进入**本次申请的目标话题**（switch 目标已知；create 由随后的 ANCHOR 决定）。
+     * 目标不符 / 没有草稿时按普通导航处理；标记无论是否命中都只作用于这一次话题变化。
+     */
+    const follow = host._topicDraftFollow ?? null;
+    const followHere = Boolean(
+      follow &&
+        !isBlankText(buffer) &&
+        (follow.targetTopicId === null || follow.targetTopicId === topicId),
+    );
+    if (follow) host._topicDraftFollow = null;
     flushNow();
     /**
      * 反例 03 / 14：话题变了，指向旧话题的显式重发关联一并失效
@@ -7277,7 +7356,9 @@ const sendTopicByDraftId = new Map<string, string | null>();
     const candidate = memoryCandidates.get(nextKey);
     const carry = previousUnbound
       ? (isBlankText(buffer) ? (readDraft(previousKey)?.text ?? "") : buffer)
-      : "";
+      : followHere
+        ? buffer
+        : "";
     /**
      * 这次迁移搬的是不是「已经点过发送、还在等回执」的那一份原文（契约 §11.5）。
      *
@@ -7285,12 +7366,13 @@ const sendTopicByDraftId = new Map<string, string | null>();
      * 找到新位置清理它。若这里给它换一个新版本号，回执就会以为存储里是「用户后来
      * 写的新内容」而不敢清理，已经发出去的文字会重新回到输入框 —— 那正是要修的缺陷。
      */
-    const movedSends = !isBlankText(carry)
-      ? inFlightSends.filter(
-          (item) =>
-            item.key === previousKey && normalizeSendText(item.text) === normalizeSendText(carry),
-        )
-      : [];
+    const movedSends =
+      previousUnbound && !isBlankText(carry)
+        ? inFlightSends.filter(
+            (item) =>
+              item.key === previousKey && normalizeSendText(item.text) === normalizeSendText(carry),
+          )
+        : [];
     const movedVersion = movedSends.reduce((max, item) => Math.max(max, item.draftSeq), 0);
     key = nextKey;
     keyTopics.set(nextKey, topicId);
@@ -7350,7 +7432,7 @@ const sendTopicByDraftId = new Map<string, string | null>();
      * 用户刚输入的新稿。不拼接、不自动发送、也不静默覆盖。
      */
     if (
-      previousUnbound &&
+      (previousUnbound || followHere) &&
       !isBlankText(carry) &&
       stored &&
       !isBlankText(stored.text) &&
@@ -7390,7 +7472,7 @@ const sendTopicByDraftId = new Map<string, string | null>();
         carrySaved = commit(seq, nextKey, carry);
       }
     }
-    if (previousUnbound) {
+    if (previousUnbound || followHere) {
       const source = readDraft(previousKey);
       if (!carrySaved) {
         /**

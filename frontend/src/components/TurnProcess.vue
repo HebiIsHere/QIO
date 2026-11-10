@@ -343,6 +343,12 @@ function toolAwaitingSummary(m: StreamMessage): string {
 
 const statusWord = computed(() => {
   if (props.running) {
+    /**
+     * 等待用户选择话题：本对话有 pending 话题申请时，过程区必须说清在等什么，
+     * 不能一直显示「运行中 / 正在处理」（等待期间并没有新的生成动作）。
+     * 决定后派生值自然消失，状态词恢复既有阶段表达。
+     */
+    if (session.topicApprovalPending) return "正在等待你选择话题";
     // 只有这条审批**确实内联在本轮过程区**时才说「等待确认」；
     // 非当前轮 / 恢复路径的审批仍由全局状态条说那句话
     if (inlineApproval.value && modalOwnsApproval.value === false) return "等待确认";

@@ -62,6 +62,42 @@ TIME_LIMIT_SECONDS = DEFAULT_TIMEOUT_SECONDS
 logger = logging.getLogger(__name__)
 
 
+#: 话题申请（契约 §2.1）的 legacy kind。它们走既有 request()/respond()，
+#: 因此自动获得身份绑定 / 600s 有效期 / 单次消费 / pending_approvals 持久化。
+TOPIC_SWITCH_KIND = "topic_switch"
+TOPIC_CREATE_KIND = "topic_create"
+TOPIC_APPLICATION_KINDS = frozenset({TOPIC_SWITCH_KIND, TOPIC_CREATE_KIND})
+
+
+class TopicApplicationError(ApprovalError):
+    """话题申请的请求错误（API 映射为 400/409，结构化 code 给前端就地处理）。"""
+
+    code = "topic_application_error"
+    status_code = 400
+
+
+class TopicNameRequired(TopicApplicationError):
+    code = "topic_name_required"
+    status_code = 400
+
+
+class TopicTargetMissing(TopicApplicationError):
+    code = "topic_target_missing"
+    status_code = 400
+
+
+class TopicApplicationStale(TopicApplicationError):
+    """没有等待者的 topic 申请（后端重启 / 已经消费过）：不假成功、不执行。"""
+
+    code = "topic_application_stale"
+    status_code = 409
+
+
+class TopicEditsUnsupported(TopicApplicationError):
+    code = "edits_unsupported"
+    status_code = 400
+
+
 def _derived_confirmations(engine, operation) -> int:  # noqa: ANN001 - 接口对象
     """后端按**真实影响对象**推导的最低确认次数（R9-H13 §8.1/§8.4）。
 
@@ -187,6 +223,9 @@ class ApprovalResult:
     decision: str  # approved / rejected / timeout / cancelled
     scope: dict | None = None
     overrides: dict | None = None
+    # 用户就地修改的内容（仅 topic_create 使用：{"name": 用户改过的新话题名}；
+    # 其它审批默认 None，行为一字不变）。
+    edits: dict | None = None
 
 
 class ApprovalService:
@@ -1060,7 +1099,19 @@ class ApprovalService:
     @staticmethod
     def _legacy_label(kind: str, payload: dict | None) -> str:
         payload = payload if isinstance(payload, dict) else {}
-        return str(payload.get("description") or "") or str(kind or "这次操作")
+        description = str(payload.get("description") or "").strip()
+        if description:
+            return description
+        # 话题申请的历史文案：说清「切到哪 / 新建什么」，不暴露原问题。
+        if str(kind or "") == TOPIC_SWITCH_KIND:
+            name = str(
+                payload.get("target_topic_name") or payload.get("target_topic_id") or ""
+            ).strip()
+            return f"切换到话题「{name}」" if name else "切换话题"
+        if str(kind or "") == TOPIC_CREATE_KIND:
+            name = str(payload.get("new_name") or "").strip()
+            return f"新建话题「{name}」" if name else "新建话题"
+        return str(kind or "这次操作")
 
     def _record_legacy_decision(
         self,
@@ -1172,6 +1223,92 @@ class ApprovalService:
         except Exception:  # noqa: BLE001 - 登记失败不能影响审批本身
             logger.warning("failed to register legacy approval result", exc_info=True)
 
+    # -- 话题申请（契约 §2.1/§2.2）：kind/payload 校验与 edits 透传 ----------
+
+    def _legacy_kind(self, approval_id: str) -> str | None:
+        """这条旧 request() 审批的 kind（内存优先，退回 pending_approvals）。
+
+        只有话题申请会用它：没有等待者的 topic 申请必须 409，而不是伪装成 404。
+        """
+        request = self._requests.get(str(approval_id or ""))
+        if request is not None:
+            return str(request.kind or "") or None
+        if self.conn is None:
+            return None
+        try:
+            row = self.conn.execute(
+                "SELECT kind FROM pending_approvals WHERE approval_id = ?",
+                (str(approval_id or ""),),
+            ).fetchone()
+        except Exception:  # noqa: BLE001 - 读不到就不臆断 kind（保持旧 404 语义）
+            logger.warning("failed to read legacy approval kind", exc_info=True)
+            return None
+        if row is None:
+            return None
+        value = row["kind"] if not isinstance(row, dict) else row.get("kind")
+        return str(value or "") or None
+
+    def _topic_target_exists(self, topic_id: str) -> bool:
+        """目标话题是否仍然存在；没有数据库连接（单元测试）时不臆断。"""
+        if not str(topic_id or "").strip():
+            return False
+        if self.conn is None:
+            return True
+        try:
+            from agent.graph.nodes import NodeService
+
+            return NodeService(self.conn).get_topic(str(topic_id)) is not None
+        except Exception:  # noqa: BLE001 - 读不到按「无法核对」处理：不误判为存在
+            logger.warning("failed to check topic existence", exc_info=True)
+            return False
+
+    def _validate_topic_decision(
+        self,
+        kind: str,
+        payload: dict,
+        decision: str,
+        edits: dict | None,
+    ) -> dict | None:
+        """校验一次话题申请的决定；返回归一化的 edits（其它审批返回 None）。
+
+        * 只有 topic_create 接受 edits = {"name": ...}；空名称 400 topic_name_required；
+        * topic_switch 批准前重核对目标话题仍存在，否则 400 topic_target_missing；
+        * 非话题审批带 edits 必须显式拒绝，不得静默丢弃；默认 None 时行为不变。
+        * 校验发生在 future.set_result 之前：失败时申请保持 pending、不被消费。
+        """
+        kind = str(kind or "")
+        approved = str(decision or "") == "approved"
+        payload = payload if isinstance(payload, dict) else {}
+        if edits is not None:
+            if kind not in TOPIC_APPLICATION_KINDS:
+                raise TopicEditsUnsupported(
+                    "这条审批不支持 edits：修改没有生效。",
+                )
+            if not isinstance(edits, dict):
+                raise TopicEditsUnsupported("edits 必须是对象。")
+            if kind == TOPIC_SWITCH_KIND:
+                raise TopicEditsUnsupported("切换申请不能修改目标话题。")
+        if not approved:
+            # 拒绝 / 取消不需要校验目标；edits 没有语义（不落库、不消费）。
+            return None
+        if kind == TOPIC_CREATE_KIND:
+            if edits is not None:
+                # 用户就地改过名称：以它为唯一来源；空名称必须 400（不退回模型原名）。
+                name = str(edits.get("name") or "").strip()
+                if not name:
+                    raise TopicNameRequired("话题名不能为空")
+                return {"name": name}
+            name = str(payload.get("new_name") or "").strip()
+            if not name:
+                raise TopicNameRequired("话题名不能为空")
+            return {"name": name}
+        if kind == TOPIC_SWITCH_KIND:
+            target = str(payload.get("target_topic_id") or "").strip()
+            if not target or not self._topic_target_exists(target):
+                raise TopicTargetMissing("目标话题已不存在，请选择在当前话题回答")
+            return None
+        return None
+
     async def request(
         self,
         kind: str,
@@ -1272,6 +1409,7 @@ class ApprovalService:
         decision: str,
         scope: dict | None = None,
         overrides: dict | None = None,
+        edits: dict | None = None,
         *,
         turn_id: str | None = None,
         session_id: str | None = None,
@@ -1282,8 +1420,19 @@ class ApprovalService:
         单次使用：等待表/请求表里已经不存在（应答过、超时过、id 是伪造的）→ False。
         旧接口兼容：如果 id 是 v2 持久化审批（没有内存等待者），把 approved/rejected
         映射到 decide/confirm —— 新前端用新接口，旧客户端仍能操作同一对象。
+
+        edits 只属于话题申请（topic_create 的名称就地修改），默认 None 时其它
+        审批的行为与以前完全一致。
         """
         future = self._waiters.get(approval_id)
+        if future is None or future.done():
+            # 话题申请没有等待者（后端重启 / 已消费 / 已过期）：不能返回假成功。
+            # 旧的 request() 行仍能在 pending_approvals 里查到 kind，据此如实 409。
+            if self._legacy_kind(approval_id) in TOPIC_APPLICATION_KINDS:
+                raise TopicApplicationStale(
+                    "这条话题申请已经不在等待中（可能来自已重启的进程或已处理过）："
+                    "本次没有执行，也不会再执行。"
+                )
         if future is None and self.store is not None:
             raw = self.store.get_raw(approval_id)
             if raw is not None and self.store.is_v2(raw):
@@ -1349,7 +1498,13 @@ class ApprovalService:
         # 契约 §4.2：只有端到端支持 overrides 的旧路径可以带；其它路径明确拒绝，
         # 不得静默丢弃（那会让界面表现成「已接受修改」）。校验在消费之前。
         self._check_overrides(request.kind, request.payload, overrides)
-        result = ApprovalResult(approval_id, decision, scope, overrides)
+        # 话题申请：批准前校验目标 / 名称（申请保持 pending、不消费），并透传 edits。
+        normalized_edits = self._validate_topic_decision(
+            request.kind, request.payload, decision, edits
+        )
+        result = ApprovalResult(
+            approval_id, decision, scope, overrides, normalized_edits
+        )
         future.set_result(result)
         # 单次使用：立刻失效，重放必然失败
         self._waiters.pop(approval_id, None)

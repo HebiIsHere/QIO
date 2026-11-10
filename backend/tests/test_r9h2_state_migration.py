@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from agent.storage.migration_r9h2_identity import DATA_CORRECTION
 
 
@@ -32,6 +34,7 @@ def _insert_failure_audit(conn, *, turn_id: str, outcome: str = "unavailable") -
     )
 
 
+@pytest.mark.real_migrations
 def test_migration_corrects_only_evidenced_failure_records(db_conn):
     bad = _insert_requirement(db_conn, text="处理项目，但不要修改 B", turn_id="turn_bad")
     _insert_failure_audit(db_conn, turn_id="turn_bad")

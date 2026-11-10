@@ -1123,6 +1123,11 @@ const processRegionSpeaks = computed(() =>
 );
 
 const showGlobalStatus = computed(() => {
+  /**
+   * 等待用户选择话题：过程区已经在说这件事时，全局条不重复说；
+   * 没有过程区（恢复 / 非当前轮）时全局条必须能说清 —— 不能显示成「正在生成」。
+   */
+  if (session.topicApprovalPending) return !processRegionSpeaks.value;
   // 「正在使用工具」「正在生成」本来就不显示（过程由过程区 / 工具卡表达）
   if (
     session.activity === "idle" ||
@@ -1159,7 +1164,10 @@ const ACTIVITY_LABELS: Record<string, string> = {
   subagent: "正在处理独立任务",
   notify: "正在整理独立任务的结果",
 };
+/** 等待用户选择话题的那句话（过程区/全局条共用同一措辞，不各说一套）。 */
+const TOPIC_APPROVAL_WAITING_TEXT = "正在等待你选择话题";
 const phaseLabel = computed(() => {
+  if (session.topicApprovalPending) return TOPIC_APPROVAL_WAITING_TEXT;
   if (!session.turnRunning && session.activity === "idle") return "";
   return ACTIVITY_LABELS[session.activity] ?? "";
 });

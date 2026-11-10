@@ -218,52 +218,81 @@ jobs:
       - name: Real worker smoke (source)
         run: |
           uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
-      # 显式把 worker 协议的两组用例单独跑一遍：ubuntu runner 上 docker 守护进程真的
-      # 可用（这正是它们此前全红的根因），注入的 fake worker 必须仍然被使用；
-      # 协议严格化（ok 必须是 bool / 恰好一行 / 空输出 / 非零退出 / 取消语义）都在这里。
-      - name: Fake worker protocol tests (Linux)
-        env:
-          # 这一步也要落 JUnit：否则它失败时「Summarize test failures」只找得到
-          # pytest-results.xml（不存在），注解只剩一句 "no junit report written"，
-          # 定位成本极高（2026-10-02 实测到过一次偶发红，就是因为这个才难查）。
-          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
+      # 全量后端测试的**唯一入口**（E 交付；CI 与本地同一条命令）：
+      #   阶段一 并行组  -m "not serial"（xdist 受控 4 worker）→ JUnit <dir>/pytest-parallel.xml
+      #   阶段二 串行组  -m serial                            → JUnit <dir>/pytest-serial.xml
+      # 两组合集=全部测试、交集=空，任一阶段失败 → 非 0 退出（另一阶段仍跑完，证据都留下）。
+      # 这里**不再**单独跑 tests/test_sandbox_worker.py / tests/test_tool_worker.py：
+      # 它们已包含在分区并集里，单列就是在同一个 job、同一个解释器里把同一批用例执行两遍
+      # （去重前的真实重复覆盖；且两步写同一个 pytest-results.xml，前一步证据被后一步覆盖）。
+      # 用多行 run: | 形式：scripts/check_docs.py 只校验单行 run: 命令与 SETUP.md 的对应，
+      # 入口命令由 SETUP 测试章节（E/Lead 落盘）说明，避免两处文本精确耦合。
+      - name: Run backend suite (parallel + serial, staged JUnit)
         run: |
-          uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
-      - name: Run tests
-        env:
-          # 让 pytest 额外落一份 JUnit 报告，供下一步在失败时生成注解。
-          # 命令本身保持单行不变（scripts/check_docs.py 会校验它与 SETUP.md 一致）。
-          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
-        run: uv run --frozen pytest -q
+          uv run --frozen python ../scripts/run_backend_suite.py --workers 4 --junit-dir junit
+      # 分阶段证据要能下载：并行组/串行组的失败各自落盘、互不覆盖；失败也上传，
+      # 注解之外还能拿到原始 XML 复核（Actions 原始日志要登录，artifact 不需要）。
+      - name: Upload staged JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-junit-py${{ matrix.python-version }}
+          path: backend/junit/*.xml
+          if-no-files-found: warn
+          retention-days: 14
       # Actions 的原始日志必须登录才能下载；**注解是公开可读的**。
       # 失败时把「哪些用例挂了、报什么错」变成注解，CI 红了才有人能立刻定位。
+      # 这里按**阶段**分别读 pytest-parallel.xml / pytest-serial.xml：只看一份会让另一阶段的
+      # 失败静默消失（历史上一份 pytest-results.xml 被覆盖就是这么丢证据的）。
       - name: Summarize test failures
         if: failure()
         shell: bash
+        env:
+          # 注解/证据里有中文用例名与原因：显式 UTF-8，避免 runner locale 差异把输出打断。
+          PYTHONIOENCODING: utf-8
         run: |
           python - <<'PY'
           import glob
           import xml.etree.ElementTree as ET
 
-          paths = glob.glob("pytest-results.xml") or glob.glob("**/pytest-results.xml", recursive=True)
-          if not paths:
-              print("::error title=pytest::no junit report written (collection/import error before tests ran)")
+          STAGES = (
+              ("parallel", "junit/pytest-parallel.xml"),
+              ("serial", "junit/pytest-serial.xml"),
+          )
+          found = {}
+          for stage, path in STAGES:
+              hits = sorted(glob.glob(path)) or sorted(
+                  item for item in glob.glob("**/pytest-*.xml", recursive=True)
+                  if item.replace("\\", "/").endswith("/" + path)
+              )
+              if hits:
+                  found[stage] = hits[0]
+          if not found:
+              print("::error title=pytest::no staged junit report written "
+                    "(collection/import error before tests ran; expected junit/pytest-parallel.xml "
+                    "or junit/pytest-serial.xml)")
               raise SystemExit(0)
 
-          bad = []
-          for case in ET.parse(paths[0]).getroot().iter("testcase"):
-              problems = list(case.findall("failure")) + list(case.findall("error"))
-              if not problems:
-                  continue
-              message = (problems[0].get("message") or "").strip()
-              text = (problems[0].text or "").strip()
-              bad.append((f"{case.get('classname')}::{case.get('name')}", f"{message}\n{text}"[:1800]))
+          for stage, path in found.items():
+              bad = []
+              for case in ET.parse(path).getroot().iter("testcase"):
+                  problems = list(case.findall("failure")) + list(case.findall("error"))
+                  if not problems:
+                      continue
+                  message = (problems[0].get("message") or "").strip()
+                  text = (problems[0].text or "").strip()
+                  bad.append((f"{case.get('classname')}::{case.get('name')}", f"{message}\n{text}"[:1800]))
+              # 一条用例一条注解：注解是公开可读的，失败细节不至于被折叠掉
+              print(f"::error title=pytest {stage} failures ({len(bad)})::"
+                    + " | ".join(name for name, _ in bad[:12]))
+              for name, detail in bad[:20]:
+                  flat = " / ".join(line.strip() for line in detail.splitlines() if line.strip())
+                  print(f"::error title=[{stage}] {name}::{flat[:1400]}")
 
-          print(f"::error title=pytest failures ({len(bad)})::" + " | ".join(name for name, _ in bad[:12]))
-          # 一条用例一条注解：注解是公开可读的，失败细节不至于被折叠掉
-          for name, detail in bad[:20]:
-              flat = " / ".join(line.strip() for line in detail.splitlines() if line.strip())
-              print(f"::error title={name}::{flat[:1400]}")
+          missing = [stage for stage, _path in STAGES if stage not in found]
+          if missing:
+              # 不是这步的失败原因（另有阶段已红），但必须让人知道「这个阶段没有证据」。
+              print("::warning title=pytest::staged junit missing for " + ", ".join(missing))
           PY
 
   # Windows 是发布平台，也是启动加固（系统命令硬超时）与凭据库（keyring）唯一
@@ -292,10 +321,21 @@ jobs:
       # 守护进程、探测不到就改走受限子进程（tools/sandbox.py），所以这条路径不再以
       # `docker exit code 125` 收场；requires_docker 标记留下，把「要真实容器隔离」的
       # 用例挑出来，ubuntu 任务照常跑它们。
-      - name: Run tests
-        env:
-          PYTEST_ADDOPTS: "--junitxml=pytest-results.xml"
-        run: uv run --frozen pytest -q -m "not requires_docker"
+      # 与 Linux 用**同一个全量入口**：--marker "not requires_docker" 会与 serial 分组做 AND
+      # 叠加（并行组 not serial and (not requires_docker)、串行组 serial and (not requires_docker)），
+      # 两组并集=「全量 ∩ 非 docker 用例」、交集=空，既不漏也不重复。
+      - name: Run backend suite (parallel + serial, staged JUnit)
+        run: |
+          uv run --frozen python ../scripts/run_backend_suite.py --workers 4 --junit-dir junit --marker "not requires_docker"
+      # 分阶段证据与 Linux 同口径：失败也上传，两阶段互不覆盖。
+      - name: Upload staged JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-junit-windows
+          path: backend/junit/*.xml
+          if-no-files-found: warn
+          retention-days: 14
       - name: Summarize test failures
         if: failure()
         shell: bash
@@ -308,24 +348,42 @@ jobs:
           import glob
           import xml.etree.ElementTree as ET
 
-          paths = glob.glob("pytest-results.xml") or glob.glob("**/pytest-results.xml", recursive=True)
-          if not paths:
-              print("::error title=pytest (windows)::no junit report written (collection/import error before tests ran)")
+          STAGES = (
+              ("parallel", "junit/pytest-parallel.xml"),
+              ("serial", "junit/pytest-serial.xml"),
+          )
+          found = {}
+          for stage, path in STAGES:
+              hits = sorted(glob.glob(path)) or sorted(
+                  item for item in glob.glob("**/pytest-*.xml", recursive=True)
+                  if item.replace("\\", "/").endswith("/" + path)
+              )
+              if hits:
+                  found[stage] = hits[0]
+          if not found:
+              print("::error title=pytest (windows)::no staged junit report written "
+                    "(collection/import error before tests ran; expected junit/pytest-parallel.xml "
+                    "or junit/pytest-serial.xml)")
               raise SystemExit(0)
 
-          bad = []
-          for case in ET.parse(paths[0]).getroot().iter("testcase"):
-              problems = list(case.findall("failure")) + list(case.findall("error"))
-              if not problems:
-                  continue
-              message = (problems[0].get("message") or "").strip()
-              text = (problems[0].text or "").strip()
-              bad.append((f"{case.get('classname')}::{case.get('name')}", f"{message}\n{text}"[:1800]))
+          for stage, path in found.items():
+              bad = []
+              for case in ET.parse(path).getroot().iter("testcase"):
+                  problems = list(case.findall("failure")) + list(case.findall("error"))
+                  if not problems:
+                      continue
+                  message = (problems[0].get("message") or "").strip()
+                  text = (problems[0].text or "").strip()
+                  bad.append((f"{case.get('classname')}::{case.get('name')}", f"{message}\n{text}"[:1800]))
+              print(f"::error title=pytest {stage} failures on windows ({len(bad)})::"
+                    + " | ".join(name for name, _ in bad[:12]))
+              for name, detail in bad[:20]:
+                  flat = " / ".join(line.strip() for line in detail.splitlines() if line.strip())
+                  print(f"::error title=[{stage}] {name}::{flat[:1400]}")
 
-          print(f"::error title=pytest failures on windows ({len(bad)})::" + " | ".join(name for name, _ in bad[:12]))
-          for name, detail in bad[:20]:
-              flat = " / ".join(line.strip() for line in detail.splitlines() if line.strip())
-              print(f"::error title={name}::{flat[:1400]}")
+          missing = [stage for stage, _path in STAGES if stage not in found]
+          if missing:
+              print("::warning title=pytest (windows)::staged junit missing for " + ", ".join(missing))
           PY
 
   frontend:

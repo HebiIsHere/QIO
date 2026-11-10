@@ -1,4 +1,4 @@
-﻿"""SSE event bus: fan-out with bounded replay.
+"""SSE event bus: fan-out with bounded replay.
 
 重连不能重新消费历史事件：每个事件都有实例内唯一的 `event_id`，
 `stream(last_event_id)` 只补发该 id 之后的事件（标准 `Last-Event-ID`）。
@@ -49,7 +49,14 @@ DEFAULT_QUEUE_LIMIT = 256
 
 # A. 可合并 / 可覆盖的累计状态事件：新值已含旧值，积压时可以合并或淘汰。
 MERGEABLE_EVENTS: frozenset[EventType] = frozenset(
-    {EventType.ASSISTANT, EventType.USAGE}
+    {
+        EventType.ASSISTANT,
+        EventType.USAGE,
+        # 已退役的事件类型：本轮起不再发布（换题统一为「模型调用原工具 + 程序建申请」）。
+        # 保留分类只是为了让「每个事件类型都必须显式归类」的不变量继续成立；
+        # 旧客户端即使收到历史重放也不会据此执行任何操作（前端已改为无副作用兼容）。
+        EventType.TOPIC_SWITCH_SUGGESTED,
+    }
 )
 
 # B. 状态转换事件：不得静默丢失（丢了客户端会停在错误状态）。
@@ -73,7 +80,8 @@ CRITICAL_EVENTS: frozenset[EventType] = frozenset(
         EventType.KNOWLEDGE_CANDIDATE,
         EventType.CREDENTIAL_STATUS,
         EventType.ANCHOR,
-        EventType.TOPIC_SWITCH_SUGGESTED,
+        # TOPIC_SWITCH_SUGGESTED 已退役（本轮统一判断：换题由模型调用原工具、程序建申请），
+        # 不再作为关键事件重放；旧客户端收到历史数据也不会据此执行任何操作。
         EventType.CAPABILITY,
         EventType.FALLBACK,
         EventType.WARNING,

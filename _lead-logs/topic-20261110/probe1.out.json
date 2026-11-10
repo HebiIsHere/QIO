@@ -1,0 +1,42 @@
+﻿{
+  "results": [
+    {
+      "op": "eval",
+      "value": "typed"
+    },
+    {
+      "op": "eval",
+      "value": "{\"mode\":\"send\",\"disabled\":false}"
+    },
+    {
+      "op": "eval",
+      "value": "{\"found\":false,\"body\":\"PERSONAL AGENT\\n受限模式\\n任务\\n当前任务\\n历史记录\\n\\n当前没有任务\\n\\n跳到输入框\\nTOPIC\\n默认话题\\n第 01 轮\\n12:57:17\\n帮我开始一个新的研究方向：量子计算实验与论文投稿计划\\n12:57:17\\n复制\\n本轮已结束\\n总耗时 453 毫秒\\n\\n（假模型默认回复）\\n\\n12:57:18\\n复制\\n对话模式\\n 收起星球\"}"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-t1-modal-wide"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-t1-modal-narrow"
+    },
+    {
+      "op": "eval",
+      "value": "{\"docW\":430,\"winW\":430,\"dialogW\":430,\"left\":0,\"right\":430,\"approveRadius\":null}"
+    },
+    {
+      "op": "console",
+      "errors": [],
+      "log": [
+        "[debug] [vite] connecting...",
+        "[debug] [vite] connected."
+      ]
+    }
+  ],
+  "errors": [],
+  "httpFails": [],
+  "log": [
+    "[debug] [vite] connecting...",
+    "[debug] [vite] connected."
+  ]
+}

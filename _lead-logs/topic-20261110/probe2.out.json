@@ -1,0 +1,94 @@
+﻿{
+  "results": [
+    {
+      "op": "eval",
+      "value": "typed"
+    },
+    {
+      "op": "eval",
+      "value": "{\"mode\":\"send\",\"disabled\":false,\"ready\":\"true\"}"
+    },
+    {
+      "op": "eval",
+      "value": "{\"found\":true,\"dialogText\":\"话题申请 · 本轮暂停，等待你的选择\\n\\n新建话题确认\\n待审批 1\\n结果与历史\\n\\n话题申请 · 本轮暂停，等待你的选择\\n\\n当前话题\\n默认话题\\n→\\n新话题名\\n\\n这是模型建议的名字，你可以改；确认之前不会创建话题。\\n\\n??????????,?????????:????????????????????????????,???????????????\\n\\n在当前话题回答\\n新建并回答\\n\\n确认之前话题不会切换或新建；你的原问题会继续得到回答。\\n\\n关闭窗口只会收起这项话题申请；不会替你选择，也不会丢失申请。\",\"inputValue\":\"?????????????(????????????????????)\",\"hasOriginalQuestion\":false}"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-create-wide"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-create-narrow-long"
+    },
+    {
+      "op": "eval",
+      "value": "{\"winW\":430,\"docScrollW\":430,\"dialog\":{\"left\":45,\"right\":383,\"width\":338},\"radius\":{\"approve\":\"14px\",\"stay\":\"14px\",\"close\":\"50%\"},\"buttons\":{\"approve\":true,\"stay\":true,\"close\":true}}"
+    },
+    {
+      "op": "eval",
+      "value": "closed"
+    },
+    {
+      "op": "eval",
+      "value": "{\"dialogVisible\":false,\"entryVisible\":true,\"entryText\":\"\",\"entryAria\":\"话题申请：QIO 申请切换或新建话题；打开同一申请处理，不会自行切换\"}"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-create-collapsed-entry"
+    },
+    {
+      "op": "eval",
+      "value": "entry-clicked"
+    },
+    {
+      "op": "eval",
+      "value": "{\"reopened\":true,\"inputValue\":\"?????????????(????????????????????)\"}"
+    },
+    {
+      "op": "eval",
+      "value": "edited"
+    },
+    {
+      "op": "eval",
+      "value": "{\"draft\":\"等待期间写下的草稿，确认后应跟随到新话题且不自动发送。\",\"sendMode\":\"send\",\"sendDisabled\":true,\"sendReady\":\"true\",\"approveDisabled\":false}"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-create-draft-sendlocked"
+    },
+    {
+      "op": "eval",
+      "value": "approved-clicked"
+    },
+    {
+      "op": "eval",
+      "value": "{\"modalGone\":true,\"answeredShown\":false,\"bodyTail\":\"受限模式\\n任务\\n跳到输入框\\nTOPIC\\n量子计算实验（用户改名后的长名称 · 窄窗换行验证）\\n第 01 轮\\n12:57:17\\n帮我开始一个新的研究方向：量子计算实验与论文投稿计划\\n12:57:17\\n复制\\n本轮已结束\\n耗时\\n\\n（假模型默认回复）\\n\\n12:57:18\\n复制\\n第 02 轮\\n13:01:17\\n帮我开始一个新的研究方向：量子计算实验与论文投稿计划\\n13:01:17\\n复制\\n本轮已结束\\n▸\\n总耗时 7.5 秒\\n1 次调用\\n\\n????????:???????????,???????????\\n\\n13:01:24\\n复制\\n 收起星球\"}"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-create-after-approve"
+    },
+    {
+      "op": "console",
+      "errors": [],
+      "log": [
+        "[debug] [vite] connecting...",
+        "[debug] [vite] connected.",
+        "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+      ]
+    }
+  ],
+  "errors": [],
+  "httpFails": [],
+  "log": [
+    "[debug] [vite] connecting...",
+    "[debug] [vite] connected.",
+    "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x4d3c00937800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+  ]
+}

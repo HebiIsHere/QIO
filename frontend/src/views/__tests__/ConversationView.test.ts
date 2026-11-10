@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import ConversationView from "../ConversationView.vue";
 import { useSessionStore } from "../../stores/session";
+import { useEventStore } from "../../stores/events";
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -52,28 +53,29 @@ function mountView() {
   });
 }
 
-describe("话题切换建议（spec 第 29~30 条，v2 为输入区上方入口③）", () => {
-  it("没有建议时不出现该入口", () => {
+describe("旧话题切换建议路径已退役（契约 §2.4）", () => {
+  it("没有话题申请时不出现该入口", () => {
     const w = mountView();
     expect(w.find('[data-entry="topicSwitch"]').exists()).toBe(false);
+    w.unmount();
   });
 
-  it("有建议时入口出现在输入区附近，展开后显示目标话题名与两个选择", async () => {
+  it("旧 TOPIC_SWITCH_SUGGESTED 事件不再出现可执行入口，也不再展开本地确认条", async () => {
     const w = mountView();
-    const session = useSessionStore();
-    session.setPendingSwitch({ topicId: "t2", topicName: "顺丁橡胶降解" });
+    const events = useEventStore();
+    events.route({
+      type: "TOPIC_SWITCH_SUGGESTED",
+      id: "e-topic-old",
+      ts: "",
+      data: { topic_id: "t2", topic_name: "顺丁橡胶降解", reason: "推测" },
+    } as never);
 
     await w.vm.$nextTick();
     await w.vm.$nextTick();
 
-    const entry = w.find('[data-entry="topicSwitch"]');
-    expect(entry.exists()).toBe(true);
-
-    await entry.trigger("click");
-    const panel = w.find('[data-section="topic-switch"]');
-    expect(panel.exists()).toBe(true);
-    expect(panel.text()).toContain("顺丁橡胶降解");
-    expect(panel.text()).toContain("保留当前");
+    expect(w.find('[data-entry="topicSwitch"]').exists()).toBe(false);
+    expect(w.find('[data-section="topic-switch"]').exists()).toBe(false);
+    expect(useSessionStore().currentTopicId).toBeFalsy();
     w.unmount();
   });
 });

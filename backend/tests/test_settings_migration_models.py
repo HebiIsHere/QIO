@@ -13,6 +13,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from agent.storage.db import connect
 from agent.storage.migrate import (
     REQUIRED_OBJECTS,
@@ -179,6 +181,7 @@ def test_compensation_74_is_ddl_only_and_covers_new_objects():
     )
 
 
+@pytest.mark.real_migrations
 def test_fresh_database_has_model_catalog_shape(db_conn: sqlite3.Connection):
     columns = {str(row[1]) for row in db_conn.execute("PRAGMA table_info(credential_models)")}
     assert {

@@ -51,6 +51,7 @@ def _legacy_row(
 # -- 迁移 -------------------------------------------------------------------
 
 
+@pytest.mark.real_migrations
 def test_migration_adds_fact_columns_and_keeps_legacy_rows_readable(db_conn, journal):
     cols = {row["name"] for row in db_conn.execute("PRAGMA table_info(turn_journal)").fetchall()}
     assert {"reason_code", "stopped_by", "actions"} <= cols, "只追加三列，不改历史列"
@@ -73,6 +74,7 @@ def test_migration_adds_fact_columns_and_keeps_legacy_rows_readable(db_conn, jou
     assert facts["actions"] == ["resend"]
 
 
+@pytest.mark.real_migrations
 def test_upgrade_path_from_pre_fact_schema_keeps_existing_rows(db_conn, journal):
     """存量库升级：把库退回到「结束事实列还没有」的状态，再跑一次迁移 —— 旧行必须原样可读。"""
     from agent.storage.migrate import apply_migrations, current_version

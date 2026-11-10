@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.api.bus import EventBus
 from agent.storage.migrate import current_version
 from agent.storage.schema import COMPENSATION_VERSION, MIGRATIONS, SCHEMA_VERSION
@@ -88,6 +90,7 @@ def test_250_notifications_are_not_silently_dropped(db_conn):
 # --- 2) 迁移 71/72 与表结构 ------------------------------------------------------
 
 
+@pytest.mark.real_migrations
 def test_migration_71_and_compensation_72_create_table(db_conn):
     numbers = {int(number) for number, _ in MIGRATIONS}
     assert 71 in numbers, "没有登记只追加迁移 71（子任务通知持久化）"

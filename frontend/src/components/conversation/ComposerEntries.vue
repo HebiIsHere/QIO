@@ -100,7 +100,9 @@ const entries = computed(() =>
       hasPendingIntent: Boolean(session.pendingContinuation),
       anchorHistoric: session.anchorHistoric,
     },
-    topicSwitch: Boolean(session.pendingSwitch),
+    // 入口③：本对话有等待选择话题的申请（只读派生自统一审批队列）。
+    // 旧 TOPIC_SWITCH_SUGGESTED 的可执行确认路径已退役，这里不再建立第二套建议状态。
+    topicSwitch: Boolean(session.topicApprovalPending),
     queue: session.turnQueue,
     localQueued: session.messages
       .filter((message) => message.queued && !message.turnId)
@@ -177,6 +179,17 @@ function toggle(id: string) {
     }
     openEntry.value = id;
     emit("extra-open", id);
+    return;
+  }
+  if (id === "topicSwitch") {
+    /**
+     * 话题申请：旧确认条已退役。入口只打开**同一份**申请的统一弹窗，
+     * 一切决定（转到/新建/在当前话题回答）都走统一审批路径；
+     * 这里不展开面板、不提交、不改 Anchor、不动草稿归属。
+     */
+    openEntry.value = null;
+    const key = session.topicApprovalKey;
+    if (key) unified.openTopicApproval(key);
     return;
   }
   if (id === "approvals") {
@@ -261,32 +274,6 @@ async function cancelContinuation() {
   }
 }
 
-const switchBusy = ref(false);
-const switchNotice = ref("");
-const switchFailed = ref(false);
-
-async function decideSwitch(switchTo: boolean) {
-  if (switchBusy.value) return;
-  switchBusy.value = true;
-  switchNotice.value = "";
-  switchFailed.value = false;
-  try {
-    if (switchTo) await session.confirmPendingSwitch();
-    else await session.rejectPendingSwitch();
-    const error = session.lastError;
-    if (error) {
-      switchNotice.value = error;
-      switchFailed.value = true;
-    } else {
-      switchNotice.value = switchTo
-        ? "已提交切换：等后端确认后生效"
-        : "已保留当前话题（这段内容仍属于当前对话）";
-    }
-  } finally {
-    switchBusy.value = false;
-  }
-}
-
 /** 接续说明（不暴露 intent_id 这类内部术语） */
 const continuationDetail = computed(() => continuationText(session.pendingContinuation));
 const anchorTitle = computed(() => session.anchorFragment?.title ?? "");
@@ -349,35 +336,6 @@ const panelTitle = computed(() => {
             >
               {{ continuationBusy ? "取消中…" : "取消这个接续选择" }}
             </button>
-          </div>
-
-          <div v-else-if="openEntry === 'topicSwitch' && session.pendingSwitch" class="simple" data-section="topic-switch">
-            <p class="line">转到「{{ session.pendingSwitch.topicName }}」？</p>
-            <p class="sub">
-              这段内容看起来属于另一个话题。是否切换由你决定，QIO 不会自行切换。
-              <template v-if="session.pendingSwitch.reason">{{ session.pendingSwitch.reason }}</template>
-            </p>
-            <p v-if="switchNotice" class="feedback" :class="{ err: switchFailed }" role="status">
-              {{ switchNotice }}
-            </p>
-            <div class="actions">
-              <button
-                class="qio-btn mini quiet"
-                type="button"
-                :disabled="switchBusy || session.pendingSwitchBusy"
-                @click="decideSwitch(false)"
-              >
-                保留当前
-              </button>
-              <button
-                class="qio-btn mini primary"
-                type="button"
-                :disabled="switchBusy || session.pendingSwitchBusy"
-                @click="decideSwitch(true)"
-              >
-                {{ switchBusy || session.pendingSwitchBusy ? "切换中…" : "转到这里" }}
-              </button>
-            </div>
           </div>
 
           <!--

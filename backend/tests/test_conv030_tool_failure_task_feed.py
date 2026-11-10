@@ -792,6 +792,7 @@ def test_run_shell_failure_codes_and_missing_command():
 # ── 9. 迁移：只追加新列，旧行默认值可用 ────────────────────────────────────
 
 
+@pytest.mark.real_migrations
 def test_tool_records_gains_structured_fact_columns(db_conn: sqlite3.Connection):
     columns = {str(row[1]) for row in db_conn.execute("PRAGMA table_info(tool_records)")}
     assert {"code", "category", "recoverable", "result_status"} <= columns

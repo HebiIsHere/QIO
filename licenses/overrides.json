@@ -86,6 +86,11 @@
       "license": "MIT",
       "source": "pypi"
     },
+    "python:numpy@2.4.6": {
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "copyright": "Copyright (c) 2005-2025, NumPy Developers.；Copyright (c) 2011-2014, The OpenBLAS Project",
+      "source": "pypi"
+    },
     "python:onnxruntime@1.30.0": {
       "license": "MIT",
       "attribution": "Microsoft Corporation",
@@ -144,6 +149,18 @@
       "attribution": "https://github.com/oyvindln/adler2",
       "source": "crates.io"
     },
+    "rust:aho-corasick@1.1.4": {
+      "license": "Unlicense OR MIT",
+      "copyright": "Copyright (c) 2015 Andrew Gallant",
+      "attribution": "https://github.com/BurntSushi/aho-corasick",
+      "source": "crates.io"
+    },
+    "rust:alloc-no-stdlib@2.0.4": {
+      "license": "BSD-3-Clause",
+      "copyright": "Copyright (c) 2016 Dropbox, Inc.",
+      "attribution": "https://github.com/dropbox/rust-alloc-no-stdlib",
+      "source": "crates.io"
+    },
     "rust:alloc-stdlib@0.2.4": {
       "license": "BSD-3-Clause",
       "attribution": "https://github.com/dropbox/rust-alloc-no-stdlib",
@@ -184,9 +201,51 @@
       "attribution": "https://github.com/gtk-rs/gtk3-rs",
       "source": "crates.io"
     },
+    "rust:atomic-waker@1.1.2": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/smol-rs/atomic-waker",
+      "source": "crates.io"
+    },
+    "rust:autocfg@1.5.1": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2018 Josh Stone",
+      "attribution": "https://github.com/cuviper/autocfg",
+      "source": "crates.io"
+    },
     "rust:base64@0.21.7": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/marshallpierce/rust-base64",
+      "source": "crates.io"
+    },
+    "rust:base64@0.22.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 Alice Maz",
+      "attribution": "https://github.com/marshallpierce/rust-base64",
+      "source": "crates.io"
+    },
+    "rust:bit-set@0.8.0": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2023 The Rust Project Developers",
+      "attribution": "https://github.com/contain-rs/bit-set",
+      "source": "crates.io"
+    },
+    "rust:bit-vec@0.8.0": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2023 The Rust Project Developers",
+      "attribution": "https://github.com/contain-rs/bit-vec",
+      "source": "crates.io"
+    },
+    "rust:bitflags@1.3.2": {
+      "license": "MIT/Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/bitflags/bitflags",
+      "source": "crates.io"
+    },
+    "rust:bitflags@2.13.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/bitflags/bitflags",
       "source": "crates.io"
     },
     "rust:block-buffer@0.10.4": {
@@ -199,6 +258,24 @@
       "attribution": "https://github.com/madsmtm/objc2",
       "source": "crates.io"
     },
+    "rust:brotli-decompressor@5.0.3": {
+      "license": "BSD-3-Clause/MIT",
+      "copyright": "Copyright (c) 2016 Dropbox, Inc.",
+      "attribution": "https://github.com/dropbox/rust-brotli-decompressor",
+      "source": "crates.io"
+    },
+    "rust:brotli@8.0.4": {
+      "license": "BSD-3-Clause AND MIT",
+      "copyright": "Copyright (c) 2016 Dropbox, Inc.",
+      "attribution": "https://github.com/dropbox/rust-brotli",
+      "source": "crates.io"
+    },
+    "rust:bs58@0.5.1": {
+      "license": "MIT/Apache-2.0",
+      "copyright": "Copyright (c) 2016 The roaring-rs developers.",
+      "attribution": "https://github.com/Nullus157/bs58-rs",
+      "source": "crates.io"
+    },
     "rust:bumpalo@3.20.3": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/fitzgen/bumpalo",
@@ -207,6 +284,18 @@
     "rust:bytemuck@1.25.2": {
       "license": "Zlib OR Apache-2.0 OR MIT",
       "attribution": "https://github.com/Lokathor/bytemuck",
+      "source": "crates.io"
+    },
+    "rust:byteorder@1.5.0": {
+      "license": "Unlicense OR MIT",
+      "copyright": "Copyright (c) 2015 Andrew Gallant",
+      "attribution": "https://github.com/BurntSushi/byteorder",
+      "source": "crates.io"
+    },
+    "rust:bytes@1.12.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2018 Carl Lerche",
+      "attribution": "https://github.com/tokio-rs/bytes",
       "source": "crates.io"
     },
     "rust:cairo-rs@0.18.5": {
@@ -239,14 +328,50 @@
       "attribution": "https://gitlab.com/lib.rs/cargo_toml",
       "source": "crates.io"
     },
+    "rust:cc@1.4.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/rust-lang/cc-rs",
+      "source": "crates.io"
+    },
     "rust:cesu8@1.1.0": {
       "license": "Apache-2.0 OR MIT",
       "attribution": "https://github.com/emk/cesu8-rs",
       "source": "crates.io"
     },
+    "rust:cfb@0.7.3": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 Matthew D. Steele",
+      "attribution": "https://github.com/mdsteele/rust-cfb",
+      "source": "crates.io"
+    },
+    "rust:cfg-expr@0.15.8": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2019 Embark Studios",
+      "attribution": "https://github.com/EmbarkStudios/cfg-expr",
+      "source": "crates.io"
+    },
+    "rust:cfg-if@1.0.4": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/rust-lang/cfg-if",
+      "source": "crates.io"
+    },
+    "rust:chrono@0.4.45": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014, Kang Seonghoon.",
+      "attribution": "https://github.com/chronotope/chrono",
+      "source": "crates.io"
+    },
     "rust:combine@4.6.7": {
       "license": "MIT",
       "attribution": "https://github.com/Marwes/combine",
+      "source": "crates.io"
+    },
+    "rust:cookie@0.18.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2017 Sergio Benitez；Copyright 2014 Alex Chricton",
+      "attribution": "https://github.com/SergioBenitez/cookie-rs",
       "source": "crates.io"
     },
     "rust:core-foundation-sys@0.8.7": {
@@ -279,6 +404,24 @@
       "attribution": "https://github.com/RustCrypto/utils",
       "source": "crates.io"
     },
+    "rust:crc32fast@1.5.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors",
+      "attribution": "https://github.com/srijs/rust-crc32fast",
+      "source": "crates.io"
+    },
+    "rust:crossbeam-channel@0.5.16": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2019 The Crossbeam Project Developers",
+      "attribution": "https://github.com/crossbeam-rs/crossbeam",
+      "source": "crates.io"
+    },
+    "rust:crossbeam-utils@0.8.22": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2019 The Crossbeam Project Developers",
+      "attribution": "https://github.com/crossbeam-rs/crossbeam",
+      "source": "crates.io"
+    },
     "rust:crypto-common@0.1.7": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/RustCrypto/traits",
@@ -304,9 +447,69 @@
       "attribution": "https://github.com/mmastrac/rust-ctor",
       "source": "crates.io"
     },
+    "rust:darling@0.23.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 Ted Driggs",
+      "attribution": "https://github.com/TedDriggs/darling",
+      "source": "crates.io"
+    },
+    "rust:darling_core@0.23.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 Ted Driggs",
+      "attribution": "https://github.com/TedDriggs/darling",
+      "source": "crates.io"
+    },
+    "rust:darling_macro@0.23.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 Ted Driggs",
+      "attribution": "https://github.com/TedDriggs/darling",
+      "source": "crates.io"
+    },
+    "rust:dbus@0.9.12": {
+      "license": "Apache-2.0/MIT",
+      "copyright": "Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors",
+      "attribution": "https://github.com/diwic/dbus-rs",
+      "source": "crates.io"
+    },
+    "rust:deranged@0.5.8": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2024 Jacob Pratt et al.",
+      "attribution": "https://github.com/jhpratt/deranged",
+      "source": "crates.io"
+    },
     "rust:derive_arbitrary@1.4.2": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/rust-fuzz/arbitrary",
+      "source": "crates.io"
+    },
+    "rust:derive_more-impl@2.1.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2016 Jelte Fennema",
+      "attribution": "https://github.com/JelteF/derive_more",
+      "source": "crates.io"
+    },
+    "rust:derive_more@2.1.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2016 Jelte Fennema",
+      "attribution": "https://github.com/JelteF/derive_more",
+      "source": "crates.io"
+    },
+    "rust:digest@0.10.7": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2017 Artyom Pavlov",
+      "attribution": "https://github.com/RustCrypto/traits",
+      "source": "crates.io"
+    },
+    "rust:dirs-sys@0.5.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2018-2019 dirs-rs contributors",
+      "attribution": "https://github.com/dirs-dev/dirs-sys-rs",
+      "source": "crates.io"
+    },
+    "rust:dirs@6.0.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2018-2019 dirs-rs contributors",
+      "attribution": "https://github.com/soc/dirs-rs",
       "source": "crates.io"
     },
     "rust:dispatch2@0.3.1": {
@@ -327,6 +530,18 @@
     "rust:dlopen2_derive@0.4.3": {
       "license": "MIT",
       "attribution": "https://github.com/OpenByteDev/dlopen2",
+      "source": "crates.io"
+    },
+    "rust:dom_query@0.27.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2023 Mykola Humanov",
+      "attribution": "https://github.com/niklak/dom_query",
+      "source": "crates.io"
+    },
+    "rust:dpi@0.1.2": {
+      "license": "Apache-2.0 AND MIT",
+      "copyright": "Copyright (c) 2018 Jorge Aparicio；Copyright © 2005-2020 Rich Felker, et al.",
+      "attribution": "https://github.com/rust-windowing/winit",
       "source": "crates.io"
     },
     "rust:dtoa-short@0.3.5": {
@@ -359,9 +574,21 @@
       "attribution": "https://github.com/dtolnay/dyn-clone",
       "source": "crates.io"
     },
+    "rust:embed-resource@3.0.11": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 nabijaczleweli",
+      "attribution": "https://github.com/nabijaczleweli/rust-embed-resource",
+      "source": "crates.io"
+    },
     "rust:embed_plist@1.2.2": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/nvzqz/embed-plist-rs",
+      "source": "crates.io"
+    },
+    "rust:encoding_rs@0.8.35": {
+      "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
+      "copyright": "Copyright Mozilla Foundation",
+      "attribution": "https://github.com/hsivonen/encoding_rs",
       "source": "crates.io"
     },
     "rust:env_filter@0.1.4": {
@@ -369,9 +596,21 @@
       "attribution": "https://github.com/rust-cli/env_logger",
       "source": "crates.io"
     },
+    "rust:equivalent@1.0.2": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2016--2023",
+      "attribution": "https://github.com/indexmap-rs/equivalent",
+      "source": "crates.io"
+    },
     "rust:erased-serde@0.4.10": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/dtolnay/erased-serde",
+      "source": "crates.io"
+    },
+    "rust:errno@0.3.14": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Chris Wong",
+      "attribution": "https://github.com/lambda-fairy/rust-errno",
       "source": "crates.io"
     },
     "rust:fastrand@2.5.0": {
@@ -382,6 +621,48 @@
     "rust:fdeflate@0.3.7": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/image-rs/fdeflate",
+      "source": "crates.io"
+    },
+    "rust:fern@0.7.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014-2017 David Ross",
+      "attribution": "https://github.com/daboross/fern",
+      "source": "crates.io"
+    },
+    "rust:field-offset@0.3.6": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016-2021 Diggory Blake, and other contributors.",
+      "attribution": "https://github.com/Diggsey/rust-field-offset",
+      "source": "crates.io"
+    },
+    "rust:filetime@0.2.29": {
+      "license": "MIT/Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/alexcrichton/filetime",
+      "source": "crates.io"
+    },
+    "rust:find-msvc-tools@0.1.9": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/rust-lang/cc-rs",
+      "source": "crates.io"
+    },
+    "rust:flate2@1.1.9": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014-2026 Alex Crichton",
+      "attribution": "https://github.com/rust-lang/flate2-rs",
+      "source": "crates.io"
+    },
+    "rust:fnv@1.0.7": {
+      "license": "Apache-2.0 / MIT",
+      "copyright": "Copyright (c) 2017 Contributors",
+      "attribution": "https://github.com/servo/rust-fnv",
+      "source": "crates.io"
+    },
+    "rust:foldhash@0.2.0": {
+      "license": "Zlib",
+      "copyright": "Copyright (c) 2024 Orson Peters",
+      "attribution": "https://github.com/orlp/foldhash",
       "source": "crates.io"
     },
     "rust:foreign-types-macros@0.2.4": {
@@ -397,6 +678,60 @@
     "rust:foreign-types@0.5.0": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/sfackler/foreign-types",
+      "source": "crates.io"
+    },
+    "rust:form_urlencoded@1.2.2": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2013-2016 The rust-url developers",
+      "attribution": "https://github.com/servo/rust-url",
+      "source": "crates.io"
+    },
+    "rust:futures-channel@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
+      "source": "crates.io"
+    },
+    "rust:futures-core@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
+      "source": "crates.io"
+    },
+    "rust:futures-executor@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
+      "source": "crates.io"
+    },
+    "rust:futures-io@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
+      "source": "crates.io"
+    },
+    "rust:futures-macro@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
+      "source": "crates.io"
+    },
+    "rust:futures-sink@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
+      "source": "crates.io"
+    },
+    "rust:futures-task@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
+      "source": "crates.io"
+    },
+    "rust:futures-util@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Alex Crichton；Copyright (c) 2017 The Tokio Authors",
+      "attribution": "https://github.com/rust-lang/futures-rs",
       "source": "crates.io"
     },
     "rust:gdk-pixbuf-sys@0.18.0": {
@@ -434,6 +769,30 @@
       "attribution": "https://github.com/gtk-rs/gtk3-rs",
       "source": "crates.io"
     },
+    "rust:generic-array@0.14.7": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2015 Bartłomiej Kamiński",
+      "attribution": "https://github.com/fizyk20/generic-array.git",
+      "source": "crates.io"
+    },
+    "rust:getrandom@0.2.17": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2018-2024 The rust-random Project Developers；Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-random/getrandom",
+      "source": "crates.io"
+    },
+    "rust:getrandom@0.3.4": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2018-2025 The rust-random Project Developers；Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-random/getrandom",
+      "source": "crates.io"
+    },
+    "rust:getrandom@0.4.3": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2018-2026 The rust-random Project Developers；Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-random/getrandom",
+      "source": "crates.io"
+    },
     "rust:gio-sys@0.18.1": {
       "license": "MIT",
       "attribution": "https://github.com/gtk-rs/gtk-rs-core",
@@ -459,6 +818,12 @@
       "attribution": "https://github.com/gtk-rs/gtk-rs-core",
       "source": "crates.io"
     },
+    "rust:glob@0.3.4": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-lang/glob",
+      "source": "crates.io"
+    },
     "rust:gobject-sys@0.18.0": {
       "license": "MIT",
       "attribution": "https://github.com/gtk-rs/gtk-rs-core",
@@ -479,9 +844,141 @@
       "attribution": "https://github.com/gtk-rs/gtk3-rs",
       "source": "crates.io"
     },
+    "rust:hashbrown@0.12.3": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Amanieu d'Antras",
+      "attribution": "https://github.com/rust-lang/hashbrown",
+      "source": "crates.io"
+    },
+    "rust:hashbrown@0.17.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 Amanieu d'Antras",
+      "attribution": "https://github.com/rust-lang/hashbrown",
+      "source": "crates.io"
+    },
+    "rust:heck@0.4.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 The Rust Project Developers",
+      "attribution": "https://github.com/withoutboats/heck",
+      "source": "crates.io"
+    },
+    "rust:heck@0.5.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 The Rust Project Developers",
+      "attribution": "https://github.com/withoutboats/heck",
+      "source": "crates.io"
+    },
+    "rust:hex@0.4.3": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2013-2014 The Rust Project Developers.；Copyright (c) 2015-2020 The rust-hex Developers",
+      "attribution": "https://github.com/KokaKiwi/rust-hex",
+      "source": "crates.io"
+    },
+    "rust:html5ever@0.38.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The html5ever Project Developers",
+      "attribution": "https://github.com/servo/html5ever",
+      "source": "crates.io"
+    },
+    "rust:http-body-util@0.1.4": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors",
+      "attribution": "https://github.com/hyperium/http-body",
+      "source": "crates.io"
+    },
+    "rust:http-body@1.1.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors",
+      "attribution": "https://github.com/hyperium/http-body",
+      "source": "crates.io"
+    },
+    "rust:http@1.5.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2017 http-rs authors",
+      "attribution": "https://github.com/hyperium/http",
+      "source": "crates.io"
+    },
+    "rust:httparse@1.10.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015-2025 Sean McArthur",
+      "attribution": "https://github.com/seanmonstar/httparse",
+      "source": "crates.io"
+    },
+    "rust:hyper-rustls@0.27.10": {
+      "license": "Apache-2.0 OR ISC OR MIT",
+      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>",
+      "attribution": "https://github.com/rustls/hyper-rustls",
+      "source": "crates.io"
+    },
+    "rust:hyper-util@0.1.20": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2023-2025 Sean McArthur",
+      "attribution": "https://github.com/hyperium/hyper-util",
+      "source": "crates.io"
+    },
+    "rust:hyper@1.11.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014-2026 Sean McArthur",
+      "attribution": "https://github.com/hyperium/hyper",
+      "source": "crates.io"
+    },
     "rust:iana-time-zone-haiku@0.1.2": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/strawlab/iana-time-zone",
+      "source": "crates.io"
+    },
+    "rust:iana-time-zone@0.1.65": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2020 Andrew Straw",
+      "attribution": "https://github.com/strawlab/iana-time-zone",
+      "source": "crates.io"
+    },
+    "rust:ico@0.5.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2018 Matthew D. Steele",
+      "attribution": "https://github.com/mdsteele/rust-ico",
+      "source": "crates.io"
+    },
+    "rust:icu_collections@2.2.0": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:icu_locale_core@2.2.0": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:icu_normalizer@2.2.0": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:icu_normalizer_data@2.2.0": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:icu_properties@2.2.0": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:icu_properties_data@2.2.0": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:icu_provider@2.2.0": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
       "source": "crates.io"
     },
     "rust:ident_case@1.0.1": {
@@ -489,14 +986,68 @@
       "attribution": "https://github.com/TedDriggs/ident_case",
       "source": "crates.io"
     },
+    "rust:idna@1.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2013-2025 The rust-url developers",
+      "attribution": "https://github.com/servo/rust-url/",
+      "source": "crates.io"
+    },
     "rust:idna_adapter@1.2.2": {
       "license": "Apache-2.0 OR MIT",
       "attribution": "https://github.com/hsivonen/idna_adapter",
       "source": "crates.io"
     },
+    "rust:indexmap@1.9.3": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2016--2017",
+      "attribution": "https://github.com/bluss/indexmap",
+      "source": "crates.io"
+    },
+    "rust:indexmap@2.14.0": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2016--2017",
+      "attribution": "https://github.com/indexmap-rs/indexmap",
+      "source": "crates.io"
+    },
+    "rust:infer@0.19.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Bojan",
+      "attribution": "https://github.com/bojand/infer",
+      "source": "crates.io"
+    },
+    "rust:ipnet@2.12.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2017 Juniper Networks, Inc.",
+      "attribution": "https://github.com/krisprice/ipnet",
+      "source": "crates.io"
+    },
+    "rust:is-docker@0.2.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2023 Sean Larkin",
+      "attribution": "https://github.com/TheLarkInn/is-docker",
+      "source": "crates.io"
+    },
+    "rust:is-wsl@0.4.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2023 Sean Larkin",
+      "attribution": "https://github.com/TheLarkInn/is-wsl",
+      "source": "crates.io"
+    },
     "rust:itoa@1.0.18": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/dtolnay/itoa",
+      "source": "crates.io"
+    },
+    "rust:javascriptcore-rs-sys@1.1.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2013-2017, The Gtk-rs Project Developers.",
+      "attribution": "https://github.com/tauri-apps/javascriptcore-rs",
+      "source": "crates.io"
+    },
+    "rust:javascriptcore-rs@1.1.2": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2013-2021, The Gtk-rs Project Developers.",
+      "attribution": "https://github.com/tauri-apps/javascriptcore-rs",
       "source": "crates.io"
     },
     "rust:jni-macros@0.22.4": {
@@ -534,8 +1085,31 @@
       "attribution": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys",
       "source": "crates.io"
     },
+    "rust:json-patch@3.0.1": {
+      "license": "MIT/Apache-2.0",
+      "copyright": "Copyright (c) 2017 Ivan Dubrov",
+      "attribution": "https://github.com/idubrov/json-patch",
+      "source": "crates.io"
+    },
+    "rust:jsonptr@0.6.3": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2024 Chance Dinkins",
+      "attribution": "https://github.com/chanced/jsonptr",
+      "source": "crates.io"
+    },
+    "rust:keyboard-types@0.7.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2017 Pyfisch",
+      "attribution": "https://github.com/pyfisch/keyboard-types",
+      "source": "crates.io"
+    },
     "rust:libappindicator-sys@0.9.0": {
       "license": "Apache-2.0 OR MIT",
+      "source": "crates.io"
+    },
+    "rust:libappindicator@0.9.0": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017-2021 qDot；Copyright (c) 2021 Tauri Apps Contributors",
       "source": "crates.io"
     },
     "rust:libc@0.2.189": {
@@ -543,9 +1117,86 @@
       "attribution": "https://github.com/rust-lang/libc",
       "source": "crates.io"
     },
+    "rust:libdbus-sys@0.2.7": {
+      "license": "Apache-2.0/MIT",
+      "copyright": "Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors",
+      "attribution": "https://github.com/diwic/dbus-rs",
+      "source": "crates.io"
+    },
+    "rust:libloading@0.7.4": {
+      "license": "ISC",
+      "copyright": "Copyright © 2015, Simonas Kazlauskas",
+      "attribution": "https://github.com/nagisa/rust_libloading/",
+      "source": "crates.io"
+    },
     "rust:libredox@0.1.18": {
       "license": "MIT",
       "attribution": "https://gitlab.redox-os.org/redox-os/libredox.git",
+      "source": "crates.io"
+    },
+    "rust:linux-raw-sys@0.12.1": {
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "attribution": "https://github.com/sunfishcode/linux-raw-sys",
+      "source": "crates.io"
+    },
+    "rust:litemap@0.8.2": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:lock_api@0.4.14": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 The Rust Project Developers",
+      "attribution": "https://github.com/Amanieu/parking_lot",
+      "source": "crates.io"
+    },
+    "rust:log@0.4.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-lang/log",
+      "source": "crates.io"
+    },
+    "rust:markup5ever@0.38.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The html5ever Project Developers",
+      "attribution": "https://github.com/servo/html5ever",
+      "source": "crates.io"
+    },
+    "rust:memchr@2.8.3": {
+      "license": "Unlicense OR MIT",
+      "copyright": "Copyright (c) 2015 Andrew Gallant",
+      "attribution": "https://github.com/BurntSushi/memchr",
+      "source": "crates.io"
+    },
+    "rust:memoffset@0.9.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 Gilad Naaman",
+      "attribution": "https://github.com/Gilnaa/memoffset",
+      "source": "crates.io"
+    },
+    "rust:mime@0.3.17": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Sean McArthur",
+      "attribution": "https://github.com/hyperium/mime",
+      "source": "crates.io"
+    },
+    "rust:minisign-verify@0.2.5": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019-2025 Frank Denis；Copyright (c) 2006-2009 Graydon Hoare",
+      "attribution": "https://github.com/jedisct1/rust-minisign-verify",
+      "source": "crates.io"
+    },
+    "rust:miniz_oxide@0.8.9": {
+      "license": "MIT OR Zlib OR Apache-2.0",
+      "copyright": "Copyright 2013-2014 RAD Game Tools and Valve Software；Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC",
+      "attribution": "https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide",
+      "source": "crates.io"
+    },
+    "rust:mio@1.2.2": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014 Carl Lerche and other MIO contributors",
+      "attribution": "https://github.com/tokio-rs/mio",
       "source": "crates.io"
     },
     "rust:muda@0.19.3": {
@@ -563,9 +1214,21 @@
       "attribution": "https://github.com/rust-mobile/ndk",
       "source": "crates.io"
     },
+    "rust:new_debug_unreachable@1.0.6": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2015 Jonathan Reem",
+      "attribution": "https://github.com/mbrubeck/rust-debug-unreachable",
+      "source": "crates.io"
+    },
     "rust:num-conv@0.2.2": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/jhpratt/num-conv",
+      "source": "crates.io"
+    },
+    "rust:num-traits@0.2.19": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-num/num-traits",
       "source": "crates.io"
     },
     "rust:num_enum@0.7.6": {
@@ -576,6 +1239,12 @@
     "rust:num_enum_derive@0.7.6": {
       "license": "BSD-3-Clause OR MIT OR Apache-2.0",
       "attribution": "https://github.com/illicitonion/num_enum",
+      "source": "crates.io"
+    },
+    "rust:num_threads@0.1.7": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2021 Jacob Pratt",
+      "attribution": "https://github.com/jhpratt/num_threads",
       "source": "crates.io"
     },
     "rust:objc2-app-kit@0.3.2": {
@@ -678,6 +1347,12 @@
       "attribution": "https://github.com/Byron/open-rs",
       "source": "crates.io"
     },
+    "rust:openssl-probe@0.2.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/rustls/openssl-probe",
+      "source": "crates.io"
+    },
     "rust:option-ext@0.2.0": {
       "license": "MPL-2.0",
       "attribution": "https://github.com/soc/option-ext.git",
@@ -703,9 +1378,99 @@
       "attribution": "https://github.com/gtk-rs/gtk-rs-core",
       "source": "crates.io"
     },
+    "rust:parking_lot@0.12.5": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 The Rust Project Developers",
+      "attribution": "https://github.com/Amanieu/parking_lot",
+      "source": "crates.io"
+    },
+    "rust:parking_lot_core@0.9.12": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 The Rust Project Developers",
+      "attribution": "https://github.com/Amanieu/parking_lot",
+      "source": "crates.io"
+    },
+    "rust:percent-encoding@2.3.2": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2013-2025 The rust-url developers",
+      "attribution": "https://github.com/servo/rust-url/",
+      "source": "crates.io"
+    },
+    "rust:phf@0.13.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi",
+      "attribution": "https://github.com/rust-phf/rust-phf",
+      "source": "crates.io"
+    },
+    "rust:phf_codegen@0.13.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi",
+      "attribution": "https://github.com/rust-phf/rust-phf",
+      "source": "crates.io"
+    },
+    "rust:phf_generator@0.13.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi",
+      "attribution": "https://github.com/rust-phf/rust-phf",
+      "source": "crates.io"
+    },
+    "rust:phf_macros@0.13.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi",
+      "attribution": "https://github.com/rust-phf/rust-phf",
+      "source": "crates.io"
+    },
+    "rust:phf_shared@0.13.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi",
+      "attribution": "https://github.com/rust-phf/rust-phf",
+      "source": "crates.io"
+    },
     "rust:pin-project-lite@0.2.17": {
       "license": "Apache-2.0 OR MIT",
       "attribution": "https://github.com/taiki-e/pin-project-lite",
+      "source": "crates.io"
+    },
+    "rust:pkg-config@0.3.33": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/rust-lang/pkg-config-rs",
+      "source": "crates.io"
+    },
+    "rust:plist@1.10.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2015 Edward Barnard",
+      "attribution": "https://github.com/ebarnard/rust-plist/",
+      "source": "crates.io"
+    },
+    "rust:png@0.17.16": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 nwin",
+      "attribution": "https://github.com/image-rs/image-png",
+      "source": "crates.io"
+    },
+    "rust:png@0.18.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 nwin",
+      "attribution": "https://github.com/image-rs/image-png",
+      "source": "crates.io"
+    },
+    "rust:potential_utf@0.1.5": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:powerfmt@0.2.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2023 Jacob Pratt et al.",
+      "attribution": "https://github.com/jhpratt/powerfmt",
+      "source": "crates.io"
+    },
+    "rust:precomputed-hash@0.1.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 Emilio Cobos Álvarez",
+      "attribution": "https://github.com/emilio/precomputed-hash",
       "source": "crates.io"
     },
     "rust:proc-macro-crate@1.3.1": {
@@ -723,9 +1488,27 @@
       "attribution": "https://github.com/bkchr/proc-macro-crate",
       "source": "crates.io"
     },
+    "rust:proc-macro-error-attr@1.0.4": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>",
+      "attribution": "https://gitlab.com/CreepySkeleton/proc-macro-error",
+      "source": "crates.io"
+    },
+    "rust:proc-macro-error@1.0.4": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>",
+      "attribution": "https://gitlab.com/CreepySkeleton/proc-macro-error",
+      "source": "crates.io"
+    },
     "rust:proc-macro2@1.0.107": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/dtolnay/proc-macro2",
+      "source": "crates.io"
+    },
+    "rust:quick-xml@0.41.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2016 Johann Tuffe",
+      "attribution": "https://github.com/tafia/quick-xml",
       "source": "crates.io"
     },
     "rust:quote@1.0.47": {
@@ -741,6 +1524,12 @@
     "rust:r-efi@6.0.0": {
       "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
       "attribution": "https://github.com/r-efi/r-efi",
+      "source": "crates.io"
+    },
+    "rust:raw-window-handle@0.6.2": {
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "copyright": "Copyright (c) 2019 Osspial",
+      "attribution": "https://github.com/rust-windowing/raw-window-handle",
       "source": "crates.io"
     },
     "rust:redox_syscall@0.5.18": {
@@ -763,9 +1552,62 @@
       "attribution": "https://github.com/dtolnay/ref-cast",
       "source": "crates.io"
     },
+    "rust:regex-automata@0.4.16": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-lang/regex",
+      "source": "crates.io"
+    },
+    "rust:regex-syntax@0.8.11": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-lang/regex",
+      "source": "crates.io"
+    },
+    "rust:regex@1.13.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers",
+      "attribution": "https://github.com/rust-lang/regex",
+      "source": "crates.io"
+    },
+    "rust:reqwest@0.13.4": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2016 Sean McArthur",
+      "attribution": "https://github.com/seanmonstar/reqwest",
+      "source": "crates.io"
+    },
+    "rust:ring@0.17.14": {
+      "license": "Apache-2.0 AND ISC",
+      "copyright": "Copyright (c) 2009 The Go Authors. All rights reserved.；Copyright 2015 The Chromium Authors. All rights reserved.",
+      "attribution": "https://github.com/briansmith/ring",
+      "source": "crates.io"
+    },
     "rust:rustc-hash@2.1.3": {
       "license": "Apache-2.0 OR MIT",
       "attribution": "https://github.com/rust-lang/rustc-hash",
+      "source": "crates.io"
+    },
+    "rust:rustc_version@0.4.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016 The Rust Project Developers",
+      "attribution": "https://github.com/djc/rustc-version-rs",
+      "source": "crates.io"
+    },
+    "rust:rustix@1.1.5": {
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "attribution": "https://github.com/bytecodealliance/rustix",
+      "source": "crates.io"
+    },
+    "rust:rustls-native-certs@0.8.4": {
+      "license": "Apache-2.0 OR ISC OR MIT",
+      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>",
+      "attribution": "https://github.com/rustls/rustls-native-certs",
+      "source": "crates.io"
+    },
+    "rust:rustls-pki-types@1.15.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2023 Dirkjan Ochtman",
+      "attribution": "https://github.com/rustls/pki-types",
       "source": "crates.io"
     },
     "rust:rustls-platform-verifier-android@0.1.1": {
@@ -773,9 +1615,69 @@
       "attribution": "https://github.com/rustls/rustls-platform-verifier",
       "source": "crates.io"
     },
+    "rust:rustls-platform-verifier@0.7.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2022 1Password",
+      "attribution": "https://github.com/rustls/rustls-platform-verifier",
+      "source": "crates.io"
+    },
+    "rust:rustls-webpki@0.103.15": {
+      "license": "ISC",
+      "copyright": "Copyright 2015 Brian Smith.",
+      "attribution": "https://github.com/rustls/webpki",
+      "source": "crates.io"
+    },
+    "rust:rustls@0.23.45": {
+      "license": "Apache-2.0 OR ISC OR MIT",
+      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>",
+      "attribution": "https://github.com/rustls/rustls",
+      "source": "crates.io"
+    },
     "rust:rustversion@1.0.23": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/dtolnay/rustversion",
+      "source": "crates.io"
+    },
+    "rust:same-file@1.0.6": {
+      "license": "Unlicense/MIT",
+      "copyright": "Copyright (c) 2017 Andrew Gallant",
+      "attribution": "https://github.com/BurntSushi/same-file",
+      "source": "crates.io"
+    },
+    "rust:schannel@0.1.29": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2015 steffengy",
+      "attribution": "https://github.com/steffengy/schannel-rs",
+      "source": "crates.io"
+    },
+    "rust:schemars@0.8.22": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Graham Esau",
+      "attribution": "https://github.com/GREsau/schemars",
+      "source": "crates.io"
+    },
+    "rust:schemars@0.9.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Graham Esau",
+      "attribution": "https://github.com/GREsau/schemars",
+      "source": "crates.io"
+    },
+    "rust:schemars@1.2.2": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Graham Esau",
+      "attribution": "https://github.com/GREsau/schemars",
+      "source": "crates.io"
+    },
+    "rust:schemars_derive@0.8.22": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Graham Esau",
+      "attribution": "https://github.com/GREsau/schemars",
+      "source": "crates.io"
+    },
+    "rust:scopeguard@1.2.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2016-2019 Ulrik Sverdrup \"bluss\" and scopeguard developers",
+      "attribution": "https://github.com/bluss/scopeguard",
       "source": "crates.io"
     },
     "rust:security-framework-sys@2.17.0": {
@@ -853,9 +1755,27 @@
       "attribution": "https://github.com/jonasbb/serde_with/",
       "source": "crates.io"
     },
+    "rust:serialize-to-javascript-impl@0.1.2": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2021 Chip Reed",
+      "attribution": "https://github.com/chippers/serialize-to-javascript",
+      "source": "crates.io"
+    },
+    "rust:serialize-to-javascript@0.1.2": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2021 Chip Reed",
+      "attribution": "https://github.com/chippers/serialize-to-javascript",
+      "source": "crates.io"
+    },
     "rust:servo_arc@0.4.3": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/servo/stylo",
+      "source": "crates.io"
+    },
+    "rust:sha2@0.10.9": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2006-2009 Graydon Hoare；Copyright (c) 2009-2013 Mozilla Foundation",
+      "attribution": "https://github.com/RustCrypto/hashes",
       "source": "crates.io"
     },
     "rust:shared_child@1.1.1": {
@@ -863,9 +1783,27 @@
       "attribution": "https://github.com/oconnor663/shared_child.rs",
       "source": "crates.io"
     },
+    "rust:shlex@2.0.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2015 Nicholas Allegra (comex).",
+      "attribution": "https://github.com/comex/rust-shlex",
+      "source": "crates.io"
+    },
     "rust:sigchld@0.2.4": {
       "license": "MIT",
       "attribution": "https://github.com/oconnor663/sigchld.rs",
+      "source": "crates.io"
+    },
+    "rust:signal-hook-registry@1.4.8": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2017 tokio-jsonrpc developers",
+      "attribution": "https://github.com/vorner/signal-hook",
+      "source": "crates.io"
+    },
+    "rust:signal-hook@0.3.18": {
+      "license": "Apache-2.0/MIT",
+      "copyright": "Copyright (c) 2017 tokio-jsonrpc developers",
+      "attribution": "https://github.com/vorner/signal-hook",
       "source": "crates.io"
     },
     "rust:simd-adler32@0.3.10": {
@@ -881,6 +1819,78 @@
     "rust:simdutf8@0.1.5": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/rusticstuff/simdutf8",
+      "source": "crates.io"
+    },
+    "rust:siphasher@1.0.3": {
+      "license": "MIT/Apache-2.0",
+      "copyright": "Copyright 2012-2016 The Rust Project Developers.；Copyright 2016-2026 Frank Denis.",
+      "attribution": "https://github.com/jedisct1/rust-siphash",
+      "source": "crates.io"
+    },
+    "rust:slab@0.4.12": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Carl Lerche",
+      "attribution": "https://github.com/tokio-rs/slab",
+      "source": "crates.io"
+    },
+    "rust:smallvec@1.15.2": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2018 The Servo Project Developers",
+      "attribution": "https://github.com/servo/rust-smallvec",
+      "source": "crates.io"
+    },
+    "rust:socket2@0.6.5": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/rust-lang/socket2",
+      "source": "crates.io"
+    },
+    "rust:softbuffer@0.4.8": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2022 Kirill Chibisov",
+      "attribution": "https://github.com/rust-windowing/softbuffer",
+      "source": "crates.io"
+    },
+    "rust:soup3-sys@0.5.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2013-2017, The Gtk-rs Project Developers.",
+      "attribution": "https://gitlab.gnome.org/World/Rust/soup3-rs",
+      "source": "crates.io"
+    },
+    "rust:soup3@0.5.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2013-2017, The Gtk-rs Project Developers.",
+      "attribution": "https://gitlab.gnome.org/World/Rust/soup3-rs",
+      "source": "crates.io"
+    },
+    "rust:stable_deref_trait@1.2.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2017 Robert Grosse",
+      "attribution": "https://github.com/storyyeller/stable_deref_trait",
+      "source": "crates.io"
+    },
+    "rust:string_cache@0.9.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2012-2013 Mozilla Foundation",
+      "attribution": "https://github.com/servo/string-cache",
+      "source": "crates.io"
+    },
+    "rust:string_cache_codegen@0.6.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2012-2013 Mozilla Foundation",
+      "attribution": "https://github.com/servo/string-cache",
+      "source": "crates.io"
+    },
+    "rust:strsim@0.11.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2015 Danny Guo；Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>",
+      "attribution": "https://github.com/rapidfuzz/strsim-rs",
+      "source": "crates.io"
+    },
+    "rust:subtle@2.6.1": {
+      "license": "BSD-3-Clause",
+      "copyright": "Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.；Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved.",
+      "attribution": "https://github.com/dalek-cryptography/subtle",
       "source": "crates.io"
     },
     "rust:swift-rs@1.0.7": {
@@ -906,6 +1916,12 @@
     "rust:sync_wrapper@1.0.2": {
       "license": "Apache-2.0",
       "attribution": "https://github.com/Actyx/sync_wrapper",
+      "source": "crates.io"
+    },
+    "rust:synstructure@0.13.2": {
+      "license": "MIT",
+      "copyright": "Copyright 2016 Nika Layzell",
+      "attribution": "https://github.com/mystor/synstructure",
       "source": "crates.io"
     },
     "rust:system-configuration-sys@0.6.0": {
@@ -938,9 +1954,98 @@
       "attribution": "https://github.com/composefs/tar-rs",
       "source": "crates.io"
     },
+    "rust:target-lexicon@0.12.16": {
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "attribution": "https://github.com/bytecodealliance/target-lexicon",
+      "source": "crates.io"
+    },
+    "rust:tauri-build@2.6.3": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tauri-codegen@2.6.3": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tauri-macros@2.6.3": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tauri-plugin-log@2.9.2": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/plugins-workspace",
+      "source": "crates.io"
+    },
+    "rust:tauri-plugin-process@2.3.1": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/plugins-workspace",
+      "source": "crates.io"
+    },
+    "rust:tauri-plugin-shell@2.3.5": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/plugins-workspace",
+      "source": "crates.io"
+    },
+    "rust:tauri-plugin-updater@2.12.0": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/plugins-workspace",
+      "source": "crates.io"
+    },
     "rust:tauri-plugin@2.6.3": {
       "license": "Apache-2.0 OR MIT",
       "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tauri-runtime-wry@2.11.4": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tauri-runtime@2.11.3": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tauri-utils@2.9.3": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tauri-winres@0.3.6": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2023 - Present Tauri Apps Contributors；Copyright (c) 2016 Max Resch",
+      "attribution": "https://github.com/tauri-apps/winres",
+      "source": "crates.io"
+    },
+    "rust:tauri@2.11.5": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2017 - Present Tauri Apps Contributors",
+      "attribution": "https://github.com/tauri-apps/tauri",
+      "source": "crates.io"
+    },
+    "rust:tempfile@3.27.0": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 Steven Allen",
+      "attribution": "https://github.com/Stebalien/tempfile",
+      "source": "crates.io"
+    },
+    "rust:tendril@0.5.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 Keegan McAllister",
+      "attribution": "https://github.com/servo/html5ever",
       "source": "crates.io"
     },
     "rust:thiserror-impl@1.0.69": {
@@ -963,14 +2068,269 @@
       "attribution": "https://github.com/dtolnay/thiserror",
       "source": "crates.io"
     },
+    "rust:time-core@0.1.9": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/time-rs/time",
+      "source": "crates.io"
+    },
+    "rust:time-macros@0.2.32": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/time-rs/time",
+      "source": "crates.io"
+    },
     "rust:time@0.3.55": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/time-rs/time",
       "source": "crates.io"
     },
+    "rust:tinystr@0.8.3": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:tinyvec@1.12.0": {
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2019 Daniel \"Lokathor\" Gee.",
+      "attribution": "https://github.com/Lokathor/tinyvec",
+      "source": "crates.io"
+    },
+    "rust:tinyvec_macros@0.1.1": {
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "copyright": "Copyright 2020 Tomasz \"Soveu\" Marx",
+      "attribution": "https://github.com/Soveu/tinyvec_macros",
+      "source": "crates.io"
+    },
+    "rust:tokio-rustls@0.26.5": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2017 quininer kel",
+      "attribution": "https://github.com/rustls/tokio-rustls",
+      "source": "crates.io"
+    },
+    "rust:tokio-util@0.7.19": {
+      "license": "MIT",
+      "attribution": "https://github.com/tokio-rs/tokio",
+      "source": "crates.io"
+    },
+    "rust:tokio@1.53.1": {
+      "license": "MIT",
+      "attribution": "https://github.com/tokio-rs/tokio",
+      "source": "crates.io"
+    },
+    "rust:toml@0.8.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml@0.9.12+spec-1.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml@1.1.4+spec-1.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml_datetime@0.6.3": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 Alex Crichton",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml_datetime@0.7.5+spec-1.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml_datetime@1.1.1+spec-1.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml_edit@0.19.15": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml_edit@0.20.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
     "rust:toml_edit@0.25.13+spec-1.1.0": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml_parser@1.1.3+spec-1.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:toml_writer@1.1.2+spec-1.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/toml-rs/toml",
+      "source": "crates.io"
+    },
+    "rust:tower-http@0.6.11": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019-2021 Tower Contributors",
+      "attribution": "https://github.com/tower-rs/tower-http",
+      "source": "crates.io"
+    },
+    "rust:tower-layer@0.3.3": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Tower Contributors",
+      "attribution": "https://github.com/tower-rs/tower",
+      "source": "crates.io"
+    },
+    "rust:tower-service@0.3.3": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Tower Contributors",
+      "attribution": "https://github.com/tower-rs/tower",
+      "source": "crates.io"
+    },
+    "rust:tower@0.5.3": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Tower Contributors",
+      "attribution": "https://github.com/tower-rs/tower",
+      "source": "crates.io"
+    },
+    "rust:tracing-core@0.1.36": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Tokio Contributors",
+      "attribution": "https://github.com/tokio-rs/tracing",
+      "source": "crates.io"
+    },
+    "rust:tracing@0.1.44": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Tokio Contributors",
+      "attribution": "https://github.com/tokio-rs/tracing",
+      "source": "crates.io"
+    },
+    "rust:tray-icon@0.24.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/tauri-apps/tray-icon",
+      "source": "crates.io"
+    },
+    "rust:try-lock@0.2.5": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2018-2023 Sean McArthur；Copyright (c) 2016 Alex Crichton",
+      "attribution": "https://github.com/seanmonstar/try-lock",
+      "source": "crates.io"
+    },
+    "rust:typeid@1.0.3": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/dtolnay/typeid",
+      "source": "crates.io"
+    },
+    "rust:typenum@1.20.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright 2014 Paho Lurie-Gregg",
+      "attribution": "https://github.com/paholg/typenum",
+      "source": "crates.io"
+    },
+    "rust:unic-char-property@0.9.0": {
+      "license": "MIT/Apache-2.0",
+      "attribution": "https://github.com/open-i18n/rust-unic/",
+      "source": "crates.io"
+    },
+    "rust:unic-char-range@0.9.0": {
+      "license": "MIT/Apache-2.0",
+      "attribution": "https://github.com/open-i18n/rust-unic/",
+      "source": "crates.io"
+    },
+    "rust:unic-common@0.9.0": {
+      "license": "MIT/Apache-2.0",
+      "attribution": "https://github.com/open-i18n/rust-unic/",
+      "source": "crates.io"
+    },
+    "rust:unic-ucd-ident@0.9.0": {
+      "license": "MIT/Apache-2.0",
+      "attribution": "https://github.com/open-i18n/rust-unic/",
+      "source": "crates.io"
+    },
+    "rust:unic-ucd-version@0.9.0": {
+      "license": "MIT/Apache-2.0",
+      "attribution": "https://github.com/open-i18n/rust-unic/",
+      "source": "crates.io"
+    },
+    "rust:unicode-ident@1.0.24": {
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "copyright": "Copyright © 1991-2023 Unicode, Inc.",
+      "attribution": "https://github.com/dtolnay/unicode-ident",
+      "source": "crates.io"
+    },
+    "rust:unicode-segmentation@1.13.3": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 The Rust Project Developers",
+      "attribution": "https://github.com/unicode-rs/unicode-segmentation",
+      "source": "crates.io"
+    },
+    "rust:untrusted@0.9.0": {
+      "license": "ISC",
+      "attribution": "https://github.com/briansmith/untrusted",
+      "source": "crates.io"
+    },
+    "rust:url@2.5.8": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2013-2025 The rust-url developers",
+      "attribution": "https://github.com/servo/rust-url",
+      "source": "crates.io"
+    },
+    "rust:urlpattern@0.3.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2021 the Deno authors",
+      "attribution": "https://github.com/denoland/rust-urlpattern",
+      "source": "crates.io"
+    },
+    "rust:utf8_iter@1.0.4": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright Mozilla Foundation",
+      "attribution": "https://github.com/hsivonen/utf8_iter",
+      "source": "crates.io"
+    },
+    "rust:uuid@1.24.0": {
+      "license": "Apache-2.0 OR MIT",
+      "copyright": "Copyright (c) 2014 The Rust Project Developers；Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon",
+      "attribution": "https://github.com/uuid-rs/uuid",
+      "source": "crates.io"
+    },
+    "rust:version-compare@0.2.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2017 Tim Visée",
+      "attribution": "https://gitlab.com/timvisee/version-compare",
+      "source": "crates.io"
+    },
+    "rust:version_check@0.9.5": {
+      "license": "MIT/Apache-2.0",
+      "copyright": "Copyright (c) 2017-2018 Sergio Benitez",
+      "attribution": "https://github.com/SergioBenitez/version_check",
+      "source": "crates.io"
+    },
+    "rust:vswhom-sys@0.1.3": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 nabijaczleweli",
+      "attribution": "https://github.com/nabijaczleweli/vswhom-sys.rs",
+      "source": "crates.io"
+    },
+    "rust:vswhom@0.1.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 nabijaczleweli",
+      "attribution": "https://github.com/nabijaczleweli/vswhom.rs",
+      "source": "crates.io"
+    },
+    "rust:walkdir@2.5.0": {
+      "license": "Unlicense/MIT",
+      "copyright": "Copyright (c) 2015 Andrew Gallant",
+      "attribution": "https://github.com/BurntSushi/walkdir",
+      "source": "crates.io"
+    },
+    "rust:want@0.3.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2018-2019 Sean McArthur",
+      "attribution": "https://github.com/seanmonstar/want",
       "source": "crates.io"
     },
     "rust:wasi@0.11.1+wasi-snapshot-preview1": {
@@ -1018,9 +2378,42 @@
       "attribution": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys",
       "source": "crates.io"
     },
+    "rust:web_atoms@0.2.5": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2014 The html5ever Project Developers",
+      "attribution": "https://github.com/servo/html5ever",
+      "source": "crates.io"
+    },
+    "rust:webkit2gtk-sys@2.0.2": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2016 Boucher, Antoni <bouanto@zoho.com>",
+      "attribution": "https://github.com/tauri-apps/webkit2gtk-rs",
+      "source": "crates.io"
+    },
+    "rust:webkit2gtk@2.0.2": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2016 Boucher, Antoni <bouanto@zoho.com>；Copyright (c) 2017-2021, The Gtk-rs Project Developers.",
+      "attribution": "https://github.com/tauri-apps/webkit2gtk-rs",
+      "source": "crates.io"
+    },
     "rust:webpki-root-certs@1.0.9": {
       "license": "CDLA-Permissive-2.0",
       "attribution": "https://github.com/rustls/webpki-roots",
+      "source": "crates.io"
+    },
+    "rust:webview2-com-macros@0.8.1": {
+      "license": "MIT",
+      "attribution": "https://github.com/wravery/webview2-rs",
+      "source": "crates.io"
+    },
+    "rust:webview2-com-sys@0.38.2": {
+      "license": "MIT",
+      "attribution": "https://github.com/wravery/webview2-rs",
+      "source": "crates.io"
+    },
+    "rust:webview2-com@0.38.2": {
+      "license": "MIT",
+      "attribution": "https://github.com/wravery/webview2-rs",
       "source": "crates.io"
     },
     "rust:winapi-i686-pc-windows-gnu@0.4.0": {
@@ -1028,9 +2421,96 @@
       "attribution": "https://github.com/retep998/winapi-rs",
       "source": "crates.io"
     },
+    "rust:winapi-util@0.1.11": {
+      "license": "Unlicense OR MIT",
+      "copyright": "Copyright (c) 2017 Andrew Gallant",
+      "attribution": "https://github.com/BurntSushi/winapi-util",
+      "source": "crates.io"
+    },
     "rust:winapi-x86_64-pc-windows-gnu@0.4.0": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/retep998/winapi-rs",
+      "source": "crates.io"
+    },
+    "rust:winapi@0.3.9": {
+      "license": "MIT/Apache-2.0",
+      "copyright": "Copyright (c) 2015-2018 The winapi-rs Developers",
+      "attribution": "https://github.com/retep998/winapi-rs",
+      "source": "crates.io"
+    },
+    "rust:window-vibrancy@0.6.0": {
+      "license": "Apache-2.0 OR MIT",
+      "attribution": "https://github.com/tauri-apps/tauri-plugin-vibrancy",
+      "source": "crates.io"
+    },
+    "rust:windows-collections@0.2.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-core@0.61.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-core@0.62.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-future@0.2.1": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-implement@0.60.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-interface@0.59.3": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-link@0.1.3": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-link@0.2.1": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-numerics@0.2.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-registry@0.6.1": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-result@0.3.4": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-result@0.4.1": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-strings@0.4.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-strings@0.5.1": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
       "source": "crates.io"
     },
     "rust:windows-sys@0.45.0": {
@@ -1043,7 +2523,47 @@
       "attribution": "https://github.com/microsoft/windows-rs",
       "source": "crates.io"
     },
+    "rust:windows-sys@0.59.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-sys@0.60.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-sys@0.61.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
     "rust:windows-targets@0.42.2": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-targets@0.52.6": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-targets@0.53.5": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-threading@0.1.0": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows-version@0.1.7": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows@0.61.3": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/microsoft/windows-rs",
       "source": "crates.io"
@@ -1123,6 +2643,16 @@
       "attribution": "https://github.com/microsoft/windows-rs",
       "source": "crates.io"
     },
+    "rust:windows_x86_64_gnu@0.52.6": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows_x86_64_gnu@0.53.1": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
     "rust:windows_x86_64_gnullvm@0.42.2": {
       "license": "MIT OR Apache-2.0",
       "attribution": "https://github.com/microsoft/windows-rs",
@@ -1143,9 +2673,125 @@
       "attribution": "https://github.com/microsoft/windows-rs",
       "source": "crates.io"
     },
+    "rust:windows_x86_64_msvc@0.52.6": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:windows_x86_64_msvc@0.53.1": {
+      "license": "MIT OR Apache-2.0",
+      "attribution": "https://github.com/microsoft/windows-rs",
+      "source": "crates.io"
+    },
+    "rust:winnow@0.5.40": {
+      "license": "MIT",
+      "attribution": "https://github.com/winnow-rs/winnow",
+      "source": "crates.io"
+    },
+    "rust:winnow@0.7.15": {
+      "license": "MIT",
+      "attribution": "https://github.com/winnow-rs/winnow",
+      "source": "crates.io"
+    },
+    "rust:winnow@1.0.4": {
+      "license": "MIT",
+      "attribution": "https://github.com/winnow-rs/winnow",
+      "source": "crates.io"
+    },
+    "rust:winreg@0.55.0": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2015 Igor Shaula",
+      "attribution": "https://github.com/gentoo90/winreg-rs",
+      "source": "crates.io"
+    },
     "rust:wit-bindgen@0.57.1": {
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "attribution": "https://github.com/bytecodealliance/wit-bindgen",
+      "source": "crates.io"
+    },
+    "rust:writeable@0.6.3": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:wry@0.55.1": {
+      "license": "Apache-2.0 OR MIT",
+      "attribution": "https://github.com/tauri-apps/wry",
+      "source": "crates.io"
+    },
+    "rust:x11-dl@2.21.0": {
+      "license": "MIT",
+      "attribution": "https://github.com/AltF02/x11-rs.git",
+      "source": "crates.io"
+    },
+    "rust:x11@2.21.0": {
+      "license": "MIT",
+      "attribution": "https://github.com/AltF02/x11-rs.git",
+      "source": "crates.io"
+    },
+    "rust:xattr@1.6.1": {
+      "license": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2015 Steven Allen",
+      "attribution": "https://github.com/Stebalien/xattr",
+      "source": "crates.io"
+    },
+    "rust:yoke-derive@0.8.2": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:yoke@0.8.3": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:zerofrom-derive@0.1.7": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:zerofrom@0.1.8": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:zeroize@1.9.0": {
+      "license": "Apache-2.0 OR MIT",
+      "attribution": "https://github.com/RustCrypto/utils",
+      "source": "crates.io"
+    },
+    "rust:zerotrie@0.2.4": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:zerovec-derive@0.11.3": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:zerovec@0.11.6": {
+      "license": "Unicode-3.0",
+      "copyright": "Copyright © 2020-2024 Unicode, Inc.",
+      "attribution": "https://github.com/unicode-org/icu4x",
+      "source": "crates.io"
+    },
+    "rust:zip@4.6.1": {
+      "license": "MIT",
+      "copyright": "Copyright (c) 2014 Mathijs van de Nes",
+      "attribution": "https://github.com/zip-rs/zip2.git",
+      "source": "crates.io"
+    },
+    "rust:zmij@1.0.23": {
+      "license": "MIT",
+      "attribution": "https://github.com/dtolnay/zmij",
       "source": "crates.io"
     }
   }

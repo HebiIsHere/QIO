@@ -64,8 +64,10 @@ backend/tmp*
 .e2e-work/
 # 测试/构建脚本产生的报告产物（junit xml、_MEI 解包残留），不进库：
 #   backend/qio-*.xml  —— 各 agent 跑 pytest --junitxml=qio-*.xml 留下的报告
+#   backend/junit/     —— scripts/run_backend_suite.py 的分阶段 JUnit（本地按 SETUP 跑会生成）
 backend/qio-*.xml
 *.junit.xml
+backend/junit/
 # Agent 验收/实验脚本的工作目录（可再生产物）：
 #   .dep-e2e   —— 安装版依赖工具链 E2E 的证据与临时安装目录
 #   .e2e-*     —— 其它同类验收脚本

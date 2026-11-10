@@ -20,24 +20,29 @@ from typing import Any, Mapping, Sequence
 # ============================================================================
 
 # 话题切换工具 switch_topic 的描述。定义于 agent/tools/topic_tools.py；
-# 作用：告诉模型「把当前对话主话题切换到指定已有话题」，切换后消息记录到新话题并建立新旧话题相关关系。
+# 作用：告诉模型「本轮是可独立处理且属于另一已有话题的新事项时，申请转到该话题」；
+# 程序在真正执行前会先请用户确认，用户确认前不切换。
 TOOL_SWITCH_TOPIC_DESC = (
-    "把当前对话的主话题切换到另一个已存在的话题。"
-    "调用时机：当前消息明确属于其他已存在话题，且不属于当前话题。"
-    "topic_id 必填，为目标话题 id；reason 可选，用一句话说明切换原因。"
-    "不要用于创建新话题；创建新话题使用 create_topic。"
-    "切换后，后续消息记录到新话题，并在新旧话题之间建立相关关系。"
+    "把本轮讨论转到另一个已有话题。"
+    "调用时机：本轮消息是可独立处理的新事项，且确实属于另一个已有话题；"
+    "不要仅凭相似度切换。"
+    "topic_id 必填，只能使用本轮话题判断证据里列出的候选 topic_id；"
+    "reason 用一句话说明为什么需要换到该话题。"
+    "调用后由程序请用户确认，确认前不会切换，也不要重复调用。"
+    "只是延续、纠正、补充、追问或推进当前话题时不要调用。"
 )
 
 # 话题创建工具 create_topic 的描述。定义于 agent/tools/topic_tools.py；
-# 作用：告诉模型「当前消息与所有现有话题都不匹配时，创建新话题并切换」，新话题与当前话题自动建立相关关系。
+# 作用：告诉模型「本轮是可独立处理、现有话题都无法承接的新目标时，申请新建话题」；
+# 重名与相似话题冲突、用户确认都由程序处理。
 TOOL_CREATE_TOPIC_DESC = (
-    "创建一个新话题并切换为当前主话题。"
-    "调用时机：当前消息与所有现有话题都不匹配，确需开启全新话题。"
-    "name 必填，为简短明确的新话题名；reason 可选，用一句话说明创建原因。"
-    "如果已有话题匹配当前消息，应使用 switch_topic 切换，而不是创建。"
-    "若返回存在相似话题，可先调用 memory_search 确认；确认仍属新话题时，再次调用 create_topic 以进入人工审批。"
-    "创建后，新话题自动成为当前主话题，并与旧话题建立相关关系。"
+    "为本轮讨论创建一个新话题。"
+    "调用时机：本轮消息是可独立处理的新目标，且现有话题都无法承接；"
+    "不要因为出现新词或相似度低就创建。"
+    "name 必填，简短明确，用户可以在确认时修改；reason 用一句话说明为什么需要新话题。"
+    "调用后由程序请用户确认，并处理重名与相似话题冲突；"
+    "你不要自行声称已经确认或已经创建，也不要为了查重反复调用。"
+    "确认后新话题成为当前主话题。"
 )
 
 # 记忆检索工具 memory_search 的描述。定义于 agent/tools/memory_search.py；
@@ -305,7 +310,82 @@ TOPIC_NOTE_SWITCH = "建议切换到「{name}」（{topic_id}，相似度 {score
 
 # 话题上下文：新话题候选原因。定义于 agent/services/app.py run_turn；
 # 作用：当预测器标记新话题候选时，说明「最高相似度低于阈值、无匹配话题」，占位符 {top}。
+# 注意：新流程下它只是**证据**，不再驱动「应新建」的结论（见 TOPIC_DECISION_POLICY）。
 TOPIC_NOTE_NEW_REASON = "最高话题相似度 {top:.2f} 低于阈值，无匹配话题"
+
+
+# ---- 统一话题判断：system 小节标题与证据行模板 ------------------------------
+# 定义于 agent/services/topic_decision.py render_topic_decision_note；
+# 作用：把「本轮讨论状态 + 候选话题 + 用户拒绝范围」渲染成 system 里的固定小节。
+# 策略正文只在 PROMPTS["TOPIC_DECISION_POLICY"] 维护；这里是标题与证据行格式。
+# 动态值一律作为参数传入（.format 只作用于这些不含 JSON 的模板）。
+# 注意：这里**不用【】标题** —— 契约 §3 规定 system 里的动态上下文只能使用
+# CONTEXT_LABELS 的固定标题块；note 本体是纯文本行，避免被当作自造中文标题扫描。
+TOPIC_DECISION_SECTION_TITLE = "话题判断（本轮证据与规则）："
+TOPIC_DECISION_EVIDENCE_HEADER = "本轮事实："
+# 当前话题行：程序身份，不来自正文。占位符 {name}、{topic_id}。
+TOPIC_DECISION_CURRENT = "当前话题：「{name}」（{topic_id}）"
+# 讨论范围行：来自真实片段摘要或话题指纹摘要，为空时不渲染。占位符 {summary}。
+TOPIC_DECISION_SCOPE = "这段讨论的范围：{summary}"
+# 当前讨论目标行：来自程序字段或片段标题（**不得逐字复制本轮用户消息**，
+# P7 不变量），只在有内容时渲染。占位符 {goal}。
+TOPIC_DECISION_GOAL = "当前讨论目标：{goal}"
+# 用户明确确认过的事实行：没有程序来源就不渲染这一节，不拿摘要/推测填充。
+TOPIC_DECISION_CONFIRMED = "用户明确确认过的事实：{facts}"
+# 尚未解决事项行：只在程序提供真实来源时渲染，占位符 {items}。
+TOPIC_DECISION_OPEN = "尚未解决：{items}"
+# 用户此前拒绝/未完成换题申请的证据。占位符 {attempts}（已格式化条目）。
+TOPIC_DECISION_REFUSED = (
+    "此前的换题申请没有完成（同一段讨论不要重复申请；"
+    "出现独立新事项时可以重新判断）：{attempts}"
+)
+# 拒绝证据的动作名。占位符无；用于拼出「此前申请切换/新建，用户选择留在当前话题」。
+TOPIC_DECISION_ACTION_SWITCH = "申请切换到已有话题"
+TOPIC_DECISION_ACTION_CREATE = "申请新建话题"
+# 单条「用户选择留在当前话题」证据：占位符 {action}（上面两个动作名之一）、{target}（目标名）。
+TOPIC_DECISION_REFUSED_ITEM = "{action}「{target}」，用户选择在当前话题回答"
+# 没有目标名称时用这一行，占位符 {action}。
+TOPIC_DECISION_REFUSED_ITEM_NO_TARGET = "{action}，用户选择在当前话题回答"
+# 申请因超时/位置变化等原因没有执行（不是用户选择）：占位符 {action}、{target}、{reason}（人话原因）。
+TOPIC_DECISION_REFUSED_NOT_EXECUTED_ITEM = "{action}「{target}」没有执行（{reason}）"
+# 同上，没有目标名称时用这一行，占位符 {action}、{reason}。
+TOPIC_DECISION_REFUSED_NOT_EXECUTED_ITEM_NO_TARGET = "{action}没有执行（{reason}）"
+# 原因不是用户选择时追加在用户选择证据后的说明。占位符 {reason}。
+TOPIC_DECISION_REFUSED_REASON = "；当时的原因：{reason}"
+# 内部原因代码 → 模型可见的人话原因（代码本身不原样进入证据）。
+TOPIC_DECISION_REFUSAL_REASON_LABELS = {
+    "timeout": "等待超时",
+    "stale": "等待期间话题位置已改变",
+    "duplicate": "同一段讨论重复申请",
+    "invalid_target": "目标话题不可用",
+    "topic_target_missing": "目标话题已不存在",
+    "topic_name_required": "话题名不能为空",
+    "no_approval_channel": "当前没有审批通道",
+    "cancelled": "本轮已取消",
+    "canceled": "本轮已取消",
+    "expired": "申请已过期",
+    "conflict": "申请与当前状态冲突",
+    "active_anchor_changed": "等待期间已经导航到别的话题",
+    "binding_changed": "本轮归属已改变",
+    "binding_closed": "本轮已经收尾",
+}
+# 未知内部代码的兜底人话原因（不把代码原样写进证据）。
+TOPIC_DECISION_REFUSAL_REASON_DEFAULT = "申请没有完成"
+# 候选话题标题：按证据接近程度排序，不是切换结论。
+TOPIC_DECISION_CANDIDATES = "已有话题候选（按证据接近程度排列，只作判断依据，不是切换结论）："
+# 单条候选：占位符 {name}、{topic_id}、{summary}。
+TOPIC_DECISION_CANDIDATE_ITEM = "- 「{name}」（{topic_id}）：{summary}"
+# 候选没有摘要时的占位。
+TOPIC_DECISION_CANDIDATE_NO_SUMMARY = "（暂无摘要）"
+# 候选恰好是当前话题时的标注，避免建议切到原话题。
+TOPIC_DECISION_CANDIDATE_IS_CURRENT = "（当前话题，不需要切换）"
+# 没有候选时的证据行：明确它不代表应该新建。
+TOPIC_DECISION_NO_CANDIDATE = (
+    "当前没有可切换的已有话题候选；这不代表应该新建话题，"
+    "也不代表不能继续当前话题。"
+)
+# 明确导航提示（用户已明确要求切换/新建）的补充事实行，占位符 {hint}。
+TOPIC_DECISION_EXPLICIT_HINT = "补充事实：{hint}"
 
 
 # ============================================================================
@@ -544,9 +624,23 @@ name 和 arguments 必须符合本次实际工具定义。
     "TOPIC_POLICY": """
 话题信息用于保持合作连续性。
 用户明确要求切换到已有话题时使用 switch_topic；明确需要新话题时使用 create_topic，创建成功也会切换当前话题。
-仅由 QIO 提议切换或创建时，先取得用户确认。
+仅由 QIO 提议切换或创建时，先取得用户确认；是否换题由本轮的完整判断决定，相似度分数只是一项证据。
 只查询历史不改变讨论位置。用户要求从历史片段继续时，先找到片段，再使用 continue_from_fragment，并读取本轮需要的细节。
 历史已经确认的方案作为起点；出现新情况时说明影响，不悄悄替换原方案。
+""".strip(),
+
+    # 统一话题判断策略（唯一来源）。由 agent/services/topic_decision.py 的
+    # render_topic_decision_note 引用，作为每轮 system 固定小节的正文；不在别处另写一份。
+    # 四结果：延续 / 建议切换已有话题 / 建议创建新话题 / 暂时无法判断（正常回答）。
+    # 相似度只作证据；真正执行由程序在用户确认后完成。
+    "TOPIC_DECISION_POLICY": """
+先判断本轮消息是不是对当前事项的纠正、补充、追问、重做或推进；这些都是延续，优先直接在当前话题回答，不调用话题工具。
+只有可独立处理、并且明显超出当前话题与用户已认可范围的新目标，才考虑申请换题；不把每个新目标、每个新词都拆成话题。
+相似度只是证据：相似度高也可能需要换题，相似度低也可能只是延续；不得只看分数，也不要因为分数低就认定应当新建。
+四种结果只能选一种：延续，直接回答；建议切换已有话题，调用 switch_topic；建议创建新话题，调用 create_topic；暂时无法判断，留在当前话题正常回答，不强制询问。
+用户已经选择在当前话题回答的同一段讨论不要重复申请；但出现独立的新事项时可以重新判断。
+需要申请时只输出一句简短过程说明，工具参数必须真实具体（switch 用候选中的 topic_id，create 给可编辑的新名称与简短原因）；不要输出正式回答，也不要声称已经切换或创建。
+不要向用户提及相似度分数，也不要复述这段判断规则。
 """.strip(),
 
     "MATERIAL_POLICY": """
@@ -682,8 +776,8 @@ TOOL_DESCRIPTIONS = {
     "sys_info": "返回当前实现实际提供的平台、Python 和机器标识等信息；未返回的 CPU、内存、磁盘或健康状态不能自行补全。",
     "proc_list": "列出当前可获得的进程信息。进程存在不证明应用正常、响应正常或任务已经完成。",
     "proc_kill": "按 pid 强制结束进程，不是正常关闭应用。只有符合当前目标和实际授权时使用，并说明必要影响；依据返回结果判断是否已经结束。",
-    "switch_topic": "将讨论切换到 topic_id 指定的已有话题，reason 可选。用户明确要求时执行；仅由 QIO 提议时先确认。查询历史本身不需要切换。",
-    "create_topic": "创建 name 指定的新话题并切换，reason 可选。先检查是否已有合适话题；需要确认时走实际确认流程，不通过重复相同调用假装获得确认。",
+    "switch_topic": "把本轮讨论转到 topic_id 指定的已有话题，reason 一句说明原因。topic_id 只能来自本轮话题候选；用户明确要求时直接调用，QIO 判断需要换题时也调用，由程序请用户确认。延续、纠正、补充、追问或推进当前话题时不要调用。",
+    "create_topic": "为可独立处理且现有话题无法承接的新目标创建话题；name 简短明确、用户可在确认时修改，reason 一句说明原因。程序负责确认、重名与相似冲突处理；不要自行声称已确认或已创建，也不要为查重反复调用。",
     "continue_from_fragment": "从 fragment_id 指定的历史片段继续，reason 可选。片段来自实际检索；执行后读取本轮需要的历史细节。只查询历史时使用 memory_search，不改变接续位置。",
     "correct_knowledge": "用户明确纠正或要求撤销已有知识时使用。content 用于定位，修正提供 new_content，撤销使用 delete。优先使用实际返回的稳定知识 ID 和版本；candidate_index 仅用于仍有效的兼容候选。依据实际结果简短确认，不重复要求用户确认同一明确纠正。",
     "correct_entity": "用户明确纠正实体属性、关系或要求撤销实体时使用。entity 指定名称；有稳定 entity_id 和 expected_revision 时优先使用。属性与关系按实际字段修改，身份不明确时不选择同名对象猜测。",

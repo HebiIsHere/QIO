@@ -1,0 +1,85 @@
+[
+ {
+  "op": "viewport",
+  "width": 1280,
+  "height": 900,
+  "ms": 300
+ },
+ {
+  "op": "navigate",
+  "url": "http://127.0.0.1:5199/",
+  "ms": 5000
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const ta=document.querySelector('#composer-input'); let ctx=null; try{ctx=await (await fetch('/api/session/context')).json();}catch(e){} return JSON.stringify({draft:ta?ta.value:null,topic:ctx?{id:ctx.topic_id,name:ctx.topic_name}:null});})()"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const el=document.querySelector('#composer-input'); const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set; set.call(el,'我们回到之前的界面问题继续聊'); el.dispatchEvent(new Event('input',{bubbles:true})); return 'typed';})()"
+ },
+ {
+  "op": "wait",
+  "ms": 500
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('button.send-btn'); if(!b||b.disabled) return 'send-blocked'; b.click(); return 'sent';})()"
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const t0=Date.now(); while(Date.now()-t0<45000){const m=document.querySelector('[data-test=\"topic-approval-content\"]'); if(m){const d=document.querySelector('[role=\"dialog\"]'); return JSON.stringify({found:true,kindText:(d?d.innerText:'').slice(0,600),hasOriginal:(d?d.innerText:'').includes('我们回到之前的界面问题继续聊')});} await new Promise(r=>setTimeout(r,250));} return JSON.stringify({found:false,tail:document.body.innerText.slice(-600)});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-switch-modal-wide"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('[data-test=\"topic-approve\"]'); if(!b) return 'no-approve'; b.click(); return 'approve-clicked';})()"
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const t0=Date.now(); while(Date.now()-t0<60000){const modal=document.querySelector('[data-test=\"topic-approval-content\"]'); const body=document.body.innerText; if(!modal&&body.includes('已切回界面问题的话题')){const ta=document.querySelector('#composer-input'); const send=document.querySelector('button.send-btn'); let ctx=null; try{ctx=await (await fetch('/api/session/context')).json();}catch(e){} return JSON.stringify({modalGone:true,answered:true,draft:ta?ta.value:null,sendDisabled:send?send.disabled:null,topic:ctx?{id:ctx.topic_id,name:ctx.topic_name}:null,messages:ctx?ctx.messages.length:null});} await new Promise(r=>setTimeout(r,300));} return JSON.stringify({modalGone:!document.querySelector('[data-test=\"topic-approval-content\"]'),answered:document.body.innerText.includes('已切回界面问题的话题'),tail:document.body.innerText.slice(-800)});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-switch-after-approve"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const el=document.querySelector('#composer-input'); const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set; set.call(el,'这段内容看起来属于量子计算实验，帮我切过去'); el.dispatchEvent(new Event('input',{bubbles:true})); return 'typed';})()"
+ },
+ {
+  "op": "wait",
+  "ms": 500
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('button.send-btn'); if(!b||b.disabled) return 'send-blocked'; b.click(); return 'sent';})()"
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const t0=Date.now(); while(Date.now()-t0<45000){const m=document.querySelector('[data-test=\"topic-approval-content\"]'); if(m){const d=document.querySelector('[role=\"dialog\"]'); return JSON.stringify({found:true,content:(d?d.innerText:'').slice(0,600)});} await new Promise(r=>setTimeout(r,250));} return JSON.stringify({found:false,tail:document.body.innerText.slice(-600)});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-reject-modal"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('[data-test=\"topic-stay\"]'); if(!b) return 'no-stay'; b.click(); return 'stay-clicked';})()"
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const t0=Date.now(); while(Date.now()-t0<60000){const modal=document.querySelector('[data-test=\"topic-approval-content\"]'); const body=document.body.innerText; if(!modal&&body.includes('就留在当前话题继续回答')){const ta=document.querySelector('#composer-input'); const send=document.querySelector('button.send-btn'); let ctx=null; try{ctx=await (await fetch('/api/session/context')).json();}catch(e){} let topics=null; try{topics=await (await fetch('/api/graph/topics')).json();}catch(e){} return JSON.stringify({modalGone:true,answered:true,draft:ta?ta.value:null,sendDisabled:send?send.disabled:null,topic:ctx?{id:ctx.topic_id,name:ctx.topic_name}:null,messageCount:ctx?ctx.messages.length:null});} await new Promise(r=>setTimeout(r,300));} return JSON.stringify({modalGone:!document.querySelector('[data-test=\"topic-approval-content\"]'),answered:document.body.innerText.includes('就留在当前话题继续回答'),tail:document.body.innerText.slice(-800)});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-reject-after-stay"
+ },
+ {
+  "op": "console",
+  "tail": 20
+ }
+]

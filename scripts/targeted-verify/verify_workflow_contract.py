@@ -144,6 +144,34 @@ CI_DISPATCH_CHECKOUT_REF_EXPR = "inputs.expected_sha || github.sha"
 # 与 CI_REQUIRED_JOBS 一致：这些 job 都是测试矩阵，必须显式检出受测提交。
 CI_TEST_CHECKOUT_JOBS = CI_REQUIRED_JOBS
 
+# ── 2026-11-10 本轮测试提速契约（F：CI 内不得重复执行同一既定测试集）──────────────
+# 全量后端测试的唯一入口由 scripts/run_backend_suite.py 提供（契约 §5/§7）：
+#   并行组（-m "not serial"）→ JUnit <dir>/pytest-parallel.xml
+#   串行组（-m serial）       → JUnit <dir>/pytest-serial.xml
+# CI 的 backend（Linux，py3.11/3.12）与 backend-windows 两个 job 必须**各只调用它一次**。
+# 历史写法「先单独 pytest tests/test_sandbox_worker.py tests/test_tool_worker.py，
+# 再 pytest -q 全量」会让同一批用例在同一个 job 里执行两次，而且两步都写同一个
+# pytest-results.xml（第二阶段直接覆盖第一阶段的证据）。这两件事都不允许回来，
+# 所以下面既是「去重」断言，也是「分阶段证据」断言。
+CI_BACKEND_SUITE_SCRIPT = "scripts/run_backend_suite.py"
+CI_BACKEND_SUITE_JOBS = ("backend", "backend-windows")
+CI_BACKEND_WORKERS_FLAG = "--workers"
+# 契约 §7 钉死 Linux / Windows 都用 4 个受控 worker（不用 xdist auto）。
+CI_BACKEND_WORKERS_VALUE = "4"
+CI_BACKEND_JUNIT_DIR_FLAG = "--junit-dir"
+# 分阶段 JUnit 文件名：失败注解与 artifact 上传都依赖它们，任何阶段都不该被覆盖丢失。
+CI_BACKEND_STAGE_JUNIT_FILES = ("pytest-parallel.xml", "pytest-serial.xml")
+# 这两个文件已被全量 pytest 包含（testpaths=tests，且没有排除项），单独再跑一遍就是重复覆盖。
+CI_BACKEND_DUPLICATE_SELECTORS = ("tests/test_sandbox_worker.py", "tests/test_tool_worker.py")
+# Windows runner 没有 docker 守护进程：入口必须把 requires_docker 用例排除，且分组后再排除。
+CI_BACKEND_WINDOWS_MARKER = "not requires_docker"
+# frozen worker 源码冒烟是非 pytest 步骤：去重只删重复的 pytest 执行，不许顺手删冒烟。
+CI_BACKEND_SMOKE_SCRIPT = "frozen_worker_smoke.py"
+# 去重不得顺带缩减矩阵/平台覆盖（两个 Python 版本、Linux + Windows 都保留）。
+CI_MATRIX_BACKEND_PYTHONS = ("3.11", "3.12")
+CI_RUNNER_BACKEND = "ubuntu-24.04"
+CI_RUNNER_BACKEND_WINDOWS = "windows-latest"
+
 # 触发场景表：用 ci.yml 的真实规则计算「什么事件会不会跑完整矩阵、去重键是什么」。
 # 每条都带期望值 —— 与 YAML 实际规则不一致就 fail，这张表是断言不是说明文档。
 # 字段：event / ref / sha（事件提交）/ head（PR 头提交）/ expected_sha（dispatch 输入）/
@@ -498,6 +526,152 @@ def check_dispatch_checkouts(jobs, text, rep):
         )
 
 
+def step_run_texts(job):
+    """一个 job 里所有带 run 的步骤：[(step, run_text)]（只看结构，不看注释）。"""
+    if not isinstance(job, dict):
+        return []
+    steps = job.get("steps") or []
+    out = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        text = str(step.get("run", ""))
+        if text.strip():
+            out.append((step, text))
+    return out
+
+
+def suite_entry_steps(job):
+    """调用了全量后端唯一入口的步骤。"""
+    return [(step, text) for step, text in step_run_texts(job) if CI_BACKEND_SUITE_SCRIPT in text]
+
+
+def check_backend_suite(jobs, rep):
+    """CI 内同一后端测试集只能执行一次：统一入口 + 分阶段 JUnit 证据 + 覆盖不缩水。
+
+    这不是「文本里有某个字符串」的检查：入口步骤的数量、是否无条件执行、参数、
+    以及注解/上传步骤能不能读到两个阶段的证据文件，都按 YAML 结构逐项断言。
+    """
+    for name, marker in (("backend", None), ("backend-windows", CI_BACKEND_WINDOWS_MARKER)):
+        job = jobs.get(name)
+        steps = step_run_texts(job)
+        entries = suite_entry_steps(job)
+        rep.check(
+            "ci.yml/" + name + ": 全量后端测试只走唯一入口 " + CI_BACKEND_SUITE_SCRIPT,
+            len(entries) == 1,
+            "suite steps=" + repr([str(step.get("name")) for step, _ in entries]),
+        )
+        if not entries:
+            continue
+        entry, entry_text = entries[0]
+        rep.check(
+            "ci.yml/" + name + ": 入口步骤不按事件/条件跳过（push/PR/dispatch 都跑）",
+            "if" not in entry,
+            "if=" + repr(entry.get("if")),
+        )
+        rep.check(
+            "ci.yml/" + name + ": 入口用受控 " + CI_BACKEND_WORKERS_FLAG + " " + CI_BACKEND_WORKERS_VALUE,
+            CI_BACKEND_WORKERS_FLAG in entry_text and CI_BACKEND_WORKERS_VALUE in entry_text,
+            entry_text[:400],
+        )
+        rep.check(
+            "ci.yml/" + name + ": 入口带 " + CI_BACKEND_JUNIT_DIR_FLAG + "（分阶段 JUnit 落盘，不靠单份 pytest-results.xml）",
+            CI_BACKEND_JUNIT_DIR_FLAG in entry_text,
+            entry_text[:400],
+        )
+        if marker:
+            rep.check(
+                "ci.yml/" + name + ": 入口带 --marker " + repr(marker) + "（Windows 没有 docker 守护进程）",
+                "--marker" in entry_text and marker in entry_text,
+                entry_text[:400],
+            )
+        # 同一 job 里任何步骤都不得再单独选中全量已包含的 worker 测试文件。
+        duplicated = [
+            str(step.get("name"))
+            for step, text in steps
+            if any(selector in text for selector in CI_BACKEND_DUPLICATE_SELECTORS)
+        ]
+        rep.check(
+            "ci.yml/" + name + ": 不再单独执行全量已包含的 worker 测试文件（无重复覆盖）",
+            not duplicated,
+            "steps=" + repr(duplicated),
+        )
+        # 单份 pytest-results.xml 会被第二阶段覆盖：入口不得再用 PYTEST_ADDOPTS 落单一 JUnit。
+        addopts = []
+        for step, _text in steps:
+            env = step.get("env")
+            if isinstance(env, dict):
+                addopts.append(str(env.get("PYTEST_ADDOPTS", "")))
+        rep.check(
+            "ci.yml/" + name + ": 不用 PYTEST_ADDOPTS 落单份 JUnit（会覆盖上一阶段证据）",
+            not any("junitxml" in item.lower() for item in addopts),
+            repr(addopts),
+        )
+        # 失败注解必须按阶段读两份 JUnit：任一阶段失败都要能定位，不能被后续覆盖。
+        annotated = False
+        for step, text in steps:
+            haystack = str(step.get("name", "")) + "\n" + text
+            if all(file_name in haystack for file_name in CI_BACKEND_STAGE_JUNIT_FILES):
+                annotated = True
+                break
+        rep.check(
+            "ci.yml/" + name + ": 失败注解读取两个阶段的 JUnit（pytest-parallel / pytest-serial）",
+            annotated,
+            "steps=" + repr([str(step.get("name")) for step, _ in steps]),
+        )
+        # 证据要能下载：上传步骤在失败时也执行，路径覆盖分阶段 JUnit。
+        uploads = [
+            step
+            for step in (job.get("steps") or [])
+            if isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        ]
+        rep.check(
+            "ci.yml/" + name + ": 上传分阶段 JUnit 证据（另存一份，注解之外可下载）",
+            bool(uploads),
+            "steps=" + repr([str(step.get("name")) for step in uploads]),
+        )
+        if uploads:
+            upload = uploads[0]
+            upload_text = workflow_text(upload)
+            rep.check(
+                "ci.yml/" + name + ": 上传步骤失败也执行（if: always()）",
+                "always()" in str(upload.get("if", "")),
+                repr(upload.get("if")),
+            )
+            rep.check(
+                "ci.yml/" + name + ": 上传路径覆盖分阶段 JUnit",
+                "junit" in upload_text.lower(),
+                upload_text[:400],
+            )
+    # 非 pytest 的 worker 冒烟必须保留：去重删的是重复的 pytest 执行，不是冒烟。
+    backend = jobs.get("backend") or {}
+    smoke = [step for step, text in step_run_texts(backend) if CI_BACKEND_SMOKE_SCRIPT in text]
+    rep.check(
+        "ci.yml/backend: 保留 frozen worker 源码冒烟（非 pytest，不因去重删掉）",
+        bool(smoke),
+        "steps=" + repr([str(step.get("name")) for step in smoke]),
+    )
+    # 去重不得缩水矩阵/平台覆盖：py3.11 + py3.12、Linux + Windows 都还在。
+    matrix = ((backend.get("strategy") or {}).get("matrix") or {}) if isinstance(backend, dict) else {}
+    versions = tuple(str(item) for item in (matrix.get("python-version") or []))
+    rep.check(
+        "ci.yml/backend: 矩阵仍覆盖 py3.11 + py3.12（平台/版本覆盖不因去重减少）",
+        versions == CI_MATRIX_BACKEND_PYTHONS,
+        repr(versions),
+    )
+    rep.check(
+        "ci.yml/backend: 仍跑在固定 Linux runner " + CI_RUNNER_BACKEND,
+        str(backend.get("runs-on")) == CI_RUNNER_BACKEND,
+        repr(backend.get("runs-on")),
+    )
+    windows = jobs.get("backend-windows") or {}
+    rep.check(
+        "ci.yml/backend-windows: 仍跑 Windows runner（发布平台覆盖不因去重减少）",
+        str(windows.get("runs-on")) == CI_RUNNER_BACKEND_WINDOWS,
+        repr(windows.get("runs-on")),
+    )
+
+
 def check_ci(workflow, text, rep):
     on = parse_on(workflow)
     rep.check("ci.yml: still triggered by push (main/ordinary branches keep their gate)", "push" in on, "on=" + repr(sorted(on)))
@@ -564,6 +738,9 @@ def check_ci(workflow, text, rep):
     rep.check_in("ci.yml: 写明 dispatch 需默认分支已有触发器（真实限制，本轮不依赖）", "默认分支", text)
     check_dispatch_preflight(jobs.get("ci-dedup-preflight") or {}, text, rep)
     check_dispatch_checkouts(jobs, text, rep)
+    # 测试提速（F）：backend / backend-windows 只能通过唯一入口跑一次后端测试，
+    # 并且保留分阶段 JUnit 证据；矩阵与平台覆盖不因去重缩水。
+    check_backend_suite(jobs, rep)
 
 
 def check_targeted(workflow, text, rep, action_text=None):
@@ -686,6 +863,51 @@ def check_no_skip_ci(rep):
     rep.check("all workflows: no skip-ci style disabling", not hits, "; ".join(hits))
 
 
+def _selftest_checkout_step():
+    """selftest 合成用例的 checkout 步骤（与真实 ci.yml 同一形状）。"""
+    return {
+        "uses": "actions/checkout@v5",
+        "with": {"ref": DOLLAR + "{{ " + CI_DISPATCH_CHECKOUT_REF_EXPR + " }}"},
+    }
+
+
+def _selftest_suite_steps(*, windows=False):
+    """selftest 合成用例的合规 backend 步骤：唯一入口 + 分阶段 JUnit + 注解/上传。"""
+    entry_run = "uv run --frozen python ../scripts/run_backend_suite.py --workers 4 --junit-dir junit"
+    if windows:
+        entry_run += ' --marker "not requires_docker"'
+    return [
+        {
+            "name": "Real worker smoke (source)",
+            "run": "uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py",
+        },
+        {"name": "Run backend suite (parallel + serial)", "run": entry_run},
+        {
+            "name": "Upload staged JUnit evidence",
+            "if": "always()",
+            "uses": "actions/upload-artifact@v4",
+            "with": {
+                "name": "backend-junit",
+                "path": "backend/junit/*.xml",
+                "if-no-files-found": "warn",
+            },
+        },
+        {
+            "name": "Summarize test failures",
+            "if": "failure()",
+            "run": "python - <<'PY'\nSTAGES = " + repr(list(CI_BACKEND_STAGE_JUNIT_FILES)) + "\nPY",
+        },
+    ]
+
+
+def _selftest_suite_step(data, job="backend"):
+    """从合成 workflow 里取入口步骤，供「加回去/改坏」的变体断言使用。"""
+    for step in data["jobs"][job]["steps"]:
+        if CI_BACKEND_SUITE_SCRIPT in str(step.get("run", "")):
+            return step
+    raise AssertionError("synthetic suite entry step missing for " + job)
+
+
 def selftest(verbose=False):
     print("== selftest: break each contract, assertions must go red ==")
     import copy
@@ -727,6 +949,21 @@ def selftest(verbose=False):
                 "run": "python scripts/targeted-verify/verify_sha.py --requested X --expected-ref Y",
             },
         ]
+    }
+    # 合成用例必须与真实 ci.yml 的新形状一致：backend / backend-windows 各只有一个
+    # 全量入口步骤（唯一入口 + 分阶段 JUnit + 注解/上传），否则「合规的 ci.yml 能过」
+    # 这条元断言就没意义。矩阵/平台也与真实 workflow 保持一致。
+    good_ci["jobs"]["backend"] = {
+        "runs-on": CI_RUNNER_BACKEND,
+        "strategy": {
+            "fail-fast": False,
+            "matrix": {"python-version": list(CI_MATRIX_BACKEND_PYTHONS)},
+        },
+        "steps": [_selftest_checkout_step(), *_selftest_suite_steps()],
+    }
+    good_ci["jobs"]["backend-windows"] = {
+        "runs-on": CI_RUNNER_BACKEND_WINDOWS,
+        "steps": [_selftest_checkout_step(), *_selftest_suite_steps(windows=True)],
     }
     text_ci = (
         "python scripts/targeted-verify/verify_workflow_contract.py tested commit dedup key 默认分支 "
@@ -850,6 +1087,126 @@ def selftest(verbose=False):
     rep.check(
         "a test job without checkout must fail",
         any("有且只有一个测试 checkout" in row[0] for row in scoped.failed()),
+    )
+
+    # ── 测试提速（F）：下面每个变体都必须让「CI 无重复执行 + 分阶段证据」断言变红 ──
+    def readd_duplicate_worker_step(data):
+        data["jobs"]["backend"]["steps"].append(
+            {
+                "name": "Fake worker protocol tests (Linux)",
+                "run": "uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py",
+            }
+        )
+
+    scoped = broken_ci(readd_duplicate_worker_step, "selftest-ci-duplicate-worker")
+    rep.check(
+        "re-adding the separately-run worker tests must fail (same set would run twice)",
+        any("无重复覆盖" in row[0] for row in scoped.failed()),
+    )
+
+    def drop_junit_dir(data):
+        _selftest_suite_step(data)["run"] = (
+            "uv run --frozen python ../scripts/run_backend_suite.py --workers 4"
+        )
+
+    scoped = broken_ci(drop_junit_dir, "selftest-ci-no-junit-dir")
+    rep.check(
+        "dropping --junit-dir must fail (staged evidence would be lost)",
+        any("分阶段 JUnit 落盘" in row[0] for row in scoped.failed()),
+    )
+
+    def drop_workers(data):
+        _selftest_suite_step(data)["run"] = (
+            "uv run --frozen python ../scripts/run_backend_suite.py --junit-dir junit"
+        )
+
+    scoped = broken_ci(drop_workers, "selftest-ci-no-workers")
+    rep.check(
+        "dropping the controlled --workers must fail",
+        any("受控 --workers" in row[0] for row in scoped.failed()),
+    )
+
+    def conditional_entry(data):
+        _selftest_suite_step(data)["if"] = "github.event_name == 'push'"
+
+    scoped = broken_ci(conditional_entry, "selftest-ci-conditional-entry")
+    rep.check(
+        "conditionally skipping the suite entry must fail",
+        any("入口步骤不按事件/条件跳过" in row[0] for row in scoped.failed()),
+    )
+
+    def windows_without_marker(data):
+        _selftest_suite_step(data, "backend-windows")["run"] = (
+            "uv run --frozen python ../scripts/run_backend_suite.py --workers 4 --junit-dir junit"
+        )
+
+    scoped = broken_ci(windows_without_marker, "selftest-ci-windows-no-marker")
+    rep.check(
+        "windows job without the requires_docker marker must fail",
+        any("not requires_docker" in row[0] for row in scoped.failed()),
+    )
+
+    def add_single_junit_addopts(data):
+        _selftest_suite_step(data)["env"] = {"PYTEST_ADDOPTS": "--junitxml=pytest-results.xml"}
+
+    scoped = broken_ci(add_single_junit_addopts, "selftest-ci-single-junitxml")
+    rep.check(
+        "re-adding a single pytest-results.xml must fail (stage evidence overwritten)",
+        any("PYTEST_ADDOPTS" in row[0] for row in scoped.failed()),
+    )
+
+    def drop_stage_annotation(data):
+        for step in data["jobs"]["backend"]["steps"]:
+            if "Summarize" in str(step.get("name", "")):
+                step["run"] = "python - <<'PY'\nimport glob\nprint(glob.glob('pytest-results.xml'))\nPY"
+                step.pop("if", None)
+
+    scoped = broken_ci(drop_stage_annotation, "selftest-ci-annotation-one-stage")
+    rep.check(
+        "a failure summary that only reads one stage JUnit must fail",
+        any("失败注解读取两个阶段" in row[0] for row in scoped.failed()),
+    )
+
+    def drop_upload(data):
+        data["jobs"]["backend"]["steps"] = [
+            step for step in data["jobs"]["backend"]["steps"]
+            if not str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        ]
+
+    scoped = broken_ci(drop_upload, "selftest-ci-no-junit-upload")
+    rep.check(
+        "dropping the staged JUnit upload must fail",
+        any("上传分阶段 JUnit 证据" in row[0] for row in scoped.failed()),
+    )
+
+    def shrink_matrix(data):
+        data["jobs"]["backend"]["strategy"]["matrix"]["python-version"] = ["3.11"]
+
+    scoped = broken_ci(shrink_matrix, "selftest-ci-shrunk-matrix")
+    rep.check(
+        "shrinking the backend python matrix must fail (dedup must not cut coverage)",
+        any("矩阵仍覆盖" in row[0] for row in scoped.failed()),
+    )
+
+    def drop_source_smoke(data):
+        data["jobs"]["backend"]["steps"] = [
+            step for step in data["jobs"]["backend"]["steps"]
+            if CI_BACKEND_SMOKE_SCRIPT not in str(step.get("run", ""))
+        ]
+
+    scoped = broken_ci(drop_source_smoke, "selftest-ci-no-source-smoke")
+    rep.check(
+        "dropping the non-pytest frozen-worker smoke must fail",
+        any("保留 frozen worker 源码冒烟" in row[0] for row in scoped.failed()),
+    )
+
+    def windows_runner_changed(data):
+        data["jobs"]["backend-windows"]["runs-on"] = "ubuntu-24.04"
+
+    scoped = broken_ci(windows_runner_changed, "selftest-ci-windows-runner")
+    rep.check(
+        "moving the windows job to Linux must fail (platform coverage lost)",
+        any("仍跑 Windows runner" in row[0] for row in scoped.failed()),
     )
 
     scoped = Report("selftest-scenarios-good", verbose=verbose)

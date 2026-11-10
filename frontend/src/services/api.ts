@@ -963,6 +963,35 @@ export const api = {
       }),
     }),
   /**
+   * 话题申请的决定（唯一路径：与工具审批同一个 `POST /api/approvals/{id}/respond`）。
+   *
+   * 只在既有请求体上多带可选 edits（仅 topic_create 的新话题名）与 scope
+   * （拒绝时 `scope.reason="stay_current"`）；不新增平行提交入口，也不经过
+   * 已退役的 `/api/topic-switch/*`。
+   */
+  respondTopicApproval: (
+    approvalId: string,
+    decision: "approved" | "rejected",
+    extras: {
+      /** 仅 topic_create：用户改过（或确认）的新话题名。 */
+      edits?: { name?: string };
+      /** reject 时带 {reason:"stay_current"}，表明是「在当前话题回答」。 */
+      scope?: Record<string, unknown>;
+    } = {},
+    binding?: { turnId?: string | null; sessionId?: string | null; requestDigest?: string | null },
+  ) =>
+    request<{ ok: boolean }>(`/api/approvals/${encodeURIComponent(approvalId)}/respond`, {
+      method: "POST",
+      body: JSON.stringify({
+        decision,
+        ...(extras.edits ? { edits: extras.edits } : {}),
+        ...(extras.scope ? { scope: extras.scope } : {}),
+        ...(binding?.turnId ? { turn_id: binding.turnId } : {}),
+        ...(binding?.sessionId ? { session_id: binding.sessionId } : {}),
+        ...(binding?.requestDigest ? { request_digest: binding.requestDigest } : {}),
+      }),
+    }),
+  /**
    * 重发一条「上次没有执行」的消息（按原话题重新提交一轮）。
    *
    * 后端用一次性 claim 抢占：同一条不可能被重发两次，已经完成的 turn 也不可能被重发。
@@ -1258,7 +1287,11 @@ export const api = {
     request<{ ok: boolean; cancelled: boolean }>("/api/anchor/continue/cancel", {
       method: "POST",
     }),
-  /** 待确认切换：确认「转到这里」。 */
+  /**
+   * @deprecated 旧「待确认切换」独立提交路由已退役（`/api/topic-switch/*` 返回 410）。
+   * 话题申请现在只在统一审批弹窗里处理，提交走 `respondTopicApproval`
+   * （同一个 `/api/approvals/{id}/respond`）。保留类型仅为迁移期编译，**不要调用**。
+   */
   confirmTopicSwitch: () =>
     request<{
       ok: boolean;
@@ -1267,7 +1300,11 @@ export const api = {
       fragment_title?: string | null;
       historic?: boolean;
     }>("/api/topic-switch/confirm", { method: "POST" }),
-  /** 待确认切换：保留当前话题。 */
+  /**
+   * @deprecated 旧「待确认切换」独立提交路由已退役（`/api/topic-switch/*` 返回 410）。
+   * 保留当前话题 = 统一审批里的 reject（scope.reason="stay_current"）。
+   * 保留类型仅为迁移期编译，**不要调用**。
+   */
   rejectTopicSwitch: () =>
     request<{ ok: boolean }>("/api/topic-switch/reject", { method: "POST" }),
   getSessionContext: (limit?: number) =>

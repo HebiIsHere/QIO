@@ -284,6 +284,9 @@ class _Plan:
     media_parts: list[Any] = field(default_factory=list)
     #: 本轮媒体材料的事实台账（每条带 read / reason / range / frames / engine）
     media_entries: list[dict] = field(default_factory=list)
+    #: 统一话题判断证据（当前讨论状态 + 候选话题 + 拒绝范围）。只作为 system 上下文
+    #: 交给本轮主模型；相似度只是证据，不单独驱动任何可执行建议。
+    topic_decision_note: str = ""
 
 
 class TurnOrchestrator:
@@ -465,7 +468,10 @@ class TurnOrchestrator:
             # ── 轮前：固定本轮归属（Topic / Fragment）──────────────────────
             # 顺序是有意的：先解析「用户明确要求切换」，再落实「已授权的历史接续」，
             # 最后才写绑定。绑定一旦写下，本轮的消息归属就不再受后续导航影响。
-            from agent.services.navigation import detect_explicit_navigation
+            from agent.services.navigation import (
+                detect_explicit_navigation,
+                detect_explicit_topic_creation,
+            )
 
             explicit_target = detect_explicit_navigation(
                 ctx.message, [(n.id, n.name) for n in app.topics.nodes.list_topics()]
@@ -474,6 +480,10 @@ class TurnOrchestrator:
                 app.navigation.enter_topic(explicit_target, relate=True)
                 topic = explicit_target
             ctx.explicit_target = explicit_target
+            # 用户明确要求新建话题：只登记「这次不需要普通确认」的授权依据，
+            # **不在这里创建** —— 创建仍由本轮模型调用 create_topic 执行一次，
+            # 避免程序先建一次、模型工具又建一次。
+            ctx.explicit_create_name = detect_explicit_topic_creation(ctx.message)
             ctx.current_topic = topic
 
             fragment_id: str | None = None
@@ -579,31 +589,68 @@ class TurnOrchestrator:
                 names.append(n.name if n else tid)
             extra_note += "；提及实体关联话题：" + "、".join(names)
 
-        # 推测切换（spec 第 29~30 条）：内容明显属于另一个话题，但用户没有说要切。
-        # 只登记「待确认」，Anchor 留在原地 —— 由用户点「转到这里」才真的切。
-        # 取消之后不再提交：切换建议是**用户可见**的结果，过时的一律不发。
-        if not explicit_target and not ctx.cancelled:
-            suggested = (
-                decision.switch_to
-                if decision.mode == TopicMode.SWITCH and decision.switch_to
-                else (prediction.main_topic_id if prediction.suggested_switch else None)
+        # 统一话题判断（本轮契约 §1）：相似度只是证据，唯一可执行判断来自本轮主模型。
+        # 旧的「预测器/分类器各自发可执行切换建议」路径退役：不再登记 pending switch、
+        # 不再发布 TOPIC_SWITCH_SUGGESTED —— 需要换题时由模型调用原工具，程序建申请。
+        topic_decision_note = ""
+        try:
+            from agent.services.topic_decision import (
+                build_topic_decision_state,
+                render_topic_decision_note,
             )
-            if suggested and suggested != topic:
-                suggestion = app.navigation.request_switch(
-                    suggested, reason="这段内容看起来属于另一个话题"
-                )
-                await app.bus.publish(
-                    make_event(
-                        EventType.TOPIC_SWITCH_SUGGESTED,
-                        {
-                            "from_topic_id": topic,
-                            "topic_id": suggestion["topic_id"],
-                            "topic_name": suggestion["topic_name"],
-                            "reason": suggestion["reason"],
-                            "turn_id": ctx.turn_id,
-                        },
+
+            # 拒绝范围有两个来源：B 在本轮申请流程里写到 ctx 的记录，以及
+            # app 级 TopicDiscussionGuard 里跨轮保留的真实拒绝（同一开放片段
+            # 视为同一段讨论）。只把**同一段讨论**的记录当证据，不跨话题臆测。
+            refuse_scope = getattr(ctx, "topic_refusal_scope", None)
+            if refuse_scope is None:
+                try:
+                    from agent.services.topic_application import (
+                        get_topic_application_state,
                     )
+
+                    guard = get_topic_application_state(app)
+                    fragment_id = getattr(ctx, "bound_fragment_id", None)
+                    if fragment_id:
+                        refuse_scope = [
+                            item
+                            for item in guard.refused_attempts
+                            if item.get("fragment_id") == fragment_id
+                        ][-4:] or None
+                except Exception:  # noqa: BLE001 - 证据缺失不能挡住一轮
+                    logging.getLogger(__name__).warning(
+                        "topic refusal scope unavailable", exc_info=True
+                    )
+            _decision_state = build_topic_decision_state(
+                app,
+                ctx,
+                topic,
+                prediction,
+                refuse_scope=refuse_scope,
+            )
+            _explicit_hint = ""
+            if explicit_target:
+                _explicit_hint = (
+                    f"用户本轮已明确要求切换到已有话题 {explicit_target}（不需要再确认）。"
                 )
+            elif getattr(ctx, "explicit_create_name", None):
+                _explicit_hint = (
+                    "用户本轮已明确要求新建话题（不需要再确认），名称见本轮用户消息。"
+                )
+            topic_decision_note = render_topic_decision_note(
+                _decision_state, explicit_hint=_explicit_hint
+            )
+            if ctx.trace is not None:
+                ctx.trace.write(
+                    "topic_decision_evidence",
+                    "candidates=%d refuse=%s"
+                    % (
+                        len(getattr(_decision_state, "candidates", ()) or ()),
+                        bool(getattr(_decision_state, "refused_attempts", ()) or ()),
+                    ),
+                )
+        except Exception:  # noqa: BLE001 - 证据渲染失败不能挡住一轮
+            logging.getLogger(__name__).warning("topic decision note failed", exc_info=True)
 
         # write user message into memory domain first
         # R2 契约：互动续作的 user 消息按**真实程序事实**落库（content_type +
@@ -869,6 +916,7 @@ class TurnOrchestrator:
             needs_consolidation=needs_consolidation,
             media_parts=media_parts,
             media_entries=media_entries,
+            topic_decision_note=topic_decision_note,
         )
 
     async def _assemble_context(
@@ -1010,7 +1058,7 @@ class TurnOrchestrator:
         # 统一消息组装（契约 §3）：system 规则 + 模式规则 + 结构化上下文块，
         # 当前用户消息正文只放用户原文，真实媒体内容块挂在同一条 user 消息上。
         from agent.adapters.base import AudioPart, ImagePart, VideoPart
-        from agent.core.message_assembly import MediaParts, build_initial_messages
+        from agent.core.message_assembly import ContextBlock, MediaParts, build_initial_messages
 
         interactive_mode = getattr(ctx, "mode", "normal") == "interactive"
         specs = [
@@ -1018,29 +1066,15 @@ class TurnOrchestrator:
             for spec in _specs_or_empty(app.registry)
             if interactive_mode or not str(getattr(spec, "name", "")).startswith("board_")
         ]
-        mode_rules = ""
-        if interactive_mode:
-            # 阶段三契约 §13.2：互动政策是主循环的模式规则（同一个 QIO，不是第二套模型）。
-            mode_rules = app.prompts_policy_text() if hasattr(app, "prompts_policy_text") else ""
-            if not mode_rules:
-                from agent import prompts as _prompts
-
-                mode_rules = _prompts.PROMPTS["INTERACTIVE_POLICY"]
-            # 自动 / 手动重试轮：在基础互动政策后追加固定重试政策；不复制正文到别处。
-            if bool(getattr(ctx, "board_retry", False)):
-                from agent import prompts as _prompts
-
-                retry_policy = _prompts.PROMPTS.get("INTERACTIVE_RETRY_POLICY", "")
-                if retry_policy:
-                    mode_rules = (str(mode_rules).rstrip() + "\n\n" + retry_policy).strip()
-        else:
-            mode_getter = getattr(adapter, "mode_rules_text", None)
-            if callable(mode_getter):
-                try:
-                    mode_rules = str(mode_getter(specs) or "")
-                except Exception:  # noqa: BLE001 - 模式规则失败不能挡住这一轮
-                    logging.getLogger(__name__).warning("mode rules failed", exc_info=True)
-                    mode_rules = ""
+        mode_rules = self._mode_rules_text(ctx, adapter, specs)
+        # 统一判断证据走**结构化上下文块**（契约 §3：system 里的动态内容必须是
+        # CONTEXT_LABELS 内的 JSON 数据块，不能自造中文标题）：四结果语义 + 当前
+        # 讨论状态 + 候选话题 + 用户此前拒绝范围。它只是本轮模型的输入证据，
+        # 不单独触发任何操作。
+        # 统一判断证据作为独立 system 小节：四结果语义 + 当前讨论状态 + 候选话题
+        # + 用户此前拒绝范围。它是纯文本证据（不含【】标题），不单独触发任何操作；
+        # 结构化上下文块仍严格使用冻结的 CONTEXT_LABELS 17 个 key。
+        extra_sections = [plan.topic_decision_note] if plan.topic_decision_note else []
         initial_messages = build_initial_messages(
             user_text=plan.user_text,
             media=MediaParts(
@@ -1050,7 +1084,11 @@ class TurnOrchestrator:
             ),
             mode_rules=mode_rules,
             blocks=plan.blocks,
+            extra_sections=extra_sections,
         )
+        # 话题申请桥：模型调用 switch_topic/create_topic 时先建申请（用户确认后
+        # 执行原工具 → 重绑定 → 重建目标话题上下文 → 继续正式回答）。
+        topic_application = self._build_topic_application(ctx, adapter, plan)
         loop = AgentLoop(
             adapter, app.registry, app.bus,
             # 用量归因：这一轮的 token 记到本轮实际用的那把凭据上（上限才有可能真的生效）
@@ -1081,6 +1119,8 @@ class TurnOrchestrator:
             media_parts=list(plan.media_parts or []),
             # 阶段三：互动轮允许「已保存意图 / 已记录等待」时不产生聊天回答。
             allow_no_answer=interactive_mode,
+            # 工具执行前申请 / 确认恢复 / 上下文重装配（本轮契约 §2.3）
+            topic_application=topic_application,
         )
         ctx.loop = loop
         # 阶段三契约 §13.2：把程序验证过的板面绑定放进可信运行上下文；
@@ -1156,6 +1196,162 @@ class TurnOrchestrator:
                     _runtime.reset_board_turn(board_token)
                 except Exception:  # noqa: BLE001 - 清理失败不影响终态
                     logging.getLogger(__name__).warning("board runtime reset failed", exc_info=True)
+
+
+    # -- 话题申请：确认后的重绑定与上下文重装配（本轮契约 §2.3/§3.5）--------
+
+    def _mode_rules_text(self, ctx, adapter, specs) -> str:
+        """本轮模式规则（互动政策 / 适配器模式规则）。execute_loop 与话题重装配共用。"""
+        if getattr(ctx, "mode", "normal") == "interactive":
+            from agent import prompts as _prompts
+
+            # 阶段三契约 §13.2：互动政策是主循环的模式规则（同一个 QIO，不是第二套模型）。
+            mode_rules = (
+                self.app.prompts_policy_text()
+                if hasattr(self.app, "prompts_policy_text")
+                else ""
+            )
+            if not mode_rules:
+                mode_rules = _prompts.PROMPTS["INTERACTIVE_POLICY"]
+            # 自动 / 手动重试轮：在基础互动政策后追加固定重试政策；不复制正文到别处。
+            if bool(getattr(ctx, "board_retry", False)):
+                retry_policy = _prompts.PROMPTS.get("INTERACTIVE_RETRY_POLICY", "")
+                if retry_policy:
+                    mode_rules = (
+                        str(mode_rules).rstrip() + "\n\n" + retry_policy
+                    ).strip()
+            return str(mode_rules or "")
+        mode_getter = getattr(adapter, "mode_rules_text", None)
+        if not callable(mode_getter):
+            return ""
+        try:
+            return str(mode_getter(specs) or "")
+        except Exception:  # noqa: BLE001 - 模式规则失败不能挡住这一轮
+            logging.getLogger(__name__).warning("mode rules failed", exc_info=True)
+            return ""
+
+    def _build_topic_application(self, ctx, adapter, plan: _Plan):
+        """构造话题申请桥；模块不在时保持旧行为（不静默改变其它轮次）。"""
+        try:
+            from agent.services.topic_application import TopicApplicationBridge
+        except ImportError:  # pragma: no cover - 模块由本轮并行分支提供
+            logging.getLogger(__name__).warning(
+                "topic application module unavailable; topic tools run directly"
+            )
+            return None
+        try:
+            return TopicApplicationBridge(
+                self.app,
+                ctx,
+                adapter=adapter,
+                plan=plan,
+                rebind_turn=lambda topic_id: self.rebind_turn_to_topic(ctx, topic_id),
+                rebuild_system=lambda topic_id: self.rebuild_system_after_topic_application(
+                    ctx, adapter, plan, topic_id
+                ),
+            )
+        except Exception:  # noqa: BLE001 - 桥初始化失败不能拖垮整轮
+            logging.getLogger(__name__).warning(
+                "topic application bridge init failed", exc_info=True
+            )
+            return None
+
+    async def rebind_turn_to_topic(self, ctx, topic_id: str) -> str:
+        """用户确认换题/新建后、正式回答之前：把本轮提问与绑定迁到目标话题。
+
+        与收尾的 _apply_tool_nav_rebind 是同一组事实，但发生在**正式回答之前**：
+        之后装配的目标话题上下文、模型正式回答、以及落库的问答都在同一个话题里，
+        不会出现「提问在旧话题、回答在新话题」或两个话题各存一份。
+        """
+        app = self.app
+        binding = app.bindings.binding_for(ctx.turn_id)
+        if binding is None or binding.write_state != "open":
+            raise RuntimeError("本轮绑定已收尾，不能再改归属")
+        if getattr(ctx, "bound_topic", None) == topic_id and ctx.user_message_id:
+            return topic_id
+        previous_topic = binding.topic_id
+        if previous_topic == topic_id:
+            return topic_id
+        target = app.fragments.get_or_create_open(topic_id)
+        app.bindings.rebind_topic_from_tool_nav(ctx.turn_id, topic_id)
+        if ctx.user_message_id:
+            # 只移动本轮这一条用户消息；其它历史/已排队消息不动。
+            app.memory.move_message(ctx.user_message_id, to_fragment_id=target.id)
+        app.bindings.record_binding(
+            ctx.turn_id,
+            topic_id,
+            fragment_id=target.id,
+            intent_id=binding.intent_id,
+            intent_version=getattr(ctx, "bound_intent_version", None),
+        )
+        ctx.bound_topic = topic_id
+        ctx.bound_fragment_id = target.id
+        ctx.topic_application_rebound = True
+        if ctx.trace is not None:
+            ctx.trace.write(
+                "topic_application_rebind", f"{previous_topic} -> {topic_id}/{target.id}"
+            )
+        # 旧申请/旧建议不能覆盖用户的新选择：锚点已由原工具写入，这里广播真实结果。
+        await app._publish_anchor_event()
+        return topic_id
+
+    async def rebuild_system_after_topic_application(
+        self, ctx, adapter, plan: _Plan, topic_id: str
+    ) -> str:
+        """换题成功后重新装配目标话题上下文，返回给主循环替换的 system 正文。
+
+        不能继续用切换前那套旧上下文：这里是**目标话题**的检索/短期记忆/实体卡/
+        焦点位置重新装配；原话题全部历史不会自动复制进新话题。
+        """
+        from agent.core.message_assembly import render_system
+        from agent.graph.anchors import AnchorService
+        from agent.services.affinity import related_topics
+
+        app = self.app
+        node = app.topics.nodes.get_topic(topic_id)
+        topic_name = node.name if node is not None else topic_id
+        fragment_id = getattr(ctx, "bound_fragment_id", None)
+        focus_fragment = AnchorService(app.conn).focus_fragment(topic_id)
+        pivot = TopicPrediction(
+            main_topic_id=topic_id,
+            backend_used=getattr(plan.prediction, "backend_used", "rules"),
+        )
+        blocks, _payload, _needs = await self._assemble_context(
+            app,
+            adapter,
+            ctx,
+            message=ctx.message,
+            topic=topic_id,
+            aux_topic_ids=related_topics(app.conn, topic_id, top_n=2),
+            fragment_id=fragment_id,
+            focus_fragment_id=focus_fragment,
+            exclude_message_id=ctx.user_message_id,
+            new_topic_candidate=False,
+            reason="",
+            short_term=app._short_term_items(
+                topic_id, exclude_message_id=ctx.user_message_id, fragment_id=fragment_id
+            ),
+            topic_note=app._topic_note(topic_id, pivot),
+            focus_block=app._focus_block(topic_id, focus_fragment) if focus_fragment else "",
+            focus_item_id=focus_fragment,
+            entity_cards=[],
+        )
+        interactive_mode = getattr(ctx, "mode", "normal") == "interactive"
+        specs = [
+            spec
+            for spec in _specs_or_empty(app.registry)
+            if interactive_mode or not str(getattr(spec, "name", "")).startswith("board_")
+        ]
+        extra = [
+            f"用户已确认把本轮转到话题「{topic_name}」（{topic_id}）。"
+            "请基于重新装配的目标话题上下文继续回答用户最初的问题；"
+            "不要再申请切换/新建，也不要把尚未发生的操作说成已完成。"
+        ]
+        return render_system(
+            mode_rules=self._mode_rules_text(ctx, adapter, specs),
+            blocks=blocks,
+            extra_sections=extra,
+        )
 
     async def persist(self, ctx, adapter, plan: _Plan, result) -> str:
         app = self.app

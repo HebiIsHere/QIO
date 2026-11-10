@@ -2,9 +2,9 @@
   "generated_by": "scripts/licenses/build_third_party.py",
   "coverage": "三套锁文件里的全部组件（含只在其它平台用到的），外加随包分发的资产",
   "inputs": {
-    "backend/uv.lock": "d81e54eb68744d6d",
-    "frontend/package-lock.json": "b261ff84391b481a",
-    "frontend/src-tauri/Cargo.lock": "c5d4b586ce709fe6"
+    "backend/uv.lock": "87d0f43a8fc706c0",
+    "frontend/package-lock.json": "347dc7975102ef01",
+    "frontend/src-tauri/Cargo.lock": "e78f36ed1bd35003"
   },
   "components": [
     {
@@ -2969,6 +2969,14 @@
     },
     {
       "eco": "python",
+      "name": "execnet",
+      "version": "2.1.2",
+      "license": "MIT",
+      "copyright": "",
+      "attribution": "holger krekel and others / https://execnet.readthedocs.io/en/latest/"
+    },
+    {
+      "eco": "python",
       "name": "fastapi",
       "version": "0.141.1",
       "license": "MIT",
@@ -3085,7 +3093,7 @@
       "version": "9.0.1",
       "license": "Apache-2.0",
       "copyright": "",
-      "attribution": "Jason R. Coombs <jaraco@jaraco.com> / https://github.com/python/importlib_metadata"
+      "attribution": "https://pypi.org/project/importlib-metadata/"
     },
     {
       "eco": "python",
@@ -3157,7 +3165,7 @@
       "version": "2.4.6",
       "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
       "copyright": "Copyright (c) 2005-2025, NumPy Developers.；Copyright (c) 2011-2014, The OpenBLAS Project",
-      "attribution": "Travis E. Oliphant et al. / https://numpy.org"
+      "attribution": "https://pypi.org/project/numpy/"
     },
     {
       "eco": "python",
@@ -3165,7 +3173,7 @@
       "version": "2.5.3",
       "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
       "copyright": "Copyright (c) 2005-2025, NumPy Developers.；Copyright (c) 2011-2014, The OpenBLAS Project",
-      "attribution": "https://pypi.org/project/numpy/",
+      "attribution": "Travis E. Oliphant et al. / https://numpy.org",
       "note": "本机 venv 装的是 numpy 2.4.6（py3.11）；2.5.3 只出现在 py>=3.12 的锁记录里，版权行取自同版本 dist-info 的许可证文件（人工确认）"
     },
     {
@@ -3263,6 +3271,14 @@
       "license": "Apache-2.0",
       "copyright": "",
       "attribution": "Tin Tvrtković <tinchester@gmail.com> / https://github.com/pytest-dev/pytest-asyncio/issues"
+    },
+    {
+      "eco": "python",
+      "name": "pytest-xdist",
+      "version": "3.8.0",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2010 Holger Krekel and contributors.",
+      "attribution": "holger krekel and contributors <pytest-dev@python.org>, holger@merlinux.eu / https://github.com/pytest-dev/pytest-xdist"
     },
     {
       "eco": "python",
@@ -3430,7 +3446,7 @@
       "version": "4.1.0",
       "license": "MIT",
       "copyright": "",
-      "attribution": "Jason R. Coombs <jaraco@jaraco.com> / https://github.com/jaraco/zipp"
+      "attribution": "https://pypi.org/project/zipp/"
     },
     {
       "eco": "rust",
@@ -3605,7 +3621,7 @@
       "name": "brotli",
       "version": "8.0.4",
       "license": "BSD-3-Clause AND MIT",
-      "copyright": "Copyright (c) 2016 Dropbox, Inc.；Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.",
+      "copyright": "Copyright (c) 2016 Dropbox, Inc.",
       "attribution": "https://github.com/dropbox/rust-brotli"
     },
     {
@@ -3829,7 +3845,7 @@
       "name": "crossbeam-channel",
       "version": "0.5.16",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright (c) 2019 The Crossbeam Project Developers；Copyright (c) 2009 The Go Authors. All rights reserved.",
+      "copyright": "Copyright (c) 2019 The Crossbeam Project Developers",
       "attribution": "https://github.com/crossbeam-rs/crossbeam"
     },
     {
@@ -3909,7 +3925,7 @@
       "name": "dbus",
       "version": "0.9.12",
       "license": "Apache-2.0/MIT",
-      "copyright": "Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors；Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors",
+      "copyright": "Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors",
       "attribution": "https://github.com/diwic/dbus-rs"
     },
     {
@@ -3917,7 +3933,7 @@
       "name": "deranged",
       "version": "0.5.8",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2024 Jacob Pratt et al.；Copyright (c) 2024 Jacob Pratt et al.",
+      "copyright": "Copyright 2024 Jacob Pratt et al.",
       "attribution": "https://github.com/jhpratt/deranged"
     },
     {
@@ -4509,7 +4525,7 @@
       "name": "http",
       "version": "1.5.0",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2017 http-rs authors；Copyright (c) 2017 http-rs authors",
+      "copyright": "Copyright 2017 http-rs authors",
       "attribution": "https://github.com/hyperium/http"
     },
     {
@@ -4549,7 +4565,7 @@
       "name": "hyper-rustls",
       "version": "0.27.10",
       "license": "Apache-2.0 OR ISC OR MIT",
-      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>；Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>",
+      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>",
       "attribution": "https://github.com/rustls/hyper-rustls"
     },
     {
@@ -4565,7 +4581,7 @@
       "name": "iana-time-zone",
       "version": "0.1.65",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2020 Andrew Straw；Copyright (c) 2020 Andrew D. Straw",
+      "copyright": "Copyright 2020 Andrew Straw",
       "attribution": "https://github.com/strawlab/iana-time-zone"
     },
     {
@@ -4644,7 +4660,7 @@
       "eco": "rust",
       "name": "ident_case",
       "version": "1.0.1",
-      "license": "MIT/Apache-2.0",
+      "license": "MIT OR Apache-2.0",
       "copyright": "",
       "attribution": "https://github.com/TedDriggs/ident_case"
     },
@@ -4805,7 +4821,7 @@
       "name": "jsonptr",
       "version": "0.6.3",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2024 Chance Dinkins；Copyright (c) 2022 Chance Dinkins",
+      "copyright": "Copyright 2024 Chance Dinkins",
       "attribution": "https://github.com/chanced/jsonptr"
     },
     {
@@ -4845,7 +4861,7 @@
       "name": "libdbus-sys",
       "version": "0.2.7",
       "license": "Apache-2.0/MIT",
-      "copyright": "Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors；Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors",
+      "copyright": "Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors",
       "attribution": "https://github.com/diwic/dbus-rs"
     },
     {
@@ -5021,7 +5037,7 @@
       "name": "num_threads",
       "version": "0.1.7",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2021 Jacob Pratt；Copyright (c) 2021 Jacob Pratt",
+      "copyright": "Copyright 2021 Jacob Pratt",
       "attribution": "https://github.com/jhpratt/num_threads"
     },
     {
@@ -5349,7 +5365,7 @@
       "name": "powerfmt",
       "version": "0.2.0",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2023 Jacob Pratt et al.；Copyright (c) 2023 Jacob Pratt et al.",
+      "copyright": "Copyright 2023 Jacob Pratt et al.",
       "attribution": "https://github.com/jhpratt/powerfmt"
     },
     {
@@ -5389,7 +5405,7 @@
       "name": "proc-macro-error",
       "version": "1.0.4",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>；Copyright (c) 2019-2020 CreepySkeleton",
+      "copyright": "Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>",
       "attribution": "https://gitlab.com/CreepySkeleton/proc-macro-error"
     },
     {
@@ -5397,7 +5413,7 @@
       "name": "proc-macro-error-attr",
       "version": "1.0.4",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>；Copyright (c) 2019-2020 CreepySkeleton",
+      "copyright": "Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>",
       "attribution": "https://gitlab.com/CreepySkeleton/proc-macro-error"
     },
     {
@@ -5445,7 +5461,7 @@
       "name": "raw-window-handle",
       "version": "0.6.2",
       "license": "MIT OR Apache-2.0 OR Zlib",
-      "copyright": "Copyright (c) 2019 Osspial；Copyright (c) 2020 Osspial",
+      "copyright": "Copyright (c) 2019 Osspial",
       "attribution": "https://github.com/rust-windowing/raw-window-handle"
     },
     {
@@ -5509,7 +5525,7 @@
       "name": "reqwest",
       "version": "0.13.4",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2016 Sean McArthur；Copyright (c) 2016-2026 Sean McArthur",
+      "copyright": "Copyright 2016 Sean McArthur",
       "attribution": "https://github.com/seanmonstar/reqwest"
     },
     {
@@ -5549,7 +5565,7 @@
       "name": "rustls",
       "version": "0.23.45",
       "license": "Apache-2.0 OR ISC OR MIT",
-      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>；Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>",
+      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>",
       "attribution": "https://github.com/rustls/rustls"
     },
     {
@@ -5557,7 +5573,7 @@
       "name": "rustls-native-certs",
       "version": "0.8.4",
       "license": "Apache-2.0 OR ISC OR MIT",
-      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>；Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>",
+      "copyright": "Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>",
       "attribution": "https://github.com/rustls/rustls-native-certs"
     },
     {
@@ -5565,7 +5581,7 @@
       "name": "rustls-pki-types",
       "version": "1.15.1",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2023 Dirkjan Ochtman；Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>",
+      "copyright": "Copyright 2023 Dirkjan Ochtman",
       "attribution": "https://github.com/rustls/pki-types"
     },
     {
@@ -5821,7 +5837,7 @@
       "name": "shlex",
       "version": "2.0.1",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2015 Nicholas Allegra (comex).；Copyright (c) 2015 Nicholas Allegra (comex).",
+      "copyright": "Copyright 2015 Nicholas Allegra (comex).",
       "attribution": "https://github.com/comex/rust-shlex"
     },
     {
@@ -6269,7 +6285,7 @@
       "name": "tinyvec_macros",
       "version": "0.1.1",
       "license": "MIT OR Apache-2.0 OR Zlib",
-      "copyright": "Copyright 2020 Tomasz \"Soveu\" Marx；Copyright (c) 2020 Soveu",
+      "copyright": "Copyright 2020 Tomasz \"Soveu\" Marx",
       "attribution": "https://github.com/Soveu/tinyvec_macros"
     },
     {
@@ -6285,7 +6301,7 @@
       "name": "tokio-rustls",
       "version": "0.26.5",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2017 quininer kel；Copyright (c) 2017 quininer kel",
+      "copyright": "Copyright 2017 quininer kel",
       "attribution": "https://github.com/rustls/tokio-rustls"
     },
     {
@@ -6461,7 +6477,7 @@
       "name": "typenum",
       "version": "1.20.1",
       "license": "MIT OR Apache-2.0",
-      "copyright": "Copyright 2014 Paho Lurie-Gregg；Copyright (c) 2014 Paho Lurie-Gregg",
+      "copyright": "Copyright 2014 Paho Lurie-Gregg",
       "attribution": "https://github.com/paholg/typenum"
     },
     {

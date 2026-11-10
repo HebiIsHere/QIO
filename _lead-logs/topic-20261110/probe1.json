@@ -1,0 +1,45 @@
+[
+ {
+  "op": "navigate",
+  "url": "http://127.0.0.1:5199/",
+  "ms": 5000
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const el=document.querySelector('#composer-input'); if(!el) return 'no-input'; const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set; set.call(el,'帮我开始一个新的研究方向：量子计算实验与论文投稿计划'); el.dispatchEvent(new Event('input',{bubbles:true})); return 'typed';})()"
+ },
+ {
+  "op": "wait",
+  "ms": 400
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('button.send-btn'); if(!b) return 'no-send'; const st={mode:b.dataset.mode,disabled:b.disabled}; b.click(); return JSON.stringify(st);})()"
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const t0=Date.now(); while(Date.now()-t0<30000){const m=document.querySelector('[data-test=\"topic-approval-content\"]'); if(m){const d=document.querySelector('[role=\"dialog\"]'); return JSON.stringify({found:true,dialog:(d?d.innerText:'').slice(0,900),input:document.querySelector('[data-test=\"topic-name-input\"]')?.value});} await new Promise(r=>setTimeout(r,250));} return JSON.stringify({found:false,body:document.body.innerText.slice(0,800)});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-t1-modal-wide"
+ },
+ {
+  "op": "viewport",
+  "width": 430,
+  "height": 900,
+  "ms": 900
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-t1-modal-narrow"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const c=document.querySelector('[data-test=\"topic-approval-content\"]'); const d=document.querySelector('[role=\"dialog\"]'); const r=(c||document.body).getBoundingClientRect(); const b=document.querySelector('[data-test=\"topic-approve\"]'); const br=b?getComputedStyle(b).borderRadius:null; return JSON.stringify({docW:document.documentElement.scrollWidth,winW:innerWidth,dialogW:Math.round(r.width),left:Math.round(r.left),right:Math.round(r.right),approveRadius:br});})()"
+ },
+ {
+  "op": "console",
+  "tail": 20
+ }
+]

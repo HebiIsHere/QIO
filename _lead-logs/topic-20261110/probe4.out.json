@@ -1,0 +1,46 @@
+﻿{
+  "results": [
+    {
+      "op": "eval",
+      "value": "typed"
+    },
+    {
+      "op": "eval",
+      "value": "sent"
+    },
+    {
+      "op": "eval",
+      "value": "{\"found\":true,\"inner\":\"话题申请 · 本轮暂停，等待你的选择\\n\\n切换话题确认\\n待审批 1\\n结果与历史\\n\\n话题申请 · 本轮暂停，等待你的选择\\n\\n当前话题\\n默认话题\\n→\\n目标话题\\n量子计算实验（用户改名后的长名称 · 窄窗换行验证）\\n\\n这段内容看起来属于量子计算实验话题：用户在讨论实验设计与投稿计划，和当前界面问题不是同一件事。\\n\\n在当前话题回答\\n转到并回答\\n\\n确认之前话题不会切换或新建；你的原问题会继续得到回答。\\n\\n关闭窗口只会收起这项话题申请；不会替你选择，也不会丢失申请。\",\"docScrollW\":430,\"winW\":430,\"dialog\":{\"l\":26,\"w\":379},\"reasonChineseOk\":1}"
+    },
+    {
+      "op": "screenshot",
+      "name": "topic-narrow-long-chinese"
+    },
+    {
+      "op": "eval",
+      "value": "stay"
+    },
+    {
+      "op": "console",
+      "errors": [],
+      "log": [
+        "[debug] [vite] connecting...",
+        "[debug] [vite] connected.",
+        "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+      ]
+    }
+  ],
+  "errors": [],
+  "httpFails": [],
+  "log": [
+    "[debug] [vite] connecting...",
+    "[debug] [vite] connected.",
+    "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x1f4009f7400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+  ]
+}

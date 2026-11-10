@@ -127,12 +127,18 @@ async def test_create_topic_mid_turn_keeps_the_whole_turn_in_the_new_topic(ctx: 
     assert fragments[0]["end_message_id"] == messages[1]["id"]
 
 
-async def test_user_navigation_during_the_turn_keeps_the_turn_in_its_bound_fragment(
+async def test_user_navigation_after_a_confirmed_switch_does_not_retroactively_move_the_turn(
     ctx: AppContext,
 ):
+    """2026-11-10 契约变更：换题归属在**正式回答之前**落实。
+
+    旧实现把「模型工具换话题」的归属留到收尾，收尾时若用户已经手动导航就让用户赢，
+    整轮留在旧话题。新流程里工具换题先经过申请、用户确认后**立即**把本轮提问搬到
+    目标话题再继续回答；这之后用户再手动导航只影响**后续轮次**，不能把已经提交
+    的提问/回答追溯搬回旧话题（否则两个话题各存一份或问答拆家）。
+    """
     old_topic = _new_topic(ctx, "旧话题")
     other_topic = _new_topic(ctx, "用户点开的另一话题")
-    old_frag = _open_fragment(ctx, old_topic)
     ctx.navigation.enter_topic(old_topic)
 
     def user_navigates_while_running() -> None:
@@ -148,10 +154,15 @@ async def test_user_navigation_during_the_turn_keeps_the_turn_in_its_bound_fragm
     turn = ctx.turns.submit("这句话先落在旧话题里", old_topic)
     await ctx.turns.wait(turn.turn_id, timeout=10)
 
+    new_topic = _topic_by_name(ctx, "工具中途建的话题")
+    assert new_topic is not None
     binding = ctx.bindings.binding_for(turn.turn_id)
-    assert (binding.topic_id, binding.fragment_id) == (old_topic, old_frag)
-    assert {m["fragment_id"] for m in _turn_messages(ctx, turn.turn_id)} == {old_frag}
-    # 用户的选择赢：Anchor 停在用户点的话题上
+    # 本轮提问/回答归属已经由用户确认的换题决定，不再被之后的导航追溯搬走。
+    assert binding.topic_id == new_topic
+    assert {m["fragment_id"] for m in _turn_messages(ctx, turn.turn_id)} == {
+        binding.fragment_id
+    }
+    # 用户的选择仍然赢在「后续轮次的位置」：Anchor 停在用户点的话题上。
     assert ctx.navigation.anchors.get_active().topic_id == other_topic
 
 

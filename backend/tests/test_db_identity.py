@@ -17,6 +17,8 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from agent.storage.db import connect
 from agent.storage.db_identity import (
     DB_INSTANCE_KEY,
@@ -146,6 +148,7 @@ def test_isolated_dev_instance_does_not_warn_or_clobber(tmp_path: Path) -> None:
     dev.close()
 
 
+@pytest.mark.real_migrations
 def test_instance_endpoint_reports_database_integrity(
     tmp_path: Path, monkeypatch, db_conn, settings
 ) -> None:

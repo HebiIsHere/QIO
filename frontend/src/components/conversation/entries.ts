@@ -65,9 +65,9 @@ export const COMPOSER_ENTRY_TEXT: Record<
     hint: "说明下一条消息从哪段历史继续；收起不会取消已选位置",
   },
   topicSwitch: {
-    label: "话题切换建议",
-    title: "话题切换建议",
-    hint: "这段内容看起来属于另一个话题；是否切换由你决定",
+    label: "话题申请",
+    title: "话题申请",
+    hint: "QIO 申请切换或新建话题；打开同一申请处理，不会自行切换",
   },
   queue: {
     label: "排队消息",
@@ -279,7 +279,7 @@ export function queueEntryCount(rows: readonly QueueRow[]): number {
 export interface ComposerEntryInput {
   sendIssues: SendIssueFacts;
   continuation: ContinuationFacts;
-  /** 有待确认的话题切换建议（session.pendingSwitch） */
+  /** 本对话有等待选择话题的申请（session.topicApprovalPending，只读派生自统一审批队列） */
   topicSwitch: boolean;
   queue: Pick<TurnQueueState, "running" | "queued" | "cancelled">;
   localQueued?: readonly LocalQueuedMessage[];
@@ -290,7 +290,7 @@ export interface ComposerEntryInput {
 /**
  * 五个入口的完整状态。
  *
- * 顺序固定（发送异常 → 历史继续 → 话题建议 → 排队 → 审批），组件按顺序渲染；
+ * 顺序固定（发送异常 → 历史继续 → 话题申请 → 排队 → 审批），组件按顺序渲染；
  * 不可见的入口不渲染 —— 有事项才显示，没有就不占位置。
  */
 export function deriveComposerEntries(input: ComposerEntryInput): ComposerEntryBadge[] {

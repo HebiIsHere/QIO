@@ -39,12 +39,14 @@ def test_entity_cards_table_and_flexible_edge_types(db_conn: sqlite3.Connection)
     assert db_conn.execute("SELECT doc_type FROM embeddings WHERE id='emb1'").fetchone()["doc_type"] == "entity_card"
 
 
+@pytest.mark.real_migrations
 def test_migrations_apply_and_idempotent(db_conn: sqlite3.Connection):
     assert current_version(db_conn) == SCHEMA_VERSION
     apply_migrations(db_conn)  # second run is a no-op
     assert current_version(db_conn) == SCHEMA_VERSION
 
 
+@pytest.mark.real_migrations
 def test_all_tables_present(db_conn: sqlite3.Connection):
     tables = {
         r["name"]

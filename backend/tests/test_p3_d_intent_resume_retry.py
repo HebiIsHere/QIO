@@ -82,6 +82,7 @@ def board_env(db_conn):
 # --- §6.1 迁移与视图 --------------------------------------------------------
 
 
+@pytest.mark.real_migrations
 def test_migration_69_adds_display_retry_and_intent_turn_tables(db_conn):
     """P3-D 的登记号：原页面线 56 → 三分支整合后 69（与 R9 的 55/57 不再同号/相邻冲突）。
 

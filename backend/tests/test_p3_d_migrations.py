@@ -149,6 +149,7 @@ def test_migration_49_provides_waiting_and_turn_binding_storage():
         f"{CLAUSE}：迁移 49 未见提交—turn 绑定 / 续作相关列")
 
 
+@pytest.mark.real_migrations
 def test_migration_50_provides_intent_versions_and_operation_ledger(db_conn):
     """§13.4/§13.7：50 必须包含意图版本历史与权威操作账本（board_operations）。
 

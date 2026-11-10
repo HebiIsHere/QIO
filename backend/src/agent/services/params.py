@@ -85,6 +85,43 @@ class TopicPolicy:
 
 
 @dataclass(frozen=True)
+class TopicDecisionPolicy:
+    """统一话题判断（agent/services/topic_decision.py）的证据渲染参数。
+
+    Semantics:
+        candidate_limit          — 注入给模型的已有话题候选上限；候选只是证据，
+            没有「未达门槛就应新建」的门槛值（不要在这里加阈值判断）
+        candidate_summary_chars  — 单个候选摘要的渲染上限（字符）
+        scope_summary_chars      — 当前讨论范围摘要的渲染上限（字符）
+        current_goal_chars       — 当前讨论目标的渲染上限（字符）。目标来自程序字段
+            ctx.topic_current_goal 或片段标题；不得逐字复制本轮用户原文
+            （P7 不变量：当前消息在模型输入里只出现一次）
+        max_confirmed_facts      — 用户明确确认事实的条数上限（没有程序来源时为空）
+        max_open_items           — 未解决事项的条数上限（没有程序来源时为空）
+        max_refused_attempts     — 进入证据的用户拒绝/留在当前话题记录条数上限
+        refused_reason_chars     — 单条拒绝原因的渲染上限（内部代码如 stay_current 不渲染）
+
+    Default source: 本轮产品口径（docs/topic-application-contract-20261110.md §2.3）
+        + 既有注入预算：候选数量取 5，高于 TopicPolicy.aux_top_count（2，仅辅助话题）；
+        字符上限沿用 FOCUS.max_message_chars=500 的单条证据量级并收紧，保证
+        「状态 + 候选 + 拒绝范围」整节是常数级、每轮都放得进 25% 注入预算。
+
+    Eval: backend/tests/test_topic_decision_evidence.py 覆盖排序/去重/上限与四结果渲染；
+        调整默认值时应同时观察话题误切换（走 backend/evals 的话题评测），
+        不要只凭个别用例改门槛。
+    """
+
+    candidate_limit: int = 5
+    candidate_summary_chars: int = 160
+    scope_summary_chars: int = 240
+    current_goal_chars: int = 300
+    max_confirmed_facts: int = 4
+    max_open_items: int = 6
+    max_refused_attempts: int = 4
+    refused_reason_chars: int = 80
+
+
+@dataclass(frozen=True)
 class RetrievalPolicy:
     """Retrieval ranking weights + recency half-life.
 
@@ -157,6 +194,7 @@ class CrossTopicPolicy:
 
 
 TOPIC = TopicPolicy()
+TOPIC_DECISION = TopicDecisionPolicy()
 RETRIEVAL = RetrievalPolicy()
 CROSS_TOPIC = CrossTopicPolicy()
 

@@ -7,8 +7,11 @@
  *   `POST /api/approvals/{approval_id}/respond`（复用 stores/approvals 的既有校验、
  *   单次消费、stale 处理与预算 overrides）；
  * * 知识保存申请：身份是 knowledge id（没有 approval_id），提交走知识自己的原子接口
- *   `POST /api/knowledge/{id}/approval`。两类**绝不串线**：分派按结构化字段
- *   （有没有 approval_id），不看标题文案。
+ *   `POST /api/knowledge/{id}/approval`；
+ * * 话题申请：身份同样是 approval_id（后端走既有 ApprovalService.request，kind ∈
+ *   {topic_switch, topic_create}），`POST /api/approvals/{id}/respond` 提交，
+ *   只多带可选 edits（新话题名）/scope（留在当前话题）。三类**绝不串线**：分派按
+ *   结构化字段（kind / 有没有 approval_id），不看标题文案。
  *
  * 队列规则（契约 §4.4）：
  * - 同一审批 id / 同一知识 id 只入队一次；
@@ -26,7 +29,7 @@ import { useApprovalResultsStore } from "./approvalResults";
 import { canAutoOpenApproval } from "./feedbackGate";
 import { useSessionStore } from "./session";
 
-export type UnifiedKind = "tool" | "knowledge";
+export type UnifiedKind = "tool" | "knowledge" | "topic";
 export type ToolOrigin = "main_agent" | "background" | "subagent" | "unknown";
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
@@ -171,10 +174,46 @@ export interface KnowledgeApprovalItem extends KnowledgePendingDetail {
   detailError: string;
 }
 
+/** 话题申请的两种 legacy kind（后端 ApprovalService.request；payload 见契约 §2.1）。 */
+export const TOPIC_APPROVAL_KINDS = ["topic_switch", "topic_create"] as const;
+export type TopicApprovalKind = (typeof TOPIC_APPROVAL_KINDS)[number];
+
+export function isTopicApprovalKind(
+  kind: string | null | undefined,
+): kind is TopicApprovalKind {
+  return kind === "topic_switch" || kind === "topic_create";
+}
+
+/**
+ * 话题申请的正文事实：**只**含契约 §2.1 允许展示的字段。
+ *
+ * 原问题 / 摘要 / 预览一律不进这里（payload 里也没有；即使后端多带了别的字段，
+ * 映射时也只读下面这几个字段），从结构上杜绝把申请理由之外的内容露给用户。
+ */
+export interface TopicApprovalItem {
+  /** topic:<approval_id>（与工具审批一样按 approval_id 唯一） */
+  key: string;
+  approvalId: string;
+  kind: TopicApprovalKind;
+  action: "switch" | "create";
+  /** 当前话题名（from_topic_name；缺失时界面说「未记录」，不猜）。 */
+  currentTopicName: string;
+  /** switch 的目标话题（target_topic_*）；create 时为空。 */
+  targetTopicName: string;
+  targetTopicId: string;
+  /** create 的模型建议名（用户可改）。 */
+  suggestedName: string;
+  /** 简短的申请原因（模型给，≤80 字）。 */
+  reason: string;
+  /** 这条申请属于哪一轮（payload.turn_id，缺失时回退审批行的 turn_id）。 */
+  turnId: string;
+  approval: ApprovalItem;
+}
+
 export interface UnifiedApprovalItem {
   key: string;
   kind: UnifiedKind;
-  /** 真实身份：approval_id（工具类）或 knowledge id（知识类）。 */
+  /** 真实身份：approval_id（工具/话题类）或 knowledge id（知识类）。 */
   identity: string;
   version: number | null;
   title: string;
@@ -184,6 +223,8 @@ export interface UnifiedApprovalItem {
   deferred: boolean;
   approval: ApprovalItem | null;
   knowledge: KnowledgeApprovalItem | null;
+  /** kind === "topic" 时的正文事实（其余类型为 null）。 */
+  topic: TopicApprovalItem | null;
 }
 
 export function unifiedKeyForTool(approvalId: string): string {
@@ -192,6 +233,10 @@ export function unifiedKeyForTool(approvalId: string): string {
 
 export function unifiedKeyForKnowledge(knowledgeId: string): string {
   return `knowledge:${knowledgeId}`;
+}
+
+export function unifiedKeyForTopic(approvalId: string): string {
+  return `topic:${approvalId}`;
 }
 
 /** 用户是否正在输入（与 events store 的判定保持一致）。 */
@@ -395,28 +440,87 @@ export async function submitKnowledgeApprovalRequest(
   );
 }
 
-/** 统一队列的唯一拼装实现（getter 共用；顺序：工具队列 → 知识到达顺序）。 */
+/** 工具/权限审批项（统一队列与 toolItems 共用一份映射规则）。 */
+function toolUnifiedItem(approval: ApprovalItem, deferredKeys: string[]): UnifiedApprovalItem {
+  const key = unifiedKeyForTool(approval.approval_id);
+  const facts = approvalFacts(approval);
+  return {
+    key,
+    kind: "tool",
+    identity: approval.approval_id,
+    version: null,
+    title: APPROVAL_KIND_TITLES[approval.kind] ?? "需要你确认的操作",
+    origin: classifyToolOrigin(approval.kind, approval.payload),
+    highRisk: facts?.highRisk === true,
+    stale: approval.stale === true,
+    deferred: deferredKeys.includes(key),
+    approval,
+    knowledge: null,
+    topic: null,
+  };
+}
+
+/** approvals 队列里的 topic_* 行 → 话题申请项（只读契约 §2.1 的字段）。 */
+function topicUnifiedItem(
+  approval: ApprovalItem,
+  collapsedTopicKeys: Set<string>,
+  deferredKeys: string[],
+): UnifiedApprovalItem {
+  const key = unifiedKeyForTopic(approval.approval_id);
+  const payload = (approval.payload ?? {}) as Record<string, unknown>;
+  const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  const kind: TopicApprovalKind =
+    approval.kind === "topic_create" ? "topic_create" : "topic_switch";
+  const action: "switch" | "create" =
+    kind === "topic_create" || text(payload.action) === "create" ? "create" : "switch";
+  const topic: TopicApprovalItem = {
+    key,
+    approvalId: approval.approval_id,
+    kind,
+    action,
+    currentTopicName: text(payload.from_topic_name),
+    targetTopicName: text(payload.target_topic_name),
+    targetTopicId: text(payload.target_topic_id),
+    suggestedName: text(payload.new_name),
+    reason: text(payload.reason),
+    turnId: text(payload.turn_id) || String(approval.turnId ?? ""),
+    approval,
+  };
+  return {
+    key,
+    kind: "topic",
+    identity: approval.approval_id,
+    version: null,
+    title: action === "create" ? "新建话题确认" : "切换话题确认",
+    origin: classifyToolOrigin(approval.kind, approval.payload),
+    highRisk: false,
+    stale: approval.stale === true,
+    deferred: collapsedTopicKeys.has(key) || deferredKeys.includes(key),
+    approval,
+    knowledge: null,
+    topic,
+  };
+}
+
+/**
+ * 统一队列的唯一拼装实现（getter 共用）。
+ *
+ * 顺序：approvals 队列按到达顺序（工具/话题混排，保持真实到达顺序）→ 知识到达顺序。
+ * topic 项**不**混进 toolItems：两类按钮与提交路径不同，入口计数统一用 count。
+ */
 function mergeUnifiedItems(
-  state: { knowledge: KnowledgeApprovalItem[]; deferredKeys: string[] },
+  state: {
+    knowledge: KnowledgeApprovalItem[];
+    deferredKeys: string[];
+    collapsedTopicKeys: Set<string>;
+  },
   queue: ApprovalItem[],
 ): UnifiedApprovalItem[] {
-  const tools: UnifiedApprovalItem[] = queue.map((approval) => {
-    const key = unifiedKeyForTool(approval.approval_id);
-    const facts = approvalFacts(approval);
-    return {
-      key,
-      kind: "tool" as const,
-      identity: approval.approval_id,
-      version: null,
-      title: APPROVAL_KIND_TITLES[approval.kind] ?? "需要你确认的操作",
-      origin: classifyToolOrigin(approval.kind, approval.payload),
-      highRisk: facts?.highRisk === true,
-      stale: approval.stale === true,
-      deferred: state.deferredKeys.includes(key),
-      approval,
-      knowledge: null,
-    };
-  });
+  const approvals: UnifiedApprovalItem[] = queue.map((approval) =>
+    isTopicApprovalKind(approval.kind)
+      ? topicUnifiedItem(approval, state.collapsedTopicKeys, state.deferredKeys)
+      : toolUnifiedItem(approval, state.deferredKeys),
+  );
   const knowledge: UnifiedApprovalItem[] = state.knowledge.map((item) => ({
     key: item.key,
     kind: "knowledge" as const,
@@ -429,8 +533,9 @@ function mergeUnifiedItems(
     deferred: state.deferredKeys.includes(item.key),
     approval: null,
     knowledge: item,
+    topic: null,
   }));
-  return [...tools, ...knowledge];
+  return [...approvals, ...knowledge];
 }
 
 /* ------------------------------------------------------------------ */
@@ -484,6 +589,7 @@ function collectObjectPaths(payload: unknown): string[] {
  * * 工具类：对象路径末段（多对象注明数量）+ 版本号（有就带）；没有路径就用工具名；
  *   再没有就用审批 id 尾段兜底（保证同类型多条永远能区分，不靠猜）。
  * * 知识类：内容摘要（没有内容才退回 id）。
+ * * 话题类：目标/新话题名（导出的是话题名，不是审批标题）。
  *
  * `short=true` 时做中间省略（给可见 chip 用）；title/aria 用完整文本。
  */
@@ -499,6 +605,17 @@ export function unifiedItemIdentity(
     const id = String(item.knowledge?.id ?? "");
     const identity = content || id;
     return shorten(identity, 18);
+  }
+  if (item.kind === "topic") {
+    const topic = item.topic;
+    if (!topic) return shorten(item.title, 18);
+    const label =
+      topic.action === "create"
+        ? "新话题：" + (squashText(topic.suggestedName) || "未命名")
+        : topic.targetTopicName
+          ? "转到：" + squashText(topic.targetTopicName)
+          : "切换话题";
+    return shorten(label, 24);
   }
   const payload = (item.approval?.payload ?? {}) as Record<string, unknown>;
   const versionRaw = payload.version ?? payload.revision ?? payload.expected_version;
@@ -536,6 +653,13 @@ export function unifiedItemSummaryFull(item: UnifiedApprovalItem | null | undefi
     const content = squashText(item.knowledge?.content);
     return content ? category + "：" + content : category;
   }
+  if (item.kind === "topic") {
+    const topic = item.topic;
+    if (!topic) return item.title || "话题申请";
+    const current = topic.currentTopicName ? "当前话题：" + squashText(topic.currentTopicName) : "";
+    const reason = squashText(topic.reason);
+    return [current, reason].filter((part) => part.length > 0).join(" · ") || item.title;
+  }
   const facts = item.approval ? approvalFacts(item.approval) : null;
   const text = squashText(facts?.description || facts?.operationSummary);
   return text || item.title || "需要你确认的操作";
@@ -559,6 +683,7 @@ export function unifiedItemSummary(item: UnifiedApprovalItem | null | undefined)
 export function unifiedItemGroupLabel(item: UnifiedApprovalItem | null | undefined): string {
   if (!item) return "";
   if (item.kind === "knowledge") return "知识";
+  if (item.kind === "topic") return "话题";
   return "权限";
 }
 
@@ -619,11 +744,21 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     activeKey: null as string | null,
     /** 用户「稍后处理 / 关闭」过的申请：同一项不再自动弹 */
     deferredKeys: loadDeferredKeys(),
+    /**
+     * 用户收起过的话题申请 key。
+     *
+     * 收起 = 只记「先不处理」，不调用 decide、不消费申请；同一申请不自动重开
+     * （用户从入口主动打开、或真有一条新申请到达时除外）。
+     */
+    collapsedTopicKeys: new Set<string>(),
+    /** 话题申请里用户改过的新话题名：收起 / 失败后保留，不静默丢弃。 */
+    topicDrafts: {} as Record<string, string>,
     /** 本会话已经自动弹出过的申请：不因轮询/重渲染反复弹 */
     autoShownKeys: [] as string[],
     /** 自动弹出被「别的弹窗 / 正在输入」挡住：条件恢复后可再试 */
     autoPending: false,
-    submittingKey: null as string | null,
+    /** 正在提交决定的申请 key（防重复提交；一次只提交一条）。 */
+    submittingKeys: [] as string[],
     submitError: "",
     submitErrorCode: "",
     /** 处理完一条后的一句话结果（成功/已处理），入口与弹窗都可展示 */
@@ -655,6 +790,38 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     },
     knowledgeItems(state): UnifiedApprovalItem[] {
       return mergeUnifiedItems(state, []).filter((item) => item.kind === "knowledge");
+    },
+    /**
+     * 当前 pending 的话题申请（D/C 的待处理入口与 topicPendingForTurn 共用同一份映射）。
+     *
+     * 每项至少给出 key / approvalId / turnId 与契约 §2.1 允许展示的字段；
+     * topic 项**不**混进 toolItems（两类按钮与提交路径不同）。
+     */
+    topicItems(state): TopicApprovalItem[] {
+      const approvals = useApprovalsStore();
+      return mergeUnifiedItems(state, approvals.queue)
+        .map((item) => item.topic)
+        .filter((topic): topic is TopicApprovalItem => topic !== null);
+    },
+    /**
+     * 某一轮是否有等待用户选择的话题申请（返回该项，没有则 null）。
+     *
+     * 只读：D 的等待文案 / 发送限制 / 草稿跟随都从这里派生，不另建第二份状态。
+     */
+    topicPendingForTurn(state): (turnId: string | null | undefined) => TopicApprovalItem | null {
+      const approvals = useApprovalsStore();
+      const topics = mergeUnifiedItems(state, approvals.queue)
+        .map((item) => item.topic)
+        .filter((topic): topic is TopicApprovalItem => topic !== null);
+      return (turnId: string | null | undefined): TopicApprovalItem | null => {
+        const id = typeof turnId === "string" ? turnId.trim() : "";
+        if (!id) return null;
+        return topics.find((topic) => topic.turnId === id) ?? null;
+      };
+    },
+    /** 正在提交的申请 key（老字段名保留：一次只提交一条）。 */
+    submittingKey(state): string | null {
+      return state.submittingKeys[0] ?? null;
     },
     count(state): number {
       return useApprovalsStore().queue.length + state.knowledge.length;
@@ -797,11 +964,12 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     },
 
     /**
-     * 自动弹出规则（只对工具/权限类；知识保存从不自动）：
+     * 自动弹出规则（工具/权限类与真正新到达的话题申请；知识保存从不自动）：
      * - 主智能体新增权限 / 后台工作 / 子智能体 / 删除覆盖类重点确认 → 自动；
+     * - 话题申请：新到达时自动展开；**用户收起过的同一申请不自动重开**；
      * - 已暂缓的同一项不重复弹；本会话自动弹过的不重复弹；
      * - 已经打开 / 用户正在输入 / 别的弹窗开着 → 不叠加（保留申请，条件恢复再试）；
-     * - 内联审批正在显示这一条 → 不自动弹（同一时刻只有一套按钮）。
+     * - 内联审批正在显示这一条 → 不自动弹（同一时刻只有一套按钮；只影响工具类）。
      */
     maybeAutoOpen(): boolean {
       if (this.visible || this.resultsVisible) return false;
@@ -817,8 +985,10 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       const items = this.items as UnifiedApprovalItem[];
       const candidate = items.find(
         (item) =>
-          item.kind === "tool" &&
+          (item.kind === "tool" || item.kind === "topic") &&
           !item.deferred &&
+          // 话题申请收起过就不再自动重开（入口主动打开不受此限）
+          (item.kind !== "topic" || !this.collapsedTopicKeys.has(item.key)) &&
           !this.autoShownKeys.includes(item.key) &&
           !item.stale &&
           !isExpiredApproval(item.approval) &&
@@ -829,7 +999,8 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
           (item.approval?.arrivedSeq ?? 0) > this.autoBlockedSeq,
       );
       if (!candidate) return false;
-      if (approvals.inlineClaimed) {
+      // 内联审批只属于工具类；话题申请不参与内联认领，也不因它挡下
+      if (candidate.kind === "tool" && approvals.inlineClaimed) {
         this.autoPending = true;
         return false;
       }
@@ -853,7 +1024,13 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     open(key?: string | null): boolean {
       const items = this.items as UnifiedApprovalItem[];
       if (!items.length) return false;
-      const target = (key && items.find((item) => item.key === key)) || this.activeItem || items[0];
+      const requested = key ? items.find((item) => item.key === key) ?? null : null;
+      /**
+       * 明确给了 key 却不在队列里：不拿别的条目凑数。不同 kind 的 key 前缀不同，
+       * 拿错条目会把「查看工具审批」打开成话题申请（或反过来）。
+       */
+      if (key && !requested) return false;
+      const target = requested ?? this.activeItem ?? items[0];
       if (!target) return false;
       const approvals = useApprovalsStore();
       if (target.kind === "tool") {
@@ -926,7 +1103,11 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
      */
     close(): void {
       const active = this.activeItem as UnifiedApprovalItem | null;
-      if (active) this.deferKey(active.key);
+      if (active) {
+        this.deferKey(active.key);
+        // 话题申请：收起只记「已收起」，**不调用 decide**、不消费申请
+        if (active.kind === "topic") this.collapsedTopicKeys.add(active.key);
+      }
       this.autoBlockedSeq = useApprovalsStore().arrivalSeq;
       this.visible = false;
       this.resultsVisible = false;
@@ -946,6 +1127,10 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         return;
       }
       this.deferKey(active.key);
+      if (active.kind === "topic") {
+        // 话题申请「稍后处理」= 收起这一项；不提交任何决定
+        this.collapsedTopicKeys.add(active.key);
+      }
       if (active.kind === "tool") {
         // 与既有 store 语义一致：收起窗口但保留待审批项
         useApprovalsStore().defer();
@@ -1033,6 +1218,153 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.noteQueueChanged();
     },
 
+    /* ── 话题申请（统一弹窗内，不另起常驻面板）────────────────────────── */
+
+    /**
+     * 用户从入口主动打开一条话题申请（D 的 ComposerEntries 入口调用）。
+     *
+     * 只看 topic 项；已收起的同一申请也能被主动打开（收起只禁止**自动**重开）。
+     * 不提交任何决定。
+     */
+    openTopicApproval(key?: string | null): boolean {
+      const items = this.items as UnifiedApprovalItem[];
+      const topics = items.filter((item) => item.kind === "topic");
+      const requested = key ? topics.find((item) => item.key === key) ?? null : null;
+      if (key && !requested) return false;
+      const target = requested ?? topics.find((item) => !item.deferred) ?? topics[0] ?? null;
+      if (!target) return false;
+      this.activeKey = target.key;
+      this.queueListOnly = false;
+      this.visible = true;
+      this.resultsVisible = false;
+      this.submitError = "";
+      this.submitErrorCode = "";
+      // 用户已经明确打开过：之后不因轮询 / 重渲染再自动弹这一项
+      if (!this.autoShownKeys.includes(target.key)) {
+        this.autoShownKeys = [...this.autoShownKeys.slice(-99), target.key];
+      }
+      return true;
+    },
+
+    /** 收起一条话题申请：只记「先不处理」，不调用 decide、不消费申请。 */
+    collapseTopic(key?: string | null): void {
+      const active = this.activeItem as UnifiedApprovalItem | null;
+      const items = this.items as UnifiedApprovalItem[];
+      const target = key ? items.find((item) => item.key === key) ?? null : active;
+      if (target && target.kind === "topic") {
+        this.collapsedTopicKeys.add(target.key);
+        this.deferKey(target.key);
+      }
+      this.autoBlockedSeq = useApprovalsStore().arrivalSeq;
+      this.visible = false;
+      this.resultsVisible = false;
+      this.activeKey = null;
+      this.queueListOnly = false;
+      this.editingKey = null;
+      this.autoPending = false;
+      this.submitError = "";
+      this.submitErrorCode = "";
+    },
+
+    /** 收起一条已经有结局的话题申请（stale：后端已无 waiter / 已过期）。 */
+    dismissStaleTopic(itemOrKey?: TopicApprovalItem | UnifiedApprovalItem | string | null): void {
+      const key = typeof itemOrKey === "string" ? itemOrKey : itemOrKey?.key ?? null;
+      const items = this.items as UnifiedApprovalItem[];
+      const active = this.activeItem as UnifiedApprovalItem | null;
+      const target = key ? items.find((item) => item.key === key) ?? null : active;
+      if (!target || target.kind !== "topic" || !target.approval) return;
+      useApprovalsStore().resolve(target.identity);
+      this.collapsedTopicKeys.delete(target.key);
+      this.noteQueueChanged();
+    },
+
+    /** 这条话题申请里用户当前编辑的新名称（create）；未编辑时用模型建议名。 */
+    topicDraftFor(topic: TopicApprovalItem | null | undefined): string {
+      if (!topic) return "";
+      const stored = this.topicDrafts[topic.key];
+      return typeof stored === "string" ? stored : topic.suggestedName;
+    },
+
+    /** 记录用户改过的新话题名（收起 / 失败后保留，不静默丢弃）。 */
+    updateTopicDraft(key: string, name: string): void {
+      if (!key) return;
+      this.topicDrafts[key] = String(name ?? "");
+    },
+
+    /**
+     * 话题申请的唯一决定入口（与工具审批同一个 /respond 路径；不新增平行提交）。
+     *
+     * approve = 转到并回答（switch）/ 新建并回答（create，可带 edits.name）；
+     * reject  = 在当前话题回答（scope.reason="stay_current"）。
+     * 空名称在本地阻断；过期本地阻断批准；失败保留申请并就地给出原因，不重复提交。
+     */
+    async decideTopic(
+      itemOrKey: TopicApprovalItem | UnifiedApprovalItem | string,
+      options: { decision: "approve" | "reject"; edits?: { name?: string } },
+    ): Promise<boolean> {
+      const key = typeof itemOrKey === "string" ? itemOrKey : itemOrKey.key;
+      const items = this.items as UnifiedApprovalItem[];
+      const active = items.find((item) => item.key === key) ?? null;
+      const topic = active?.topic ?? null;
+      if (!active || !topic) return false;
+      // 双提交防护：任何一项正在提交都不再发第二次（按钮同时 disabled）
+      if (this.submittingKeys.length > 0) return false;
+      if (active.stale || active.approval?.stale) {
+        this.submitError =
+          "这项话题申请已经有结局（可能已在别处处理或已过期），不会再执行；没有提交任何决定。";
+        this.submitErrorCode = "stale";
+        return false;
+      }
+      const decision = options.decision;
+      // 到期禁止批准（拒绝 / 在当前话题回答仍可提交：那是「不执行」）
+      if (decision === "approve" && isExpiredApproval(active.approval)) {
+        this.submitError =
+          "这项话题申请已经到期，不能再批准（期限来自后端，不会被放宽）。可以选「在当前话题回答」。";
+        this.submitErrorCode = "expired";
+        return false;
+      }
+      let edits: { name: string } | null = null;
+      if (decision === "approve" && topic.action === "create") {
+        const name = String(options.edits?.name ?? this.topicDraftFor(topic)).trim();
+        if (!name) {
+          this.submitError = "话题名不能为空；请填写新话题名后再提交。";
+          this.submitErrorCode = "topic_name_required";
+          return false;
+        }
+        edits = { name };
+        // 用户改过的名字记下来：失败后重开 / 收起都不丢
+        this.updateTopicDraft(active.key, name);
+      }
+      this.submittingKeys = [...this.submittingKeys, active.key];
+      this.submitError = "";
+      this.submitErrorCode = "";
+      try {
+        const outcome = await useApprovalsStore().respondTopicById(
+          topic.approvalId,
+          decision === "approve" ? "approved" : "rejected",
+          {
+            ...(edits ? { edits } : {}),
+            ...(decision === "reject" ? { scope: { reason: "stay_current" } } : {}),
+          },
+        );
+        if (!outcome.ok) {
+          this.submitError = outcome.message;
+          this.submitErrorCode = outcome.code;
+          if (outcome.terminal) this.lastNotice = outcome.message;
+          return false;
+        }
+        // 成功前不得显示「已切换 / 已创建」：只如实说已提交、等执行结果
+        this.lastNotice =
+          decision === "reject"
+            ? "已选择在当前话题回答；本轮会留在当前话题。"
+            : "已提交你的话题选择；执行结果会显示在对话里。";
+        this.finishHandled(active.key);
+        return true;
+      } finally {
+        this.submittingKeys = this.submittingKeys.filter((entry) => entry !== active.key);
+      }
+    },
+
     async retryKnowledgeLoad(): Promise<boolean> {
       return this.refreshKnowledgePending();
     },
@@ -1048,7 +1380,9 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     ): Promise<boolean> {
       const active = this.activeItem as UnifiedApprovalItem | null;
       if (!active) return false;
-      if (this.submittingKey) return false;
+      // 话题申请有专门的 decideTopic；这里不接受它，避免两条提交路径串线
+      if (active.kind === "topic") return false;
+      if (this.submittingKeys.length > 0) return false;
       if (active.kind === "tool") {
         if (decision !== "approve" && decision !== "reject") return false;
         if (active.stale) return false;
@@ -1062,7 +1396,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
           this.submitErrorCode = "expired";
           return false;
         }
-        this.submittingKey = active.key;
+        this.submittingKeys = [...this.submittingKeys, active.key];
         this.submitError = "";
         this.submitErrorCode = "";
         try {
@@ -1097,7 +1431,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
           this.finishHandled(active.key);
           return true;
         } finally {
-          this.submittingKey = null;
+          this.submittingKeys = this.submittingKeys.filter((entry) => entry !== active.key);
         }
       }
       // 知识保存申请：只走知识自己的原子接口
@@ -1109,7 +1443,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         this.submitErrorCode = "empty_content";
         return false;
       }
-      this.submittingKey = active.key;
+      this.submittingKeys = [...this.submittingKeys, active.key];
       this.submitError = "";
       this.submitErrorCode = "";
       try {
@@ -1149,7 +1483,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         }
         return false;
       } finally {
-        this.submittingKey = null;
+        this.submittingKeys = this.submittingKeys.filter((entry) => entry !== active.key);
       }
     },
 
@@ -1185,6 +1519,11 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       if (key && Object.prototype.hasOwnProperty.call(this.drafts, key)) {
         delete this.drafts[key];
       }
+      // 话题申请的「改过的名字」与「已收起」标记也随结局一起收口
+      if (key && Object.prototype.hasOwnProperty.call(this.topicDrafts, key)) {
+        delete this.topicDrafts[key];
+      }
+      if (key) this.collapsedTopicKeys.delete(key);
       const items = this.items as UnifiedApprovalItem[];
       const remaining = items.filter((item) => item.key !== key);
       if (!remaining.length) {
@@ -1212,9 +1551,11 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.resultsVisible = false;
       this.activeKey = null;
       this.deferredKeys = [];
+      this.collapsedTopicKeys = new Set<string>();
+      this.topicDrafts = {};
       this.autoShownKeys = [];
       this.autoPending = false;
-      this.submittingKey = null;
+      this.submittingKeys = [];
       this.submitError = "";
       this.submitErrorCode = "";
       this.lastNotice = "";

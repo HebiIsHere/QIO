@@ -2979,22 +2979,32 @@ def create_app(
 
     @app.post("/api/topic-switch/confirm")
     async def confirm_topic_switch() -> dict:
-        result = ctx.navigation.confirm_switch()
-        if result is None:
-            return {"ok": False, "topic_id": None}
-        await ctx._publish_anchor_event()
-        return {
-            "ok": True,
-            "topic_id": result.topic_id,
-            "fragment_id": result.fragment_id,
-            "fragment_title": result.fragment_title,
-            "historic": result.historic,
-        }
+        # 已退役（契约 §2.4）：旧的「待确认切换」不再有第二条独立提交入口，
+        # 话题变更统一走 /api/approvals/{id}/respond 的 topic_switch 申请。
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "code": "topic_switch_legacy_retired",
+                "message": (
+                    "旧的待确认切换入口已退役：话题申请统一走 "
+                    "/api/approvals/{id}/respond"
+                ),
+            },
+        )
 
     @app.post("/api/topic-switch/reject")
     async def reject_topic_switch() -> dict:
-        ctx.navigation.reject_switch()
-        return {"ok": True}
+        # 已退役（同上）：拒绝只属于统一审批弹窗里的 reject。
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "code": "topic_switch_legacy_retired",
+                "message": (
+                    "旧的待确认切换入口已退役：话题申请统一走 "
+                    "/api/approvals/{id}/respond"
+                ),
+            },
+        )
 
     # -- agent trace (read-only debug) -------------------------------------
 
@@ -4067,15 +4077,24 @@ def create_app(
         turn_id = body.get("turn_id")
         session_id = body.get("session_id")
         digest = body.get("request_digest")
+        # 话题申请的就地修改（仅 topic_create；其它审批不读它，默认 None 行为不变）。
+        # 只有真的带了 edits 才作为关键字传下去：既有审批调用方/测试桩的签名
+        # 保持一字不变（不因本轮改动被迫接受新位置参数）。
+        edits = body.get("edits")
+        respond_kwargs: dict = {
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "digest": digest,
+        }
+        if edits is not None:
+            respond_kwargs["edits"] = edits
         try:
             handled = await approvals.respond(
                 approval_id,
                 decision,
                 scope,
                 overrides,
-                turn_id=turn_id,
-                session_id=session_id,
-                digest=digest,
+                **respond_kwargs,
             )
         except _ApprovalError as exc:
             raise _approval_http_error(exc) from exc
@@ -4083,7 +4102,11 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not handled:
             raise HTTPException(status_code=404, detail="approval not found or already answered")
-        return {"ok": True, "approval_id": approval_id, "decision": decision}
+        response = {"ok": True, "approval_id": approval_id, "decision": decision}
+        if isinstance(edits, dict):
+            # 回显用户批准时改过的内容（前端据此确认「新建的是改过之后的名字」）。
+            response["edits"] = edits
+        return response
 
     # -- test-only event publish ------------------------------------------
     # 只在开发模式注册（生产构建里这条路由根本不存在），且同样要求会话认证。

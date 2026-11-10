@@ -570,6 +570,45 @@ function isLegacyNotExecutableError(error: unknown): boolean {
   return approvalErrorCode(error) === "legacy_approval_not_executable";
 }
 
+/**
+ * 失败响应里的中文原因：契约 §2.2 的错误是 `{"detail":{"code","message"}}`，
+ * 优先取 message（后端给的人话），再退回 detail 字符串 / code，最后才用 Error.message。
+ */
+function approvalErrorDetailMessage(error: unknown): string {
+  const body = (error as { body?: unknown }).body;
+  if (body && typeof body === "object") {
+    const detail = (body as Record<string, unknown>).detail;
+    if (typeof detail === "string" && detail.trim()) return detail.trim();
+    if (detail && typeof detail === "object") {
+      const record = detail as Record<string, unknown>;
+      const message = record.message;
+      if (typeof message === "string" && message.trim()) return message.trim();
+      const code = record.code;
+      if (typeof code === "string" && code.trim()) return code.trim();
+    }
+  }
+  return (error as Error)?.message || "未知原因";
+}
+
+/** 话题申请决定的附加请求体（契约 §2.2：只在既有 /respond 请求体上扩展）。 */
+export interface TopicRespondExtras {
+  /** 仅 topic_create：用户改过（或确认）的新话题名。 */
+  edits?: { name?: string };
+  /** reject 时带 `{reason:"stay_current"}`，表明是「在当前话题回答」。 */
+  scope?: Record<string, unknown>;
+}
+
+/**
+ * 话题申请决定的处理结果（结构化，界面据此就地显示可处理状态）。
+ * terminal = 申请已有结局（后端已无这条待办 / 已失效），界面只给收口入口。
+ */
+export interface TopicRespondOutcome {
+  ok: boolean;
+  code: string;
+  message: string;
+  terminal: boolean;
+}
+
 /** APPROVAL_SOURCE → 中文标签（未知来源如实显示原值）。 */
 function approvalSourceLabel(source: string): string {
   switch (source) {
@@ -1233,6 +1272,141 @@ export const useApprovalsStore = defineStore("approvals", {
         // 失败保留审批项：UI 上「看起来批准了、后端没批准」是绝不允许的状态
         // 文案必须先说结论：失败 ≠ 已授权，再给原因与退路。
         this.error = `审批请求失败，未做出任何授权：${(e as Error).message}（可重试）`;
+      } finally {
+        this.responding = null;
+      }
+    },
+
+    /* ── 话题申请：唯一的提交实现（复用既有 /respond 路径）────────────── */
+
+    /**
+     * 话题申请的决定（唯一提交入口，与工具审批同一条既有路径）。
+     *
+     * 与工具审批走同一个 `POST /api/approvals/{id}/respond`，因此同样具备：
+     * approval_id 身份、单次消费、stale/404 收口、结果记录与双提交防护。
+     * 唯一扩展是请求体多带 edits（仅 topic_create 的新名称）与 scope（拒绝时 stay_current）。
+     *
+     * 返回结构化结果（而不是只写 error）：界面需要就地把 400/409 的中文原因显示出来，
+     * 并在「已有结局」时给收口入口；失败一律保留待办（失败 ≠ 已授权）。
+     */
+    async respondTopicById(
+      approvalId: string,
+      decision: "approved" | "rejected",
+      extras: TopicRespondExtras = {},
+    ): Promise<TopicRespondOutcome> {
+      const item = this.queue.find((a) => a.approval_id === approvalId);
+      if (!item) {
+        return {
+          ok: false,
+          code: "not_found",
+          message: "这项话题申请已经不在待办里（可能已在别处处理或已过期），不会再执行。",
+          terminal: true,
+        };
+      }
+      if (this.responding) {
+        return {
+          ok: false,
+          code: "busy",
+          message: "另有审批正在提交，等这次提交完成后再试；这次没有提交任何决定。",
+          terminal: false,
+        };
+      }
+      if (item.stale) {
+        return {
+          ok: false,
+          code: "already_handled",
+          message: "这项话题申请已经有结局（可能已在别处处理或已过期），不会再执行。",
+          terminal: true,
+        };
+      }
+      if (isInterruptedLegacyApproval(item)) {
+        return {
+          ok: false,
+          code: "legacy_interrupted",
+          message: "这项话题申请属于旧审批路径的中断记录：上次操作没有执行，这里只显示事实。",
+          terminal: true,
+        };
+      }
+      /**
+       * 话题申请来自既有 ApprovalService.request（legacy 行，没有 v2 状态机）。
+       * 若后端给了 v2 状态，说明它不是这条路 —— 不在这里臆测提交。
+       */
+      if (isLifecycleApproval(item)) {
+        return {
+          ok: false,
+          code: "not_legacy",
+          message: "这项申请由后端生命周期管理，不能从话题申请入口提交；没有做出任何决定。",
+          terminal: false,
+        };
+      }
+      this.responding = item.approval_id;
+      this.error = null;
+      item.lifecycleError = undefined;
+      try {
+        await api.respondTopicApproval(item.approval_id, decision, extras, {
+          turnId: item.turnId,
+          sessionId: item.sessionId,
+          requestDigest: item.requestDigest,
+        });
+        // 成功才出队（按 id 过滤，避免并发事件让 shift 移除错项）
+        this.queue = this.queue.filter((a) => a.approval_id !== item.approval_id);
+        if (!this.queue.length) this.deferred = false;
+        if (this.inlineId === item.approval_id) this.inlineId = null;
+        /**
+         * 用户决定是**真的发生过**的事实：先记「已批准（等待执行）」/「已拒绝」；
+         * 真正的切换/新建执行结果仍以后端 APPROVAL_RESULT（executed / failed）为准 ——
+         * 成功前绝不显示「已切换 / 已创建」。
+         */
+        useApprovalResultsStore().recordLocal({
+          approvalId: item.approval_id,
+          phase: decision,
+          state: decision === "approved" ? "approved" : "rejected",
+          summary:
+            decision === "approved"
+              ? "已提交话题选择，等待后端执行"
+              : "已选择在当前话题回答",
+          ok: decision === "rejected" ? false : null,
+          kind: item.kind,
+          label: item.label ?? "",
+          legacy: true,
+        });
+        return { ok: true, code: "", message: "", terminal: false };
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        const code = approvalErrorCode(e);
+        const detail = approvalErrorDetailMessage(e);
+        if (status === 404) {
+          item.stale = true;
+          this.error = detail;
+          return {
+            ok: false,
+            code: code || "already_handled",
+            message:
+              "这项话题申请已经有结局（可能已在别处处理或已过期），不会再执行。" +
+              (detail ? "（" + detail + "）" : ""),
+            terminal: true,
+          };
+        }
+        /**
+         * 无 waiter 的话题申请：后端结构化 409 topic_application_stale。
+         * 申请已不再等待处理（例如本轮绑定话题已经变化）—— 不假成功，标成失效。
+         */
+        if (status === 409 && code === "topic_application_stale") {
+          item.stale = true;
+          this.error = detail;
+          return {
+            ok: false,
+            code,
+            message:
+              "这项话题申请已经失效（本轮绑定的话题已变化或申请不再等待处理），不会再执行。" +
+              (detail ? "（" + detail + "）" : ""),
+            terminal: true,
+          };
+        }
+        // 失败保留申请：空名称 / 目标话题不存在等由后端原样给中文原因，界面就地显示
+        item.lifecycleError = detail;
+        this.error = detail;
+        return { ok: false, code: code || "topic_failed", message: detail, terminal: false };
       } finally {
         this.responding = null;
       }

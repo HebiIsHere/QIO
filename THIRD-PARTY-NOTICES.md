@@ -7,9 +7,9 @@
 许可证全文见文末；正文里的版权行缺失时会在该条目上写明出处。
 
 生成输入（sha256 前 16 位）：
-- `backend/uv.lock` — `d81e54eb68744d6d`
-- `frontend/package-lock.json` — `b261ff84391b481a`
-- `frontend/src-tauri/Cargo.lock` — `c5d4b586ce709fe6`
+- `backend/uv.lock` — `87d0f43a8fc706c0`
+- `frontend/package-lock.json` — `347dc7975102ef01`
+- `frontend/src-tauri/Cargo.lock` — `e78f36ed1bd35003`
 
 ## 组件与许可证
 
@@ -35,7 +35,7 @@
 - `flatbuffers@25.12.19`（python） — 版权行见上游：Derek Bailey
 - `hf-xet@1.6.0`（python） — 版权行见上游：https://huggingface.co/docs/hub/xet/index
 - `huggingface-hub@1.31.0`（python） — 版权行见上游：Hugging Face, Inc.
-- `importlib-metadata@9.0.1`（python） — 版权行见上游：Jason R. Coombs <jaraco@jaraco.com> / https://github.com/python/importlib_metadata
+- `importlib-metadata@9.0.1`（python） — 版权行见上游：https://pypi.org/project/importlib-metadata/
 - `openai@3.13.0`（python） — Copyright 2026 OpenAI
 - `pytest-asyncio@1.4.0`（python） — 版权行见上游：Tin Tvrtković <tinchester@gmail.com> / https://github.com/pytest-dev/pytest-asyncio/issues
 - `requests@2.34.2`（python） — Copyright 2019 Kenneth Reitz
@@ -69,9 +69,9 @@
 
 ### Apache-2.0 OR ISC OR MIT（3 个）
 
-- `hyper-rustls@0.27.10`（rust） — Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>；Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
-- `rustls@0.23.45`（rust） — Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>；Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
-- `rustls-native-certs@0.8.4`（rust） — Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>；Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+- `hyper-rustls@0.27.10`（rust） — Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
+- `rustls@0.23.45`（rust） — Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
+- `rustls-native-certs@0.8.4`（rust） — Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
 
 ### Apache-2.0 OR MIT（51 个）
 
@@ -141,8 +141,8 @@
 
 ### Apache-2.0/MIT（3 个）
 
-- `dbus@0.9.12`（rust） — Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors；Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
-- `libdbus-sys@0.2.7`（rust） — Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors；Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
+- `dbus@0.9.12`（rust） — Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
+- `libdbus-sys@0.2.7`（rust） — Copyright 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
 - `signal-hook@0.3.18`（rust） — Copyright (c) 2017 tokio-jsonrpc developers
 
 ### BSD-2-Clause（5 个）
@@ -187,7 +187,7 @@
 
 ### BSD-3-Clause AND MIT（1 个）
 
-- `brotli@8.0.4`（rust） — Copyright (c) 2016 Dropbox, Inc.；Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
+- `brotli@8.0.4`（rust） — Copyright (c) 2016 Dropbox, Inc.
 
 ### BSD-3-Clause OR MIT OR Apache-2.0（2 个）
 
@@ -241,7 +241,7 @@
 - `rustls-webpki@0.103.15`（rust） — Copyright 2015 Brian Smith.
 - `untrusted@0.9.0`（rust） — 版权行见上游：https://github.com/briansmith/untrusted
 
-### MIT（448 个）
+### MIT（450 个）
 
 - `bge-small-zh-v1.5@fp32`（bundled） — Copyright (c) BAAI (Beijing Academy of Artificial Intelligence) — 内置中文嵌入模型（ONNX 转换版来自社区仓库 Xenova/bge-small-zh-v1.5），随安装包分发；完整声明见 resources/models/bge-small-zh-v1.5/ 下的 LICENSE-BAAI-bge-small-zh-v1.5.txt 与 NOTICE.txt。
 - `@asamuzakjp/css-color@5.1.11`（npm） — Copyright (c) 2024 asamuzaK (Kazz)
@@ -556,6 +556,7 @@
 - `backports-tarfile@1.2.0`（python） — 版权行见上游：https://pypi.org/project/backports-tarfile/
 - `beautifulsoup4@4.15.0`（python） — 版权行见上游：Leonard Richardson <leonardr@segfault.org> / https://www.crummy.com/software/BeautifulSoup/bs4/download/
 - `charset-normalizer@3.5.1`（python） — Copyright (c) 2025 TAHRI Ahmed R.
+- `execnet@2.1.2`（python） — 版权行见上游：holger krekel and others / https://execnet.readthedocs.io/en/latest/
 - `fastapi@0.141.1`（python） — Copyright (c) 2018 Sebastián Ramírez
 - `filelock@3.32.6`（python） — Copyright (c) 2025 Bernát Gábor and contributors
 - `h11@0.16.0`（python） — Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors
@@ -573,6 +574,7 @@
 - `pydantic@2.13.5`（python） — 版权行见上游：Samuel Colvin <s@muelcolvin.com>, Eric Jolibois <em.jolibois@gmail.com>, Hasan Ramezani <hasan.r67@gmail.com>, Adrian Garcia Badaracco <1755071+adriangb@users.noreply.github.com>, Terrence Dorsey <terry@pydantic.dev>, David Montague <david@pydantic.dev>, Serge Matveenko <lig@countzero.co>, Marcelo Trylesinski <marcelotryle@gmail.com>, Sydney Runkle <sydneymarierunkle@gmail.com>, David Hewitt <mail@davidhewitt.dev>, Alex Hall <alex.mojaki@gmail.com>, Victorien Plot <contact@vctrn.dev> / https://github.com/pydantic/pydantic
 - `pydantic-core@2.46.5`（python） — Copyright (c) 2022 Samuel Colvin
 - `pytest@9.1.1`（python） — Copyright (c) 2004 Holger Krekel and others
+- `pytest-xdist@3.8.0`（python） — Copyright (c) 2010 Holger Krekel and contributors.
 - `pyyaml@6.0.3`（python） — Copyright (c) 2017-2021 Ingy döt Net；Copyright (c) 2006-2016 Kirill Simonov
 - `soupsieve@2.9.2`（python） — Copyright (c) 2018 - 2026 Isaac Muse <isaacmuse@gmail.com>
 - `tiktoken@0.14.0`（python） — Copyright (c) 2022 OpenAI, Shantanu Jain
@@ -581,7 +583,7 @@
 - `urllib3@2.7.0`（python） — Copyright (c) 2008-2020 Andrey Petrov and contributors.
 - `uvloop@0.22.1`（python） — 版权行见上游：https://pypi.org/project/uvloop/
 - `watchfiles@1.2.0`（python） — 版权行见上游：Samuel Colvin <s@muelcolvin.com> / https://github.com/samuelcolvin/watchfiles/releases
-- `zipp@4.1.0`（python） — 版权行见上游：Jason R. Coombs <jaraco@jaraco.com> / https://github.com/jaraco/zipp
+- `zipp@4.1.0`（python） — 版权行见上游：https://pypi.org/project/zipp/
 - `atk@0.18.2`（rust） — 版权行见上游：https://github.com/gtk-rs/gtk3-rs
 - `atk-sys@0.18.2`（rust） — 版权行见上游：https://github.com/gtk-rs/gtk3-rs
 - `block2@0.6.2`（rust） — 版权行见上游：https://github.com/madsmtm/objc2
@@ -692,7 +694,7 @@
 - `zip@4.6.1`（rust） — Copyright (c) 2014 Mathijs van de Nes
 - `zmij@1.0.23`（rust） — 版权行见上游：https://github.com/dtolnay/zmij
 
-### MIT OR Apache-2.0（244 个）
+### MIT OR Apache-2.0（245 个）
 
 - `@tauri-apps/plugin-process@2.3.1`（npm） — 版权行见上游：https://github.com/tauri-apps/plugins-workspace
 - `@tauri-apps/plugin-updater@2.12.0`（npm） — 版权行见上游：https://github.com/tauri-apps/plugins-workspace
@@ -721,10 +723,10 @@
 - `core-graphics-types@0.2.0`（rust） — 版权行见上游：https://github.com/servo/core-foundation-rs
 - `cpufeatures@0.2.17`（rust） — 版权行见上游：https://github.com/RustCrypto/utils
 - `crc32fast@1.5.0`（rust） — Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
-- `crossbeam-channel@0.5.16`（rust） — Copyright (c) 2019 The Crossbeam Project Developers；Copyright (c) 2009 The Go Authors. All rights reserved.
+- `crossbeam-channel@0.5.16`（rust） — Copyright (c) 2019 The Crossbeam Project Developers
 - `crossbeam-utils@0.8.22`（rust） — Copyright (c) 2019 The Crossbeam Project Developers
 - `crypto-common@0.1.7`（rust） — 版权行见上游：https://github.com/RustCrypto/traits
-- `deranged@0.5.8`（rust） — Copyright 2024 Jacob Pratt et al.；Copyright (c) 2024 Jacob Pratt et al.
+- `deranged@0.5.8`（rust） — Copyright 2024 Jacob Pratt et al.
 - `derive_arbitrary@1.4.2`（rust） — 版权行见上游：https://github.com/rust-fuzz/arbitrary
 - `digest@0.10.7`（rust） — Copyright (c) 2017 Artyom Pavlov
 - `dirs@6.0.0`（rust） — Copyright (c) 2018-2019 dirs-rs contributors
@@ -762,10 +764,11 @@
 - `heck@0.5.0`（rust） — Copyright (c) 2015 The Rust Project Developers
 - `hex@0.4.3`（rust） — Copyright (c) 2013-2014 The Rust Project Developers.；Copyright (c) 2015-2020 The rust-hex Developers
 - `html5ever@0.38.0`（rust） — Copyright (c) 2014 The html5ever Project Developers
-- `http@1.5.0`（rust） — Copyright 2017 http-rs authors；Copyright (c) 2017 http-rs authors
+- `http@1.5.0`（rust） — Copyright 2017 http-rs authors
 - `httparse@1.10.1`（rust） — Copyright (c) 2015-2025 Sean McArthur
-- `iana-time-zone@0.1.65`（rust） — Copyright 2020 Andrew Straw；Copyright (c) 2020 Andrew D. Straw
+- `iana-time-zone@0.1.65`（rust） — Copyright 2020 Andrew Straw
 - `iana-time-zone-haiku@0.1.2`（rust） — 版权行见上游：https://github.com/strawlab/iana-time-zone
+- `ident_case@1.0.1`（rust） — 版权行见上游：https://github.com/TedDriggs/ident_case
 - `idna@1.1.0`（rust） — Copyright (c) 2013-2025 The rust-url developers
 - `ipnet@2.12.1`（rust） — Copyright 2017 Juniper Networks, Inc.
 - `itoa@1.0.18`（rust） — 版权行见上游：https://github.com/dtolnay/itoa
@@ -776,7 +779,7 @@
 - `jni-sys@0.4.1`（rust） — 版权行见上游：https://github.com/jni-rs/jni-sys
 - `jni-sys-macros@0.4.1`（rust） — 版权行见上游：https://github.com/jni-rs/jni-sys
 - `js-sys@0.3.103`（rust） — 版权行见上游：https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
-- `jsonptr@0.6.3`（rust） — Copyright 2024 Chance Dinkins；Copyright (c) 2022 Chance Dinkins
+- `jsonptr@0.6.3`（rust） — Copyright 2024 Chance Dinkins
 - `keyboard-types@0.7.0`（rust） — Copyright (c) 2017 Pyfisch
 - `libc@0.2.189`（rust） — 版权行见上游：https://github.com/rust-lang/libc
 - `lock_api@0.4.14`（rust） — Copyright (c) 2016 The Rust Project Developers
@@ -787,7 +790,7 @@
 - `ndk-sys@0.6.0+11769913`（rust） — 版权行见上游：https://github.com/rust-mobile/ndk
 - `num-conv@0.2.2`（rust） — 版权行见上游：https://github.com/jhpratt/num-conv
 - `num-traits@0.2.19`（rust） — Copyright (c) 2014 The Rust Project Developers
-- `num_threads@0.1.7`（rust） — Copyright 2021 Jacob Pratt；Copyright (c) 2021 Jacob Pratt
+- `num_threads@0.1.7`（rust） — Copyright 2021 Jacob Pratt
 - `once_cell@1.21.4`（rust） — 版权行见上游：https://github.com/matklad/once_cell
 - `openssl-probe@0.2.1`（rust） — Copyright (c) 2014 Alex Crichton
 - `osakit@0.3.1`（rust） — 版权行见上游：https://github.com/mdevils/rust-osakit
@@ -797,12 +800,12 @@
 - `pkg-config@0.3.33`（rust） — Copyright (c) 2014 Alex Crichton
 - `png@0.17.16`（rust） — Copyright (c) 2015 nwin
 - `png@0.18.1`（rust） — Copyright (c) 2015 nwin
-- `powerfmt@0.2.0`（rust） — Copyright 2023 Jacob Pratt et al.；Copyright (c) 2023 Jacob Pratt et al.
+- `powerfmt@0.2.0`（rust） — Copyright 2023 Jacob Pratt et al.
 - `proc-macro-crate@1.3.1`（rust） — 版权行见上游：https://github.com/bkchr/proc-macro-crate
 - `proc-macro-crate@2.0.2`（rust） — 版权行见上游：https://github.com/bkchr/proc-macro-crate
 - `proc-macro-crate@3.5.0`（rust） — 版权行见上游：https://github.com/bkchr/proc-macro-crate
-- `proc-macro-error@1.0.4`（rust） — Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>；Copyright (c) 2019-2020 CreepySkeleton
-- `proc-macro-error-attr@1.0.4`（rust） — Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>；Copyright (c) 2019-2020 CreepySkeleton
+- `proc-macro-error@1.0.4`（rust） — Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>
+- `proc-macro-error-attr@1.0.4`（rust） — Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru>
 - `proc-macro2@1.0.107`（rust） — 版权行见上游：https://github.com/dtolnay/proc-macro2
 - `quote@1.0.47`（rust） — 版权行见上游：https://github.com/dtolnay/quote
 - `ref-cast@1.0.26`（rust） — 版权行见上游：https://github.com/dtolnay/ref-cast
@@ -810,9 +813,9 @@
 - `regex@1.13.1`（rust） — Copyright (c) 2014 The Rust Project Developers
 - `regex-automata@0.4.16`（rust） — Copyright (c) 2014 The Rust Project Developers
 - `regex-syntax@0.8.11`（rust） — Copyright (c) 2014 The Rust Project Developers
-- `reqwest@0.13.4`（rust） — Copyright 2016 Sean McArthur；Copyright (c) 2016-2026 Sean McArthur
+- `reqwest@0.13.4`（rust） — Copyright 2016 Sean McArthur
 - `rustc_version@0.4.1`（rust） — Copyright (c) 2016 The Rust Project Developers
-- `rustls-pki-types@1.15.1`（rust） — Copyright 2023 Dirkjan Ochtman；Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
+- `rustls-pki-types@1.15.1`（rust） — Copyright 2023 Dirkjan Ochtman
 - `rustls-platform-verifier@0.7.0`（rust） — Copyright (c) 2022 1Password
 - `rustls-platform-verifier-android@0.1.1`（rust） — 版权行见上游：https://github.com/rustls/rustls-platform-verifier
 - `rustversion@1.0.23`（rust） — 版权行见上游：https://github.com/dtolnay/rustversion
@@ -835,7 +838,7 @@
 - `serialize-to-javascript-impl@0.1.2`（rust） — Copyright (c) 2021 Chip Reed
 - `servo_arc@0.4.3`（rust） — 版权行见上游：https://github.com/servo/stylo
 - `sha2@0.10.9`（rust） — Copyright (c) 2006-2009 Graydon Hoare；Copyright (c) 2009-2013 Mozilla Foundation
-- `shlex@2.0.1`（rust） — Copyright 2015 Nicholas Allegra (comex).；Copyright (c) 2015 Nicholas Allegra (comex).
+- `shlex@2.0.1`（rust） — Copyright 2015 Nicholas Allegra (comex).
 - `signal-hook-registry@1.4.8`（rust） — Copyright (c) 2017 tokio-jsonrpc developers
 - `simdutf8@0.1.5`（rust） — 版权行见上游：https://github.com/rusticstuff/simdutf8
 - `smallvec@1.15.2`（rust） — Copyright (c) 2018 The Servo Project Developers
@@ -862,7 +865,7 @@
 - `time@0.3.55`（rust） — 版权行见上游：https://github.com/time-rs/time
 - `time-core@0.1.9`（rust） — 版权行见上游：https://github.com/time-rs/time
 - `time-macros@0.2.32`（rust） — 版权行见上游：https://github.com/time-rs/time
-- `tokio-rustls@0.26.5`（rust） — Copyright 2017 quininer kel；Copyright (c) 2017 quininer kel
+- `tokio-rustls@0.26.5`（rust） — Copyright 2017 quininer kel
 - `toml@0.8.2`（rust） — 版权行见上游：https://github.com/toml-rs/toml
 - `toml@0.9.12+spec-1.1.0`（rust） — 版权行见上游：https://github.com/toml-rs/toml
 - `toml@1.1.4+spec-1.1.0`（rust） — 版权行见上游：https://github.com/toml-rs/toml
@@ -876,7 +879,7 @@
 - `toml_writer@1.1.2+spec-1.1.0`（rust） — 版权行见上游：https://github.com/toml-rs/toml
 - `tray-icon@0.24.2`（rust） — 版权行见上游：https://github.com/tauri-apps/tray-icon
 - `typeid@1.0.3`（rust） — 版权行见上游：https://github.com/dtolnay/typeid
-- `typenum@1.20.1`（rust） — Copyright 2014 Paho Lurie-Gregg；Copyright (c) 2014 Paho Lurie-Gregg
+- `typenum@1.20.1`（rust） — Copyright 2014 Paho Lurie-Gregg
 - `unicode-segmentation@1.13.3`（rust） — Copyright (c) 2015 The Rust Project Developers
 - `url@2.5.8`（rust） — Copyright (c) 2013-2025 The rust-url developers
 - `wasm-bindgen@0.2.126`（rust） — 版权行见上游：https://github.com/wasm-bindgen/wasm-bindgen
@@ -946,8 +949,8 @@
 
 ### MIT OR Apache-2.0 OR Zlib（2 个）
 
-- `raw-window-handle@0.6.2`（rust） — Copyright (c) 2019 Osspial；Copyright (c) 2020 Osspial
-- `tinyvec_macros@0.1.1`（rust） — Copyright 2020 Tomasz "Soveu" Marx；Copyright (c) 2020 Soveu
+- `raw-window-handle@0.6.2`（rust） — Copyright (c) 2019 Osspial
+- `tinyvec_macros@0.1.1`（rust） — Copyright 2020 Tomasz "Soveu" Marx
 
 ### MIT OR Zlib OR Apache-2.0（1 个）
 
@@ -959,12 +962,11 @@
 - `@csstools/css-syntax-patches-for-csstree@1.1.7`（npm） — 版权行见上游：https://github.com/csstools/postcss-plugins
 - `cffi@2.1.1`（python） — 版权行见上游：Armin Rigo, Maciej Fijalkowski
 
-### MIT/Apache-2.0（13 个）
+### MIT/Apache-2.0（12 个）
 
 - `bitflags@1.3.2`（rust） — Copyright (c) 2014 The Rust Project Developers
 - `bs58@0.5.1`（rust） — Copyright (c) 2016 The roaring-rs developers.
 - `filetime@0.2.29`（rust） — Copyright (c) 2014 Alex Crichton
-- `ident_case@1.0.1`（rust） — 版权行见上游：https://github.com/TedDriggs/ident_case
 - `json-patch@3.0.1`（rust） — Copyright (c) 2017 Ivan Dubrov
 - `siphasher@1.0.3`（rust） — Copyright 2012-2016 The Rust Project Developers.；Copyright 2016-2026 Frank Denis.
 - `unic-char-property@0.9.0`（rust） — 版权行见上游：https://github.com/open-i18n/rust-unic/
@@ -1267,11 +1269,12 @@
 - `certifi@2026.7.22`（python，MPL-2.0）— Kenneth Reitz
 - `cffi@2.1.1`（python，MIT-0）— Armin Rigo, Maciej Fijalkowski
 - `cryptography@50.0.1`（python，Apache-2.0 OR BSD-3-Clause）— https://pypi.org/project/cryptography/
+- `execnet@2.1.2`（python，MIT）— holger krekel and others / https://execnet.readthedocs.io/en/latest/
 - `flatbuffers@25.12.19`（python，Apache-2.0）— Derek Bailey
 - `fsspec@2026.7.0`（python，BSD-3-Clause）— https://filesystem-spec.readthedocs.io/en/latest/changelog.html
 - `hf-xet@1.6.0`（python，Apache-2.0）— https://huggingface.co/docs/hub/xet/index
 - `huggingface-hub@1.31.0`（python，Apache-2.0）— Hugging Face, Inc.
-- `importlib-metadata@9.0.1`（python，Apache-2.0）— Jason R. Coombs <jaraco@jaraco.com> / https://github.com/python/importlib_metadata
+- `importlib-metadata@9.0.1`（python，Apache-2.0）— https://pypi.org/project/importlib-metadata/
 - `jaraco-classes@3.4.0`（python，MIT）— Jason R. Coombs
 - `jaraco-context@6.1.2`（python，MIT）— Jason R. Coombs <jaraco@jaraco.com> / https://github.com/jaraco/jaraco.context
 - `jaraco-functools@4.6.0`（python，MIT）— Jason R. Coombs <jaraco@jaraco.com> / https://github.com/jaraco/jaraco.functools
@@ -1290,7 +1293,7 @@
 - `uvloop@0.22.1`（python，MIT）— https://pypi.org/project/uvloop/
 - `watchfiles@1.2.0`（python，MIT）— Samuel Colvin <s@muelcolvin.com> / https://github.com/samuelcolvin/watchfiles/releases
 - `websockets@17.1`（python，BSD-3-Clause）— Aymeric Augustin <aymeric.augustin@m4x.org> / https://github.com/python-websockets/websockets
-- `zipp@4.1.0`（python，MIT）— Jason R. Coombs <jaraco@jaraco.com> / https://github.com/jaraco/zipp
+- `zipp@4.1.0`（python，MIT）— https://pypi.org/project/zipp/
 - `adler2@2.0.1`（rust，0BSD OR MIT OR Apache-2.0）— https://github.com/oyvindln/adler2
 - `alloc-stdlib@0.2.4`（rust，BSD-3-Clause）— https://github.com/dropbox/rust-alloc-no-stdlib
 - `android_log-sys@0.3.2`（rust，MIT OR Apache-2.0）— https://github.com/rust-mobile/android_log-sys-rs
@@ -1360,7 +1363,7 @@
 - `gtk-sys@0.18.2`（rust，MIT）— https://github.com/gtk-rs/gtk3-rs
 - `gtk3-macros@0.18.2`（rust，MIT）— https://github.com/gtk-rs/gtk3-rs
 - `iana-time-zone-haiku@0.1.2`（rust，MIT OR Apache-2.0）— https://github.com/strawlab/iana-time-zone
-- `ident_case@1.0.1`（rust，MIT/Apache-2.0）— https://github.com/TedDriggs/ident_case
+- `ident_case@1.0.1`（rust，MIT OR Apache-2.0）— https://github.com/TedDriggs/ident_case
 - `idna_adapter@1.2.2`（rust，Apache-2.0 OR MIT）— https://github.com/hsivonen/idna_adapter
 - `itoa@1.0.18`（rust，MIT OR Apache-2.0）— https://github.com/dtolnay/itoa
 - `jni@0.21.1`（rust，MIT OR Apache-2.0）— https://github.com/jni-rs/jni-rs

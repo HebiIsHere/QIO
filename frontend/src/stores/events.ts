@@ -384,6 +384,12 @@ export const useEventStore = defineStore("events", {
           // 说明它的 TOOL_END 丢了，先收口；服务器若知道真实结果，
           // 随后的快照核对会把它改回 success / failed / cancelled。
           session.convergeRunningTools(tid);
+          /**
+           * 一轮结束：本轮的话题申请登记与还没消费的草稿跟随一起收口。
+           * 没有发生 ANCHOR（拒绝/失败/过期/后端重启）时草稿留在原话题、归属不变；
+           * 这里只清「一次性」标记，不移动任何文字。
+           */
+          session.clearTopicApplicationsForTurn(tid);
           session.turnEnded();
           session.lastTurnOutcome = { turnId: tid, status };
           if (status === "failed") {
@@ -438,6 +444,13 @@ export const useEventStore = defineStore("events", {
           });
           // 后端队列已空：本地「等待中」标记同步清除（排队项被取消时不会残留）
           if (applied && !queuedList.length) session.clearQueuedFlags();
+          /**
+           * 权威队列显示服务端已空闲：这一轮已经结束（TURN_END 可能丢帧）——
+           * 话题申请的一次性草稿跟随不能跨轮残留，否则下次普通导航会带走草稿。
+           */
+          if (applied && !running && !queuedList.length) {
+            session.clearTopicApplicationsForTurn(session.activeTurnId);
+          }
           if (instanceChanged) {
             // 换了实例：旧的连接信息（端口 / 令牌）不再可信
             resetBackend();
@@ -673,13 +686,6 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const approvalId = String(d.approval_id ?? "");
           if (!approvalId) break;
-          /**
-           * R9：事件不新增类型，用 payload.phase 表达状态（W1 冻结）。
-           * 前端只呈现：中间态（confirmed / approved / executing）保留待办；
-           * 终态（executed / failed / invalidated / interrupted_unverified / …）才收口。
-           * 旧后端没有 phase → recordResult 内部按旧的「有结局即收敛」处理。
-           */
-          useApprovalsStore().recordResult(d);
           const phase = String(d.phase ?? "");
           const terminal = new Set([
             "executed",
@@ -690,6 +696,59 @@ export const useEventStore = defineStore("events", {
             "rejected",
             "cancelled",
           ]);
+          /**
+           * 话题申请（topic_switch / topic_create）的结局只做两件 UI 派生的事：
+           * 1. 批准/执行中 → 武装**一次性**草稿跟随（等待期间的草稿跟到确认后的话题）；
+           * 2. 拒绝/取消/失败/过期 → 清除跟随（草稿留在原话题，归属不变）。
+           *
+           * legacy 的 /respond 事件不带 kind / payload，所以用 APPROVAL_REQUIRED
+           * 时的本地登记认身份；执行结果事件带顶层 kind 也能认出来。
+           */
+          const approvalEnvelope = (d.approval ?? {}) as Record<string, unknown>;
+          const eventKind = String(approvalEnvelope.kind ?? d.kind ?? "");
+          const registered = session.topicApplicationFor(approvalId);
+          const isTopicApplication =
+            Boolean(registered) || eventKind === "topic_switch" || eventKind === "topic_create";
+          if (isTopicApplication) {
+            const payload = (approvalEnvelope.payload ?? d.payload ?? {}) as Record<string, unknown>;
+            const topicKind =
+              registered?.kind ??
+              (eventKind === "topic_create" ? "topic_create" : "topic_switch");
+            const targetTopicId =
+              registered?.targetTopicId ?? (String(payload.target_topic_id ?? "").trim() || null);
+            /**
+             * 已在执行 = 用户已经选过话题：等待期间写的草稿要跟着本轮进入目标话题。
+             * switch 必须知道目标 id（不知道就不武装，绝不把草稿带错话题）；
+             * create 的目标话题由随后的 ANCHOR 决定（targetTopicId=null）。
+             */
+            if (phase === "approved" || phase === "executing") {
+              if (topicKind === "topic_create" || targetTopicId) {
+                session.armTopicDraftFollow({
+                  targetTopicId,
+                  turnId: registered?.turnId ?? String(d.turn_id ?? ""),
+                });
+              }
+            } else {
+              // executed / rejected / cancelled / expired / invalidated / failed：登记收口。
+              // executed 不动已武装的跟随（ANCHOR 可能就在同一顺序里）；其余结局一律清除。
+              session.dropTopicApplication(approvalId);
+              if (phase !== "executed") session.clearTopicDraftFollow();
+            }
+            /**
+             * 话题申请不把整轮标成 activity="approval"（等待状态由统一队列派生）；
+             * 若兼容路径留下了该状态，决定后按真实阶段恢复 —— 不一直停在「等待确认」。
+             */
+            if (session.activity === "approval") {
+              session.activity = session.turnPhase === "generating" ? "generating" : "waiting";
+            }
+          }
+          /**
+           * R9：事件不新增类型，用 payload.phase 表达状态（W1 冻结）。
+           * 前端只呈现：中间态（confirmed / approved / executing）保留待办；
+           * 终态（executed / failed / invalidated / interrupted_unverified / …）才收口。
+           * 旧后端没有 phase → recordResult 内部按旧的「有结局即收敛」处理。
+           */
+          useApprovalsStore().recordResult(d);
           if ((!phase || terminal.has(phase)) && session.pendingContinue?.id === approvalId) {
             session.pendingContinue = null;
           }
@@ -711,6 +770,14 @@ export const useEventStore = defineStore("events", {
             // historic=false（位置推进到当前片段）→ UI 收起「从…继续」提示
             Boolean(d.historic),
           );
+          /**
+           * 话题申请批准后的草稿跟随：锚点已经落到目标话题、但话题 id 没变时
+           * bind 不会触发（同键早退）—— 一次性标记在这里收口，不跨导航残留。
+           */
+          const follow = session._topicDraftFollow;
+          if (follow && (follow.targetTopicId === null || follow.targetTopicId === topicId)) {
+            session.clearTopicDraftFollow();
+          }
           // 「已登记但还没落实」的接续选择：界面据此显示「将从所选记录继续」，
           // 而不是让人以为已经建了新片段（阶段 1 的两步语义）。
           const pendingIntent = (d.pending_intent_id as string | null) ?? null;
@@ -734,17 +801,14 @@ export const useEventStore = defineStore("events", {
           break;
         }
         case "TOPIC_SWITCH_SUGGESTED": {
-          // 推测切换（spec 第 29~30 条）：内容看起来属于另一个话题。
-          // 只登记建议、亮出低干扰的确认条；Anchor 必须留在原处，
-          // 用户点「转到这里」时才由 confirmPendingSwitch 真正切换。
-          const d = event.data as Record<string, unknown>;
-          const topicId = String(d.topic_id ?? "");
-          if (!topicId || topicId === session.currentTopicId) break;
-          session.setPendingSwitch({
-            topicId,
-            topicName: String(d.topic_name ?? "另一个话题"),
-            reason: (d.reason as string | undefined) ?? undefined,
-          });
+          /**
+           * 旧路径**已退役**（本轮契约 §2.4）：后端不再发布可执行的切换建议，
+           * 相似度只作为本轮主模型的证据，唯一判断入口是受控工具调用产生的
+           * 话题申请（APPROVAL_REQUIRED 的 topic_switch / topic_create）。
+           *
+           * 事件类型保留只为兼容旧后端/旧回放：这里**不建立任何可执行状态**，
+           * 不改 Anchor、不亮确认条、不调用任何提交接口。
+           */
           break;
         }
         case "SUBAGENT_STATUS": {
@@ -869,7 +933,8 @@ export const useEventStore = defineStore("events", {
         typeof approval.state === "string"
           ? approvalMetaFromPending(toPendingApproval(approval))
           : undefined;
-      useApprovalsStore().enqueue(id, kind || "unknown", (approval.payload ?? {}) as Record<string, unknown>, {
+      const payload = (approval.payload ?? {}) as Record<string, unknown>;
+      useApprovalsStore().enqueue(id, kind || "unknown", payload, {
         // 恢复路径显式传 autoOpen:false（不抢焦点）；实时到达交统一门控决定
         autoOpen: opts.autoOpen ?? true,
         // 绑定信息随待办一起保存：应答时原样回传（服务端另有自己的校验）
@@ -878,6 +943,23 @@ export const useEventStore = defineStore("events", {
         requestDigest: (approval.request_digest as string | null) ?? null,
         ...(meta ? { meta } : {}),
       });
+      /**
+       * 话题申请（topic_switch / topic_create）：正文与决定入口在统一审批队列，
+       * 这里只登记「哪个 approval_id 是话题申请」（legacy 的 APPROVAL_RESULT
+       * 不带 kind/payload，结局要靠这份登记认出来）。
+       *
+       * 不把整轮标成 activity="approval"：等待状态由 session.topicApprovalPending
+       * 从统一队列派生；决定后没有额外的「审批结束」事件能把它恢复成生成中。
+       */
+      if (kind === "topic_switch" || kind === "topic_create") {
+        session.registerTopicApplication({
+          approvalId: id,
+          kind,
+          turnId: (approval.turn_id as string | null) ?? null,
+          targetTopicId: String(payload.target_topic_id ?? "").trim() || null,
+        });
+        return;
+      }
       session.activity = "approval";
     },
 

@@ -18,7 +18,6 @@ from agent.prompts import (
     INJECT_SHORT_TERM_SECTION,
     TOPIC_NOTE_CURRENT,
     TOPIC_NOTE_RELATED,
-    TOPIC_NOTE_SWITCH,
 )
 from agent.services.injection import (
     BudgetConfig,
@@ -327,16 +326,9 @@ class ContextAssembler:
                 n = self.topics.nodes.get_topic(tid)
                 names.append(f"「{n.name if n else tid}」（{tid}）")
             parts.append(TOPIC_NOTE_RELATED.format(names="、".join(names)))
-        if prediction.suggested_switch and prediction.main_topic_id:
-            n = self.topics.nodes.get_topic(prediction.main_topic_id)
-            score = prediction.scores.get(prediction.main_topic_id, 0.0)
-            parts.append(
-                TOPIC_NOTE_SWITCH.format(
-                    name=n.name if n else prediction.main_topic_id,
-                    topic_id=prediction.main_topic_id,
-                    score=score,
-                )
-            )
+        # 旧实现会在这里把「预测器建议切换」写进上下文，等于让预测器成为第二个
+        # 判断入口；本轮统一判断后只保留证据（当前话题 + 相关话题），是否换题
+        # 由本轮主模型结合讨论状态判断（见 agent/services/topic_decision.py）。
         return "；".join(parts)
 
     def entity_card_topics(self, message: str) -> list[str]:

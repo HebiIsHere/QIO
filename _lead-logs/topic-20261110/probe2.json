@@ -1,0 +1,107 @@
+[
+ {
+  "op": "viewport",
+  "width": 1280,
+  "height": 900,
+  "ms": 300
+ },
+ {
+  "op": "navigate",
+  "url": "http://127.0.0.1:5199/",
+  "ms": 5000
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const el=document.querySelector('#composer-input'); if(!el) return 'no-input'; const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set; set.call(el,'帮我开始一个新的研究方向：量子计算实验与论文投稿计划'); el.dispatchEvent(new Event('input',{bubbles:true})); return 'typed';})()"
+ },
+ {
+  "op": "wait",
+  "ms": 500
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('button.send-btn'); if(!b) return 'no-send'; const st={mode:b.dataset.mode,disabled:b.disabled,ready:b.dataset.ready}; if(!b.disabled) b.click(); return JSON.stringify(st);})()"
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const t0=Date.now(); while(Date.now()-t0<45000){const m=document.querySelector('[data-test=\"topic-approval-content\"]'); if(m){const d=document.querySelector('[role=\"dialog\"]'); const inp=document.querySelector('[data-test=\"topic-name-input\"]'); return JSON.stringify({found:true,dialogText:(d?d.innerText:'').slice(0,1400),inputValue:inp?inp.value:null,hasOriginalQuestion:(d?d.innerText:'').includes('帮我开始一个新的研究方向')});} await new Promise(r=>setTimeout(r,250));} return JSON.stringify({found:false,body:document.body.innerText.slice(-1000)});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-create-wide"
+ },
+ {
+  "op": "viewport",
+  "width": 430,
+  "height": 900,
+  "ms": 900
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-create-narrow-long"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const c=document.querySelector('[data-test=\"topic-approval-content\"]'); const d=document.querySelector('[role=\"dialog\"]'); const r=(c||d||document.body).getBoundingClientRect(); const approve=document.querySelector('[data-test=\"topic-approve\"]'); const stay=document.querySelector('[data-test=\"topic-stay\"]'); const close=document.querySelector('[data-test=\"topic-approval-close\"]'); const radius=(el)=>el?getComputedStyle(el).borderRadius:null; return JSON.stringify({winW:innerWidth,docScrollW:document.documentElement.scrollWidth,dialog:{left:Math.round(r.left),right:Math.round(r.right),width:Math.round(r.width)},radius:{approve:radius(approve),stay:radius(stay),close:radius(close)},buttons:{approve:!!approve,stay:!!stay,close:!!close}});})()"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('[data-test=\"topic-approval-close\"]'); if(!b) return 'no-close'; b.click(); return 'closed';})()"
+ },
+ {
+  "op": "wait",
+  "ms": 800
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const dlg=document.querySelector('[data-test=\"topic-approval-content\"]'); const entry=document.querySelector('[data-entry=\"topicSwitch\"]'); return JSON.stringify({dialogVisible:!!dlg,entryVisible:!!entry,entryText:entry?entry.innerText:null,entryAria:entry?entry.getAttribute('aria-label'):null});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-create-collapsed-entry"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const entry=document.querySelector('[data-entry=\"topicSwitch\"]'); if(!entry) return 'no-entry'; entry.click(); return 'entry-clicked';})()"
+ },
+ {
+  "op": "wait",
+  "ms": 900
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const m=document.querySelector('[data-test=\"topic-approval-content\"]'); const inp=document.querySelector('[data-test=\"topic-name-input\"]'); return JSON.stringify({reopened:!!m,inputValue:inp?inp.value:null});})()"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const inp=document.querySelector('[data-test=\"topic-name-input\"]'); if(inp){const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; set.call(inp,'量子计算实验（用户改名后的长名称 · 窄窗换行验证）'); inp.dispatchEvent(new Event('input',{bubbles:true}));} const ta=document.querySelector('#composer-input'); const setT=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set; setT.call(ta,'等待期间写下的草稿，确认后应跟随到新话题且不自动发送。'); ta.dispatchEvent(new Event('input',{bubbles:true})); return 'edited';})()"
+ },
+ {
+  "op": "wait",
+  "ms": 400
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const send=document.querySelector('button.send-btn'); const ta=document.querySelector('#composer-input'); return JSON.stringify({draft:ta.value,sendMode:send.dataset.mode,sendDisabled:send.disabled,sendReady:send.dataset.ready,approveDisabled:document.querySelector('[data-test=\"topic-approve\"]').disabled});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-create-draft-sendlocked"
+ },
+ {
+  "op": "eval",
+  "js": "(()=>{const b=document.querySelector('[data-test=\"topic-approve\"]'); if(!b) return 'no-approve'; if(b.disabled) return 'approve-disabled'; b.click(); return 'approved-clicked';})()"
+ },
+ {
+  "op": "eval",
+  "js": "(async()=>{const t0=Date.now(); while(Date.now()-t0<60000){const modal=document.querySelector('[data-test=\"topic-approval-content\"]'); const body=document.body.innerText; const answered=body.includes('已按你的选择处理'); if(!modal&&answered){const ta=document.querySelector('#composer-input'); const send=document.querySelector('button.send-btn'); let ctx=null; try{ctx=await (await fetch('/api/session/context')).json();}catch(e){} let topics=null; try{topics=await (await fetch('/api/graph/topics')).json();}catch(e){} return JSON.stringify({modalGone:true,answeredShown:true,draft:ta?ta.value:null,sendDisabled:send?send.disabled:null,sendMode:send?send.dataset.mode:null,context:ctx?{topic_id:ctx.topic_id,topic_name:ctx.topic_name,messages:(ctx.messages||[]).length}:null,topics:topics?topics.topics.map(t=>({id:t.topic_id,title:t.title})):null});} await new Promise(r=>setTimeout(r,300));} return JSON.stringify({modalGone:!document.querySelector('[data-test=\"topic-approval-content\"]'),answeredShown:document.body.innerText.includes('已按你的选择处理'),bodyTail:document.body.innerText.slice(-1200)});})()"
+ },
+ {
+  "op": "screenshot",
+  "name": "topic-create-after-approve"
+ },
+ {
+  "op": "console",
+  "tail": 25
+ }
+]

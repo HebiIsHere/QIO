@@ -40,7 +40,7 @@ uv sync --frozen --extra dev      # 按 uv.lock 精确安装（CI 同款命令�
 | numpy / onnxruntime / tokenizers | 本地向量召回（bge-small-zh-v1.5） |
 | pypdf | 卡片内 PDF 预览的只读事实（页数 / 标题 / 是否加密 / 可提取文本量）。纯 Python，随 sidecar 打包 |
 
-dev 额外：`pytest`、`pytest-asyncio`。
+dev 额外：`pytest`、`pytest-asyncio`、`pytest-xdist`（受控并行；worker 数显式指定，**禁止 `auto`**）。
 
 ## 2.1 卡片内预览与多媒体处理（安装版不需要用户另装东西）
 
@@ -331,20 +331,42 @@ python scripts/release_gate.py --selftest
 python scripts/licenses/check_third_party.py
 python scripts/licenses/check_third_party.py --selftest
 
-# 后端测试
+# ---- 后端测试（全量唯一入口；本地与 CI 同一条命令）----------------------------
+# 从 backend 目录执行（CI 的 working-directory 也是 backend）：
 cd backend
-uv run --frozen pytest -q
+uv run --frozen python ../scripts/run_backend_suite.py --workers 4 --junit-dir junit
 
-# Windows CI 用的同一套（GitHub 的 windows runner 没有 docker 守护进程：沙箱探测
-# 不到守护进程会改走受限子进程；需要真实容器隔离的用例标记为 requires_docker，
-# 在这里排除，ubuntu 任务照常跑）
-uv run --frozen pytest -m "not requires_docker"
+# 阶段一：pytest -m "not serial" -n <workers>       → junit/pytest-parallel.xml
+# 阶段二：pytest -m serial -p no:xdist              → junit/pytest-serial.xml
+# 两阶段都会跑完再汇总退出码；任一阶段失败 → 非 0。两组并集 = 全量、交集 = 空。
+# worker 数显式给（本机 16 逻辑核建议 4；机器更小就用 2；**不要用 auto**）。
+# ONNX/数值线程上限（OMP/OPENBLAS/MKL 等）由 tests/conftest.py 在测试进程内
+# 统一设为 1，只影响测试进程，不改生产行为。
 
-# Linux CI 的两条专项（本机也能跑；都不需要 docker 守护进程）
-# 1) 真 worker 冒烟：直接用源码里的工具 worker 跑三项协议检查
+# Windows CI 同一条入口 + 排除需要真实 docker 守护进程的用例
+# （GitHub 的 windows runner 只有 docker CLI、没有 daemon；requires_docker 用例
+# 由 ubuntu 任务真跑）。--marker 与两组是 AND 叠加，不会漏跑也不会重复跑）：
+uv run --frozen python ../scripts/run_backend_suite.py --workers 4 --junit-dir junit --marker "not requires_docker"
+
+# 机器校验测试分区：并行组 + 串行组 的并集 = 全量收集、交集 = 空（collect-only，
+# 不执行用例；条件 skip 在三次收集中路径一致，不影响判定）：
+python ../scripts/test_partition_check.py
+
+# 定向用例（先 cd backend；跑单个文件或 nodeid，不要跑全量）：
+uv run --frozen pytest tests/test_storage.py -q
+uv run --frozen pytest tests/test_api_auth.py::test_health_is_public -q
+
+# 串行组是什么：只有依赖「真实进程清理 / 共享系统资源（如真 docker 守护进程）/
+# 固定端口 / 严格时序」的用例才标 serial，由入口脚本第二阶段以单进程执行。
+# 清单与逐条原因集中写在 backend/tests/conftest.py 的 SERIAL_MODULES / SERIAL_NODEIDS
+# （显式 marker serial；不按名字/路径排除、不用它掩盖失败）。普通用例不要标 serial。
+# 同理，迁移 / 升级 / 旧版本 / 结构缺失 / 损坏自愈 / DB 初始化 / 持久性类用例标
+# real_migrations，逐次对独立空库真实重放迁移；其余用例用每 worker 一次生成的
+# 模板库克隆（sqlite3 backup）。要强制**全部**用例走真实迁移做对比：
+#   $env:QIO_TEST_REAL_MIGRATIONS = "1"; uv run --frozen pytest -q
+
+# Linux CI 同款的真 worker 冒烟（源码路径，三项协议检查；不依赖 docker 守护进程）：
 uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
-# 2) fake worker 协议测试：显式注入假执行器，断言它不会被自动解析覆盖
-uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
 
 # 前端测试 / 类型 / 构建（与 CI 顺序一致）
 cd frontend

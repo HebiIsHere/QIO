@@ -1,8 +1,15 @@
-﻿"""Topic management tools: switch / create (execution side of topic prediction).
+"""Topic management tools: switch / create (execution side of topic prediction).
 
-Judgement comes from the embedding predictor; the main model confirms via
-these tools. Switching updates the anchor (old topic -> history) and
-accumulates a related edge between the old and new topic.
+Judgement comes from the main model; these tools stay the **only** executors of
+topic navigation. 话题申请流程（services/topic_application.py）会在
+`ToolRegistry.execute` 之前拦截同名工具：用户确认之后才以（可能被 edits
+校正过的）参数走到这里。因此：
+
+* 本模块保持既有执行语义（进入话题 / 创建话题 + 登记工具导航归属）；
+* create 的查重与「相似冲突二次审批」（kind=create_topic）完全保留，不被
+  bridge 跳过；
+* 真正的归属搬迁与上下文重建不在这里做（由 orchestrator 注入 bridge 的闭包
+  负责，避免出现第二套切换执行器）。
 """
 
 from __future__ import annotations

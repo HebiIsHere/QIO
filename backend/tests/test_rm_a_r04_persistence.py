@@ -87,6 +87,7 @@ def client(tmp_path):
 # -- 单元层：顺序与异常语义 ---------------------------------------------------
 
 
+@pytest.mark.real_migrations
 def test_accepted_write_failure_raises_journal_write_error(db_conn: sqlite3.Connection):
     journal = TurnJournal(db_conn)
     db_conn.execute("DROP TABLE turn_journal")  # 写入必然失败
@@ -305,6 +306,7 @@ def test_accepted_message_survives_an_immediate_restart(tmp_path):
     assert lost["turn_saved"]["status"] == "interrupted"
 
 
+@pytest.mark.real_migrations
 def test_accept_write_failure_leaves_no_partial_row(db_conn: sqlite3.Connection):
     """受理写入失败不留半截行（写入用 `transaction()` 而不是 `with conn:`）。
 

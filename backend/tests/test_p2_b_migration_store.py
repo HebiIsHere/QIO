@@ -64,6 +64,7 @@ def test_migration_number_tables_and_columns():
     }
 
 
+@pytest.mark.real_migrations
 def test_migration_apply_is_idempotent(db_conn):
     first = migration_p2_b.apply(db_conn)
     assert first
@@ -178,6 +179,7 @@ def test_store_duplicate_question_and_change_log(db_conn):
         empty_db.close()
 
 
+@pytest.mark.real_migrations
 def test_migration_does_not_write_schema_version(db_conn):
     prepare_db(db_conn)
     # 迁移 47 只建表，不参与 schema_version 收敛（Lead 整合时处理）。

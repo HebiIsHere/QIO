@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -146,6 +147,38 @@ def detect_explicit_navigation(
                 best = (topic_id, len(title))
         if best is not None:
             return best[0]
+    return None
+
+
+# 「用户明确要求新建话题」的窄检测：句中必须同时出现新建类动词与「话题」二字，
+# 名称来自引号或「叫/名为/叫做/：」。只用来判断「这次不需要再弹普通确认」，
+# 不参与实质归属判断（新目标/新词不因此被拆成新话题，那是本轮主模型的工作）。
+_CREATE_VERBS = ("新建", "创建", "新开", "开一个", "建一个")
+_CREATE_NAME_PATTERNS = (
+    re.compile(r"[「『《\"'“](?P<name>[^」』》\"'”]{1,40})[」』》\"'”]"),
+    re.compile(r"(?:叫|名为|叫做|名称为|：|:)\s*(?P<name>[^\s，,。.；;！!？?]{1,40})"),
+)
+
+
+def detect_explicit_topic_creation(message: str) -> str | None:
+    """识别「用户明确要求新建话题」并返回名称；识别不了返回 None。
+
+    只认窄句式（新建动词 + 「话题」），不按语义猜测：比如
+    「新建一个文件叫报告」不是新建话题，「这段讨论换到新话题吧」没有名称也不算。
+    真实新建仍走 create_topic 工具的查重与冲突处理。
+    """
+    text = (message or "").strip()
+    if not text or "话题" not in text:
+        return None
+    if not any(verb in text for verb in _CREATE_VERBS):
+        return None
+    for pattern in _CREATE_NAME_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        name = match.group("name").strip(" 　\"'“”「」『』《》：:，,。.；;！!？?")
+        if name and name != "话题":
+            return name
     return None
 
 

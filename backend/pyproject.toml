@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-xdist>=3.6"]
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -38,4 +38,7 @@ pythonpath = ["src"]
 markers = [
     "real_verify: 直接覆盖真实的凭据验证逻辑（网络仍由 fake 客户端替代）",
     "requires_docker: 需要真实可用的 docker 守护进程（GitHub 的 windows runner 只有 CLI，没有 daemon）",
+    "real_migrations: 必须逐次对独立空库重放真实迁移（迁移/升级/旧版本/结构自愈/DB 初始化/持久性），不依赖模板库克隆",
+    "serial: 依赖真实进程清理/共享系统资源/严格时序/固定端口，由入口脚本放到串行阶段（-p no:xdist）执行",
+    "topic_application: 本文件直接验证话题申请/确认/拒绝的真实审批交互，禁用 conftest 的旧测试自动批准兜底",
 ]

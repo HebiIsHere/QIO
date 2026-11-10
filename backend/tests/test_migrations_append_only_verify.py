@@ -14,6 +14,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+import pytest
+
 BASELINE_COMMIT = "ee6bbff1841b869be8b2e17dd85dc434b496b839"
 BASELINE_VERSION = 25
 BASELINE_DIGEST = "bce312cf92d7a3743b5fbe04c6e15a87b4b770e4132b21af343965eaca7d4f6a"
@@ -61,6 +63,7 @@ def test_historical_migrations_are_byte_identical_to_baseline():
     )
 
 
+@pytest.mark.real_migrations
 def test_attachments_table_is_created_by_an_appended_migration(db_conn):
     rows = db_conn.execute("PRAGMA table_info(attachments)").fetchall()
     assert rows, "契约 §4.2：必须有一张 attachments 表（只追加迁移）"

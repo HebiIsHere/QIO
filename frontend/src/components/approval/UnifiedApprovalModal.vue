@@ -32,6 +32,7 @@ import { useModalArbiterStore } from "../../stores/modalArbiter";
 import ApprovalFacts from "../ApprovalFacts.vue";
 import ApprovalResultsPanel from "./ApprovalResultsPanel.vue";
 import KnowledgeApprovalBody from "./KnowledgeApprovalBody.vue";
+import TopicApprovalContent from "./TopicApprovalContent.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const unified = useUnifiedApprovalsStore();
@@ -49,7 +50,9 @@ const panelOpen = computed(
 );
 const items = computed(() => unified.items);
 const activeIndex = computed(() => unified.activeIndex);
-const busy = computed(() => !!item.value && unified.submittingKey === item.value.key);
+const busy = computed(
+  () => !!item.value && unified.submittingKeys.includes(item.value.key),
+);
 const dialogRef = ref<HTMLElement | null>(null);
 
 /* ── F09：审批列表的阅读位置（真实 DOM 滚动位置；详情替换列表时 DOM 会被销毁）──── */
@@ -267,6 +270,9 @@ const kicker = computed(() => {
   if (item.value.kind === "knowledge") {
     return "知识保存申请 · 确认前尚未生效";
   }
+  if (item.value.kind === "topic") {
+    return "话题申请 · 本轮暂停，等待你的选择";
+  }
   const origin = TOOL_ORIGIN_LABELS[item.value.origin] ?? "来源未记录";
   return origin + "提出的申请 · " + (item.value.highRisk ? "重点确认" : "单次授权");
 });
@@ -274,7 +280,8 @@ const kicker = computed(() => {
 const errorText = computed(() => {
   if (!item.value) return "";
   if (unified.submitError) return unified.submitError;
-  if (item.value.kind === "tool" && item.value.approval) return approvals.error ?? "";
+  // 工具 / 话题类都有真实 approval 记录：后端拒绝原因（空名称、目标消失…）就放在这里
+  if (item.value.approval) return approvals.error ?? "";
   return "";
 });
 
@@ -585,6 +592,44 @@ async function submit(decision: "approve" | "approve_modified" | "ignore" | "rej
   await unified.submit(decision);
 }
 
+/* ── 话题申请（话题审批与工具/知识共用同一个弹窗与队列）──────────────── */
+const isTopic = computed(() => item.value?.kind === "topic");
+const topic = computed(() => item.value?.topic ?? null);
+
+/** 决定只交给 store 的唯一入口（decideTopic → 既有 /respond 路径）；组件不发请求。 */
+async function decideTopic(payload: {
+  decision: "approve" | "reject";
+  edits?: { name: string };
+}) {
+  const active = topic.value;
+  if (!active) return;
+  await unified.decideTopic(active, payload);
+}
+
+/** 右上角关闭 = 只收起（不提交、不消费申请，不自动重开）。 */
+function collapseTopic() {
+  const active = item.value;
+  if (!active || active.kind !== "topic") {
+    unified.closePanel();
+    return;
+  }
+  unified.collapseTopic(active.key);
+}
+
+/** stale（后端已无这条待办 / 已失效）：只收起这条事实，不补任何决定。 */
+function dismissTopic() {
+  const active = item.value;
+  if (!active || active.kind !== "topic") return;
+  unified.dismissStaleTopic(active);
+}
+
+/** create：用户改过的新名称由 store 持有，收起 / 失败后不丢。 */
+function updateTopicName(value: string) {
+  const active = topic.value;
+  if (!active) return;
+  unified.updateTopicDraft(active.key, value);
+}
+
 /** 用户改了预算：只有这次真的改动才允许随批准提交（F06）。 */
 function onBudgetChange(next: ApprovalBudget) {
   budgetForm.value = next;
@@ -627,7 +672,12 @@ function retryKnowledgeDetail() {
           </h2>
         </div>
         <span class="ua-head__slot">
+          <!--
+            话题申请：关闭在正文右上角（只收起、不提交）；标题栏不再放第二个 ×，
+            避免同一窗口出现两套关闭按钮。
+          -->
           <button
+            v-if="!isTopic"
             class="ua-close"
             type="button"
             aria-label="关闭（不会自动批准或拒绝；稍后处理：只收起窗口，保留申请）"
@@ -762,6 +812,23 @@ function retryKnowledgeDetail() {
             @retry="retryKnowledgeDetail"
           />
         </template>
+        <!--
+          话题申请：当前话题 → 目标/可编辑新名称 + 原因 + 两个动作。
+          只展示契约 §2.1 允许的字段；不展示原问题/摘要/预览。
+        -->
+        <template v-else-if="item.kind === 'topic' && item.topic">
+          <TopicApprovalContent
+            :item="item.topic"
+            :name="unified.topicDraftFor(item.topic)"
+            :busy="busy"
+            :expired="expired"
+            :stale="item.stale"
+            @update:name="updateTopicName"
+            @decide="decideTopic"
+            @collapse="collapseTopic"
+            @dismiss="dismissTopic"
+          />
+        </template>
         <p v-if="unified.knowledgeError && item.kind === 'knowledge'" class="ua-refresh-note">
           {{ unified.knowledgeError }}
           <button class="ua-refresh-btn" type="button" @click="retryKnowledgeDetail">重试</button>
@@ -777,13 +844,20 @@ function retryKnowledgeDetail() {
         </span>
       </p>
 
-      <p v-if="expired" class="ua-expired" role="status" data-test="unified-approval-expired">
+      <!-- 话题申请的到期说明在正文里（避免同一句显示两遍）；工具类仍在这里说 -->
+      <p
+        v-if="expired && !isTopic"
+        class="ua-expired"
+        role="status"
+        data-test="unified-approval-expired"
+      >
         这项申请已经到期，不能再批准（期限来自后端，不会被放宽）。需要的话请让后端重新发起这次申请。
       </p>
 
       <p v-if="errorText" class="ua-error" role="alert">{{ failureHint }}</p>
 
-      <footer class="ua-actions">
+      <!-- 话题申请的两个动作在正文里（与内容同处）；其余类型沿用底部按钮 -->
+      <footer v-if="!isTopic" class="ua-actions">
         <template v-if="item.kind === 'tool'">
           <button
             v-if="item.stale"
@@ -915,7 +989,13 @@ function retryKnowledgeDetail() {
           </template>
         </template>
       </footer>
-      <p class="ua-note">每次只处理当前申请。关闭窗口不会自动批准或拒绝，也不会丢失申请。</p>
+      <p class="ua-note">
+        {{
+          isTopic
+            ? "关闭窗口只会收起这项话题申请；不会替你选择，也不会丢失申请。"
+            : "每次只处理当前申请。关闭窗口不会自动批准或拒绝，也不会丢失申请。"
+        }}
+      </p>
       </template>
 
       <!-- 结果与历史：只读；0 待办时也能打开（F02） -->
