@@ -86,11 +86,25 @@
   未新增页面/面板/浏览器原生确认框，颜色/圆角沿用既有变量。
 - 真实应用截图未作为本轮冻结条件；如需视觉复核可在后续只读检查（本轮不声称已做像素核对）。
 
-### 4.4 最终批次与 CI
+### 4.4 最终批次与 CI（如实记录，含失败与修复）
 
-- 最终受测 SHA、本地唯一完整批次（后端并行 + 串行组、前端类型检查 + 全量测试、离线评测、文档/
-  合规/workflow/分区检查）与唯一完整 CI run 的结果在最终交付报告中如实列出；本文件随冻结提交记录
-  启动前状态，不把「运行中」写成「通过」。
+- 冻结 SHA（第一次）：`1abe82d777fb1721d03cdfbc347f55d8a257a5b9`（分支 `fix/topic-review-20261110`）。
+- 本地唯一完整验收批次在该 SHA 上运行一次（后端并行+串行、前端类型检查+全量、离线评测、
+  文档/合规/workflow/分区检查）：**2 个步骤非零**：
+  1) `backend_suite`：并行组 1 项失败 `tests/test_stage_protocol.py::test_streamed_interim_text_shares_the_stage_of_its_narrative`
+     —— 该用例断言「工具轮后首答先 streaming=true 再 streaming=false 两条事件」，正是 F01 要修掉的
+     旧行为（普通工具轮提前 ANSWERABLE 才可能实时流式）。F01 后工具轮首答在决策门内缓冲、
+     一次性交付，断言已按新语义更新（同一正文只出现一次、streaming=false），并记录时延取舍。
+     串行组 101 passed、并行组其余全过；总计一次性失败为 1。
+  2) `frontend_tests`：`src/__tests__/router-aliases.test.ts` 2 项在并行负载下 5015ms 超时
+     （历史同款负载抖动，P102 亦记录）；同机空闲单独复跑 **3/3 passed / exit 0**，未改断言。
+  其余步骤（前端 tsc、离线评测、docs、third-party、workflow 契约、测试分区）全部 exit 0。
+- 修复提交（第二次冻结）：仅更新上述受 F01 语义影响的测试断言 + architecture/delivery 文档；
+  定向复跑该用例与相关阶段门用例通过；未再触发第二轮完整批次/CI（按本轮纪律）。
+- 唯一完整 CI run：`42825357813`（event=push，SHA `1abe82d7`，repo HebiIsHere/QIO，
+  https://github.com/HebiIsHere/QIO/actions/runs/42825357813）；修复提交推送使用 `[skip ci]`
+  以避免自动触发第二份完整矩阵，最终状态在最终交付报告如实列出。
+- 本文件随冻结提交记录事实，不把「运行中」写成「通过」；未覆盖差异与新 SHA 关系见最终报告。
 
 ## 5. 已知边界与显式偏差
 

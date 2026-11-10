@@ -6125,7 +6125,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - F09：拒绝证据沿用 `same_stage/source_fragment_id` 来源链（有界 64、防环、去重），容量分段继承范围，跨轮作为证据交给主模型判断。
   - F11：新增只读工具 `lookup_topic`（CORE_TOOLS 始终可见）：按名称/ID 解析真实话题，同名全列不挑选、不存在不编 ID 不自动新建、空话题/已结束话题如实标注、零导航副作用；`prompts.py` 单源说明；查询后仍可调用 `switch_topic`（F01）。
   - F12：ANCHOR 事件新增 `origin=manual|topic_operation / operation_id / param_version / turn_id / nav_version / seq`；删除 `targetTopicId=null` 通配跟随，草稿跟随绑定本次操作与草稿版本，只消费权威成功结果一次，兼容旧/重复/乱序事件与失效收口，目标已有草稿沿用既有保护。
-- 验证（冻结前状态）：各角色定向检查通过（A 144、B 103、C 271 合并批、D 前端新增/既有全绿且 `vue-tsc` exit 0、E 41+65+123、Lead ANCHOR/路由回归通过）；F 独立回归 23 后端 + 14 前端全绿，同一批用例在基线快照上 20 failed/2 passed（旧问题可复现 → 修复有行为证据）；交叉评审推动修复 F07/F10 keep 标志、F08 路由双推进、F05 与 P1-02 口径、F12 改名后 confirmation 四类真实接缝。最终受测 SHA、本地唯一完整批次与唯一完整 CI run 在最终交付报告中如实列出（**未完成前不声称全量通过**）。
+- 验证（冻结前状态）：各角色定向检查通过（A 144、B 103、C 271 合并批、D 前端新增/既有全绿且 `vue-tsc` exit 0、E 41+65+123、Lead ANCHOR/路由回归通过）；F 独立回归 23 后端 + 14 前端全绿，同一批用例在基线快照上 20 failed/2 passed（旧问题可复现 → 修复有行为证据）；交叉评审推动修复 F07/F10 keep 标志、F08 路由双推进、F05 与 P1-02 口径、F12 改名后 confirmation 四类真实接缝。最终受测 SHA、本地唯一完整批次与唯一完整 CI run 在最终交付报告中如实列出（**未完成前不声称全量通过**）。首次冻结 SHA `1abe82d7` 的唯一本地完整批次：后端 1 项因 F01 语义更新的旧断言失败（已在本轮修复提交更新并定向复跑）、前端 2 项历史负载抖动（单独复跑通过），其余步骤 exit 0；唯一 CI run 42825357813 在该 SHA 上运行。
 - 未验证边界：真实模型自然语言语义判断准确率（fake/mock 只证明接线与分支衔接）；外部模型调用不保证 exactly-once（崩溃在模型调用与正文暂存之间时可能再次调用模型）；Windows runner 复验；界面核对以实际页面为准。
 - 证据：`docs/topic-review-20261110-contract.md`、`docs/topic-review-20261110.md`、`docs/architecture.md` §21。
 

@@ -412,12 +412,16 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         if e.type.value == "ASSISTANT" and not e.data.get("interim")
     ]
     assert all(said not in (a["content"] or "") for a in answers), answers
-    # 正式回答来自**声明过**的那次调用：先一条 streaming=true 的累计增量，
-    # 再一条 streaming=false 的收尾校准（同一 delta_id、同一份文字）
-    assert [a["content"] for a in answers] == ["完成", "完成"]
-    assert answers[0]["streaming"] is True and answers[-1]["streaming"] is False
-    assert answers[0]["delta_id"] == answers[-1]["delta_id"]
+    # F01 语义（2026-11-10 第三轮）：普通工具轮**不再**提前打开可回答阶段 ——
+    # 决策期保持开放，防止后续合理的话题工具被当迟到调用。因此工具轮之后首个
+    # 「准备发布正式答案」的响应仍在阶段门内整段缓冲，一次性交付（streaming=false），
+    # 不存在「先发布再改判」的两条事件（那正是旧 bug）；answerable 之后的后续调用
+    # 才恢复流式，见 test_p1r_b_phase_gate 的话题操作路径。
+    assert [a["content"] for a in answers] == ["完成"]
+    assert answers[0]["streaming"] is False  # 缓冲后一次性交付，不冒充流式
     assert all(a["role_evidence"] == "declared_answer" for a in answers)
+    # 同一段正式正文只出现一次（不是两条累计/校准重复）
+    assert len(answers) == 1
     # 说明行的 raw.stage 与事件一致（历史回看同一份事实）
     rows = _narrative_rows(ctx)
     assert rows[0]["raw"]["stage"]["stage_id"] == opened["stage_id"]
