@@ -489,6 +489,7 @@ async def test_http_a_to_b_replay_a_keeps_backend_position(tmp_path):
     b = _topic(ctx, "乙话题")
     fa = _seed_fragment(ctx, a, closed=True, title="甲的历史 A")
     fb = _seed_fragment(ctx, b, closed=True, title="乙的历史 B")
+    base0 = _nav(ctx)
     transport = httpx.ASGITransport(app=api)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         first = await client.post(
@@ -498,6 +499,7 @@ async def test_http_a_to_b_replay_a_keeps_backend_position(tmp_path):
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-a",
+                "base_nav_version": base0,
             },
         )
         assert first.status_code == 200, first.text
@@ -512,6 +514,7 @@ async def test_http_a_to_b_replay_a_keeps_backend_position(tmp_path):
                 "fragment_id": fb,
                 "continue_from_history": True,
                 "request_id": "req-b",
+                "base_nav_version": version_a,
             },
         )
         assert second.status_code == 200, second.text
@@ -531,16 +534,20 @@ async def test_http_a_to_b_replay_a_keeps_backend_position(tmp_path):
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-a",
+                "base_nav_version": base0,
             },
         )
 
-    # 重放已失效旧选择：必须拒绝（不是 200），且零位置写入 / 零版本推进
-    assert replay.status_code == 409, (
-        "已失效旧选择的请求重放必须 409，实际 %s: %s" % (replay.status_code, replay.text)
+    # R16 I04/C3：同 request_id + 同实际参数的重放返回既有结果（replay=true），
+    # 零位置写入 / 零版本推进 / 不重新获得位置控制权（断言强度不降：位置与选择必须仍是 B）。
+    assert replay.status_code == 200, (
+        "已失效旧选择的请求重放必须返回既有结果，实际 %s: %s"
+        % (replay.status_code, replay.text)
     )
     payload = replay.json()
-    assert payload.get("ok") is False and payload.get("conflict") is True, payload
-    assert payload.get("code") == "continuation_request_inactive", payload
+    assert payload.get("ok") is True and payload.get("replay") is True, payload
+    assert payload.get("changed") is False, payload
+    assert payload.get("command_id") == "request:req-a", payload
 
     anchor_after = _anchor(ctx)
     assert anchor_after is not None and anchor_after.topic_id == b, anchor_after
@@ -562,6 +569,7 @@ async def test_http_continue_click_is_two_phase_and_creates_no_fragment(tmp_path
     a = _topic(ctx, "甲话题")
     fa = _seed_fragment(ctx, a, closed=True, title="甲的历史 A")
     fragments_before = ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"]
+    base0 = _nav(ctx)
     transport = httpx.ASGITransport(app=api)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         first = await client.post(
@@ -571,6 +579,7 @@ async def test_http_continue_click_is_two_phase_and_creates_no_fragment(tmp_path
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-same",
+                "base_nav_version": base0,
             },
         )
         assert first.status_code == 200, first.text
@@ -587,6 +596,7 @@ async def test_http_continue_click_is_two_phase_and_creates_no_fragment(tmp_path
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-same",
+                "base_nav_version": base0,
             },
         )
         assert again.status_code == 200, again.text
@@ -754,6 +764,7 @@ async def test_runtime_state_anchor_matches_navigation_authority(tmp_path):
     fb = _seed_fragment(ctx, b, closed=True, title="乙的历史")
     ctx.navigation.enter_topic(a, fragment_id=fa)
     version_a = _nav(ctx)
+    base_replay = version_a
     transport = httpx.ASGITransport(app=api)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         state_a = await client.get("/api/runtime/state")
@@ -774,6 +785,7 @@ async def test_runtime_state_anchor_matches_navigation_authority(tmp_path):
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-authority-a",
+                "base_nav_version": version_a,
             },
         )
         assert chosen_a.status_code == 200, chosen_a.text
@@ -787,6 +799,7 @@ async def test_runtime_state_anchor_matches_navigation_authority(tmp_path):
                 "fragment_id": fb,
                 "continue_from_history": True,
                 "request_id": "req-authority-b",
+                "base_nav_version": version_a2,
             },
         )
         assert moved.status_code == 200, moved.text
@@ -802,7 +815,8 @@ async def test_runtime_state_anchor_matches_navigation_authority(tmp_path):
         assert body_b["anchor"].get("fragment_id") == fb, body_b.get("anchor")
         assert body_b["anchor"].get("nav_version") == version_b, body_b.get("anchor")
 
-        # 重放已失效的旧 request_id（A）：拒绝且不改变权威快照
+        # R16 I04/C3：重放已失效的旧 request_id（A）返回既有结果（replay），
+        # 不重新导航、不改变权威快照（断言强度不降：快照必须仍是 B）。
         stale = await client.post(
             "/api/anchor",
             json={
@@ -810,12 +824,17 @@ async def test_runtime_state_anchor_matches_navigation_authority(tmp_path):
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-authority-a",
+                "base_nav_version": base_replay,
             },
         )
         state_after = await client.get("/api/runtime/state")
-    assert stale.status_code == 409, (
-        "已失效旧 request_id 的重放必须 409，实际 %s: %s" % (stale.status_code, stale.text)
+    assert stale.status_code == 200, (
+        "已失效旧 request_id 的重放必须返回既有结果，实际 %s: %s"
+        % (stale.status_code, stale.text)
     )
+    stale_body = stale.json()
+    assert stale_body.get("replay") is True and stale_body.get("changed") is False, stale_body
+    assert stale_body.get("command_id") == "request:req-authority-a", stale_body
     body_after = state_after.json()
     assert body_after["anchor"].get("topic_id") == b, (
         "旧位置请求不得改变权威快照：%r" % (body_after.get("anchor"),)
@@ -836,6 +855,7 @@ async def test_runtime_state_new_request_id_is_a_real_new_selection(tmp_path):
     b = _topic(ctx, "重新选择乙")
     fa = _seed_fragment(ctx, a, closed=True, title="甲的历史")
     fb = _seed_fragment(ctx, b, closed=True, title="乙的历史")
+    base0 = _nav(ctx)
     transport = httpx.ASGITransport(app=api)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         first_a = await client.post(
@@ -845,6 +865,7 @@ async def test_runtime_state_new_request_id_is_a_real_new_selection(tmp_path):
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-first-a",
+                "base_nav_version": base0,
             },
         )
         assert first_a.status_code == 200, first_a.text
@@ -855,6 +876,7 @@ async def test_runtime_state_new_request_id_is_a_real_new_selection(tmp_path):
                 "fragment_id": fb,
                 "continue_from_history": True,
                 "request_id": "req-first-b",
+                "base_nav_version": _nav(ctx),
             },
         )
         assert moved_b.status_code == 200, moved_b.text
@@ -870,6 +892,7 @@ async def test_runtime_state_new_request_id_is_a_real_new_selection(tmp_path):
                 "fragment_id": fa,
                 "continue_from_history": True,
                 "request_id": "req-reselect-a",
+                "base_nav_version": version_b,
             },
         )
         assert reselect.status_code == 200, reselect.text
