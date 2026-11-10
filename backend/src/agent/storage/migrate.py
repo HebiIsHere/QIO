@@ -172,6 +172,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 记录会各调一次模型、活任务租约到期会被重复接管；补偿迁移 82 里有对应
         # CREATE TABLE。
         "topic_answer_runs",
+        # R16-A（迁移 83）：完整位置状态（position_version 单行表）与导航命令身份
+        # （request/operation/internal 身份 + 结果行）。缺表时位置状态无法排序、命令
+        # 重放/冲突/失效判断全部失效；补偿迁移 84 里有对应 CREATE TABLE / INDEX。
+        "position_state",
+        "navigation_commands",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -284,6 +289,12 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "topic_recovery_records.execution_generation",
         "topic_recovery_records.execution_owner",
         "topic_recovery_records.last_heartbeat_at",
+        # R16-A（迁移 83）：逻辑答案共享暂存 + phase 状态机列（契约 §6）。缺了它们，
+        # 暂存正文只能退回按恢复记录各自复制（同一逻辑答案多份权威）；补偿迁移 84 有 ADD COLUMN。
+        "topic_answer_runs.phase",
+        "topic_answer_runs.staged_answer",
+        "topic_answer_runs.staged_at",
+        "topic_answer_runs.staged_model",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -345,6 +356,10 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # R15-D / R4（迁移 81）：执行权按状态/租约与按实例检索；补偿 82 有 CREATE INDEX。
         "idx_topic_answer_runs_status",
         "idx_topic_answer_runs_owner",
+        # R16-A（迁移 83）：导航命令按身份唯一（重放/冲突依据）与按创建时间检索。
+        # 补偿迁移 84 里有对应 CREATE INDEX。
+        "idx_navigation_commands_identity",
+        "idx_navigation_commands_created",
     ),
 }
 
