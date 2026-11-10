@@ -155,18 +155,31 @@
 | Lead 最终后端定向批（18 文件） | 196 passed，exit 0 | `r15-evidence\lead\final-backend-targeted.log` |
 | Lead 最终前端定向批（14 文件） | 173 passed，exit 0 | `r15-evidence\lead\final-frontend-targeted.log` |
 | Lead 全仓 `npx vue-tsc --noEmit` | exit 0，无输出 | 同上目录 |
-| `python scripts/check_docs.py` | 见最终交付报告（提交前运行） | 同上目录 |
+| `python scripts/check_docs.py` | 通过（113 个里程碑条目） | 同上目录 |
 
 未运行全量 pytest / 全量 vitest / 生产构建 / 离线评测（按本轮纪律），因此不声称全量通过。
 
-## 5. CI 状态（如实记录，不含未发生的结果）
+## 5. CI 状态（如实记录）
 
-- 本轮按纪律**不默认启动完整 CI 矩阵**；也避免 push、PR、manual 重复触发。
-- 推送策略：交付提交使用 `[skip ci]` 推送以避免自动触发完整矩阵；随后用
-  `targeted-verify.yml`（dispatch-only，按完整 SHA 锁定）定向验证 docs / backend-py311 /
-  frontend 的筛选范围（新用例 + 受影响文件）。
-- 本文件随交付提交冻结时，**定向 CI 尚未派发**；其 run 链接、受测 SHA、筛选范围与真实状态
-  （通过/失败/运行中/排队/未启动/受阻）以最终交付报告为准——报告前会查询一次真实状态。
+- 受测代码提交（本轮实现 + 测试 + 文档首次冻结）：
+  `183039587de65e368f126d67ced7e94313251008`（分支 `fix/topic-review-20261110`，
+  父提交 `44d92fb3`）。冻结时工作树干净。
+- 推送使用 `[skip ci]`，**未自动触发完整 CI 矩阵**（推送后 `gh run list --commit` 为空）；
+  随后用 dispatch-only 的 `targeted-verify.yml` 按完整 SHA 定向派发（每个 run 的
+  verify-sha preflight 都断言实际 checkout 的提交等于该 SHA）：
+  | 范围 | run | 结论 | 说明 |
+  | --- | --- | --- | --- |
+  | docs / workflow contract | 42860553215 | success | docs consistency、release gate selftest、workflow 触发/SHA/筛选契约、verify_sha 单测 |
+  | frontend | 42860575284 | success | clean install + Typecheck + Targeted specs（5 文件）+ Build（✓ built） |
+  | backend (py311) | 42861051910 | success | 9 个筛选文件（本地 collect 83 项）、worker smoke、Targeted tests |
+  - run 链接：https://github.com/HebiIsHere/QIO/actions/runs/42860553215 、
+    https://github.com/HebiIsHere/QIO/actions/runs/42860575284 、
+    https://github.com/HebiIsHere/QIO/actions/runs/42861051910
+- 一次**排队冲突**的如实记录：首次 backend-py311 派发 42860563987 在同一 ref 的并发组里被
+  后续 frontend 派发挤掉 `cancelled`（不是测试失败）；frontend 结束后按同一 SHA 重新派发
+  42861051910 = success。不能把被取消的 run 记作通过，也不能把 success 记成首次派发。
+- 文档回填：本文件与 `docs/status.md` 的 CI 结果回填提交（仅文档、`[skip ci]`）在受测 SHA
+  之后，不改变受测代码与测试；最终 HEAD 以最终交付报告为准。
 - 未覆盖：完整 CI 矩阵、Windows runner 复验、安装包 E2E、真实模型链路；`44d92fb3` 本身
   没有 CI run，不能把旧 run 42825357813 记作本轮验证。
 

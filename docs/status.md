@@ -1,4 +1,4 @@
-﻿# QIO 项目状态
+# QIO 项目状态
 
 **本文只回答一个问题：现在真的做到哪了。**
 
@@ -6140,6 +6140,6 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - R3：`register_and_position_continuation` 在同一 SQLite 事务内完成登记/有效性/Anchor 落位/版本推进；路由消费结果并区分幂等复用（200 replay 零写入零版本零 ANCHOR）、失效旧请求（409 `continuation_request_inactive`）、真实新选择（200 changed、一次版本推进、一次 ANCHOR）、同 request_id 参数冲突（409 `continuation_request_conflict`）；两阶段接续与点击不建片段保持不变。
   - R4：追加迁移 81（`topic_answer_runs` + 记录执行权列）+ 补偿 82 + `REQUIRED_OBJECTS`；按 `answer_key` 协调执行权、心跳续租、generation/owner CAS、接管复用 `InstanceRegistry.owner_alive`（True/None 不接管、False 可接管）；保存事务内再校验执行权并原子收口所有同 answer_key 记录；旧执行者迟到写入零写入返回 `recovery_execution_superseded`；保留唯一答案、只补存、并行、封存后归属、恢复不覆盖导航；不声称外部模型 exactly-once。
 - 验证：实现者定向（R1 先红 7 failed→绿、契约 6 文件 70 项；R2 模拟基线 10/13 失败→13/13、必跑 5 文件 66 项；R3 先红 7 failed→9 项、既有目标套件 100 项；R4 先红 2 failed→12 项、既有恢复 93 项、迁移对象 76 项）；E 真实集成（后端 10 项、前端 7 项）+ 受影响子集全绿；F 独立复现（后端 22 项/前端 12 项，基线副本红→主工作树绿）与交叉评审；Lead 最终定向批（后端 18 文件 196 项、前端 14 文件 173 项、全仓 `npx vue-tsc --noEmit`）exit 0。本轮**未运行全量 pytest / 全量 vitest / 生产构建**，不声称全量通过。
-- CI：按本轮纪律不默认启动完整矩阵；交付提交以 `[skip ci]` 推送后仅用 dispatch-only 的 `targeted-verify.yml` 按完整 SHA 定向验证。run 链接、受测 SHA、筛选范围与真实状态以最终交付报告为准（报告前查询一次；**不把未发生或运行中的结果写成通过**）。`44d92fb3` 本身无 CI run；旧 run `42825357813` 属于 `1abe82d7`，不记作本轮验证。
+- CI：受测代码提交 `183039587de65e368f126d67ced7e94313251008`（父 `44d92fb3`）。按本轮纪律不默认启动完整矩阵；交付提交以 `[skip ci]` 推送（未自动触发完整 CI）后，仅用 dispatch-only 的 `targeted-verify.yml` 按完整 SHA 定向验证：docs/workflow contract run 42860553215 = success、frontend（typecheck + 5 文件定向 specs + build）run 42860575284 = success、backend py311（9 个筛选文件，本地 collect 83 项）run 42861051910 = success；链接 https://github.com/HebiIsHere/QIO/actions/runs/42860553215 、https://github.com/HebiIsHere/QIO/actions/runs/42860575284 、https://github.com/HebiIsHere/QIO/actions/runs/42861051910 。首次 backend 派发 42860563987 因同 ref 并发排队冲突被取消（非测试失败，已按同一 SHA 重新派发成功）；不把取消记作通过。完整矩阵、windows runner、安装包 E2E 未覆盖；`44d92fb3` 本身无 CI run，旧 run `42825357813` 属于 `1abe82d7`，不记作本轮验证。
 - 未验证边界：真实模型自然语言语义判断准确率（fake/scripted 只证明接线与分支衔接）；外部模型调用不保证 exactly-once（崩溃在模型返回与持久化之间仍可能再次调用）；R2 重连/实例变化以事件与快照字段模拟（未起真实 SSE/uvicorn 端到端）；R3 覆盖真实 HTTP 顺序重放、未做真实并发 HTTP 重放；R4 以单进程多任务 + InstanceRegistry 模拟实例失效；R4 旧版本残留 record.claim_owner 无 run 行按「无执行/可接管」处理（单一进程升级假设）；前端为 store/事件层验证，未做浏览器 E2E。
 - 证据：`docs/topic-review-r1r4-contract-20261111.md`、`docs/topic-review-r1r4-20261111.md`、`docs/architecture.md` §21；原始日志/截图目录 `D:\qio-dev\r15-evidence\`。
