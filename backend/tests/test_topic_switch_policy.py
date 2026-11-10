@@ -8,7 +8,10 @@
 * 旧「待确认切换」HTTP 入口退役（410），不得保留可独立提交的旧确认路径；
 * 拒绝或取消话题申请后，仍在原话题回答原问题（由话题申请流程测试覆盖）。
 
-本文件只保留：明确导航识别、显式新建识别、导航原语、旧入口退役与「不再自动建议」。
+P1-01（2026-11-10 第二轮）：程序在进入主循环前的关键词 / 正则「明确授权识别」
+与轮前直切已删除。是否换题只由本轮主模型在开关工具参数 intent 里声明。
+本文件只保留：**轮前位置不变**（模型调用前 anchor 不变）、否定/解释/引用等
+不触发程序导航、导航原语、旧入口退役与「不再自动建议」。
 """
 from __future__ import annotations
 
@@ -24,11 +27,7 @@ from agent.credentials.store import MemoryKeyring
 from agent.graph.anchors import AnchorService
 from agent.services.app import AppContext
 from agent.services.affinity import TopicMode
-from agent.services.navigation import (
-    TopicNavigationService,
-    detect_explicit_navigation,
-    detect_explicit_topic_creation,
-)
+from agent.services.navigation import TopicNavigationService
 from agent.services.predict import TopicPrediction
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
@@ -69,59 +68,107 @@ def _topic(ctx: AppContext, name: str) -> str:
     return ctx.topics.nodes.create_topic(name).id
 
 
-# -- 明确导航 / 明确新建：识别层 -------------------------------------------
+# -- 程序识别路径已退役：不允许在进入主循环前做语义授权判断 ------------------
 
 
-def test_detect_explicit_navigation_matches_switch_verbs_and_titles():
-    titles = [("t1", "顺丁橡胶降解"), ("t2", "QIO 前端")]
+def test_navigation_service_has_no_programmatic_authorization_detectors():
+    import agent.services.navigation as navigation_module
 
-    assert detect_explicit_navigation("切到 顺丁橡胶降解", titles) == "t1"
-    assert detect_explicit_navigation("切换到QIO 前端吧", titles) == "t2"
-    assert detect_explicit_navigation("回到 顺丁橡胶降解 那个话题", titles) == "t1"
-    assert detect_explicit_navigation("转到 QIO 前端", titles) == "t2"
-
-
-def test_detect_explicit_navigation_ignores_plain_mention():
-    titles = [("t1", "顺丁橡胶降解")]
-
-    assert detect_explicit_navigation("顺丁橡胶降解的数据不错", titles) is None
-    assert detect_explicit_navigation("切到 一个并不存在的话题", titles) is None
+    assert not hasattr(navigation_module, "detect_explicit_navigation")
+    assert not hasattr(navigation_module, "detect_explicit_topic_creation")
+    for name in (
+        "_NAV_VERBS",
+        "_CREATE_NAME_PATTERNS",
+    ):
+        assert not hasattr(navigation_module, name), name
 
 
-def test_detect_explicit_topic_creation_is_narrow():
-    assert detect_explicit_topic_creation("帮我新建一个话题叫量子计算") == "量子计算"
-    assert detect_explicit_topic_creation("创建话题「论文投稿计划」") == "论文投稿计划"
-    # 不是新建话题的句子不能误判：没有「话题」二字 / 没有新建动词 / 只有名词提及
-    assert detect_explicit_topic_creation("新建一个文件叫报告") is None
-    assert detect_explicit_topic_creation("这段讨论换到新话题吧") is None
-    assert detect_explicit_topic_creation("量子计算这个话题不错") is None
+# -- 轮前位置不变：模型调用前 anchor 不被用户原话移动 ------------------------
 
 
-# -- 明确切换：直接执行，不弹申请 ------------------------------------------
-
-
-async def test_explicit_switch_executes_without_confirmation(
+async def test_switch_request_does_not_move_the_anchor_before_the_model(
     ctx: AppContext, monkeypatch
 ):
     a = _topic(ctx, "QIO 前端")
     b = _topic(ctx, "顺丁橡胶降解")
     adapter = _install_adapter(ctx, monkeypatch)
     ctx.navigation.enter_topic(a)
+    seen: dict = {}
+
+    async def _capture(messages, tools, **kwargs):  # noqa: ANN001, ANN003
+        active = AnchorService(ctx.conn).get_active()
+        seen["anchor_at_model"] = active.topic_id if active is not None else None
+        seen["user_text"] = [
+            str(getattr(m, "content", "") or "")
+            for m in messages
+            if getattr(m, "role", "") == "user"
+        ][-1]
+        return Completion(message=ChatMessage(role="assistant", content="好的。"))
+
+    monkeypatch.setattr(adapter, "complete", _capture)
     asked: list[str] = []
 
     async def _no_application(kind, payload=None, **kwargs):  # noqa: ANN001, ANN003
         asked.append(str(kind))
-        raise AssertionError(f"明确切换不应建立申请：{kind} {payload}")
+        raise AssertionError(f"模型没有调用话题工具，程序不应建立申请：{kind} {payload}")
 
     monkeypatch.setattr(ctx.approvals, "request", _no_application)
 
     result = await ctx.run_turn("切到 顺丁橡胶降解", topic_id=a)
 
     assert result["ok"] is True
-    assert AnchorService(ctx.conn).get_active().topic_id == b
-    assert ctx.navigation.pending_switch() is None, "明确切换不需要再确认"
-    assert asked == []
-    assert adapter.requests, "本轮确实调用了模型"
+    # 本文件的核心断言（P1-01 验收）：模型调用前位置没有任何变化。
+    assert seen["anchor_at_model"] == a
+    # 用户原话完整进入主循环，程序不截断、不改写、不先替模型执行。
+    assert seen["user_text"] == "切到 顺丁橡胶降解"
+    assert "anchor_at_model" in seen, "本轮确实调用了模型"
+    # fake 模型没有请求工具：程序不得自己把用户挪到 b。
+    assert AnchorService(ctx.conn).get_active().topic_id == a
+    assert ctx.navigation.pending_switch() is None
+    assert asked == [], "没有工具调用就不应建立话题申请"
+
+
+# -- 否定 / 解释 / 引用 / 条件 / 改口 / 指代：程序不导航 ---------------------
+
+
+_NON_NAVIGATION_MESSAGES = [
+    "不要切换到原神话题，继续回答这里的问题",
+    "请不要新建名为「原神」的话题",
+    "请解释「新建话题」是什么意思，不要执行操作",
+    "把「切换到原神话题」翻译成英文",
+    "等我确认以后再切过去",
+    "切到原神。不，还是留在这里",
+    "我想玩会原神",
+    "那个话题的数据怎么样",
+    "顺丁橡胶降解的数据不错",
+]
+
+
+@pytest.mark.parametrize("message", _NON_NAVIGATION_MESSAGES)
+async def test_non_requests_never_navigate_programmatically(
+    ctx: AppContext, monkeypatch, message: str
+):
+    from agent.services.navigation import TopicNotFound  # noqa: F401 - 只为保持导入面一致
+
+    a = _topic(ctx, "原神")
+    _install_adapter(ctx, monkeypatch)
+    ctx.navigation.enter_topic(a)
+    before = {n.id for n in ctx.topics.nodes.list_topics()}
+    asked: list[str] = []
+
+    async def _no_application(kind, payload=None, **kwargs):  # noqa: ANN001, ANN003
+        asked.append(str(kind))
+        raise AssertionError(f"非请求不应建立申请：{kind} {payload}")
+
+    monkeypatch.setattr(ctx.approvals, "request", _no_application)
+
+    result = await ctx.run_turn(message, topic_id=a)
+
+    assert result["ok"] is True
+    assert AnchorService(ctx.conn).get_active().topic_id == a
+    assert ctx.navigation.pending_switch() is None
+    assert {n.id for n in ctx.topics.nodes.list_topics()} == before, "程序不得新建话题"
+    assert asked == [], "程序不得在模型调用前判断「明确请求」"
 
 
 # -- 预测器不再单独产生可执行建议 ------------------------------------------
@@ -197,29 +244,31 @@ async def test_predictor_switch_signal_no_longer_produces_an_executable_suggesti
     assert collected == [], "旧的可执行切换建议事件必须退役"
 
 
-async def test_explicit_create_name_reaches_the_turn_context(ctx: AppContext, monkeypatch):
-    from agent.services import topic_decision as decision_module
-
+async def test_create_request_is_not_registered_or_executed_by_the_program(
+    ctx: AppContext, monkeypatch
+):
+    adapter = _install_adapter(ctx, monkeypatch)
     a = _topic(ctx, "QIO 前端")
-    _install_adapter(ctx, monkeypatch)
     ctx.navigation.enter_topic(a)
     seen: dict = {}
 
-    def _capture(app, turn_ctx, topic, prediction, refuse_scope=None):
-        seen["ctx"] = turn_ctx
-        return object()
+    async def _capture(messages, tools, **kwargs):  # noqa: ANN001, ANN003
+        seen["user_text"] = [
+            str(getattr(m, "content", "") or "")
+            for m in messages
+            if getattr(m, "role", "") == "user"
+        ][-1]
+        return Completion(message=ChatMessage(role="assistant", content="好的。"))
 
-    monkeypatch.setattr(decision_module, "build_topic_decision_state", _capture)
-    monkeypatch.setattr(
-        decision_module, "render_topic_decision_note", lambda state, **kwargs: ""
-    )
+    monkeypatch.setattr(adapter, "complete", _capture)
     before = {n.id for n in ctx.topics.nodes.list_topics()}
 
     result = await ctx.run_turn("帮我新建一个话题叫量子计算", topic_id=a)
 
     assert result["ok"] is True
-    # 明确新建只登记授权依据（供 bridge 判断不重复确认），不在这里创建。
-    assert getattr(seen["ctx"], "explicit_create_name", None) == "量子计算"
+    # P1-01：程序不再在轮前解析出「明确新建」并写进本轮上下文（授权只来自
+    # 本轮模型在 create_topic 参数 intent 里声明的值）。
+    assert seen["user_text"] == "帮我新建一个话题叫量子计算"
     after = {n.id for n in ctx.topics.nodes.list_topics()}
     assert after == before, "程序不得先建一次话题（创建只由本轮模型调用 create_topic 执行）"
 

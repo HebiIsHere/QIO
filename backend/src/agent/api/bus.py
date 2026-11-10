@@ -76,6 +76,9 @@ CRITICAL_EVENTS: frozenset[EventType] = frozenset(
         EventType.TOOL_CREATE_STATUS,
         EventType.APPROVAL_REQUIRED,
         EventType.APPROVAL_RESULT,
+        # 话题阶段（P1-02）：丢了客户端会把「还在判断/等待/准备上下文」当成可回答，
+        # 按关键事件处理（走既有 RESYNC 恢复路径）。
+        EventType.TOPIC_PHASE,
         EventType.SUBAGENT_STATUS,
         EventType.KNOWLEDGE_CANDIDATE,
         EventType.CREDENTIAL_STATUS,

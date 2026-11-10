@@ -27,7 +27,11 @@ import type { MemoryPendingListing, PendingItemView } from "../services/api";
 import { approvalFacts, useApprovalsStore, type ApprovalItem } from "./approvals";
 import { useApprovalResultsStore } from "./approvalResults";
 import { canAutoOpenApproval } from "./feedbackGate";
-import { useSessionStore } from "./session";
+import {
+  useSessionStore,
+  type TopicAnswerRecovery,
+  type TopicPhase,
+} from "./session";
 
 export type UnifiedKind = "tool" | "knowledge" | "topic";
 export type ToolOrigin = "main_agent" | "background" | "subagent" | "unknown";
@@ -207,7 +211,32 @@ export interface TopicApprovalItem {
   reason: string;
   /** 这条申请属于哪一轮（payload.turn_id，缺失时回退审批行的 turn_id）。 */
   turnId: string;
+  /**
+   * 稳定操作身份（P1-05：payload.operation_id）。
+   * 可选：旧后端没有该字段、组件测试也可以只造展示所需的最小字段。
+   */
+  operationId?: string;
+  /** 带版本的参数（payload.param_version；缺失 null）。 */
+  paramVersion?: number | null;
+  /** 申请建立时的导航版本快照（payload.base_nav_version；缺失 null）。 */
+  baseNavVersion?: number | null;
+  /** 相似话题冲突（payload.conflict 结构化字段；缺失就是 null，不猜）。 */
+  conflict?: TopicApprovalConflict | null;
+  /** 是否已失效（后端结构化判定 / 本地 APPROVAL_RESULT 同步过来的事实）。 */
+  invalidated?: boolean;
+  invalidatedReason?: string;
+  invalidatedCode?: string;
   approval: ApprovalItem;
+}
+
+/**
+ * 相似话题冲突（契约 §6：冲突 ≠ 创建成功 ≠ 整轮结束）。
+ * 只从 payload 的结构化字段读取；status 不认识就保留原值，不猜语义。
+ */
+export interface TopicApprovalConflict {
+  status: "conflict_pending" | "conflict_confirmed" | "conflict_declined" | string;
+  existingTopicId: string;
+  existingTopicName: string;
 }
 
 export interface UnifiedApprovalItem {
@@ -225,6 +254,18 @@ export interface UnifiedApprovalItem {
   knowledge: KnowledgeApprovalItem | null;
   /** kind === "topic" 时的正文事实（其余类型为 null）。 */
   topic: TopicApprovalItem | null;
+  /** 稳定操作身份（payload.operation_id；旧后端为空串）。 */
+  operationId: string;
+  /** 相似话题二次确认的来源申请（payload.source_approval_id；旧后端为空串）。 */
+  sourceTopicApprovalId: string;
+  /** 是否已失效（失效 ≠ 拒绝；原确认不可执行、保留原因与恢复入口）。 */
+  invalidated: boolean;
+  invalidatedReason: string;
+  invalidatedCode: string;
+  /** 该条 operation+turn 匹配到本轮 TOPIC_PHASE 时的阶段（否则 null）。 */
+  stage: TopicPhase | null;
+  /** 上下文准备失败的恢复事实（只有 recoverable_failure 时非 null）。 */
+  recovery: TopicAnswerRecovery | null;
 }
 
 export function unifiedKeyForTool(approvalId: string): string {
@@ -440,6 +481,86 @@ export async function submitKnowledgeApprovalRequest(
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* P1R：阶段 / 失效 / 操作身份的只读派生                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 当前轮的话题阶段事实（只读 session）。
+ *
+ * 旧后端没有 TOPIC_PHASE / session 尚未初始化 → 全部为空：界面不渲染阶段行、
+ * 不伪造恢复信息，既有行为保持不变。
+ */
+function liveTopicState(): {
+  stage: TopicPhase | null;
+  operationId: string;
+  turnId: string;
+  recovery: TopicAnswerRecovery | null;
+} {
+  try {
+    const session = useSessionStore();
+    return {
+      stage: session.stage,
+      operationId: String(session.topicStageOperationId ?? ""),
+      turnId: String(session.topicStageTurnId ?? ""),
+      recovery: session.recovery,
+    };
+  } catch {
+    return { stage: null, operationId: "", turnId: "", recovery: null };
+  }
+}
+
+/** 阶段归属：operation 与 turn 都能对上（一方缺失时按另一方判断）才给这一条。 */
+function stageForTopic(
+  topic: { operationId?: string | null; turnId: string },
+  live: ReturnType<typeof liveTopicState>,
+): TopicPhase | null {
+  if (!live.stage) return null;
+  const operationId = String(topic.operationId ?? "").trim();
+  if (operationId && live.operationId && operationId !== live.operationId) return null;
+  if (topic.turnId && live.turnId && topic.turnId !== live.turnId) return null;
+  return live.stage;
+}
+
+function payloadNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** 相似话题冲突：只读 payload 的结构化字段（缺失就是 null，不猜）。 */
+function topicConflictFromPayload(
+  payload: Record<string, unknown>,
+): TopicApprovalConflict | null {
+  const raw = payload.conflict;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const status = String(record.status ?? "").trim();
+  if (!status) return null;
+  return {
+    status,
+    existingTopicId: String(record.existing_topic_id ?? record.existingTopicId ?? "").trim(),
+    existingTopicName: String(
+      record.existing_topic_name ?? record.existingTopicName ?? "",
+    ).trim(),
+  };
+}
+
+/** 操作身份（P1-05）：payload 结构化字段；旧后端缺失时为空串。 */
+function identityFields(approval: ApprovalItem): {
+  operationId: string;
+  sourceTopicApprovalId: string;
+} {
+  const payload = (approval.payload ?? {}) as Record<string, unknown>;
+  return {
+    operationId: String(approval.operationId ?? payload.operation_id ?? "").trim(),
+    sourceTopicApprovalId: String(
+      approval.sourceTopicApprovalId ??
+        payload.source_approval_id ??
+        payload.source_topic_approval_id ??
+        "",
+    ).trim(),
+  };
+}
+
 /** 工具/权限审批项（统一队列与 toolItems 共用一份映射规则）。 */
 function toolUnifiedItem(approval: ApprovalItem, deferredKeys: string[]): UnifiedApprovalItem {
   const key = unifiedKeyForTool(approval.approval_id);
@@ -457,14 +578,26 @@ function toolUnifiedItem(approval: ApprovalItem, deferredKeys: string[]): Unifie
     approval,
     knowledge: null,
     topic: null,
+    ...identityFields(approval),
+    invalidated: false,
+    invalidatedReason: "",
+    invalidatedCode: "",
+    stage: null,
+    recovery: null,
   };
 }
 
 /** approvals 队列里的 topic_* 行 → 话题申请项（只读契约 §2.1 的字段）。 */
 function topicUnifiedItem(
   approval: ApprovalItem,
-  collapsedTopicKeys: Set<string>,
-  deferredKeys: string[],
+  state: {
+    collapsedTopicKeys: Set<string>;
+    deferredKeys: string[];
+    invalidatedTopics: Record<
+      string,
+      { reason: string; code: string; operationId: string; at: number }
+    >;
+  },
 ): UnifiedApprovalItem {
   const key = unifiedKeyForTopic(approval.approval_id);
   const payload = (approval.payload ?? {}) as Record<string, unknown>;
@@ -473,6 +606,14 @@ function topicUnifiedItem(
     approval.kind === "topic_create" ? "topic_create" : "topic_switch";
   const action: "switch" | "create" =
     kind === "topic_create" || text(payload.action) === "create" ? "create" : "switch";
+  /**
+   * 失效的事实有两个来源：本地 APPROVAL_RESULT decision=stale（invalidatedTopics）
+   * 与后端行的结构化 409（approval.invalidated）。两者都不改 payload、不写拒绝范围。
+   */
+  const invalidation = state.invalidatedTopics[approval.approval_id] ?? null;
+  const invalidated = approval.invalidated === true || Boolean(invalidation);
+  const invalidatedReason = approval.invalidatedReason || invalidation?.reason || "";
+  const invalidatedCode = approval.invalidatedCode || invalidation?.code || "";
   const topic: TopicApprovalItem = {
     key,
     approvalId: approval.approval_id,
@@ -484,8 +625,17 @@ function topicUnifiedItem(
     suggestedName: text(payload.new_name),
     reason: text(payload.reason),
     turnId: text(payload.turn_id) || String(approval.turnId ?? ""),
+    operationId: String(payload.operation_id ?? approval.operationId ?? "").trim(),
+    paramVersion: payloadNumber(payload.param_version ?? approval.paramVersion),
+    baseNavVersion: payloadNumber(payload.base_nav_version ?? approval.baseNavVersion),
+    conflict: topicConflictFromPayload(payload),
+    invalidated,
+    invalidatedReason,
+    invalidatedCode,
     approval,
   };
+  const live = liveTopicState();
+  const stage = stageForTopic(topic, live);
   return {
     key,
     kind: "topic",
@@ -495,11 +645,42 @@ function topicUnifiedItem(
     origin: classifyToolOrigin(approval.kind, approval.payload),
     highRisk: false,
     stale: approval.stale === true,
-    deferred: collapsedTopicKeys.has(key) || deferredKeys.includes(key),
+    // 已失效的申请不自动重弹：仍有说明与恢复入口，但不再算「待用户当场决定」
+    deferred: state.collapsedTopicKeys.has(key) || state.deferredKeys.includes(key) || invalidated,
     approval,
     knowledge: null,
     topic,
+    ...identityFields(approval),
+    invalidated,
+    invalidatedReason,
+    invalidatedCode,
+    stage,
+    recovery: stage === "recoverable_failure" ? live.recovery : null,
   };
+}
+
+/** 任意「指向一条话题申请」的入参：key / approval_id / 队列项。 */
+export type TopicSelector = TopicApprovalItem | UnifiedApprovalItem | string | null | undefined;
+
+/** 从入参解析统一队列项；找不到返回 null（不拿别的条目凑数）。 */
+function selectTopicItem(
+  selector: TopicSelector,
+  items: UnifiedApprovalItem[],
+): UnifiedApprovalItem | null {
+  if (!selector) return null;
+  if (typeof selector === "string") {
+    const raw = selector.trim();
+    if (!raw) return null;
+    const key = raw.startsWith("topic:") ? raw : unifiedKeyForTopic(raw);
+    return (
+      items.find((item) => item.key === key) ??
+      items.find((item) => item.identity === raw) ??
+      null
+    );
+  }
+  const key = String((selector as { key?: string }).key ?? "");
+  if (!key) return null;
+  return items.find((item) => item.key === key) ?? null;
 }
 
 /**
@@ -513,12 +694,16 @@ function mergeUnifiedItems(
     knowledge: KnowledgeApprovalItem[];
     deferredKeys: string[];
     collapsedTopicKeys: Set<string>;
+    invalidatedTopics: Record<
+      string,
+      { reason: string; code: string; operationId: string; at: number }
+    >;
   },
   queue: ApprovalItem[],
 ): UnifiedApprovalItem[] {
   const approvals: UnifiedApprovalItem[] = queue.map((approval) =>
     isTopicApprovalKind(approval.kind)
-      ? topicUnifiedItem(approval, state.collapsedTopicKeys, state.deferredKeys)
+      ? topicUnifiedItem(approval, state)
       : toolUnifiedItem(approval, state.deferredKeys),
   );
   const knowledge: UnifiedApprovalItem[] = state.knowledge.map((item) => ({
@@ -534,6 +719,13 @@ function mergeUnifiedItems(
     approval: null,
     knowledge: item,
     topic: null,
+    operationId: "",
+    sourceTopicApprovalId: "",
+    invalidated: false,
+    invalidatedReason: "",
+    invalidatedCode: "",
+    stage: null,
+    recovery: null,
   }));
   return [...approvals, ...knowledge];
 }
@@ -777,6 +969,20 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
      * （arrivalSeq 更大）的申请才按规则自动弹出。
      */
     autoBlockedSeq: 0,
+    /**
+     * 后端结构化判定失效的话题申请（approval_id → 原因）。
+     *
+     * 失效 ≠ 拒绝：不写拒绝范围、不自动重弹、不覆盖当前选择；申请仍留在队列里
+     * 说明原因并保留恢复入口，由用户主动收口。
+     */
+    invalidatedTopics: {} as Record<
+      string,
+      { reason: string; code: string; operationId: string; at: number }
+    >,
+    /** 已由用户主动收口的失效申请（有界；只影响展示，不通知后端）。 */
+    acknowledgedInvalidations: [] as string[],
+    /** 恢复重试单飞：正在重试的 record_id（空串 = 空闲）。 */
+    retryingAnswerRecord: "",
   }),
   getters: {
     /** 统一队列：工具/权限类在前（更紧急），知识保存按到达顺序在后。 */
@@ -816,7 +1022,42 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       return (turnId: string | null | undefined): TopicApprovalItem | null => {
         const id = typeof turnId === "string" ? turnId.trim() : "";
         if (!id) return null;
-        return topics.find((topic) => topic.turnId === id) ?? null;
+        /**
+         * 已失效的申请不再是「等待用户当场决定」：发送限制 / 等待文案随之解除，
+         * 但申请本身仍留在队列里（原因与恢复入口不消失）。
+         */
+        return (
+          topics.find((topic) => topic.turnId === id && !topic.invalidated) ?? null
+        );
+      };
+    },
+    /**
+     * 某条话题申请当前的阶段（按该条 operationId + turnId 匹配本轮 TOPIC_PHASE）。
+     * 旧后端没有阶段事件 / 对不上 → null（D 不渲染阶段行，不伪造）。
+     */
+    topicStageFor(state): (selector: TopicSelector) => TopicPhase | null {
+      const items = mergeUnifiedItems(state, useApprovalsStore().queue);
+      return (selector: TopicSelector): TopicPhase | null =>
+        selectTopicItem(selector, items)?.stage ?? null;
+    },
+    /** 某条话题申请上下文的恢复事实（只有 recoverable_failure 时非 null）。 */
+    topicRecoveryFor(state): (selector: TopicSelector) => TopicAnswerRecovery | null {
+      const items = mergeUnifiedItems(state, useApprovalsStore().queue);
+      return (selector: TopicSelector): TopicAnswerRecovery | null =>
+        selectTopicItem(selector, items)?.recovery ?? null;
+    },
+    /**
+     * 某条话题申请的原确认按钮是否应禁用（失效 / 已处理 / 到期 / 正在提交）。
+     * 只读派生：D 不再在组件里另写一套规则。
+     */
+    isTopicDecisionDisabled(state): (selector: TopicSelector) => boolean {
+      const items = mergeUnifiedItems(state, useApprovalsStore().queue);
+      return (selector: TopicSelector): boolean => {
+        const item = selectTopicItem(selector, items);
+        if (!item || item.kind !== "topic") return false;
+        if (item.invalidated || item.stale || item.approval?.stale) return true;
+        if (isExpiredApproval(item.approval)) return true;
+        return state.submittingKeys.includes(item.key);
       };
     },
     /** 正在提交的申请 key（老字段名保留：一次只提交一条）。 */
@@ -987,6 +1228,8 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         (item) =>
           (item.kind === "tool" || item.kind === "topic") &&
           !item.deferred &&
+          // 已失效的申请不自动重弹：保留说明与恢复入口，由用户主动收口
+          !item.invalidated &&
           // 话题申请收起过就不再自动重开（入口主动打开不受此限）
           (item.kind !== "topic" || !this.collapsedTopicKeys.has(item.key)) &&
           !this.autoShownKeys.includes(item.key) &&
@@ -1303,12 +1546,32 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       options: { decision: "approve" | "reject"; edits?: { name?: string } },
     ): Promise<boolean> {
       const key = typeof itemOrKey === "string" ? itemOrKey : itemOrKey.key;
+      // 双提交防护：任何一项正在提交都不再发第二次（按钮同时 disabled）
+      if (this.submittingKeys.length > 0) return false;
       const items = this.items as UnifiedApprovalItem[];
       const active = items.find((item) => item.key === key) ?? null;
       const topic = active?.topic ?? null;
-      if (!active || !topic) return false;
-      // 双提交防护：任何一项正在提交都不再发第二次（按钮同时 disabled）
-      if (this.submittingKeys.length > 0) return false;
+      if (!active || !topic) {
+        /**
+         * 幂等：同一申请已经提交成功（双击 / 重放 / 刷新后重复回调）时返回既有结果，
+         * 不再发第二次请求，也不把「队列里已经没有它」说成失败。
+         */
+        const approvalId = key.startsWith("topic:") ? key.slice("topic:".length) : key;
+        const receipt = useApprovalsStore().topicReceiptFor(approvalId);
+        if (receipt?.ok) {
+          this.lastNotice = "这次话题选择此前已经提交成功；没有重复提交。";
+          return true;
+        }
+        return false;
+      }
+      if (active.invalidated) {
+        // 失效 ≠ 拒绝：原确认不可执行；原因与恢复入口保留，不提交任何决定
+        this.submitError =
+          active.invalidatedReason ||
+          "这项话题申请已经失效（本轮绑定的话题已变化或申请不再等待处理），不会再执行；可以在当前话题继续提问。";
+        this.submitErrorCode = "invalidated";
+        return false;
+      }
       if (active.stale || active.approval?.stale) {
         this.submitError =
           "这项话题申请已经有结局（可能已在别处处理或已过期），不会再执行；没有提交任何决定。";
@@ -1350,7 +1613,20 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         if (!outcome.ok) {
           this.submitError = outcome.message;
           this.submitErrorCode = outcome.code;
-          if (outcome.terminal) this.lastNotice = outcome.message;
+          if (outcome.terminal) {
+            this.lastNotice = outcome.message;
+            /**
+             * 后端结构化失效（409 topic_application_stale）：标记这条申请，
+             * 保留原因与恢复入口、禁用原确认、不自动重弹；不写拒绝范围。
+             */
+            if (outcome.code === "topic_application_stale") {
+              this.markTopicInvalidated(topic.approvalId, {
+                code: outcome.code,
+                reason: outcome.message,
+                operationId: topic.operationId,
+              });
+            }
+          }
           return false;
         }
         // 成功前不得显示「已切换 / 已创建」：只如实说已提交、等执行结果
@@ -1362,6 +1638,99 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         return true;
       } finally {
         this.submittingKeys = this.submittingKeys.filter((entry) => entry !== active.key);
+      }
+    },
+
+    /* ── 失效收口 / 恢复入口（契约 §5 / §8；失效 ≠ 拒绝）────────────────── */
+
+    /**
+     * 标记一条话题申请已失效（后端结构化判定；唯一登记处）。
+     *
+     * 行为：保留队列项与真实原因、禁用原确认、不自动重弹、不写拒绝范围、
+     * 不覆盖当前选择；只按 approval_id 处理这一条，不动别的申请。
+     */
+    markTopicInvalidated(
+      approvalIdOrKey: string,
+      input: { code?: string; reason?: string; operationId?: string } = {},
+    ): void {
+      const raw = String(approvalIdOrKey ?? "").trim();
+      if (!raw) return;
+      const approvalId = raw.startsWith("topic:") ? raw.slice("topic:".length) : raw;
+      const previous = this.invalidatedTopics[approvalId];
+      const reason =
+        String(input.reason ?? "").trim() ||
+        previous?.reason ||
+        "这条话题申请已经失效（本轮绑定的话题已变化或申请不再等待处理），不会再执行。";
+      const code = String(input.code ?? previous?.code ?? "topic_application_stale");
+      const operationId = String(input.operationId ?? previous?.operationId ?? "");
+      this.invalidatedTopics = {
+        ...this.invalidatedTopics,
+        [approvalId]: { reason, code, operationId, at: Date.now() },
+      };
+      // 后端权威失效：同步到审批行（原因可见、按钮禁用），不删除这一条
+      const approvals = useApprovalsStore();
+      const item = approvals.queue.find((entry) => entry.approval_id === approvalId);
+      if (item) {
+        item.invalidated = true;
+        item.invalidatedReason = reason;
+        item.invalidatedCode = code;
+      }
+      const key = unifiedKeyForTopic(approvalId);
+      this.deferKey(key);
+      this.collapsedTopicKeys.add(key);
+      this.autoBlockedSeq = Math.max(this.autoBlockedSeq, approvals.arrivalSeq);
+      this.noteQueueChanged();
+    },
+
+    /**
+     * 用户主动收口一条失效申请：**纯本地**动作。
+     *
+     * 不发 /respond、不写拒绝范围、不提交任何决定；改过的名字（topicDrafts）保留，
+     * 只把这一条从待办里移走并记下已收口。
+     */
+    acknowledgeInvalidatedTopic(selector: TopicSelector): void {
+      const items = this.items as UnifiedApprovalItem[];
+      const item = selectTopicItem(selector, items);
+      if (!item || item.kind !== "topic") return;
+      const approvalId = item.identity;
+      useApprovalsStore().resolve(approvalId);
+      this.collapsedTopicKeys.delete(item.key);
+      if (!this.acknowledgedInvalidations.includes(approvalId)) {
+        this.acknowledgedInvalidations = [
+          ...this.acknowledgedInvalidations.slice(-49),
+          approvalId,
+        ];
+      }
+      // 注意：topicDrafts[item.key] 故意保留（用户改过的名字不因失效丢失）
+      this.noteQueueChanged();
+    },
+
+    /**
+     * 恢复入口（上下文准备失败后重试回答）：只重做未完成步骤。
+     * 成功给可见结果；失败原因如实写进 submitError（不假装成功、不重复提交）。
+     */
+    async retryTopicAnswer(recordId: string): Promise<boolean> {
+      const id = String(recordId ?? "").trim();
+      if (!id) return false;
+      // 单飞：同一次恢复的重复点击不重复发请求
+      if (this.retryingAnswerRecord) return false;
+      this.retryingAnswerRecord = id;
+      this.submitError = "";
+      this.submitErrorCode = "";
+      try {
+        const session = this.sessionStore();
+        const result = session
+          ? await session.retryTopicAnswer(id)
+          : { ok: false, code: "no_session", message: "会话状态尚未准备好，没有提交重试。" };
+        if (result.ok) {
+          this.lastNotice = "已请求重新回答；不会重复发送你的消息，也不会重新执行已成功的话题操作。";
+          return true;
+        }
+        this.submitError = result.message || "没能重新开始回答（原因未知）；没有重发任何消息。";
+        this.submitErrorCode = result.code || "retry_failed";
+        return false;
+      } finally {
+        this.retryingAnswerRecord = "";
       }
     },
 
@@ -1563,6 +1932,9 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.drafts = {};
       this.queueListOnly = false;
       this.autoBlockedSeq = 0;
+      this.invalidatedTopics = {};
+      this.acknowledgedInvalidations = [];
+      this.retryingAnswerRecord = "";
       persistDeferredKeys([]);
     },
   },

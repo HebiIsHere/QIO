@@ -87,10 +87,18 @@ class TopicTargetMissing(TopicApplicationError):
 
 
 class TopicApplicationStale(TopicApplicationError):
-    """没有等待者的 topic 申请（后端重启 / 已经消费过）：不假成功、不执行。"""
+    """话题申请已失效（后端重启 / 已经消费过 / 等待期间位置被改）：不假成功、不执行。
+
+    `extra` 是给 API 的结构化事实（operation_id / 版本号 / why），不是授权凭据：
+    它只用于如实说明「为什么没执行」，任何客户端都不能据此获得执行能力。
+    """
 
     code = "topic_application_stale"
     status_code = 409
+
+    def __init__(self, message: str, *, extra: dict | None = None) -> None:
+        super().__init__(message)
+        self.extra: dict = dict(extra or {})
 
 
 class TopicEditsUnsupported(TopicApplicationError):
@@ -366,6 +374,109 @@ class ApprovalService:
             return
         self._pending_publishes.add(task)
         task.add_done_callback(self._pending_publishes.discard)
+
+    # -- 话题申请的起点复核（P1-04）----------------------------------------
+
+    def pending_request(self, approval_id: str) -> dict | None:
+        """只读地取一条仍在等待中的旧审批（不消费、不改状态）。"""
+        request = self._requests.get(str(approval_id or ""))
+        if request is None:
+            return None
+        return {
+            "kind": request.kind,
+            "payload": dict(request.payload or {}),
+            "turn_id": request.turn_id,
+            "expires_at": request.expires_at,
+        }
+
+    def _topic_navigation_stale(self, kind: str, payload: dict) -> dict | None:
+        """话题申请的起点是否已经改变：拿快照里的导航版本与当前版本比对。
+
+        只做**确定性事实**校验，不猜用户语义：读不到版本 / 旧申请没有快照时返回
+        None（由执行前的 CAS 与既有 binding 校验兜底），绝不因此放行或误判。
+        """
+        if str(kind or "") not in TOPIC_APPLICATION_KINDS:
+            return None
+        payload = payload if isinstance(payload, dict) else {}
+        raw_expected = payload.get("base_nav_version")
+        if raw_expected is None:
+            return None
+        try:
+            expected = int(raw_expected)
+        except (TypeError, ValueError):
+            return None
+        if self.conn is None:
+            return None
+        try:
+            from agent.services.navigation_version import current as current_nav_version
+
+            actual = int(current_nav_version(self.conn))
+        except Exception:  # noqa: BLE001 - 读不到就不猜（执行前 CAS 仍会拦）
+            logger.warning("failed to read navigation version", exc_info=True)
+            return None
+        if actual == expected:
+            return None
+        return {
+            "why": "nav_version_changed",
+            "expected": expected,
+            "actual": actual,
+            # 结构化事实（P1-04 契约）：前端按 operation_id/参数版本消费，不靠文本猜。
+            "operation_id": payload.get("operation_id"),
+            "param_version": payload.get("param_version"),
+            "base_nav_version": expected,
+            "current_nav_version": actual,
+        }
+
+    async def settle_stale(
+        self,
+        approval_id: str,
+        *,
+        why: str,
+        expected: int | None = None,
+        actual: int | None = None,
+    ) -> bool:
+        """把一条已失效的话题申请结算掉：**不是拒绝**，也不会隐式执行。
+
+        * 等待方收到 `ApprovalResult(decision="stale")`（不会挂到超时）；
+        * 持久化状态落 `invalidated`，历史写「已失效（本次没有执行）」，不写拒绝；
+        * 发一条 APPROVAL_RESULT，前端据此禁用原确认并保留恢复入口。
+        """
+        request = self._requests.get(str(approval_id or ""))
+        if request is None:
+            return False
+        future = self._waiters.pop(approval_id, None)
+        self._requests.pop(approval_id, None)
+        if future is not None and not future.done():
+            future.set_result(ApprovalResult(approval_id, "stale"))
+        self._settle(approval_id, "invalidated")
+        self._record_legacy_decision(
+            approval_id,
+            decision="invalidated",
+            payload=request.payload,
+            kind=request.kind,
+            reason=str(why or "nav_version_changed"),
+        )
+        payload = request.payload if isinstance(request.payload, dict) else {}
+        detail = {
+            "approval_id": approval_id,
+            "decision": "stale",
+            "phase": "invalidated",
+            "legacy": True,
+            "code": "topic_application_stale",
+            "why": str(why or "nav_version_changed"),
+            "reason": "等待期间话题位置已经改变，这次申请没有再执行",
+            "turn_id": request.turn_id,
+            "kind": request.kind,
+            "operation_id": payload.get("operation_id"),
+            "param_version": payload.get("param_version"),
+            "base_nav_version": expected,
+            "current_nav_version": actual,
+        }
+        try:
+            await self.bus.publish(make_event(EventType.APPROVAL_RESULT, detail))
+        except Exception:  # noqa: BLE001 - 状态已收口；通知失败不能改变事实
+            logger.warning("failed to publish stale approval result", exc_info=True)
+        return True
 
     # -- 跨重启的等待记录 --------------------------------------------------
 
@@ -1147,7 +1258,13 @@ class ApprovalService:
             outcome = "expired"
             summary = "已过期：" + label + "（等你确认超过期限，本次没有执行）"
             detail["decision"] = "timeout"
-        else:  # pragma: no cover - 内部只传上面四种
+        elif decision == "invalidated":
+            # 失效 ≠ 用户拒绝：历史里必须写实情，不能被读成「你选了拒绝」。
+            outcome = "invalidated"
+            summary = "已失效：" + label + "（" + (str(reason or "等待期间起点已改变")) + "，本次没有执行）"
+            detail["decision"] = "invalidated"
+            detail["invalidated"] = True
+        else:  # pragma: no cover - 内部只传上面几种
             return
         try:
             self.store.write_history(
@@ -1498,6 +1615,23 @@ class ApprovalService:
         # 契约 §4.2：只有端到端支持 overrides 的旧路径可以带；其它路径明确拒绝，
         # 不得静默丢弃（那会让界面表现成「已接受修改」）。校验在消费之前。
         self._check_overrides(request.kind, request.payload, overrides)
+        # 话题申请（P1-04）：批准前复核**真实起点快照**（导航版本）。等待期间用户
+        # 手动切了话题 / 换了历史位置，这条申请就不再对应当前起点 —— 失效不是拒绝，
+        # 不执行、不再弹、不跳回旧位置。必须在这里把等待者结算掉（否则桥会挂到超时），
+        # 再如实 409。真正写入前还有一次 CAS（见 services/navigation.py），二者之间
+        # 没有「检查一次就永远有效」的窗口。
+        if str(decision or "") == "approved":
+            stale = self._topic_navigation_stale(request.kind, request.payload)
+            if stale is not None:
+                self.settle_stale(approval_id, **stale)
+                raise TopicApplicationStale(
+                    "等待期间话题位置已经改变，这条申请没有再执行（这不是你的拒绝）。",
+                    extra={
+                        "approval_id": approval_id,
+                        "kind": request.kind,
+                        **stale,
+                    },
+                )
         # 话题申请：批准前校验目标 / 名称（申请保持 pending、不消费），并透传 edits。
         normalized_edits = self._validate_topic_decision(
             request.kind, request.payload, decision, edits

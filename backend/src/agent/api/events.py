@@ -18,6 +18,11 @@ class EventType(str, Enum):
     FALLBACK = "FALLBACK"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     APPROVAL_RESULT = "APPROVAL_RESULT"
+    # 话题阶段（P1-02 输出边界）：{phase, operation_id?, approval_id?, turn_id,
+    # target_topic_id?, recovery?}。phase ∈ decision_open / awaiting_confirmation /
+    # executing / context_preparing / answerable / recoverable_failure。
+    # 只有 answerable 允许发布正式回答正文；其余阶段只表示受控处理状态。
+    TOPIC_PHASE = "TOPIC_PHASE"
     CREDENTIAL_STATUS = "CREDENTIAL_STATUS"
     SUBAGENT_STATUS = "SUBAGENT_STATUS"
     # 工具创建是一条流程、一张卡：这些事件让同一张卡原地推进

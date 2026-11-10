@@ -95,8 +95,6 @@ def _ctx(message: str = "把顺丁橡胶那次实验的结论再整理一下", *
     data = {
         "message": message,
         "bound_fragment_id": None,
-        "explicit_target": None,
-        "explicit_create_name": None,
     }
     data.update(overrides)
     return SimpleNamespace(**data)
@@ -491,23 +489,21 @@ def test_render_returns_plain_text_without_executable_payload():
         json.loads(note)
 
 
-def test_render_accepts_scoped_candidates_and_explicit_hint_override():
+def test_render_accepts_scoped_candidates_without_program_hint():
     state = build_topic_decision_state(
         _app(topics=FakeTopics({"t1": ("当前事项", "")})),
-        _ctx("继续", explicit_target="t2"),
+        _ctx("继续"),
         "t1",
         _prediction(scores={"t9": 0.5}),
     )
-    assert "程序已识别" in state.explicit_hint
+    # P1-01：判断状态里不再有「程序已识别明确导航」字段；语义只来自本轮模型。
+    assert not hasattr(state, "explicit_hint")
 
     note = render_topic_decision_note(
         state,
         [TopicCandidate("t_override", "覆盖候选", 0.4, "来自调用方的候选摘要")],
-        explicit_hint="本轮已由程序识别明确导航。",
     )
     assert "覆盖候选" in note
     assert "来自调用方的候选摘要" in note
-    assert "本轮已由程序识别明确导航。" in note
-    assert state.explicit_hint not in note
 
     assert render_topic_decision_note(None) == ""

@@ -238,7 +238,8 @@ class TurnContext:
     bound_topic: str | None = None
     bound_fragment_id: str | None = None
     bound_intent_version: int | None = None
-    explicit_target: str | None = None
+    # P1-01/P1-02：轮前语义识别已删除。explicit_target / explicit_create_name
+    # 不再存在（同一事实只接受模型工具参数的 intent 声明，见 topic_operation.py）。
     # 放行执行的事实（审计 F04）：reserve 只是「预留」，只有真正入队（submit /
     # _enqueue_reserved）才是「被放行执行」。**是否放行过**是区分
     # 「准备期放弃、从未执行」与「曾受理后又取消」的唯一可靠依据 ——

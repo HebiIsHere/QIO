@@ -20,7 +20,6 @@
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -31,6 +30,11 @@ from agent.graph.edges import EdgeService
 from agent.graph.nodes import NodeService
 from agent.memory.fragment import FragmentManager, new_id
 from agent.services.binding import IntentNotFound, TurnBindingService
+from agent.services.navigation_version import (
+    NavigationVersionConflict,
+    cas_or_advance,
+    current as current_nav_version,
+)
 from agent.storage.db import transaction
 
 
@@ -96,6 +100,8 @@ class NavigationResult:
     created_fragment_id: str | None = None
     source_fragment_id: str | None = None
     sealed_fragment_id: str | None = None
+    #: 本次写入后的真实导航版本（P1-04）。置信来源：navigation_version。
+    nav_version: int | None = None
 
 
 def relate_topics(conn: sqlite3.Connection, a: str, b: str) -> None:
@@ -106,80 +112,16 @@ def relate_topics(conn: sqlite3.Connection, a: str, b: str) -> None:
     EdgeService(conn).add(src, dst, "related")
 
 
-# 明确的导航动词。只有「动词 + 已知话题名」同时命中才算明确切换：
-# 单纯提到某个话题名（「顺丁橡胶降解的数据不错」）不是导航意图。
-_NAV_VERBS = (
-    "切换到",
-    "切到",
-    "转到",
-    "换到",
-    "回到",
-    "返回",
-    "继续之前的",
-    "接着之前的",
-    "继续之前",
-)
-
-
-def detect_explicit_navigation(
-    message: str, topics: list[tuple[str, str]] | tuple[tuple[str, str], ...]
-) -> str | None:
-    """识别「用户明确要求切换话题」的指令，返回目标 topic_id。
-
-    `topics` 是 [(topic_id, title)]。命中条件：句子里出现导航动词，
-    动词之后的部分能匹配到一个**已知话题名**（最长匹配优先）。
-    """
-    if not message:
-        return None
-    for verb in _NAV_VERBS:
-        idx = message.find(verb)
-        if idx < 0:
-            continue
-        tail = message[idx + len(verb):].strip(" 　「」《》\"'：:，,。.?!~～、")
-        if not tail:
-            continue
-        best: tuple[str, int] | None = None
-        for topic_id, title in topics:
-            if not title:
-                continue
-            matched = title in tail or (len(tail) >= 2 and tail in title)
-            if matched and (best is None or len(title) > best[1]):
-                best = (topic_id, len(title))
-        if best is not None:
-            return best[0]
-    return None
-
-
-# 「用户明确要求新建话题」的窄检测：句中必须同时出现新建类动词与「话题」二字，
-# 名称来自引号或「叫/名为/叫做/：」。只用来判断「这次不需要再弹普通确认」，
-# 不参与实质归属判断（新目标/新词不因此被拆成新话题，那是本轮主模型的工作）。
-_CREATE_VERBS = ("新建", "创建", "新开", "开一个", "建一个")
-_CREATE_NAME_PATTERNS = (
-    re.compile(r"[「『《\"'“](?P<name>[^」』》\"'”]{1,40})[」』》\"'”]"),
-    re.compile(r"(?:叫|名为|叫做|名称为|：|:)\s*(?P<name>[^\s，,。.；;！!？?]{1,40})"),
-)
-
-
-def detect_explicit_topic_creation(message: str) -> str | None:
-    """识别「用户明确要求新建话题」并返回名称；识别不了返回 None。
-
-    只认窄句式（新建动词 + 「话题」），不按语义猜测：比如
-    「新建一个文件叫报告」不是新建话题，「这段讨论换到新话题吧」没有名称也不算。
-    真实新建仍走 create_topic 工具的查重与冲突处理。
-    """
-    text = (message or "").strip()
-    if not text or "话题" not in text:
-        return None
-    if not any(verb in text for verb in _CREATE_VERBS):
-        return None
-    for pattern in _CREATE_NAME_PATTERNS:
-        match = pattern.search(text)
-        if match is None:
-            continue
-        name = match.group("name").strip(" 　\"'“”「」『』《》：:，,。.；;！!？?")
-        if name and name != "话题":
-            return name
-    return None
+# ── 语义授权识别：已在本轮删除（P1-01）────────────────────────────────
+# 这里曾经有 detect_explicit_navigation / detect_explicit_topic_creation：
+# 用关键词 + 包含匹配在**进入主循环之前**判断「用户是否明确要求切换/新建」，
+# 据此决定免确认直切或直接执行。那是程序在替主模型做自然语言语义判断，
+# 会产生「否定切换被当成明确切换」「解释新建话题被当成要新建」等错误。
+#
+# 现在唯一的语义判断位置是本轮主循环模型：它照常调用 switch_topic /
+# create_topic，并在工具参数的 intent 里声明 user_request / suggestion；
+# 程序只消费这个受控通道的值（见 services/topic_operation.py）。
+# 不要再在这里加回任何关键词、正则、包含匹配、相似度阈值式的「授权识别」。
 
 
 class TopicNavigationService:
@@ -199,6 +141,9 @@ class TopicNavigationService:
         fragment_id: str | None = None,
         relate: bool = False,
         restore_position: bool = True,
+        expected_nav_version: int | None = None,
+        turn_id: str | None = None,
+        advance_nav_version: bool = True,
     ) -> NavigationResult:
         """进入一个话题：Anchor 移到该话题（有历史位置就恢复它）。
 
@@ -219,13 +164,39 @@ class TopicNavigationService:
             # 切回话题时恢复它保存的位置（没有 / 已失效则为 None）
             fragment_id = self.anchors.position_fragment(topic_id)
         previous = self.anchors.get_active()
-        self.anchors.set_active(topic_id, fragment_id)
+        # Anchor 写入与导航版本推进在**同一个事务**里：`expected_nav_version` 非 None
+        # 时它是一次授权 CAS（话题申请确认后执行）——版本已被用户的新导航改掉就抛
+        # NavigationVersionConflict，事务回滚，Anchor 保持原样（不覆盖用户的新选择）。
+        with transaction(self.conn):
+            self.anchors.set_active(topic_id, fragment_id)
+            if advance_nav_version:
+                nav_version = cas_or_advance(
+                    self.conn,
+                    expected_nav_version,
+                    source="navigation.enter_topic",
+                    topic_id=topic_id,
+                    fragment_id=fragment_id,
+                    turn_id=turn_id,
+                )
+            else:
+                # 例行位置细化（轮首补锚点 / 轮末把位置推进到本轮真实片段）：
+                # 它不是用户或工具的**导航决策**，不推进版本（契约 §5 的推进来源清单）。
+                # 否则一次正常的工具换题会被同一轮收尾再推一次，恢复入口会把自己的
+                # 记录误判成「用户后来已经离开」。
+                nav_version = current_nav_version(self.conn)
         if relate and previous is not None and previous.topic_id:
             relate_topics(self.conn, previous.topic_id, topic_id)
-        return self._result(topic_id, fragment_id)
+        return self._result(topic_id, fragment_id, nav_version=nav_version)
 
     def continue_from_history(
-        self, topic_id: str, fragment_id: str, *, relate: bool = True
+        self,
+        topic_id: str,
+        fragment_id: str,
+        *,
+        relate: bool = True,
+        expected_nav_version: int | None = None,
+        turn_id: str | None = None,
+        advance_nav_version: bool = True,
     ) -> NavigationResult:
         """从一段历史接续（两步语义的便捷入口：登记 + 立即落实）。
 
@@ -233,14 +204,33 @@ class TopicNavigationService:
         `apply_continuation`（真正有消息要执行时才落实）。这个方法是二者的组合，
         供「确实要立刻落实」的调用方使用，行为与旧版保持一致。
         """
-        intent = self.register_continuation(topic_id, fragment_id)
+        intent = self.register_continuation(topic_id, fragment_id, turn_id=turn_id)
         if not intent.get("intent_id"):
             # 来源就是当前开放片段：普通继续，没有可落实的意图
-            return self.enter_topic(topic_id, fragment_id=fragment_id, relate=relate)
-        return self.apply_continuation(topic_id, intent["intent_id"], relate=relate)
+            return self.enter_topic(
+                topic_id,
+                fragment_id=fragment_id,
+                relate=relate,
+                expected_nav_version=expected_nav_version,
+                turn_id=turn_id,
+                advance_nav_version=advance_nav_version,
+            )
+        return self.apply_continuation(
+            topic_id,
+            intent["intent_id"],
+            relate=relate,
+            expected_nav_version=expected_nav_version,
+            turn_id=turn_id,
+        )
 
     def register_continuation(
-        self, topic_id: str, fragment_id: str, *, request_id: str | None = None
+        self,
+        topic_id: str,
+        fragment_id: str,
+        *,
+        request_id: str | None = None,
+        advance_nav_version: bool = True,
+        turn_id: str | None = None,
     ) -> dict:
         """登记「下一次发送要从这段历史继续」。**不创建任何片段。**
 
@@ -256,6 +246,7 @@ class TopicNavigationService:
             raise FragmentNotInTopic(f"片段不属于该话题：{fragment_id}")
         if source.closed_at is None:
             # 来源就是当前开放片段：它就是对话的位置，普通继续，不需要接续意图
+            # （没有位置变化，也就不推进导航版本）。
             return {
                 "topic_id": topic_id,
                 "fragment_id": fragment_id,
@@ -265,11 +256,27 @@ class TopicNavigationService:
                 "intent_id": None,
                 "intent_version": None,
                 "source_fragment_id": fragment_id,
+                "nav_version": current_nav_version(self.conn),
             }
 
-        intent = TurnBindingService(self.conn).register_intent(
-            topic_id, fragment_id, request_id=request_id
-        )
+        # 选历史片段 / 改接续位置是一次真实的位置变化（P1-04）：登记意图与推进
+        # 导航版本放在同一个事务里，失败时登记不会留下半截状态。
+        with transaction(self.conn):
+            intent = TurnBindingService(self.conn).register_intent(
+                topic_id, fragment_id, request_id=request_id
+            )
+            nav_version = (
+                cas_or_advance(
+                    self.conn,
+                    None,
+                    source="navigation.register_continuation",
+                    topic_id=topic_id,
+                    fragment_id=fragment_id,
+                    turn_id=turn_id,
+                )
+                if advance_nav_version
+                else current_nav_version(self.conn)
+            )
         return {
             "topic_id": topic_id,
             "fragment_id": fragment_id,
@@ -279,10 +286,17 @@ class TopicNavigationService:
             "intent_id": intent.intent_id,
             "intent_version": intent.version,
             "source_fragment_id": fragment_id,
+            "nav_version": nav_version,
         }
 
     def apply_continuation(
-        self, topic_id: str, intent_id: str, *, relate: bool = True
+        self,
+        topic_id: str,
+        intent_id: str,
+        *,
+        relate: bool = True,
+        expected_nav_version: int | None = None,
+        turn_id: str | None = None,
     ) -> NavigationResult:
         """落实接续意图：这是真正创建/复用片段的**唯一**位置（原子交接）。
 
@@ -308,17 +322,27 @@ class TopicNavigationService:
         if intent.resolved_fragment_id:
             existing = self.fragments.get(intent.resolved_fragment_id)
             if existing is not None:
+                # 重试（传输重试 / 工具重试）：不重复创建，也不推进版本。
                 return self._result(
                     topic_id,
                     existing.id,
                     created_fragment_id=existing.id,
                     source_fragment_id=intent.source_fragment_id,
+                    nav_version=current_nav_version(self.conn),
                 )
 
         source = self.fragments.get(intent.source_fragment_id) if intent.source_fragment_id else None
         if source is not None and source.closed_at is None:
+            # 先落实位置（含 CAS），成功后才把意图标成已落实：CAS 失败时意图仍可重试。
+            result = self.enter_topic(
+                topic_id,
+                fragment_id=source.id,
+                relate=relate,
+                expected_nav_version=expected_nav_version,
+                turn_id=turn_id,
+            )
             bindings.resolve_intent(intent_id, source.id)
-            return self.enter_topic(topic_id, fragment_id=source.id, relate=relate)
+            return result
 
         previous = self.anchors.get_active()
         open_fragment = self.fragments.open_fragment(topic_id)
@@ -338,9 +362,19 @@ class TopicNavigationService:
                 relation_type="history_reopen",
                 boundary_reason="history_continuation",
             )
+            self.anchors.set_active(topic_id, new_fragment_id)
+            # 位置写入 + 导航版本 CAS 在同一个事务里：申请基于的起点变了就整体回滚
+            # （不建片段、不落实意图、Anchor 不动），绝不执行旧申请。
+            nav_version = cas_or_advance(
+                self.conn,
+                expected_nav_version,
+                source="navigation.apply_continuation",
+                topic_id=topic_id,
+                fragment_id=new_fragment_id,
+                turn_id=turn_id,
+            )
             # 落实结果与片段创建在同一个事务里：不会出现「片段建了但意图没落实」
             bindings.resolve_intent(intent_id, new_fragment_id)
-        self.anchors.set_active(topic_id, new_fragment_id)
         if relate and previous is not None and previous.topic_id:
             relate_topics(self.conn, previous.topic_id, topic_id)
         return self._result(
@@ -349,15 +383,33 @@ class TopicNavigationService:
             created_fragment_id=new_fragment_id,
             source_fragment_id=intent.source_fragment_id,
             sealed_fragment_id=sealed_id,
+            nav_version=nav_version,
         )
 
-    def create_topic(self, name: str, *, relate: bool = True) -> NavigationResult:
-        node = self.nodes.create_topic(name)
+    def create_topic(
+        self,
+        name: str,
+        *,
+        relate: bool = True,
+        expected_nav_version: int | None = None,
+        turn_id: str | None = None,
+    ) -> NavigationResult:
         previous = self.anchors.get_active()
-        self.anchors.set_active(node.id)
+        # 建话题 + 写 Anchor + 版本 CAS 是同一个事务：申请基于的起点已经变了就整体
+        # 回滚，**不会留下一个已创建但没人承认的话题**。
+        with transaction(self.conn):
+            node = self.nodes.create_topic(name)
+            self.anchors.set_active(node.id)
+            nav_version = cas_or_advance(
+                self.conn,
+                expected_nav_version,
+                source="navigation.create_topic",
+                topic_id=node.id,
+                turn_id=turn_id,
+            )
         if relate and previous is not None and previous.topic_id:
             relate_topics(self.conn, previous.topic_id, node.id)
-        return self._result(node.id, None)
+        return self._result(node.id, None, nav_version=nav_version)
 
     # -- 待确认切换 -------------------------------------------------------
 
@@ -384,11 +436,21 @@ class TopicNavigationService:
             "reason": self._pending_reason,
         }
 
-    def confirm_switch(self) -> NavigationResult | None:
+    def confirm_switch(
+        self,
+        *,
+        expected_nav_version: int | None = None,
+        turn_id: str | None = None,
+    ) -> NavigationResult | None:
         pending = self.pending_switch()
         if pending is None:
             return None
-        result = self.enter_topic(pending["topic_id"], fragment_id=pending["fragment_id"])
+        result = self.enter_topic(
+            pending["topic_id"],
+            fragment_id=pending["fragment_id"],
+            expected_nav_version=expected_nav_version,
+            turn_id=turn_id,
+        )
         self.reject_switch()
         return result
 
@@ -421,6 +483,7 @@ class TopicNavigationService:
         created_fragment_id: str | None = None,
         source_fragment_id: str | None = None,
         sealed_fragment_id: str | None = None,
+        nav_version: int | None = None,
     ) -> NavigationResult:
         return NavigationResult(
             topic_id=topic_id,
@@ -430,4 +493,5 @@ class TopicNavigationService:
             created_fragment_id=created_fragment_id,
             source_fragment_id=source_fragment_id,
             sealed_fragment_id=sealed_fragment_id,
+            nav_version=nav_version,
         )

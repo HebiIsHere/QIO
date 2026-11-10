@@ -112,7 +112,15 @@ def _decide(client: TestClient, approval_id: str, decision: str):
 def _row(client: TestClient, approval_id: str):
     # 用审批存储的读取形状（含 operation_detail/state/confirmed_stage），
     # 不直接依赖底层 raw 列名，测试改 operation_detail 时与执行器看到的一致。
-    return client.app.state.ctx.approvals.store.get(approval_id)
+    #
+    # 必须回到**应用事件循环线程**读：sqlite 连接是 check_same_thread=False，
+    # 但没有连接级互斥；审批后台执行器还在事件循环线程上写同一条记录时，
+    # 测试线程直接 conn.execute 会偶发 sqlite3.InterfaceError: bad parameter
+    # or other API misuse（CI run 42760316832 的并行失败样式）。portal.call
+    # 只换读取线程，读取语义与断言完全不变。
+    return client.portal.call(
+        lambda: client.app.state.ctx.approvals.store.get(approval_id)
+    )
 
 
 def _wait_terminal(client: TestClient, approval_id: str, states: set[str], *, timeout: float = 20.0):

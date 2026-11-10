@@ -161,6 +161,10 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 用途分配也退回 credentials.tags 的一把 Key 整体占用。
         "credential_models",
         "model_usages",
+        # P1R-C（迁移 77）：单调导航版本（申请绑定真实导航位置）。缺了它，
+        # 申请无法判断「等待期间位置是否已变」，旧申请可能覆盖用户的新选择；
+        # 补偿迁移 78 里有对应的建表语句。
+        "navigation_version",
     ),
     "columns": (
         "turn_journal.owner_instance_id",

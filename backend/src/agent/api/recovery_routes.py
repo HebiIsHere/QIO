@@ -76,6 +76,15 @@ class _RequeueBody(BaseModel):
     expected_generation: int | None = None
 
 
+class _RetryAnswerBody(BaseModel):
+    """P1-03：话题回答恢复（只重做未完成步骤）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    expected_class: str | None = None
+    expected_status: str | None = None
+
+
 def build_router(ctx: Any) -> APIRouter:
     """按 ctx 造出恢复端点（由 Lead 在 `api/server.py` include 一行）。"""
     router = APIRouter(prefix="/api/recovery", tags=["recovery"])
@@ -206,6 +215,29 @@ def build_router(ctx: Any) -> APIRouter:
         result = _inbox().ignore(record_id, expected_class=payload.expected_class)
         if not result.get("ok"):
             return JSONResponse(status_code=409, content=result)
+        return result
+
+    @router.post("/records/{record_id}/retry-answer")
+    async def retry_answer(
+        record_id: str, body: _RetryAnswerBody | None = Body(default=None)
+    ) -> Any:
+        """重做话题回答（P1-03）：只重装配上下文 / 重做回答，不重跑话题工具。
+
+        幂等：已经成功返回既有结果（不重复生成、不复制消息）；恢复前复核导航
+        版本，用户后来的手动选择不会被覆盖（如实 409 topic_application_stale）。
+        """
+        from agent.services.topic_recovery import retry_topic_answer
+
+        payload = body or _RetryAnswerBody()
+        result = await retry_topic_answer(
+            ctx,
+            record_id,
+            expected_class=payload.expected_class,
+            expected_status=payload.expected_status,
+        )
+        status_code = int(result.pop("status_code", 200) or 200)
+        if not result.get("ok"):
+            return JSONResponse(status_code=status_code, content=result)
         return result
 
     @router.post("/records/{record_id}/requeue")

@@ -24,6 +24,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = REPO_ROOT / "backend"
 
 
+def _configure_output() -> None:
+    """报告层必须能在任何控制台编码下工作（英文 Windows 的 cp1252 也不能崩）。
+
+    CI（run 42760316832）在 Windows 上出现过本脚本中文输出 UnicodeEncodeError：
+    分区校验本身是对的，死在打印上。与 scripts/check_docs.py 使用同一套做法：
+    tty 保留自身编码 + backslashreplace；重定向/CI 写 UTF-8 字节。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        except (OSError, ValueError):
+            is_tty = False
+        try:
+            if is_tty:
+                reconfigure(errors="backslashreplace")
+            else:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            continue
+
+
 def marker_and(base: str, marker: str) -> str:
     marker = marker.strip()
     if not marker:
@@ -48,6 +72,8 @@ def collect(expression: str | None, extra_args: list[str]) -> set[str]:
     cmd += extra_args
     env = dict(os.environ)
     env.pop("PYTEST_ADDOPTS", None)  # 不让外部 addopts 重复注入 --junitxml 等参数
+    # 子进程也按 UTF-8 输出：上面按 utf-8 解码，编码不一致会把中文写成乱码/替换字符。
+    env["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(
         cmd,
         cwd=str(BACKEND_DIR),
@@ -80,6 +106,7 @@ def _print_sample(label: str, nodeids: set[str], limit: int = 20) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_output()
     parser = argparse.ArgumentParser(
         description="校验 serial / not-serial 两组测试分区：并集=全量、交集=空。",
     )

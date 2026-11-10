@@ -10,7 +10,7 @@
  * - 记忆问题提醒只显示真实待回答数量；点击后把「星球 → 待确认 → 定位问题」的目标
  *   交给外层（Lead 集成 PlanetView 的 initialTab/focusPendingId 时消费）。
  */
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useApprovalsStore } from "../../stores/approvals";
 import { useApprovalResultsStore } from "../../stores/approvalResults";
 import { useSessionStore } from "../../stores/session";
@@ -20,6 +20,7 @@ import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
 import { isInputBusy } from "../../stores/feedbackGate";
 import { planetContinuum } from "../../composables/planetContinuum";
 import UnifiedApprovalModal from "../approval/UnifiedApprovalModal.vue";
+import TopicStageNotice from "../approval/TopicStageNotice.vue";
 import type { MemoryOpenTarget } from "../../stores/memoryQuestions";
 
 const props = withDefaults(
@@ -48,6 +49,37 @@ let refreshTimer = 0;
 let noticeTimer = 0;
 let lastRetryAt = 0;
 const notice = ref("");
+
+/* ── 话题阶段 / 恢复（D · 契约 §8）───────────────────────────────────────
+ * 唯一来源是后端 TOPIC_PHASE 事件经 session store 派生的 stage / recovery：
+ * - 等待确认：由弹窗正文与消息区状态条表达，这里不重复；
+ * - 已确认执行中 / 目标上下文准备中：对话里给一句受控状态（不伪造模型生成）；
+ * - 回答准备失败：显示后端真实原因 + 重试入口（动作走 session.retryTopicAnswer）。
+ * 组件不推进阶段、不猜测进度；拿到新的事件后提示自然更新或消失。
+ */
+const topicRetrying = ref(false);
+const topicStage = computed(() => session.stage);
+const topicRecovery = computed(() => session.recovery);
+const stageNoticeVisible = computed(
+  () =>
+    topicStage.value === "executing" ||
+    topicStage.value === "context_preparing" ||
+    topicStage.value === "recoverable_failure",
+);
+
+async function retryTopicStage(recordId: string) {
+  if (topicRetrying.value) return;
+  topicRetrying.value = true;
+  try {
+    const result = await session.retryTopicAnswer(recordId);
+    if (result.ok) {
+      notice.value = result.message || "已经重新开始回答；进度以后端事件为准。";
+    }
+    // 失败原因由 store 写回 topicRecovery.message，提示块会原地更新（不假装成功）
+  } finally {
+    topicRetrying.value = false;
+  }
+}
 
 /**
  * 唯一挂载的守卫（Phase 3-C）：
@@ -247,7 +279,16 @@ defineExpose({ openApprovals, retryAutoOpen });
       主对话不再显示「记忆整理问题」提醒，三类事项改由星球「待确认」本地处理；
       组件文件与共享数据保留（星球侧能力不受影响）。
     -->
-    <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>
+    <!-- 顶部提示栈：申请提交结果 + 话题阶段/恢复提示，同一位置纵向排列，不互相遮挡 -->
+    <div v-if="notice || stageNoticeVisible" class="ua-notices" data-test="ua-notices">
+      <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>
+      <TopicStageNotice
+        :stage="topicStage"
+        :recovery="topicRecovery"
+        :retrying="topicRetrying"
+        @retry="retryTopicStage"
+      />
+    </div>
   </div>
 </template>
 
@@ -256,12 +297,25 @@ defineExpose({ openApprovals, retryAutoOpen });
 .unified-approval-layer {
   position: static;
 }
-.ua-layer-notice {
+/* 顶部提示栈：与统一审批弹窗（z-index 200）分层，绝不抢层的交互；位置只在这里定义。 */
+.ua-notices {
   position: fixed;
   top: calc(var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) + 40px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 91;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.ua-notices > * {
+  pointer-events: auto;
+}
+.ua-layer-notice {
   max-width: min(560px, calc(100vw - 32px));
   margin: 0;
   padding: 6px 14px;

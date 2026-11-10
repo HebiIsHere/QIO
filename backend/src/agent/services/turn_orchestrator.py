@@ -17,7 +17,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent import prompts
 from agent.api.events import EventType, make_event
@@ -27,6 +27,10 @@ from agent.services.navigation import (
     take_tool_navigation,
 )
 from agent.services.predict import TopicPrediction
+from agent.services.topic_recovery import TopicContextPrepareError
+
+if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
+    from agent.adapters.base import ChatMessage
 
 # 边界策略的运行模式（阶段 4）：
 # off     不评估；
@@ -260,6 +264,12 @@ def _user_message_facts(ctx) -> tuple[str, dict | None]:
     return "text", None
 
 
+#: 兼容旧名：重建失败的结构化异常已由 B 的 services.topic_recovery 唯一定义
+#: （stage / operation_id / topic_id / detail / as_dict()）。这里只保留别名，
+#: 不再有第二套异常定义；orchestrator 失败时抛 TopicContextPrepareError。
+TopicContextRebuildError = TopicContextPrepareError
+
+
 @dataclass
 class _Plan:
     topic: str
@@ -466,24 +476,12 @@ class TurnOrchestrator:
             topic = ctx.initial_topic or app.current_topic()
 
             # ── 轮前：固定本轮归属（Topic / Fragment）──────────────────────
-            # 顺序是有意的：先解析「用户明确要求切换」，再落实「已授权的历史接续」，
-            # 最后才写绑定。绑定一旦写下，本轮的消息归属就不再受后续导航影响。
-            from agent.services.navigation import (
-                detect_explicit_navigation,
-                detect_explicit_topic_creation,
-            )
-
-            explicit_target = detect_explicit_navigation(
-                ctx.message, [(n.id, n.name) for n in app.topics.nodes.list_topics()]
-            )
-            if explicit_target and explicit_target != topic:
-                app.navigation.enter_topic(explicit_target, relate=True)
-                topic = explicit_target
-            ctx.explicit_target = explicit_target
-            # 用户明确要求新建话题：只登记「这次不需要普通确认」的授权依据，
-            # **不在这里创建** —— 创建仍由本轮模型调用 create_topic 执行一次，
-            # 避免程序先建一次、模型工具又建一次。
-            ctx.explicit_create_name = detect_explicit_topic_creation(ctx.message)
+            # P1-01：这里**不做任何自然语言语义识别**——进入主循环之前不判断
+            # 「用户是否明确要求切换 / 新建」，本轮位置在这个时间点保持不变。
+            # 是否换题只由本轮主模型在工具参数的 intent 里声明，程序不做关键词 /
+            # 正则 / 包含匹配式的「明确授权」推断（那会把否定、解释、引用误判成
+            # 明确请求）。这里只落实「已授权的历史接续」，最后才写绑定；绑定一旦
+            # 写下，本轮的消息归属就不再受后续导航影响。
             ctx.current_topic = topic
 
             fragment_id: str | None = None
@@ -526,7 +524,8 @@ class TurnOrchestrator:
             # 写入只走 Navigator：会话起点变化也是「进入话题」这一种导航。
             active_anchor = app.navigation.anchors.get_active()
             if active_anchor is None or active_anchor.topic_id != topic:
-                app.navigation.enter_topic(topic)
+                # 例行补锚点：不是用户/工具的导航决策，不推进导航版本（P1-04）。
+                app.navigation.enter_topic(topic, advance_nav_version=False)
                 await app._publish_anchor_event()
         return adapter
 
@@ -547,9 +546,8 @@ class TurnOrchestrator:
         message = ctx.message
         tracer = ctx.trace
 
-        # 明确导航已经在 begin() 里解析并写进本轮绑定（阶段 1）：
-        # 这里只读取结果，用于「不再叠加推测切换」与 trace 记录。
-        explicit_target = getattr(ctx, "explicit_target", None)
+        # P1-01：begin() 不再做轮前语义识别，这里也没有「程序识别的明确导航」
+        # 可读——是否换题只来自本轮主模型调用原工具时在参数里声明的 intent。
 
         # 话题预判会用嵌入模型（缺本地模型时降级到规则层）——单独成段，
         # 不要让「第一次加载嵌入模型」的几秒钟变成上下文装配里的黑盒。
@@ -628,18 +626,7 @@ class TurnOrchestrator:
                 prediction,
                 refuse_scope=refuse_scope,
             )
-            _explicit_hint = ""
-            if explicit_target:
-                _explicit_hint = (
-                    f"用户本轮已明确要求切换到已有话题 {explicit_target}（不需要再确认）。"
-                )
-            elif getattr(ctx, "explicit_create_name", None):
-                _explicit_hint = (
-                    "用户本轮已明确要求新建话题（不需要再确认），名称见本轮用户消息。"
-                )
-            topic_decision_note = render_topic_decision_note(
-                _decision_state, explicit_hint=_explicit_hint
-            )
+            topic_decision_note = render_topic_decision_note(_decision_state)
             if ctx.trace is not None:
                 ctx.trace.write(
                     "topic_decision_evidence",
@@ -1230,30 +1217,50 @@ class TurnOrchestrator:
             logging.getLogger(__name__).warning("mode rules failed", exc_info=True)
             return ""
 
+    def _set_topic_phase(self, ctx, phase) -> None:
+        """把本轮话题阶段同步给 ctx 与 AgentLoop 的阶段门（B 的 set_topic_phase）。
+
+        bridge 在本轮构造时传入这个同步回调；真正调用发生在 loop.run 内，
+        此时 ctx.loop 已就位。没有 loop（单元测试 / 旧路径）时只记在 ctx 上，
+        不假装阶段门已经生效。
+        """
+        ctx.topic_phase = phase
+        loop = getattr(ctx, "loop", None)
+        setter = getattr(loop, "set_topic_phase", None)
+        if callable(setter):
+            setter(phase)
+
     def _build_topic_application(self, ctx, adapter, plan: _Plan):
-        """构造话题申请桥；模块不在时保持旧行为（不静默改变其它轮次）。"""
+        """构造话题申请桥（Lead 冻结签名，C 实现）。
+
+        set_phase 是同步回调：bridge 在等待确认 / 执行 / 上下文准备时调用，
+        loop 据此决定本轮能否发布正式正文。桥构造失败不静默退化成语义直执行：
+        没有桥时话题工具按普通工具走旧语义，会成为第二条语义路径（P1-01 禁止），
+        所以初始化错误如实抛出，由本轮失败通道处理。
+        """
+        from agent.services.topic_application import TopicApplicationBridge
+
+        return TopicApplicationBridge(
+            self.app,
+            ctx,
+            adapter=adapter,
+            plan=plan,
+            rebind_turn=lambda topic_id: self.rebind_turn_to_topic(ctx, topic_id),
+            rebuild_system=lambda topic_id: self.rebuild_system_after_topic_application(
+                ctx, adapter, plan, topic_id
+            ),
+            set_phase=lambda phase: self._set_topic_phase(ctx, phase),
+        )
+
+    @staticmethod
+    def _current_operation_id() -> str | None:
+        """当前正在处理的话题操作 id（C 的 ContextVar；拿不到就 None）。"""
         try:
-            from agent.services.topic_application import TopicApplicationBridge
-        except ImportError:  # pragma: no cover - 模块由本轮并行分支提供
-            logging.getLogger(__name__).warning(
-                "topic application module unavailable; topic tools run directly"
-            )
-            return None
-        try:
-            return TopicApplicationBridge(
-                self.app,
-                ctx,
-                adapter=adapter,
-                plan=plan,
-                rebind_turn=lambda topic_id: self.rebind_turn_to_topic(ctx, topic_id),
-                rebuild_system=lambda topic_id: self.rebuild_system_after_topic_application(
-                    ctx, adapter, plan, topic_id
-                ),
-            )
-        except Exception:  # noqa: BLE001 - 桥初始化失败不能拖垮整轮
-            logging.getLogger(__name__).warning(
-                "topic application bridge init failed", exc_info=True
-            )
+            from agent.services.topic_operation import current_operation
+
+            operation = current_operation()
+            return getattr(operation, "operation_id", None)
+        except Exception:  # noqa: BLE001 - 身份只是恢复记录的附加事实
             return None
 
     async def rebind_turn_to_topic(self, ctx, topic_id: str) -> str:
@@ -1262,38 +1269,75 @@ class TurnOrchestrator:
         与收尾的 _apply_tool_nav_rebind 是同一组事实，但发生在**正式回答之前**：
         之后装配的目标话题上下文、模型正式回答、以及落库的问答都在同一个话题里，
         不会出现「提问在旧话题、回答在新话题」或两个话题各存一份。
+
+        P1-03：整个搬迁（片段落位 + 绑定改向 + 用户消息移动 + 绑定细化）在一个
+        事务里完成，任何一步失败都整体回滚；重复调用是幂等的（已归属到目标话题时
+        不再写任何一行，也不产生第二条用户消息）。
         """
+        from agent.storage.db import transaction
+
         app = self.app
-        binding = app.bindings.binding_for(ctx.turn_id)
-        if binding is None or binding.write_state != "open":
+        turn_id = str(getattr(ctx, "turn_id", "") or "")
+        target_topic = str(topic_id or "").strip()
+        if not target_topic:
+            raise RuntimeError("目标话题为空，不能改归属")
+        binding = app.bindings.binding_for(turn_id)
+        if binding is None:
+            raise RuntimeError("本轮还没有绑定，不能改归属")
+        if binding.write_state != "open":
             raise RuntimeError("本轮绑定已收尾，不能再改归属")
-        if getattr(ctx, "bound_topic", None) == topic_id and ctx.user_message_id:
-            return topic_id
         previous_topic = binding.topic_id
-        if previous_topic == topic_id:
-            return topic_id
-        target = app.fragments.get_or_create_open(topic_id)
-        app.bindings.rebind_topic_from_tool_nav(ctx.turn_id, topic_id)
-        if ctx.user_message_id:
-            # 只移动本轮这一条用户消息；其它历史/已排队消息不动。
-            app.memory.move_message(ctx.user_message_id, to_fragment_id=target.id)
-        app.bindings.record_binding(
-            ctx.turn_id,
-            topic_id,
-            fragment_id=target.id,
-            intent_id=binding.intent_id,
-            intent_version=getattr(ctx, "bound_intent_version", None),
-        )
-        ctx.bound_topic = topic_id
-        ctx.bound_fragment_id = target.id
+        # 幂等：重复确认 / 网络重放 / 超时重试不产生第二次搬迁。
+        if previous_topic == target_topic:
+            if getattr(ctx, "bound_fragment_id", None) is None and ctx.user_message_id:
+                row = app.conn.execute(
+                    "SELECT fragment_id FROM messages WHERE id = ?",
+                    (ctx.user_message_id,),
+                ).fetchone()
+                actual_fragment = row["fragment_id"] if row is not None else None
+                if actual_fragment:
+                    ctx.bound_fragment_id = actual_fragment
+            ctx.bound_topic = target_topic
+            ctx.topic_application_rebound = True
+            return target_topic
+        if app.topics.nodes.get_topic(target_topic) is None:
+            raise RuntimeError(f"目标话题不存在：{target_topic}")
+        target_fragment_id: str
+        with transaction(app.conn):
+            target = app.fragments.get_or_create_open(target_topic)
+            target_fragment_id = target.id
+            app.bindings.rebind_topic_from_tool_nav(turn_id, target_topic)
+            if ctx.user_message_id:
+                # 只移动本轮这一条用户消息；其它历史/已排队消息不动。
+                app.memory.move_message(
+                    ctx.user_message_id, to_fragment_id=target_fragment_id
+                )
+            app.bindings.record_binding(
+                turn_id,
+                target_topic,
+                fragment_id=target_fragment_id,
+                intent_id=binding.intent_id,
+                intent_version=getattr(ctx, "bound_intent_version", None),
+            )
+        ctx.bound_topic = target_topic
+        ctx.bound_fragment_id = target_fragment_id
         ctx.topic_application_rebound = True
         if ctx.trace is not None:
             ctx.trace.write(
-                "topic_application_rebind", f"{previous_topic} -> {topic_id}/{target.id}"
+                "topic_application_rebind",
+                f"{previous_topic} -> {target_topic}/{target_fragment_id}",
             )
+        # 事务提交之后才广播：失败回滚时不能发出「已经导航」的假事件。
         # 旧申请/旧建议不能覆盖用户的新选择：锚点已由原工具写入，这里广播真实结果。
         await app._publish_anchor_event()
-        return topic_id
+        return target_topic
+
+    def _topic_specs(self, *, interactive: bool) -> list:
+        return [
+            spec
+            for spec in _specs_or_empty(self.app.registry)
+            if interactive or not str(getattr(spec, "name", "")).startswith("board_")
+        ]
 
     async def rebuild_system_after_topic_application(
         self, ctx, adapter, plan: _Plan, topic_id: str
@@ -1302,56 +1346,257 @@ class TurnOrchestrator:
 
         不能继续用切换前那套旧上下文：这里是**目标话题**的检索/短期记忆/实体卡/
         焦点位置重新装配；原话题全部历史不会自动复制进新话题。
+
+        P1-03：失败（异常 / 空结果 / 空 system）必须**抛结构化失败**
+        （B 的 TopicContextPrepareError：stage=context_prepare + topic_id +
+        operation_id），不得 warn 后返回旧 system；由 B 的 loop 进入
+        RECOVERABLE_FAILURE 并写恢复记录。本方法只读，抛错前不改 system/messages。
         """
         from agent.core.message_assembly import render_system
         from agent.graph.anchors import AnchorService
         from agent.services.affinity import related_topics
+        from agent.trace.redact import sanitize_error_text as _sanitize
 
         app = self.app
-        node = app.topics.nodes.get_topic(topic_id)
-        topic_name = node.name if node is not None else topic_id
-        fragment_id = getattr(ctx, "bound_fragment_id", None)
-        focus_fragment = AnchorService(app.conn).focus_fragment(topic_id)
-        pivot = TopicPrediction(
-            main_topic_id=topic_id,
-            backend_used=getattr(plan.prediction, "backend_used", "rules"),
-        )
-        blocks, _payload, _needs = await self._assemble_context(
-            app,
-            adapter,
-            ctx,
-            message=ctx.message,
-            topic=topic_id,
-            aux_topic_ids=related_topics(app.conn, topic_id, top_n=2),
-            fragment_id=fragment_id,
-            focus_fragment_id=focus_fragment,
-            exclude_message_id=ctx.user_message_id,
-            new_topic_candidate=False,
-            reason="",
-            short_term=app._short_term_items(
-                topic_id, exclude_message_id=ctx.user_message_id, fragment_id=fragment_id
-            ),
-            topic_note=app._topic_note(topic_id, pivot),
-            focus_block=app._focus_block(topic_id, focus_fragment) if focus_fragment else "",
-            focus_item_id=focus_fragment,
-            entity_cards=[],
-        )
-        interactive_mode = getattr(ctx, "mode", "normal") == "interactive"
-        specs = [
-            spec
-            for spec in _specs_or_empty(app.registry)
-            if interactive_mode or not str(getattr(spec, "name", "")).startswith("board_")
-        ]
-        extra = [
-            f"用户已确认把本轮转到话题「{topic_name}」（{topic_id}）。"
-            "请基于重新装配的目标话题上下文继续回答用户最初的问题；"
-            "不要再申请切换/新建，也不要把尚未发生的操作说成已完成。"
-        ]
-        return render_system(
-            mode_rules=self._mode_rules_text(ctx, adapter, specs),
-            blocks=blocks,
-            extra_sections=extra,
-        )
+        target = str(topic_id or "").strip()
+        turn_id = str(getattr(ctx, "turn_id", "") or "") or None
+        operation_id = self._current_operation_id()
+        try:
+            if not target:
+                raise ValueError("目标话题为空")
+            node = app.topics.nodes.get_topic(target)
+            if node is None:
+                raise ValueError(f"目标话题不存在：{target}")
+            topic_name = node.name
+            fragment_id = getattr(ctx, "bound_fragment_id", None)
+            focus_fragment = AnchorService(app.conn).focus_fragment(target)
+            pivot = TopicPrediction(
+                main_topic_id=target,
+                backend_used=getattr(plan.prediction, "backend_used", "rules"),
+            )
+            blocks, _payload, _needs = await self._assemble_context(
+                app,
+                adapter,
+                ctx,
+                message=ctx.message,
+                topic=target,
+                aux_topic_ids=related_topics(app.conn, target, top_n=2),
+                fragment_id=fragment_id,
+                focus_fragment_id=focus_fragment,
+                exclude_message_id=ctx.user_message_id,
+                new_topic_candidate=False,
+                reason="",
+                short_term=app._short_term_items(
+                    target,
+                    exclude_message_id=ctx.user_message_id,
+                    fragment_id=fragment_id,
+                ),
+                topic_note=app._topic_note(target, pivot),
+                focus_block=app._focus_block(target, focus_fragment)
+                if focus_fragment
+                else "",
+                focus_item_id=focus_fragment,
+                entity_cards=[],
+            )
+            if not blocks:
+                raise RuntimeError("目标话题上下文装配结果为空")
+            interactive_mode = getattr(ctx, "mode", "normal") == "interactive"
+            specs = self._topic_specs(interactive=interactive_mode)
+            extra = [
+                f"用户已确认把本轮转到话题「{topic_name}」（{target}）。"
+                "请基于重新装配的目标话题上下文继续回答用户最初的问题；"
+                "不要再申请切换/新建，也不要把尚未发生的操作说成已完成。"
+            ]
+            system = render_system(
+                mode_rules=self._mode_rules_text(ctx, adapter, specs),
+                blocks=blocks,
+                extra_sections=extra,
+            )
+            if not str(system or "").strip():
+                raise RuntimeError("目标话题 system 为空")
+            return system
+        except TopicContextPrepareError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 失败必须显式上报，不能返回旧 system
+            detail = _sanitize(str(exc))[:300]
+            if getattr(ctx, "trace", None) is not None:
+                ctx.trace.write(
+                    "topic_context_rebuild_failed", f"{target or '?'}: {detail}"
+                )
+            error = TopicContextPrepareError(
+                detail,
+                operation_id=operation_id,
+                topic_id=target or None,
+            )
+            # turn_id 是附加诊断事实（B 的 as_dict 只含 stage/operation_id/topic_id/detail）。
+            error.turn_id = turn_id
+            raise error from exc
+
+    async def prepare_topic_answer_messages(
+        self, *, turn_id: str, topic_id: str, user_message_id: str
+    ) -> list[ChatMessage]:
+        """恢复入口：为目标话题装配「只生成回答」的初始消息（P1-03）。
+
+        只读：不写库、不发事件、不新建用户消息、不重跑话题工具，也**不复制**
+        原话题全部历史。system 用目标话题重新装配的上下文；messages 只有
+        system + 本轮原始 user 消息（媒体 / 附件事实按本轮真实绑定尽力恢复）。
+
+        失败 raise TopicContextPrepareError（stage=context_prepare），
+        由 B 的恢复入口如实写恢复记录，不得回落到旧上下文回答。
+        """
+        from agent.adapters.base import AudioPart, ImagePart, VideoPart
+        from agent.core.message_assembly import MediaParts, build_initial_messages
+        from agent.graph.anchors import AnchorService
+        from agent.services.affinity import related_topics
+        from agent.trace.redact import sanitize_error_text as _sanitize
+
+        app = self.app
+        turn = str(turn_id or "").strip()
+        target = str(topic_id or "").strip()
+        message_id = str(user_message_id or "").strip()
+        operation_id = self._current_operation_id()
+        try:
+            if not turn or not target or not message_id:
+                raise ValueError("恢复参数不完整（turn_id/topic_id/user_message_id 必填）")
+            node = app.topics.nodes.get_topic(target)
+            if node is None:
+                raise ValueError(f"目标话题不存在：{target}")
+            topic_name = node.name
+            row = app.conn.execute(
+                "SELECT content, role FROM messages WHERE id = ?", (message_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"本轮用户消息不存在：{message_id}")
+            if str(row["role"]) != "user":
+                raise ValueError(f"消息 {message_id} 不是用户消息")
+            user_text = str(row["content"] or "")
+            adapter = await app.build_adapter()
+            if adapter is None:
+                raise RuntimeError("模型凭据不可用，无法装配回答上下文")
+            # 归属可能已经迁移，也可能迁移失败：只有属于目标话题的片段才作为
+            # 「路径前提」；否则按目标话题当前上下文装配（不猜）。
+            binding = app.bindings.binding_for(turn)
+            fragment_id = None
+            if binding is not None and binding.topic_id == target:
+                fragment_id = binding.fragment_id
+            focus_fragment = AnchorService(app.conn).focus_fragment(target)
+            pivot = TopicPrediction(main_topic_id=target, backend_used="rules")
+            blocks, _payload, _needs = await self._assemble_context(
+                app,
+                adapter,
+                None,
+                message=user_text,
+                topic=target,
+                aux_topic_ids=related_topics(app.conn, target, top_n=2),
+                fragment_id=fragment_id,
+                focus_fragment_id=focus_fragment,
+                exclude_message_id=message_id,
+                new_topic_candidate=False,
+                reason="",
+                short_term=app._short_term_items(
+                    target, exclude_message_id=message_id, fragment_id=fragment_id
+                ),
+                topic_note=app._topic_note(target, pivot),
+                focus_block=app._focus_block(target, focus_fragment)
+                if focus_fragment
+                else "",
+                focus_item_id=focus_fragment,
+                entity_cards=[],
+            )
+            if not blocks:
+                raise RuntimeError("目标话题上下文装配结果为空")
+            # 附件事实（只读事实表；授权仍是 W1 网关的唯一裁决）。
+            read_grants: dict = {"allowed": [], "denied": [], "degraded": False}
+            try:
+                from agent.services import attachment_access as _attachment_access
+
+                read_grants = await app.authorize_attachment_reads_for_turn(turn)
+                _attachment_access.set_read_grants(read_grants.get("allowed") or [])
+            except Exception:  # noqa: BLE001 - 授权失败按本轮没有材料授权处理
+                logging.getLogger(__name__).warning(
+                    "recovery attachment read authorization failed", exc_info=True
+                )
+            attachment_block: dict = {}
+            try:
+                note = app.attachment_turn_note(turn)
+            except Exception:  # noqa: BLE001 - 附件事实是旁路
+                note = ""
+            try:
+                materials = app.attachment_materials_facts(turn)
+            except Exception:  # noqa: BLE001 - 附件事实是旁路
+                materials = []
+            if note:
+                attachment_block["note"] = str(note).strip()
+            if materials:
+                attachment_block["materials"] = materials
+            denied_materials = list(read_grants.get("denied") or [])
+            if denied_materials:
+                attachment_block["read_denied"] = denied_materials
+                attachment_block["read_denied_note"] = (
+                    "这些附件本轮没有读取授权或源文件不可用：不要声称读过其内容"
+                )
+            if attachment_block:
+                from agent.core.message_assembly import ContextBlock
+
+                blocks.append(ContextBlock("attachments", attachment_block))
+            # 本轮媒体材料：从本轮的持久化候选尽力恢复（失败按没有媒体处理，
+            # 不伪造「已读到」）。
+            media_parts: list[Any] = []
+            collector = getattr(app, "media_materials_for_turn", None)
+            resolver = getattr(app, "resolve_media_materials", None)
+            if callable(collector) and callable(resolver):
+                try:
+                    collected = collector(turn, adapter)
+                    candidates = list(collected.get("candidates") or [])
+                    if candidates:
+                        resolved = await asyncio.to_thread(
+                            resolver, candidates, turn_id=turn, adapter=adapter
+                        )
+                        media_parts = list(resolved.get("parts") or [])
+                except Exception:  # noqa: BLE001 - 媒体恢复失败不阻断回答
+                    logging.getLogger(__name__).warning(
+                        "recovery media materials failed", exc_info=True
+                    )
+                    media_parts = []
+                finally:
+                    from agent.services.media import cleanup_media
+
+                    work_root = Path(app.settings.data_dir) / "tmp" / f"media-{turn}"
+                    cleanup_media(work_root)
+            specs = self._topic_specs(interactive=False)
+            extra = [
+                f"本轮已经转到话题「{topic_name}」（{target}）。请基于重新装配的"
+                "目标话题上下文回答用户最初的问题；不要再申请切换/新建，"
+                "也不要把尚未发生的操作说成已完成。"
+            ]
+            return build_initial_messages(
+                user_text=user_text,
+                media=MediaParts(
+                    images=tuple(
+                        part for part in media_parts if isinstance(part, ImagePart)
+                    ),
+                    audios=tuple(
+                        part for part in media_parts if isinstance(part, AudioPart)
+                    ),
+                    videos=tuple(
+                        part for part in media_parts if isinstance(part, VideoPart)
+                    ),
+                ),
+                mode_rules=self._mode_rules_text(None, adapter, specs),
+                blocks=blocks,
+                extra_sections=extra,
+            )
+        except TopicContextPrepareError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 恢复入口必须得到明确失败
+            detail = _sanitize(str(exc))[:300]
+            error = TopicContextPrepareError(
+                detail,
+                operation_id=operation_id,
+                topic_id=target or None,
+            )
+            error.turn_id = turn or None
+            raise error from exc
 
     async def persist(self, ctx, adapter, plan: _Plan, result) -> str:
         app = self.app
@@ -1369,12 +1614,18 @@ class TurnOrchestrator:
         if final_topic != plan.topic:
             # 只记录，不搬动：绑定的归属优先
             ctx.trace.write("bound_topic", f"{final_topic} (context={plan.topic})")
-        # 阶段三契约 §13.3：互动轮允许不回复（已保存意图 / 已记录等待）。
-        # 没有真实交付内容时不写空助手消息，避免界面出现空白回答气泡。
-        if (
+        # 阶段三契约 §13.3 + P1-02 输出边界：
+        # * 互动轮允许不回复（已保存意图 / 已记录等待）；
+        # * 话题阶段门下没有正式回答的轮次（result.formal_answer=False：决策未定 /
+        #   等待确认 / 执行中 / 上下文准备中 / 可恢复失败）不得写空助手消息，
+        #   也不得把过程说明当正式回答落库。
+        # B 的 TurnResult 新增 formal_answer 字段；字段不存在时按旧行为（True）处理。
+        formal_answer = bool(getattr(result, "formal_answer", True))
+        interactive_no_reply = (
             getattr(ctx, "mode", "normal") == "interactive"
             and not (getattr(result, "final_content", "") or "").strip()
-        ):
+        )
+        if not formal_answer or interactive_no_reply:
             ctx.final_verification = None
             app.bindings.mark_write_closed(ctx.turn_id)
             anchor = app.conn.execute(
@@ -1386,7 +1637,10 @@ class TurnOrchestrator:
                 if anchor is not None
                 else getattr(ctx, "bound_fragment_id", None)
             )
-            ctx.trace.write("messages", "interactive_no_reply")
+            ctx.trace.write(
+                "messages",
+                "interactive_no_reply" if interactive_no_reply else "no_formal_answer",
+            )
             return final_topic
         assistant_msg_id, _ = app.memory.append_message(
             topic_id=final_topic,
@@ -1860,8 +2114,14 @@ class TurnOrchestrator:
             and active.fragment_id == fragment_id
         ):
             return
+        # 轮末把位置推进到本轮真实片段：这是**位置细化**，不是导航决策。
+        # 推进版本会让「同一轮工具换题 + 收尾落位」被记成两次导航，恢复入口
+        # 会把自己的记录误判成用户后来又切走了（P1-03/P1-04 接缝）。
         app.navigation.enter_topic(
-            final_topic, fragment_id=fragment_id, relate=False
+            final_topic,
+            fragment_id=fragment_id,
+            relate=False,
+            advance_nav_version=False,
         )
         await app._publish_anchor_event()
 

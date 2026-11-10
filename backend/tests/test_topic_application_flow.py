@@ -29,6 +29,7 @@ from agent.config import Settings
 from agent.core.loop import AgentLoop
 from agent.core.turn import TurnContext
 from agent.credentials.store import MemoryKeyring
+from agent.services import navigation_version
 from agent.services.app import AppContext
 from agent.services.topic_application import TopicApplicationBridge
 from agent.storage.db import connect
@@ -241,8 +242,6 @@ def _prepare_turn(app: AppContext, *, message: str, topic_id: str):
     ctx.current_topic = topic_id
     ctx.bound_topic = topic_id
     ctx.bound_fragment_id = fragment.id
-    ctx.explicit_target = None
-    ctx.explicit_create_name = None
     return ctx, fragment.id
 
 
@@ -337,20 +336,20 @@ async def _wait_until(predicate, *, timeout: float = 5.0) -> None:
         await asyncio.sleep(0.01)
 
 
-def _switch_call(call_id: str, topic_id: str) -> ToolCall:
-    return ToolCall(
-        id=call_id,
-        name="switch_topic",
-        arguments={"topic_id": topic_id, "reason": "这段内容看起来属于该话题"},
-    )
+def _switch_call(
+    call_id: str, topic_id: str, *, intent: str | None = None
+) -> ToolCall:
+    arguments: dict = {"topic_id": topic_id, "reason": "这段内容看起来属于该话题"}
+    if intent is not None:
+        arguments["intent"] = intent
+    return ToolCall(id=call_id, name="switch_topic", arguments=arguments)
 
 
-def _create_call(call_id: str, name: str) -> ToolCall:
-    return ToolCall(
-        id=call_id,
-        name="create_topic",
-        arguments={"name": name, "reason": "这是一个独立的新话题"},
-    )
+def _create_call(call_id: str, name: str, *, intent: str | None = None) -> ToolCall:
+    arguments: dict = {"name": name, "reason": "这是一个独立的新话题"}
+    if intent is not None:
+        arguments["intent"] = intent
+    return ToolCall(id=call_id, name="create_topic", arguments=arguments)
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +514,7 @@ async def test_create_approved_with_edited_name_creates_the_edited_topic(app: Ap
 # 4) 拒绝之后同轮重复申请被程序拦截（不重复弹、工具不执行）
 # ---------------------------------------------------------------------------
 
-async def test_repeated_switch_after_rejection_is_blocked_without_second_approval(app: AppContext):
+async def test_repeated_switch_after_rejection_is_late_and_not_executed(app: AppContext):
     old_topic = _topic(app, "旧话题")
     target_topic = _topic(app, "目标话题")
     app.fragments.get_or_create_open(target_topic)
@@ -538,9 +537,12 @@ async def test_repeated_switch_after_rejection_is_blocked_without_second_approva
     assert adapter.calls == 3
     assert result.final_content == "在当前话题回答"
     assert app.navigation.anchors.get_active().topic_id == old_topic
+    # 拒绝 → 立即 ANSWERABLE，本轮归属固定：再次请求导航属**迟到**请求，
+    # 按既有 _warn_late_tool_calls 口径不执行，不再进入申请/查重流程。
     reasons = [item["reason"] for item in app.topic_application_state.refused_attempts]
-    assert "rejected" in reasons and "duplicate" in reasons
+    assert reasons == ["rejected"], "迟到的导航请求不进入申请流程（不记 duplicate）"
     assert captured["rebind"] == []
+    assert any("不执行这些调用" in w for w in result.warnings), "迟到请求必须可观察"
 
 
 # ---------------------------------------------------------------------------
@@ -580,8 +582,16 @@ async def test_navigation_while_waiting_makes_application_stale(app: AppContext)
     assert _message_fragment(app, ctx.user_message_id) == old_fragment
     assert captured["rebind"] == [] and captured["systems"] == []
     assert result.final_content == "在原话题回答"
+    # P1-04：申请绑定真实导航版本快照（不是等待前检查一次就当一直有效）。
+    payload = approvals.requests[0]["payload"]
+    assert payload["base_nav_version"] is not None
+    assert navigation_version.current(app.conn) != payload["base_nav_version"], (
+        "用户手动导航必须推进导航版本，旧申请的起点因此不再匹配"
+    )
+    # 失效 ≠ 拒绝：不写拒绝范围（不污染「用户拒绝过」的证据）。
     reasons = [item["reason"] for item in app.topic_application_state.refused_attempts]
-    assert "stale" in reasons
+    assert "stale" not in reasons
+    assert getattr(ctx, "topic_refusal_scope", None) is None
     # 批准过但没执行：审批历史必须如实收口成失败（不假装执行成功）
     assert approvals.executions and approvals.executions[-1]["ok"] is False
 
@@ -620,7 +630,9 @@ async def test_timeout_is_treated_as_refusal_and_tool_is_not_executed(app: AppCo
 # 7) 一次性交付路径：正文 + 话题工具同时返回 → 决定前不得出现正式回答
 # ---------------------------------------------------------------------------
 
-async def test_declared_answer_with_topic_tool_is_held_until_decision(app: AppContext):
+async def test_declared_answer_with_topic_tool_body_is_discarded_until_decision(
+    app: AppContext,
+):
     old_topic = _topic(app, "旧话题")
     target_topic = _topic(app, "目标话题")
     app.fragments.get_or_create_open(target_topic)
@@ -642,11 +654,12 @@ async def test_declared_answer_with_topic_tool_is_held_until_decision(app: AppCo
     try:
         await _wait_until(lambda: bool(approvals.requests))
         assert _assistant(events, interim=False) == [], "决定前不得出现正式回答"
-        held = _assistant(events, interim=True)
-        assert any(
-            d.get("role_evidence") == "declared_answer_held_for_topic_application"
-            for d in held
-        ), "被扣住的正文应按过程说明交付（不丢字、不冒充正式回答）"
+        # 阶段门：响应含话题工具调用 → 正文整段丢弃（不能当回答，也**不得**
+        # 改名成过程说明发出去 —— 旧「先发后改判」路径已删除）。
+        assert all(
+            "这段先不能交付" not in (d.get("content") or "")
+            for d in _assistant(events)
+        ), "含话题工具调用的响应正文必须整段丢弃"
         approvals.release("approved")
         result = await asyncio.wait_for(run, timeout=15)
     finally:
@@ -655,9 +668,14 @@ async def test_declared_answer_with_topic_tool_is_held_until_decision(app: AppCo
 
     assert result.final_content == "真正的回答"
     final_events = _assistant(events, interim=False)
-    assert len(final_events) == 1
-    assert final_events[0]["content"] == "真正的回答"
+    # 流式收尾是同一 delta_id 的累计快照：正文只算一份。
+    assert {d["content"] for d in final_events} == {"真正的回答"}
+    assert len({d["delta_id"] for d in final_events}) == 1
     assert all("这段先不能交付" not in d.get("content", "") for d in final_events)
+    assert all(
+        "这段先不能交付" not in (d.get("content") or "")
+        for d in _assistant(events)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -797,10 +815,10 @@ async def test_explicit_user_switch_skips_approval_but_still_rebinds(app: AppCon
     app.memory.move_message(ctx.user_message_id, to_fragment_id=target_fragment)
     ctx.bound_topic = target_topic
     ctx.bound_fragment_id = target_fragment
-    ctx.explicit_target = target_topic
 
+    # P1-01：语义来源唯一受控通道 = 本轮真实 tool_call 的 intent 参数。
     adapter = ScriptedAdapter([
-        (None, [_switch_call("c1", target_topic)]),
+        (None, [_switch_call("c1", target_topic, intent="user_request")]),
         (ANSWER_MARKER + "\n明确导航后的回答", None),
     ])
     approvals = FakeApprovals()
@@ -824,9 +842,9 @@ async def test_explicit_user_creation_skips_approval_but_still_creates_and_rebin
     old_topic = _topic(app, "旧话题")
     question = "新建一个话题叫「用户说的新话题」"
     ctx, _ = _prepare_turn(app, message=question, topic_id=old_topic)
-    ctx.explicit_create_name = "用户说的新话题"
+    # P1-01：直接执行只由本轮 tool_call 的 intent 声明，不再读轮前 explicit 提示。
     adapter = ScriptedAdapter([
-        (None, [_create_call("c1", "用户说的新话题")]),
+        (None, [_create_call("c1", "用户说的新话题", intent="user_request")]),
         (ANSWER_MARKER + "\n新话题里的回答", None),
     ])
     approvals = FakeApprovals()
@@ -911,12 +929,24 @@ async def test_answer_failure_after_switch_does_not_rollback_the_topic(app: AppC
     bridge, _captured = _make_bridge(app, ctx, approvals)
     loop = _make_loop(app, adapter, approvals, bridge)
 
-    with pytest.raises(RuntimeError):
-        await asyncio.wait_for(
-            loop.run(question, initial_messages=_initial_messages(question)), timeout=15
-        )
+    # P1-03：回答失败是可恢复失败（不再上抛整轮失败）：不发布正式回答，保留恢复
+    # 记录，单独记 failed_stage="answer"；已经成功执行的话题变更不回滚。
+    result = await asyncio.wait_for(
+        loop.run(question, initial_messages=_initial_messages(question)), timeout=15
+    )
 
-    # 回答失败不回滚已经成功执行的话题变更；两条失败事实各自可读
+    from agent.services import topic_recovery
+
+    assert result.final_content is None
+    assert result.formal_answer is False
+    assert result.cancelled is False
     assert app.navigation.anchors.get_active().topic_id == target_topic
     assert _binding(app, ctx.turn_id).topic_id == target_topic
     assert approvals.executions and approvals.executions[-1]["ok"] is True
+    recovery = loop._topic_recovery
+    assert recovery is not None and recovery["failed_stage"] == "answer"
+    stored = topic_recovery.get_record(app, recovery["record_id"])
+    assert stored is not None
+    assert stored["status"] == "pending"
+    assert stored["failed_stage"] == "answer"
+    assert stored["topic_id"] == target_topic

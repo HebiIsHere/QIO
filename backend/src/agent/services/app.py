@@ -1999,6 +1999,15 @@ class AppContext:
             unbind_background_owner(self.conn)
         except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
             logger.warning("failed to unbind interactive background owner", exc_info=True)
+        # 实例身份也是进程级模块状态：不解绑的话，同一进程里后建的 AppContext
+        # 会沿用上一个（已关闭）实例的身份，派生任务的归属条件因此永远不匹配
+        # （表现为「更新 0 行」而不是报错，最容易在并行测试里被误判成业务失败）。
+        try:
+            from agent.services.derived_tasks import bind_instance as _unbind_derived_instance
+
+            _unbind_derived_instance(None, None)
+        except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+            logger.warning("failed to unbind derived task instance", exc_info=True)
 
         log_close_report(report)
         return report

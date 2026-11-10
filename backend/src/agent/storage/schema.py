@@ -2030,6 +2030,30 @@ MIGRATIONS.append(
     )
 )
 
+# ── P1R-C（2026-11-10）：P1-04 单调导航版本（申请绑定真实导航位置）──────────
+# 只追加迁移 77 + 补偿 78；历史迁移一条不动。表语义见
+# services/navigation_version.py 与 storage/migration_p1r_navigation.py。
+from agent.storage.migration_p1r_navigation import MIGRATION as _P1R_NAVIGATION_MIGRATION  # noqa: E402
+
+MIGRATIONS.append(_P1R_NAVIGATION_MIGRATION)
+
+# 补偿入口（新，78）：补偿 76 的全部语句 + 导航版本表建表 DDL。
+# 与 66/68/70/72/74/76 同口径：纯追加 DDL；「版本已登记但表丢失」的存量库由
+# migrate.verify_required_objects 重放这里补齐，不改任何数据行。
+MIGRATIONS.append(
+    (
+        78,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 76 for stmt in stmts]
+            + [
+                stmt
+                for stmt in _P1R_NAVIGATION_MIGRATION[1]
+                if " ".join(str(stmt).split())[:6].upper().startswith(("CREATE", "ALTER"))
+            ]
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 76
+COMPENSATION_VERSION = 78
 

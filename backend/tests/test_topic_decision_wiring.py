@@ -190,28 +190,18 @@ async def test_high_similarity_alone_never_emits_an_executable_suggestion(
     assert suggestions == [], f"相似度不得单独产生可执行建议：{suggestions}"
 
 
-async def test_explicit_create_registers_authorization_but_creates_no_topic(
+async def test_create_request_no_longer_registers_program_authorization(
     ctx: AppContext, monkeypatch
 ):
     a = _topic(ctx, "QIO 前端")
     _install_adapter(ctx, monkeypatch)
     ctx.navigation.enter_topic(a)
-    seen: dict = {}
-
-    def _capture(app, turn_ctx, topic, prediction, refuse_scope=None):
-        seen["ctx"] = turn_ctx
-        return object()
-
-    monkeypatch.setattr(decision_module, "build_topic_decision_state", _capture)
-    monkeypatch.setattr(
-        decision_module, "render_topic_decision_note", lambda state, **kwargs: ""
-    )
     before = {n.id for n in ctx.topics.nodes.list_topics()}
 
     result = await ctx.run_turn("帮我新建一个话题叫量子计算", topic_id=a)
 
     assert result["ok"] is True
-    # 明确新建只登记授权依据（供 bridge 判断「不重复确认」），不在这里创建。
-    assert getattr(seen["ctx"], "explicit_create_name", None) == "量子计算"
+    # P1-01：进入主循环前不再解析 / 登记「明确新建」授权；创建只由本轮模型
+    # 调用 create_topic（intent=user_request|suggestion）执行一次。
     after = {n.id for n in ctx.topics.nodes.list_topics()}
     assert after == before, "程序不得先建一次话题（创建只由本轮模型调用 create_topic 执行）"

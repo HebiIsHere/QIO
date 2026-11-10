@@ -7,6 +7,7 @@ import {
   type EventType,
 } from "../services/events";
 import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
+import { useUnifiedApprovalsStore } from "./unifiedApprovals";
 import { approvalMetaFromPending, useApprovalsStore } from "./approvals";
 import { toPendingApproval } from "../services/approvalLifecycle";
 import { api, type TurnFactsRow } from "../services/api";
@@ -252,6 +253,15 @@ export const useEventStore = defineStore("events", {
               void restoreRuntimeState("instance-change");
             }
             if (tid) this.lastTurnId = tid;
+            /**
+             * 换了一轮：上一轮的话题阶段不能延续（阶段只属于它自己那一轮）。
+             * 同一轮重复到达的 TURN_START（重连重放）不清 —— 否则会丢掉已经收到的阶段。
+             */
+            if (tid && session.topicStageTurnId !== tid) {
+              session.resetTopicPhase();
+              // 上一轮暂存的正文不可能再等来 answerable：新一轮开始即作废
+              session.clearDeferredFormalAnswers();
+            }
             // TURN_START 带 request_id 时精确关联到那次发送动作（契约 5）：
             // 「这一轮已经开始」由事件认定；回执/查证就不得再改写该轮运行态，
             // 查证 404（记录已丢）也不得把真实在跑的轮次误报成「未发送」。
@@ -533,6 +543,34 @@ export const useEventStore = defineStore("events", {
              * 「整段推送 + 打字机」的行为；显式 false（text 兼容档）时不假装实时生成。
              * delta_id / seq：同轮多段正文各自保真，重复 / 迟到事件按 seq 丢弃。
              */
+            /**
+             * 正文门（契约 §3 / §8）：本轮有阶段事实且还没到 answerable 时，
+             * 不把**正式正文**写进回答流。
+             *
+             * 顺序容错：契约 §3 原文顺序是「先交付缓冲正文，随后进入 ANSWERABLE」，
+             * 因此这里不丢弃，而是按原事件暂存（有界、不提前展示、不改写）；
+             * TOPIC_PHASE(answerable) 到达后原样回放。后端改成 answerable 先发时
+             * 走正常展示路径，两种顺序都不丢回答 —— 门本身没有放宽。
+             */
+            if (d.interim !== true && !session.acceptsTopicFormalAnswer(String(d.turn_id ?? ""))) {
+              session.holdDeferredFormalAnswer({
+                turnId: String(d.turn_id ?? ""),
+                content,
+                streaming: d.streaming !== false,
+                meta: {
+                  deltaId: stringOrNull(d.delta_id),
+                  seq: numberOrNull(d.seq),
+                  stageId:
+                    d.stage_id === null
+                      ? null
+                      : typeof d.stage_id === "string" && d.stage_id.trim()
+                        ? d.stage_id
+                        : undefined,
+                  callIds: Array.isArray(d.call_ids) ? (d.call_ids as string[]).map(String) : [],
+                },
+              });
+              break;
+            }
             session.pushAssistant(content, d.interim === true, d.streaming !== false, {
               deltaId: stringOrNull(d.delta_id),
               seq: numberOrNull(d.seq),
@@ -687,6 +725,7 @@ export const useEventStore = defineStore("events", {
           const approvalId = String(d.approval_id ?? "");
           if (!approvalId) break;
           const phase = String(d.phase ?? "");
+          const decision = String(d.decision ?? "").trim();
           const terminal = new Set([
             "executed",
             "failed",
@@ -709,6 +748,22 @@ export const useEventStore = defineStore("events", {
           const registered = session.topicApplicationFor(approvalId);
           const isTopicApplication =
             Boolean(registered) || eventKind === "topic_switch" || eventKind === "topic_create";
+          /**
+           * 事件身份校验（契约 §5）：结果事件带 operation_id 且与本地登记不同 =
+           * 旧操作的事件 —— 不改当前位置、不消费，也不误解锁别的申请。
+           */
+          const eventOperationId = String(
+            d.operation_id ?? (approvalEnvelope as Record<string, unknown>).operation_id ?? "",
+          ).trim();
+          const registeredOperationId = String(registered?.operationId ?? "").trim();
+          if (
+            isTopicApplication &&
+            eventOperationId &&
+            registeredOperationId &&
+            eventOperationId !== registeredOperationId
+          ) {
+            break;
+          }
           if (isTopicApplication) {
             const payload = (approvalEnvelope.payload ?? d.payload ?? {}) as Record<string, unknown>;
             const topicKind =
@@ -716,6 +771,38 @@ export const useEventStore = defineStore("events", {
               (eventKind === "topic_create" ? "topic_create" : "topic_switch");
             const targetTopicId =
               registered?.targetTopicId ?? (String(payload.target_topic_id ?? "").trim() || null);
+            /**
+             * 失效 ≠ 拒绝（契约 §5 / §8）：后端结构化判定的失效（decision=stale 或
+             * code=topic_application_stale）**不**写拒绝范围、**不**自动重弹、不覆盖当前选择。
+             * 申请保留在队列里说明原因并保留恢复入口，由用户主动收口；
+             * 也绝不把别的申请一起解锁（只按 approval_id 处理这一条）。
+             */
+            const invalidatedCode = String(
+              d.code ?? (approvalEnvelope as Record<string, unknown>).code ?? "",
+            ).trim();
+            const invalidatedByBackend =
+              decision === "stale" ||
+              invalidatedCode === "topic_application_stale" ||
+              String(d.state ?? "").trim() === "stale";
+            if (invalidatedByBackend) {
+              const reasonRaw =
+                d.message ?? d.reason ?? (typeof d.detail === "string" ? d.detail : "");
+              const reason =
+                String(reasonRaw ?? "").trim() ||
+                "这条话题申请已经失效（本轮绑定的话题已变化或申请不再等待处理），不会再执行。";
+              useUnifiedApprovalsStore().markTopicInvalidated(approvalId, {
+                code: invalidatedCode || "stale",
+                reason,
+                operationId: registered?.operationId ?? "",
+              });
+              session.dropTopicApplication(approvalId);
+              session.clearTopicDraftFollow();
+              if (session.activity === "approval") {
+                session.activity = session.turnPhase === "generating" ? "generating" : "waiting";
+              }
+              // 失效不是执行终态：保留申请说明与恢复入口，不走 recordResult 的终态收口
+              break;
+            }
             /**
              * 已在执行 = 用户已经选过话题：等待期间写的草稿要跟着本轮进入目标话题。
              * switch 必须知道目标 id（不知道就不武装，绝不把草稿带错话题）；
@@ -751,6 +838,22 @@ export const useEventStore = defineStore("events", {
           useApprovalsStore().recordResult(d);
           if ((!phase || terminal.has(phase)) && session.pendingContinue?.id === approvalId) {
             session.pendingContinue = null;
+          }
+          break;
+        }
+        case "TOPIC_PHASE": {
+          /**
+           * 本轮话题阶段（契约 §3）：后端唯一来源，前端只消费。
+           * 旧 / 乱序 / 别的轮 / 别的 operation 的事件由 session.applyTopicPhase 丢弃。
+           */
+          const d = event.data as Record<string, unknown>;
+          const advanced = session.applyTopicPhase(d);
+          /**
+           * answerable = 允许发布正式正文：把顺序容错暂存的那份按原事件回放
+           * （只有真的推进到 answerable 才回放；旧 / 乱序事件不放行）。
+           */
+          if (advanced && session.stage === "answerable") {
+            session.releaseDeferredFormalAnswers(d.turn_id as string | null);
           }
           break;
         }
@@ -952,11 +1055,25 @@ export const useEventStore = defineStore("events", {
        * 从统一队列派生；决定后没有额外的「审批结束」事件能把它恢复成生成中。
        */
       if (kind === "topic_switch" || kind === "topic_create") {
+        /**
+         * 操作身份随申请一起登记（P1-05）：TOPIC_PHASE / 结局事件只按
+         * operation_id + turn 归属；旧后端没有这些字段 → 空串 / null，不猜。
+         */
+        const numberField = (value: unknown): number | null => {
+          if (typeof value === "number" && Number.isFinite(value)) return value;
+          if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) {
+            return Number(value);
+          }
+          return null;
+        };
         session.registerTopicApplication({
           approvalId: id,
           kind,
           turnId: (approval.turn_id as string | null) ?? null,
           targetTopicId: String(payload.target_topic_id ?? "").trim() || null,
+          operationId: String(payload.operation_id ?? approval.operation_id ?? "").trim(),
+          paramVersion: numberField(payload.param_version ?? approval.param_version),
+          baseNavVersion: numberField(payload.base_nav_version ?? approval.base_nav_version),
         });
         return;
       }

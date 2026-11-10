@@ -1869,6 +1869,14 @@ def create_app(
                     asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
                 )
             except asyncio.TimeoutError:
+                # 真实来源写进服务端日志：CI 曾只看到 500，没有正文，无法判断是
+                # 「收尾超时」还是「写盘失败」。这里带脱敏后的附件引用与上限值。
+                logging.getLogger(__name__).warning(
+                    "upload settle timeout: attachment=%s generation=%s timeout_s=%s",
+                    redact_text(str(att.id)),
+                    upload_generation,
+                    UPLOAD_SETTLE_SECONDS,
+                )
                 attachments.cancel(att.id)  # 迟到结果的最后一道闸：不得提交 ready
                 _converge_upload(
                     att.id,
@@ -1923,6 +1931,11 @@ def create_app(
             if outcome.state == DISK_FAILED:
                 # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
                 # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
+                logging.getLogger(__name__).warning(
+                    "upload disk failure: attachment=%s detail=%s",
+                    redact_text(str(att.id)),
+                    redact_text(str(outcome.error or "disk_failed")),
+                )
                 applied = attachments.apply_material_outcome(
                     att.id, outcome, generation=upload_generation
                 )
@@ -4097,6 +4110,23 @@ def create_app(
                 **respond_kwargs,
             )
         except _ApprovalError as exc:
+            # 话题申请失效（P1-04）：409 + 结构化事实。失效不是拒绝，前端据此禁用
+            # 原确认、保留恢复入口；这里不返回「已批准/已拒绝」的假成功。
+            if getattr(exc, "code", "") == "topic_application_stale":
+                extra = dict(getattr(exc, "extra", {}) or {})
+                body = {
+                    "ok": False,
+                    "code": "topic_application_stale",
+                    "message": str(exc),
+                    **extra,
+                }
+                # 兼容既有客户端读取 FastAPI 的 detail 形状（同一份事实，不两套语义）。
+                body["detail"] = {
+                    "code": "topic_application_stale",
+                    "message": str(exc),
+                    **extra,
+                }
+                return JSONResponse(status_code=409, content=body)
             raise _approval_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

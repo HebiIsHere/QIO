@@ -55,6 +55,12 @@ from agent.core.turn_facts import TurnFacts
 from agent.core.answer_buffer import AnswerBuffer
 from agent.core.progress import ProgressTracker
 from agent.trace.redact import sanitize_error_text
+from agent.services.topic_operation import (
+    TOPIC_TOOL_KINDS,
+    TopicPhase,
+    TopicStages,
+    publishes_formal_answer,
+)
 from agent import prompts
 from agent.prompts import ANSWER_MARKER
 from agent.tools.registry import ToolRegistry
@@ -212,6 +218,10 @@ class _AssistantStream:
         publish_chars: int = PUBLISH_CHARS,
         clock: Callable[[], float] = time.monotonic,
         answer_expected: bool = False,
+        # 阶段门（P1-02）：DECISION_OPEN 期间**整段缓冲、不发布任何正文**。
+        # 响应结束后上层才知道这条响应是否请求了话题工具，先发后改判不允许
+        # （也不能把正文改名成过程说明再发出去）。
+        gate: bool = False,
         spill_dir: Path | str | None = None,
         memory_limit: int | None = None,
         spill_limit: int | None = None,
@@ -230,6 +240,10 @@ class _AssistantStream:
         # （角色只看正文声明），只决定「未声明正文」在调用结束时去哪：被要求回答的
         # 调用不可能产出过程说明，未声明也按正式回答一次性交付。
         self._answer_expected = answer_expected
+        # 阶段门缓冲：原始正文（含可能的回答声明），不解析、不发布；由 AgentLoop
+        # 在确认这条响应有没有话题工具调用之后决定丢弃 / 一次性交付。
+        self._gate = bool(gate)
+        self._gate_text = ""
         # None（还没判定）/ "interim"（过程区）/ "answer"（正式回答）/
         # "undeclared"（未声明：有界缓冲，调用结束时再决定去哪）
         self.role: str | None = None
@@ -275,6 +289,10 @@ class _AssistantStream:
             return
         self.saw_delta = True
         self._saw_text = True
+        if self._gate:
+            # 阶段门：先整段缓冲，任何角色都不实时发布（集合未知时不得发布正文）。
+            self._gate_text += text
+            return
         if self.role is None:
             await self._feed(self._consume_prefix(text))
             return
@@ -309,6 +327,9 @@ class _AssistantStream:
         警告并按已声明回答收尾（绝不隐藏真实工具调用、绝不把回答移回过程区）。
         """
         self.saw_delta = True
+        if self._gate:
+            # 阶段门：工具增量只说明「这条响应带工具」，正文仍整段缓冲。
+            return
         if self.role in (None, "undeclared"):
             self.role = "interim"
             self.role_evidence = None
@@ -500,6 +521,19 @@ class _AssistantStream:
 
     # -- 收尾 -------------------------------------------------------------
 
+    def _finish_gate(self, completion: Completion | None) -> None:
+        """阶段门收尾：只把整段结果收进缓冲，绝不发布任何正文。"""
+        if completion is not None and not self._saw_text:
+            text = completion.message.content or ""
+            if text:
+                self._gate_text += text
+                self._saw_text = True
+
+    @property
+    def gate_text(self) -> str:
+        """阶段门缓冲的原始正文（含可能的回答声明；未脱敏、未发布）。"""
+        return self._gate_text
+
     async def finish(self, completion: Completion | None) -> None:
         """流结束 / 中断：收尾，并把没到节奏的文字补齐。
 
@@ -517,6 +551,11 @@ class _AssistantStream:
 
         没有任何正文时什么都不发（空气泡是无意义噪声）。
         """
+        if self._gate:
+            # 阶段门：整段缓冲、收尾也不发布 —— 角色与去向由 AgentLoop 在确认
+            # 「这条响应有没有话题工具调用」之后决定（P1-02）。
+            self._finish_gate(completion)
+            return
         if not self._saw_text and completion is not None:
             # 一段正文增量都没收到、但整段结果里有正文（供应商一次性给出）：
             # 走同一套内容角色判定，不假装是一帧一帧来的。
@@ -664,6 +703,9 @@ class TurnResult:
     # 没有正式回答段（例如整轮空输出、只留下停止说明）时为 None —— 前端据此区分
     # 「校准哪一条」与「没有可校准回答」，不再靠全文相等/前缀相似度猜。
     final_answer_id: str | None = None
+    # 本轮是否应当落一条正式回答消息（P1-02/P1-03）：阶段门未打开（可恢复失败 /
+    # 决策未定）时为 False —— 上层不得写空助手消息，也不得用旧上下文凑一句。
+    formal_answer: bool = True
 
 
 class AgentLoop:
@@ -723,6 +765,26 @@ class AgentLoop:
         self.approvals = approvals
         self.guard = guard
         self.topic_application = topic_application
+        # 正式回答发布边界（P1-02，唯一枚举见 services/topic_operation.py）：
+        # None = 没有话题申请桥的普通轮 / 子任务，publishes_formal_answer(None)
+        # 为 True，行为与以前完全一致；有桥的轮在第一次模型调用前置 DECISION_OPEN。
+        self.topic_phase: TopicPhase | None = None
+        self._topic_operation_id: str | None = None
+        self._topic_approval_id: str | None = None
+        self._topic_target_topic_id: str | None = None
+        self._topic_recovery: dict | None = None
+        self._topic_stages: TopicStages | None = None
+        # 阶段事件的异步发布任务（sync 回调里只能调度，不能 await）。
+        self._topic_phase_tasks: set[asyncio.Task] = set()
+        self._topic_phase_unsent: dict | None = None
+        # 话题操作是否尚未终结（查重冲突待确认 / 同版本等待合法重试）：
+        # 由 bridge.after_tool 的 directive.keep_decision_open 提供事实，决定批次后
+        # 是否保持 DECISION_OPEN（不发布正式正文，允许同 operation 合法重试）。
+        self._topic_keep_decision_open = False
+        # 本次模型调用是否整段缓冲正文（阶段门）；由 _run 在调用前决定。
+        self._gate_active = False
+        # 阶段门缓冲的正文（流式路径由 _AssistantStream 收上来）。
+        self._call_gate_text = ""
         # 被话题申请拦截的 call（工具没有执行：不记 tool 事实、不参与无进展判定）。
         self._topic_blocked_calls: set[str] = set()
         # 批准并真实换题后待重建的目标话题（工具结果回填之后由 _run 消费）。
@@ -751,10 +813,6 @@ class AgentLoop:
         # 角色判据（第五轮契约 §1.1：角色只看正文声明），只决定「未声明的正文」
         # 在调用结束时去哪 —— 被要求回答的调用不可能产出过程说明。
         self._answer_expected = False
-        # 本次调用请求了话题工具（且申请桥生效）：正文绝不能作为正式回答交付，
-        # 未确认前正式回答不得泄露（契约 §1.4）。一次性交付路径在 _emit_one_shot_assistant
-        # 里据此扣住正文，流式路径由 _run 的改判快照兜底。
-        self._hold_topic_answer = False
         # 当前这次调用的**内容角色**（由 _AssistantStream / _emit_one_shot_assistant
         # 按正文声明判定）："answer" / "interim" / None。
         self._call_role: str | None = None
@@ -1161,96 +1219,258 @@ class AgentLoop:
         """这次响应是否请求了话题工具（只有申请桥生效时才算）。"""
         if self.topic_application is None or completion is None:
             return False
-        try:
-            from agent.services.topic_application import TOPIC_TOOL_KINDS
-        except Exception:  # noqa: BLE001 - 桥不存在时话题工具按普通工具走旧语义
-            return False
         return any(
             str(getattr(call, "name", "")) in TOPIC_TOOL_KINDS
             for call in (completion.tool_calls or [])
         )
 
-    async def _hold_streamed_answer_for_topic(self, completion: Completion) -> None:
-        """流式路径：已实时发出的「声明回答」在请求话题工具时改判为过程说明。
+    async def _settle_gated_call(
+        self, completion: Completion, *, has_topic_calls: bool
+    ) -> None:
+        """阶段门收口：先确认这条响应有没有话题工具调用，再决定正文去向（P1-02）。
 
-        契约 §1.4 要求未确认前正式回答不得泄露。流式正文在 tool call 增量到达前
-        已经按声明进过回答区，无法物理撤回；这里用**同一个 delta_id** 补一条
-        interim=true 的累计快照（前端原地更新这一条），并把它排除出 final_content。
-        真正的正式回答在申请决定之后由模型重新生成（新的 delta_id，只出现一次）。
+        缓冲发生在响应过程中（_AssistantStream 的 gate 模式），所以这里**没有**
+        「先发后改判」：已实时进过回答区的正文不存在，也不需要改名成过程说明。
+
+        * 含话题工具调用 → 正文一律丢弃（既不能当回答，也不改名成过程说明发出）；
+        * 不含 → 一次性交付（streaming=false），随后本轮进入 ANSWERABLE，
+          之后的模型调用恢复流式。
         """
-        text = self._call_answer_text or ""
+        raw = self._call_gate_text or (completion.message.content or "")
+        self._call_gate_text = ""
         calls = list(completion.tool_calls or [])
-        self._call_role = "interim"
-        self._call_answer_text = ""
-        self._call_undeclared = False
-        if self._last_answer_delta_id == self._call_delta_id:
-            self._last_answer_delta_id = None
-        if not text.strip():
+        if has_topic_calls:
+            # 决策未定：这段文字不能当回答，也不能作为过程说明发出去（契约 §3）。
+            self._call_role = "interim"
+            self._call_answer_text = ""
+            self._call_undeclared = False
             return
-        payload = {
-            "content": _redact_published(text, holdback=False),
-            "interim": True,
-            "streaming": False,
-            "delta_id": self._call_delta_id or "",
-            "seq": 1,
-            "stage_id": self._current_stage_id(),
-            "call_ids": [call.id for call in calls],
-            "role_evidence": "declared_answer_held_for_topic_application",
-        }
-        await self._emit_assistant(payload)
-        self._warn(
-            "模型在声明最终回答之后仍请求了话题变更：这段文字按过程说明处理，"
-            "正式回答将在话题确认后重新生成"
+        # 已确认这条响应没有话题工具调用：本轮不需要话题操作，正式回答边界打开。
+        # **必须先把 ANSWERABLE 事件真的发出去，再交付正文**（契约 §3 / §8.4：
+        # 前端只在可回答阶段展示正式回答；先正文后阶段会让这段唯一的回答被丢弃）。
+        await self._open_answerable()
+        declared, body = _split_declared_answer(raw or "")
+        if declared:
+            body = _redact_published(body, holdback=False)
+            self._call_role = "answer"
+            self._call_answer_text = body
+            if body.strip():
+                await self._emit_assistant(
+                    self._one_shot_payload(
+                        body, interim=False, evidence="declared_answer"
+                    )
+                )
+            return
+        if calls:
+            # 有普通工具调用：这段正文是过程说明；text 兼容档的 content 是 JSON
+            # 协议块，不当作正文展示（与一次性交付路径同一口径）。
+            self._call_role = "interim"
+            if body.strip() and self.adapter.mode == AdapterMode.NATIVE:
+                await self._emit_assistant(
+                    self._one_shot_payload(
+                        _redact_published(body, holdback=False),
+                        interim=True,
+                        evidence=None,
+                        calls=calls,
+                    )
+                )
+            return
+        # 没有声明、也没有工具调用：未声明的正文按正式回答一次性交付（降级路径）。
+        body = _redact_published(body, holdback=False)
+        self._call_role = "answer"
+        self._call_answer_text = body
+        self._call_undeclared = bool(body.strip())
+        if body.strip():
+            await self._emit_assistant(
+                self._one_shot_payload(
+                    body, interim=False, evidence="undeclared_answer"
+                )
+            )
+        if self._call_undeclared:
+            self._note_undeclared_answer()
+
+    async def _settle_late_topic_calls(self, completion: Completion) -> None:
+        """ANSWERABLE 之后迟到的导航请求：不执行、可见警告、不改本轮归属（P1-02）。
+
+        按既有 _warn_late_tool_calls 的口径变成可观察警告；本轮按已有正文收尾，
+        迟到的工具一次都不执行。已实时发布过的正式回答保持原样（永不移动）。
+        """
+        await self._warn_late_tool_calls(completion.tool_calls)
+        if self._stream_emitted and self._call_role == "answer":
+            return  # 正式回答已经实时发布：归属不变，正文不再重复交付
+        if self._stream_emitted:
+            # 过程区文字已经发出：不能当正式回答；按「本轮没有回答」走兜底。
+            self._call_answer_text = ""
+            return
+        content = completion.message.content or ""
+        body = _redact_published(content, holdback=False)
+        if not body.strip():
+            self._call_answer_text = ""
+            return
+        self._call_role = "answer"
+        self._call_answer_text = body
+        self._call_undeclared = True
+        await self._emit_assistant(
+            self._one_shot_payload(body, interim=False, evidence="undeclared_answer")
         )
+        self._note_undeclared_answer()
 
-    async def _apply_topic_rebuilds(self, messages: list[ChatMessage]) -> None:
-        """工具结果回填之后：把本轮 system 换成目标话题的上下文。
+    async def _apply_topic_rebuilds(self, messages: list[ChatMessage]) -> bool:
+        """工具结果回填之后：把本轮 system 换成目标话题的上下文（P1-03）。
 
-        只替换/插入第一条 system 消息 —— user 消息、真实媒体内容块与工具消息
-        一律不动，也**不**把原话题的历史复制过来（契约 §2.3）。重建失败如实
-        记可见 WARNING 并保留旧 system，绝不假装上下文已经换过去了。
+        成功 → 消费待重建记录、只替换/插入第一条 system 消息（user 消息、真实
+        媒体内容块与工具消息一律不动，也**不**把原话题的历史复制过来），置
+        stages.context_ready / topic_phase=ANSWERABLE，返回 True。
+
+        失败（异常 / 空 / 不完整）→ **不清空待重建记录、不继续用旧 system 回答**：
+        置 RECOVERABLE_FAILURE、发可观察错误事件、写恢复记录、结束本轮，返回 False。
         """
         topic_ids = list(dict.fromkeys(self._pending_topic_rebuilds))
-        self._pending_topic_rebuilds.clear()
+        if not topic_ids:
+            return True
+        # 同一轮归属只固定一次：目标取最近一次真实导航的目标。
+        topic_id = topic_ids[-1]
         builder = getattr(self.topic_application, "build_system", None)
-        for topic_id in topic_ids:
-            new_system: str | None = None
+        self.set_topic_phase(TopicPhase.CONTEXT_PREPARING, target_topic_id=topic_id)
+        await self.flush_topic_phase_events()
+        new_system: str | None = None
+        failure: Exception | None = None
+        try:
+            if callable(builder):
+                new_system = await builder(topic_id)
+        except Exception as exc:  # noqa: BLE001 - 装配失败是「可恢复失败」，不是回答
+            failure = exc
+        if failure is not None:
+            await self._topic_context_prepare_failed(
+                topic_id, exc=failure, detail=sanitize_error_text(str(failure))
+            )
+            return False
+        if not isinstance(new_system, str) or not new_system.strip():
+            await self._topic_context_prepare_failed(
+                topic_id, exc=None, detail="目标话题上下文为空"
+            )
+            return False
+        # 只有准备成功才消费待重建记录（失败保留，恢复入口只重做未完成步骤）。
+        self._pending_topic_rebuilds.clear()
+        system_message = ChatMessage(role="system", content=new_system)
+        if messages and messages[0].role == "system":
+            messages[0] = system_message
+        else:
+            messages.insert(0, system_message)
+        stages = self._topic_stages or TopicStages()
+        stages.context_ready = True
+        stages.failed_stage = ""
+        stages.failure = ""
+        self._topic_stages = stages
+        self.set_topic_phase(TopicPhase.ANSWERABLE, target_topic_id=topic_id)
+        await self.flush_topic_phase_events()
+        return True
+
+    def _current_recovery_navigation_version(self) -> int | None:
+        """失败时刻的真实导航版本（恢复基线）；读不到就如实 None（不猜数字）。"""
+        try:
+            from agent.services.navigation_version import current as _current
+        except Exception:  # noqa: BLE001 - 迁移/模块未就绪：恢复时按「无法校验」处理
+            return None
+        app = getattr(self.topic_application, "app", None)
+        conn = getattr(app, "conn", None)
+        if conn is None:
+            getter = getattr(self.topic_application, "_conn", None)
+            if callable(getter):
+                try:
+                    conn = getter()
+                except Exception:  # noqa: BLE001
+                    conn = None
+        if conn is None:
+            return None
+        try:
+            return int(_current(conn))
+        except Exception:  # noqa: BLE001 - 读版本失败不阻断失败记录
+            logger.warning("failed to read navigation version for recovery", exc_info=True)
+            return None
+
+    def _topic_recovery_identity(self) -> dict:
+        """恢复记录需要的操作身份 / 用户消息（事实只从桥回传，不按文本猜）。"""
+        operation = None
+        operation_getter = getattr(self.topic_application, "current_operation", None)
+        if callable(operation_getter):
             try:
-                if callable(builder):
-                    new_system = await builder(topic_id)
-            except Exception as exc:  # noqa: BLE001 - 重建失败不能结束这一轮
-                message = "话题申请已执行，但目标话题上下文重建失败：" + sanitize_error_text(
-                    str(exc)
-                )
-                self._warn(message)
-                await self._emit(
-                    EventType.WARNING,
-                    {
-                        "code": "topic_context_rebuild_failed",
-                        "message": message,
-                        "recoverable": True,
-                        "topic_id": topic_id,
-                    },
-                )
-                continue
-            if not isinstance(new_system, str) or not new_system.strip():
-                message = "话题申请已执行，但目标话题上下文为空：继续使用原上下文回答"
-                self._warn(message)
-                await self._emit(
-                    EventType.WARNING,
-                    {
-                        "code": "topic_context_rebuild_empty",
-                        "message": message,
-                        "recoverable": True,
-                        "topic_id": topic_id,
-                    },
-                )
-                continue
-            system_message = ChatMessage(role="system", content=new_system)
-            if messages and messages[0].role == "system":
-                messages[0] = system_message
-            else:
-                messages.insert(0, system_message)
+                operation = operation_getter()
+            except Exception:  # noqa: BLE001 - 拿不到操作身份不影响失败事实
+                operation = None
+        bridge_ctx = getattr(self.topic_application, "ctx", None)
+        return {
+            "operation_id": (
+                getattr(operation, "operation_id", None) or self._topic_operation_id
+            ),
+            "param_version": getattr(operation, "param_version", None),
+            "base_nav_version": getattr(operation, "base_nav_version", None),
+            "recovery_nav_version": self._current_recovery_navigation_version(),
+            "from_topic_id": (
+                getattr(operation, "from_topic", None)
+                or getattr(bridge_ctx, "bound_topic", None)
+            ),
+            "user_message_id": (
+                getattr(bridge_ctx, "user_message_id", None)
+                or getattr(operation, "user_message_id", None)
+            ),
+        }
+
+    async def _topic_context_prepare_failed(
+        self, topic_id: str, *, exc: Exception | None, detail: str
+    ) -> None:
+        """上下文准备失败：可恢复失败 + 可观察错误 + 恢复记录（P1-03）。"""
+        from agent.services.topic_recovery import record_topic_failure
+        from agent.services.topic_operation import stage_failure_message
+
+        stages = self._topic_stages or TopicStages()
+        stages.failed_stage = "context_prepare"
+        stages.failure = _redact_published(str(detail or ""), holdback=False)
+        stages.context_ready = False
+        self._topic_stages = stages
+        message = f"{stage_failure_message(stages)}：{stages.failure}"
+        scope = getattr(self.topic_application, "app", None) or self.topic_application
+        identity = self._topic_recovery_identity()
+        record = record_topic_failure(
+            scope,
+            turn_id=str(self.turn_id or ""),
+            topic_id=topic_id,
+            failed_stage="context_prepare",
+            message=message,
+            stages=stages,
+            **identity,
+        )
+        self._topic_recovery = {
+            "record_id": record["record_id"],
+            "kind": record["kind"],
+            "failed_stage": "context_prepare",
+            "message": message,
+            "retryable": True,
+        }
+        # 阶段事件必须**一次**带上恢复事实（先发一个没有 recovery 的同阶段事件
+        # 会因阶段未变化而被后续调用吞掉，前端就拿不到 record_id）。
+        self.set_topic_phase(
+            TopicPhase.RECOVERABLE_FAILURE,
+            target_topic_id=topic_id,
+            recovery=self._topic_recovery,
+        )
+        self._warn(message)
+        await self._emit(
+            EventType.ERROR,
+            {
+                "code": "topic_context_prepare_failed",
+                "message": message,
+                "recoverable": True,
+                "operation_id": self._topic_operation_id,
+                "topic_id": topic_id,
+                "failed_stage": "context_prepare",
+                "recovery": dict(self._topic_recovery),
+            },
+        )
+        self._stop_code = "topic_context_prepare_failed"
+        self._stop_reason = message
+        self._stop_by = "system"
+        await self.flush_topic_phase_events()
 
     async def _guarded_execute(self, call) -> Any:
         """在独立 task 中执行，登记到 _active_tool_tasks 以便 cancel()。"""
@@ -1302,6 +1522,9 @@ class AgentLoop:
                     replacement = directive.get("result")
                     if isinstance(replacement, ToolResult):
                         result = replacement
+                    # 权威事实（operation_id / target_topic_id / stages）只从桥回传
+                    # 的数据里读，不按错误文本猜（P1-03 / P1-05）。
+                    self._absorb_topic_directive(directive)
                     rebind_topic = directive.get("rebind_topic_id")
                     if rebind_topic:
                         self._pending_topic_rebuilds.append(str(rebind_topic))
@@ -1432,6 +1655,181 @@ class AgentLoop:
             if record["status"] == "running"
         ]
 
+    # -- 正式回答发布边界（P1-02） -----------------------------------------
+
+    @staticmethod
+    def _coerce_topic_phase(phase: Any) -> TopicPhase | None:
+        """外部阶段值 → TopicPhase；拿不准的一律按「不可发布」的安全侧处理。"""
+        if phase is None:
+            return None
+        if isinstance(phase, TopicPhase):
+            return phase
+        try:
+            return TopicPhase(str(phase).strip().lower())
+        except ValueError:
+            return TopicPhase.RECOVERABLE_FAILURE
+
+    def set_topic_phase(
+        self,
+        phase: TopicPhase | str | None,
+        *,
+        operation_id: str | None = None,
+        approval_id: str | None = None,
+        target_topic_id: str | None = None,
+        recovery: dict | None = None,
+    ) -> None:
+        """设置本轮正式回答的发布阶段（唯一阶段入口，sync，供话题申请桥回调）。
+
+        只有 publishes_formal_answer(topic_phase) 为真的阶段允许发布正式正文。
+        阶段变化会发可观察的 TOPIC_PHASE 事件；本方法是 sync 的（桥在工具执行
+        路径里回调），事件发布以任务方式调度，await flush_topic_phase_events()
+        可确保它已经发出去（循环自己的检查点与测试用它）。
+        """
+        parsed = self._coerce_topic_phase(phase)
+        previous = self.topic_phase
+        self.topic_phase = parsed
+        if operation_id is not None:
+            self._topic_operation_id = str(operation_id)
+        if approval_id is not None:
+            self._topic_approval_id = str(approval_id)
+        if target_topic_id is not None:
+            self._topic_target_topic_id = str(target_topic_id)
+        if recovery is not None:
+            self._topic_recovery = dict(recovery)
+        if parsed is previous or parsed is None:
+            return
+        payload = {
+            "phase": parsed.value,
+            "operation_id": self._topic_operation_id,
+            "approval_id": self._topic_approval_id,
+            "target_topic_id": self._topic_target_topic_id,
+            "recovery": dict(self._topic_recovery) if self._topic_recovery else None,
+        }
+        self._topic_phase_unsent = payload
+        self._schedule_topic_phase_emit()
+
+    def _schedule_topic_phase_emit(self) -> None:
+        """把待发阶段事件调度出去（sync 上下文里只能 create_task）。"""
+        if self._topic_phase_unsent is None:
+            return
+        event_type = getattr(EventType, "TOPIC_PHASE", None)
+        if event_type is None:  # pragma: no cover - 旧事件定义：不伪造事件类型
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - 同步上下文：等下一个检查点补发
+            return
+        payload = self._topic_phase_unsent
+        self._topic_phase_unsent = None
+        task = loop.create_task(self._emit(event_type, payload))
+        self._topic_phase_tasks.add(task)
+        task.add_done_callback(self._topic_phase_tasks.discard)
+
+    async def flush_topic_phase_events(self) -> None:
+        """确保已设置的阶段事件真的发出去了（检查点 / 收尾 / 测试用）。"""
+        if self._topic_phase_unsent is not None:
+            payload = self._topic_phase_unsent
+            self._topic_phase_unsent = None
+            event_type = getattr(EventType, "TOPIC_PHASE", None)
+            if event_type is not None:
+                await self._emit(event_type, payload)
+        pending = [task for task in self._topic_phase_tasks if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _open_answerable(self) -> None:
+        """本轮决策已解决且没有待准备的话题上下文 → 允许发布正式回答。"""
+        if not publishes_formal_answer(self.topic_phase):
+            self.set_topic_phase(TopicPhase.ANSWERABLE)
+            await self.flush_topic_phase_events()
+
+    @property
+    def topic_stages(self) -> TopicStages | None:
+        """本轮话题操作的分步事实（没有话题操作时为 None）。"""
+        return self._topic_stages
+
+    def _absorb_topic_directive(self, directive: dict | None) -> None:
+        """消费话题申请桥 after_tool 回传的权威事实（不按错误文本猜阶段）。"""
+        if not isinstance(directive, dict):
+            return
+        operation_id = directive.get("operation_id")
+        target_topic_id = directive.get("target_topic_id")
+        stages = directive.get("stages")
+        if operation_id is not None:
+            self._topic_operation_id = str(operation_id)
+        if target_topic_id is not None:
+            self._topic_target_topic_id = str(target_topic_id)
+        if isinstance(stages, dict):
+            current = self._topic_stages or TopicStages()
+            for name in TopicStages.__dataclass_fields__:  # type: ignore[attr-defined]
+                if name in stages:
+                    setattr(current, name, stages[name])
+            self._topic_stages = current
+        # 操作尚未终结（查重冲突待确认 / 同参数版本等待合法重试）：保持决策开放，
+        # 不得在本批工具之后强制 ANSWERABLE。只在有 directive 时更新（不泄漏旧值）。
+        self._topic_keep_decision_open = bool(directive.get("keep_decision_open"))
+
+
+    def _topic_answer_failure_recoverable(self) -> bool:
+        """回答失败是否属于「话题已切换、上下文已就绪，但回答没完成」（P1-03）。"""
+        if self.topic_application is None or self._topic_stages is None:
+            return False
+        stages = self._topic_stages
+        if stages.answer_complete:
+            return False
+        if not (stages.context_ready or stages.navigation_applied or stages.tool_success):
+            return False
+        return self.topic_phase is not TopicPhase.RECOVERABLE_FAILURE
+
+    async def _record_topic_answer_failure(self, exc: Exception) -> None:
+        """回答阶段失败：单独记 failed_stage=answer，单独恢复（不冒充工具失败）。"""
+        from agent.services.topic_recovery import record_topic_failure
+        from agent.services.topic_operation import stage_failure_message
+
+        stages = self._topic_stages or TopicStages()
+        stages.failed_stage = "answer"
+        stages.answer_complete = False
+        stages.failure = _redact_published(sanitize_error_text(str(exc)), holdback=False)
+        self._topic_stages = stages
+        topic_id = self._topic_target_topic_id or ""
+        message = f"{stage_failure_message(stages)}：{stages.failure}"
+        scope = getattr(self.topic_application, "app", None) or self.topic_application
+        identity = self._topic_recovery_identity()
+        record = record_topic_failure(
+            scope,
+            turn_id=str(self.turn_id or ""),
+            topic_id=topic_id,
+            failed_stage="answer",
+            message=message,
+            stages=stages,
+            **identity,
+        )
+        self._topic_recovery = {
+            "record_id": record["record_id"],
+            "kind": record["kind"],
+            "failed_stage": "answer",
+            "message": message,
+            "retryable": True,
+        }
+        self.set_topic_phase(TopicPhase.RECOVERABLE_FAILURE, recovery=self._topic_recovery)
+        self._warn(message)
+        await self._emit(
+            EventType.ERROR,
+            {
+                "code": "topic_answer_failed",
+                "message": message,
+                "recoverable": True,
+                "operation_id": self._topic_operation_id,
+                "topic_id": topic_id,
+                "failed_stage": "answer",
+                "recovery": dict(self._topic_recovery),
+            },
+        )
+        self._stop_code = "topic_answer_failed"
+        self._stop_reason = message
+        self._stop_by = "system"
+        await self.flush_topic_phase_events()
+
     # -- event helpers ----------------------------------------------------
 
     async def _emit(self, event_type: EventType, data: dict) -> None:
@@ -1545,6 +1943,17 @@ class AgentLoop:
         self._warnings = []
         self._stream_degraded_warned = False
         self._termination_warned = False
+        # 阶段门（P1-02）：每轮从「没有话题阶段」开始（同一个 loop 复用跑下一轮时，
+        # 上一轮的 ANSWERABLE / 恢复记录绝不能带过来）。
+        self.topic_phase = None
+        self._topic_operation_id = None
+        self._topic_approval_id = None
+        self._topic_target_topic_id = None
+        self._topic_recovery = None
+        self._topic_stages = None
+        self._topic_keep_decision_open = False
+        self._gate_active = False
+        self._call_gate_text = ""
         # 每轮一份：上一轮的拦截 / 待重建不能泄漏到下一轮。
         self._topic_blocked_calls = set()
         self._pending_topic_rebuilds = []
@@ -1698,12 +2107,37 @@ class AgentLoop:
                 )
                 self._notices.clear()
 
+            # 阶段门（P1-02）：有话题申请桥时，本次调用前若本轮尚未 ANSWERABLE，
+            # 先置 DECISION_OPEN；这次调用的正文整段缓冲，确认有没有话题工具调用
+            # 之后再决定丢弃 / 一次性交付（绝不先发布、再改判）。
+            self._gate_active = False
+            if (
+                self.topic_application is not None
+                and self.topic_phase is not TopicPhase.RECOVERABLE_FAILURE
+            ):
+                if self.topic_phase is None:
+                    # 有话题申请桥的轮：决策未定时不得发布正式正文（P1-02）。
+                    self.set_topic_phase(TopicPhase.DECISION_OPEN)
+                    await self.flush_topic_phase_events()
+                    self._gate_active = True
+                elif not publishes_formal_answer(self.topic_phase):
+                    self._gate_active = True
+
             # ── 模型调用（带全套工具）：角色由**正文开头的声明**决定（第五轮契约 §1.1）
             # —— 带工具同样可以给出正式回答；不再「工作调用正文一律进过程区 + 结束
             # 无 tool_calls 就再发一次 tools=[] 重写一遍」（那会让同一段答案出现两份）。
             with self._phase("tool_routing"):
                 work_tools = await self._routed_tools(messages)
-            completion = await self._plan(messages, tools=work_tools, hint=self._call_hint())
+            try:
+                completion = await self._plan(
+                    messages, tools=work_tools, hint=self._call_hint()
+                )
+            except Exception as exc:  # noqa: BLE001 - 回答失败单独恢复（P1-03）
+                if self._topic_answer_failure_recoverable():
+                    await self._record_topic_answer_failure(exc)
+                    phase = LoopPhase.STOPPED
+                    break
+                raise
             if completion is None:
                 if self._budget_exhausted_reason:
                     # 凭据累计用量上限耗尽：这是「按上限停下来」，不是「这一轮坏了」。
@@ -1737,31 +2171,41 @@ class AgentLoop:
                 phase = LoopPhase.STOPPED
                 break
 
-            # 本次调用是否请求了话题工具（且申请桥生效）：如果是，这段正文绝不是
-            # 正式回答（未确认前正式回答不得泄露，契约 §1.4），先按过程说明处理。
+            # 阶段门（P1-02）：这次调用开始前就确定要不要整段缓冲正文。
+            gated_call = self._gate_active
+            self._gate_active = False
             has_topic_calls = self._has_topic_tool_calls(completion)
-            # 真流式路径已经在收到增量时边收边发。这里只处理「这一次调用的正文还
-            # 没有任何人负责发」的情况（text 兼容档 / 未实现的降级），一次性给出
-            # {streaming: false} —— 不假装流式。
-            self._hold_topic_answer = has_topic_calls
-            try:
+            if gated_call:
+                # 决策未定：正文整段缓冲，响应结束后才按「有没有话题工具调用」
+                # 决定丢弃 / 一次性交付 —— 不存在先发布再改判的路径。
+                await self._settle_gated_call(completion, has_topic_calls=has_topic_calls)
+            elif has_topic_calls and publishes_formal_answer(self.topic_phase):
+                # ANSWERABLE 之后本轮归属已固定：迟到的导航请求不执行、不改归属
+                # （可观察警告），本轮按已有正文收尾。
+                await self._settle_late_topic_calls(completion)
+                answer_text = self._deliverable_answer_text()
+                phase = LoopPhase.DONE
+                if answer_text.strip():
+                    final_content = answer_text
+                    break
+                if self.allow_no_answer:
+                    final_content = ""
+                    break
+                final_content = await self._maybe_fallback(messages, completion)
+                break
+            else:
+                # 真流式路径已经在收到增量时边收边发。这里只处理「这一次调用的正文
+                # 还没有任何人负责发」的情况（text 兼容档 / 未实现的降级），一次性
+                # 给出 {streaming: false} —— 不假装流式。
                 if not self._stream_emitted:
                     await self._emit_one_shot_assistant(completion)
-            finally:
-                self._hold_topic_answer = False
-            if has_topic_calls and self._call_role == "answer":
-                # 流式路径：声明回答的正文已经实时进过回答区 —— 用同一个 delta_id
-                # 补一条过程说明快照把它改判（不进 final_content），并可见警告。
-                await self._hold_streamed_answer_for_topic(completion)
-
-            if self._call_undeclared:
-                # 协议未遵守（模型没有声明回答角色）：未声明的正文按一次性回答交付，
-                # 如实记录这条降级路径，不冒充流式（契约 §1.2/§1.3）。
-                self._note_undeclared_answer()
-            if self._call_buffer_outcome is not None:
-                # 交付不完整（硬上限截断 / 暂存创建·写入·读取故障）：如实报告 ——
-                # 可见 WARNING + 事实进交付内容（读取故障绝不说成「超过上限」）
-                await self._note_incomplete_answer(self._call_buffer_outcome)
+                if self._call_undeclared:
+                    # 协议未遵守（模型没有声明回答角色）：未声明的正文按一次性回答
+                    # 交付，如实记录这条降级路径，不冒充流式（契约 §1.2/§1.3）。
+                    self._note_undeclared_answer()
+                if self._call_buffer_outcome is not None:
+                    # 交付不完整（硬上限截断 / 暂存创建·写入·读取故障）：如实报告
+                    await self._note_incomplete_answer(self._call_buffer_outcome)
 
             answer_text = self._deliverable_answer_text()
             if not has_topic_calls and self._call_role == "answer":
@@ -1838,7 +2282,27 @@ class AgentLoop:
             # 批准并真实换题之后：用目标话题的上下文重建 system（保留本轮的
             # user 消息与媒体，不复制原话题历史），再继续循环生成正式回答。
             if self._pending_topic_rebuilds:
-                await self._apply_topic_rebuilds(messages)
+                context_ready = await self._apply_topic_rebuilds(messages)
+                if not context_ready:
+                    # 上下文准备失败：不发布正式回答，进入可恢复失败（P1-03）。
+                    phase = LoopPhase.STOPPED
+                    break
+            elif (
+                self.topic_application is not None
+                and not self._topic_keep_decision_open
+                and not publishes_formal_answer(self.topic_phase)
+                and self.topic_phase is not TopicPhase.RECOVERABLE_FAILURE
+                and any(
+                    str(call.name) in TOPIC_TOOL_KINDS
+                    and str(call.id) in self._topic_blocked_calls
+                    for call in completion.tool_calls
+                )
+            ):
+                # 申请被拒绝 / 失效（工具没有执行）：决策已经解决，本轮在原话题
+                # 回答 —— 打开正式回答边界。工具真实失败不在这里收口：模型可以
+                # 在同一决策阶段内合法重试（查重冲突二次审批，P1-05）。
+                self.set_topic_phase(TopicPhase.ANSWERABLE)
+            await self.flush_topic_phase_events()
             phase = LoopPhase.OBSERVING
 
         cancelled = self.is_cancelled()
@@ -1855,8 +2319,16 @@ class AgentLoop:
             stop_code = self._stop_code or "none"
             stop_reason = self._stop_reason
             stop_by = self._stop_by
-        if not cancelled and not (final_content or "").strip() and not self.allow_no_answer:
+        formal_answer = publishes_formal_answer(self.topic_phase)
+        if (
+            not cancelled
+            and formal_answer
+            and not (final_content or "").strip()
+            and not self.allow_no_answer
+        ):
             # 静默失败收口：护栏终止 / 预算停止 / 模型什么都没说，都必须留下人话。
+            # 注意：可恢复失败 / 决策未定时 formal_answer 为 False，这里绝不补一句
+            # 「本轮没有产生回答」当成正式回答（P1-02 / P1-03）。
             # 取消是用户自己的动作，界面已有「已停止」状态行，这里不补文本。
             # 停止说明可能引用工具 / 厂商回显，过一遍脱敏（契约 C3：错误与最终输出）。
             final_content = _redact_published(
@@ -1886,6 +2358,8 @@ class AgentLoop:
         # （否则「子任务完成了」这句话会被静默丢掉，用户永远等不到结果）。
         unread_notices = list(self._notices)
         self._notices.clear()
+        # 阶段事件必须真的发出去（sync 回调只调度了发布任务）。
+        await self.flush_topic_phase_events()
         return TurnResult(
             final_content=final_content,
             phase=phase,
@@ -1901,6 +2375,7 @@ class AgentLoop:
             stopped_by=stop_by,
             final_annotation=final_annotation,
             final_answer_id=self._last_answer_delta_id,
+            formal_answer=formal_answer,
         )
 
     # -- steps ------------------------------------------------------------
@@ -1956,6 +2431,8 @@ class AgentLoop:
         self._call_answer_text = stream.answer_text
         self._call_undeclared = stream.undeclared_answer_used
         self._call_buffer_outcome = stream.buffer_outcome
+        # 阶段门缓冲的正文（gate 模式下，流式内容一个字都没有发布）。
+        self._call_gate_text = stream.gate_text
 
     async def _note_model_termination(self, completion: Completion) -> None:
         """把这次模型调用的结束事实记成本轮的停止原因（冻结契约 C2）。
@@ -2033,26 +2510,6 @@ class AgentLoop:
         content = completion.message.content or ""
         calls = completion.tool_calls or []
         declared, body = _split_declared_answer(content)
-        if declared and self._hold_topic_answer:
-            # 这段正文声明了「最终回答」，但同一响应还请求了话题工具：先扣住。
-            # 不冒充正式回答（interim=true），等申请决定并继续循环后由模型重新生成。
-            self._call_role = "interim"
-            self._call_answer_text = ""
-            body = _redact_published(body, holdback=False)
-            if body.strip() and self.adapter.mode == AdapterMode.NATIVE:
-                batch_has_narrative = any(
-                    parse_narrative(getattr(c, "narrative", None)) is not None for c in calls
-                )
-                if not batch_has_narrative:
-                    await self._emit_assistant(
-                        self._one_shot_payload(
-                            body,
-                            interim=True,
-                            evidence="declared_answer_held_for_topic_application",
-                            calls=calls,
-                        )
-                    )
-            return
         if declared:
             self._call_role = "answer"
             # 对外发布与最终交付的正文统一脱敏（契约 C3）；整段已知，无需扣留尾部。
@@ -2281,6 +2738,7 @@ class AgentLoop:
         self._call_answer_text = ""
         self._call_undeclared = False
         self._call_buffer_outcome = None
+        self._call_gate_text = ""
         # 系统提示只发给这一次调用（不写回对话记录）：内容角色协议 / 兜底要求。
         request_messages = messages
         if hint:
@@ -2507,6 +2965,7 @@ class AgentLoop:
             self._emit_assistant,
             delta_id=delta_id,
             answer_expected=self._answer_expected,
+            gate=self._gate_active,
             spill_dir=self._spill_dir,
             memory_limit=self._undeclared_memory_limit,
             spill_limit=self._undeclared_spill_limit,

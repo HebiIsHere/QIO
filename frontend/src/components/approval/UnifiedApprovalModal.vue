@@ -33,6 +33,11 @@ import ApprovalFacts from "../ApprovalFacts.vue";
 import ApprovalResultsPanel from "./ApprovalResultsPanel.vue";
 import KnowledgeApprovalBody from "./KnowledgeApprovalBody.vue";
 import TopicApprovalContent from "./TopicApprovalContent.vue";
+import type {
+  TopicConflictView,
+  TopicRecoveryView,
+  TopicStageValue,
+} from "./TopicStageTypes";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const unified = useUnifiedApprovalsStore();
@@ -271,7 +276,7 @@ const kicker = computed(() => {
     return "知识保存申请 · 确认前尚未生效";
   }
   if (item.value.kind === "topic") {
-    return "话题申请 · 本轮暂停，等待你的选择";
+    return topicKicker.value;
   }
   const origin = TOOL_ORIGIN_LABELS[item.value.origin] ?? "来源未记录";
   return origin + "提出的申请 · " + (item.value.highRisk ? "重点确认" : "单次授权");
@@ -279,6 +284,10 @@ const kicker = computed(() => {
 
 const errorText = computed(() => {
   if (!item.value) return "";
+  // 话题申请的失效 / 恢复原因已经在正文里按后端原文显示（不重复说两遍）
+  if (item.value.kind === "topic" && (topicInvalidated.value || topicStage.value === "recoverable_failure")) {
+    return "";
+  }
   if (unified.submitError) return unified.submitError;
   // 工具 / 话题类都有真实 approval 记录：后端拒绝原因（空名称、目标消失…）就放在这里
   if (item.value.approval) return approvals.error ?? "";
@@ -596,6 +605,68 @@ async function submit(decision: "approve" | "approve_modified" | "ignore" | "rej
 const isTopic = computed(() => item.value?.kind === "topic");
 const topic = computed(() => item.value?.topic ?? null);
 
+/**
+ * 话题申请的阶段 / 恢复 / 失效 / 冲突事实：全部只读消费 E 的 store 派生。
+ *
+ * 旧后端没有 TOPIC_PHASE、或事件还没到时派生为 null —— 这里不渲染阶段行、不伪造状态；
+ * 组件不自行推进阶段、不猜后续进度。
+ */
+/** 阶段事实：按该条申请 operationId + turnId 匹配本轮 TOPIC_PHASE（对不上为 null）。 */
+const topicStage = computed<TopicStageValue | null>(() => {
+  const stage = item.value?.stage ?? null;
+  return (stage as TopicStageValue | null) ?? null;
+});
+/** 恢复事实：只有 recoverable_failure 之后非 null（后端真实原因 + 重试凭据）。 */
+const topicRecovery = computed<TopicRecoveryView | null>(() => {
+  const recovery = item.value?.recovery ?? null;
+  return (recovery as TopicRecoveryView | null) ?? null;
+});
+/** 失效事实（失效 ≠ 拒绝）：来自后端结构化 409 / APPROVAL_RESULT decision=stale。 */
+const topicInvalidated = computed(() => topic.value?.invalidated === true);
+const topicInvalidatedReason = computed(() => String(topic.value?.invalidatedReason ?? ""));
+const topicConflict = computed<TopicConflictView | null>(() =>
+  (topic.value?.conflict ?? null) as TopicConflictView | null,
+);
+const topicRetrying = ref(false);
+/** 话题申请的顶部说明：阶段事实直接来自后端，不把执行中写成「模型生成中」。 */
+const topicKicker = computed(() => {
+  switch (topicStage.value) {
+    case "executing":
+      return "话题申请 · 已确认，执行中";
+    case "context_preparing":
+      return "话题申请 · 目标上下文准备中";
+    case "answerable":
+      return "话题申请 · 已进入可回答阶段";
+    case "recoverable_failure":
+      return "话题申请 · 回答准备失败，可重试";
+    default:
+      return "话题申请 · 本轮暂停，等待你的选择";
+  }
+});
+/** 同一操作的相似话题二次确认（工具审批 kind=create_topic），不是第二份申请。 */
+const isTopicConflictApproval = computed(
+  () => item.value?.kind === "tool" && item.value.approval?.kind === "create_topic",
+);
+const topicConflictName = computed(() => {
+  const payload = (item.value?.approval?.payload ?? {}) as Record<string, unknown>;
+  const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  return text(payload.new_name) || text(payload.name);
+});
+const topicConflictExistingName = computed(() => {
+  const payload = (item.value?.approval?.payload ?? {}) as Record<string, unknown>;
+  const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  return (
+    text(payload.existing_topic_name) ||
+    text(payload.similar_topic_name) ||
+    text(payload.conflict_topic_name)
+  );
+});
+const topicConflictOperationId = computed(() => {
+  const active = item.value as (typeof item.value) & { operationId?: string } | null;
+  const payload = (item.value?.approval?.payload ?? {}) as Record<string, unknown>;
+  return String(active?.operationId ?? payload.operation_id ?? "").trim();
+});
+
 /** 决定只交给 store 的唯一入口（decideTopic → 既有 /respond 路径）；组件不发请求。 */
 async function decideTopic(payload: {
   decision: "approve" | "reject";
@@ -628,6 +699,36 @@ function updateTopicName(value: string) {
   const active = topic.value;
   if (!active) return;
   unified.updateTopicDraft(active.key, value);
+}
+
+/**
+ * 恢复入口：只把 recordId 交给 store 的唯一 retry 动作（组件不发请求）。
+ *
+ * 成功 / 失败都不在这里伪造阶段：阶段由后端 TOPIC_PHASE 推进，失败原因由 store 写回
+ * topicRecovery.message（提示块原地更新），保证「没有假装成功」。
+ */
+async function retryTopic(recordId: string) {
+  if (topicRetrying.value) return;
+  topicRetrying.value = true;
+  try {
+    // store 的唯一 retry 入口：成功后阶段仍以后端 TOPIC_PHASE 推进为准；失败原因写回恢复事实
+    await unified.retryTopicAnswer(String(recordId ?? ""));
+  } finally {
+    topicRetrying.value = false;
+  }
+}
+
+/**
+ * 失效收口：不写拒绝范围、不发 /respond、不覆盖用户后来的选择。
+ *
+ * 只把这条申请从待办里收口（用户已经不可能再批准它）；
+ * 已改过的名称、草稿与原问题都保留在各自既有位置。
+ */
+function acknowledgeTopic() {
+  const active = topic.value;
+  if (!active) return;
+  // 纯本地收口：不发 /respond、不写拒绝范围、保留已改名称与草稿
+  unified.acknowledgeInvalidatedTopic(active);
 }
 
 /** 用户改了预算：只有这次真的改动才允许随批准提交（F06）。 */
@@ -793,6 +894,25 @@ function retryKnowledgeDetail() {
           >
             后端明确指出：这条旧审批路径不支持修改执行预算，预算只能按审批记录里的值只读核对。
           </p>
+          <!--
+            P1-05 查重冲突：同一 operation 的相似话题二次确认（工具审批 kind=create_topic）。
+            这里显式说明「同一操作、不是第二份申请」，并让用户看得到要新建的真实名称；
+            决定仍走这条工具审批自己的按钮，不另造一套提交路径。
+          -->
+          <div
+            v-if="isTopicConflictApproval"
+            class="ua-topic-conflict"
+            role="status"
+            data-test="topic-conflict-approval"
+          >
+            <p class="ua-topic-conflict__title">
+              同一话题操作的相似话题确认{{ topicConflictOperationId ? "（操作 " + topicConflictOperationId + "）" : "" }}
+            </p>
+            <p class="ua-topic-conflict__body">
+              要新建的话题名<template v-if="topicConflictName">「{{ topicConflictName }}」</template>与已有话题<template v-if="topicConflictExistingName">「{{ topicConflictExistingName }}」</template>相似；
+              确认只决定这一次是否新建，不会生成第二份话题申请，也不会重新提交之前的话题选择。
+            </p>
+          </div>
           <ApprovalFacts
             :item="item.approval"
             :budget="budgetForm"
@@ -823,10 +943,18 @@ function retryKnowledgeDetail() {
             :busy="busy"
             :expired="expired"
             :stale="item.stale"
+            :stage="topicStage"
+            :invalidated="topicInvalidated"
+            :invalidated-reason="topicInvalidatedReason"
+            :recovery="topicRecovery"
+            :conflict="topicConflict"
+            :retrying="topicRetrying"
             @update:name="updateTopicName"
             @decide="decideTopic"
             @collapse="collapseTopic"
             @dismiss="dismissTopic"
+            @retry="retryTopic"
+            @acknowledge="acknowledgeTopic"
           />
         </template>
         <p v-if="unified.knowledgeError && item.kind === 'knowledge'" class="ua-refresh-note">
@@ -1341,6 +1469,28 @@ function retryKnowledgeDetail() {
   color: var(--text-primary);
   font-size: 12px;
   line-height: 1.6;
+}
+/* 查重冲突说明（同一操作的二次确认）：与工具事实分开，先讲清楚「不会生成第二份申请」。 */
+.ua-topic-conflict {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
+  background: var(--warning-soft, var(--bg-inset));
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ua-topic-conflict__title {
+  margin: 0 0 2px;
+  font-family: var(--serif);
+  font-size: 12.5px;
+  color: var(--text-strong);
+}
+.ua-topic-conflict__body {
+  margin: 0;
+  color: var(--text-secondary);
 }
 .ua-refresh-note {
   margin: 8px 0 0;

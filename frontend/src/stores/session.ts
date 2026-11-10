@@ -23,6 +23,7 @@ import {
   type RecoveryRecordView,
 } from "../services/recoveryApi";
 import { restoreRuntimeState } from "./restore";
+import { retryTopicAnswer as retryTopicAnswerRequest } from "../services/approvalLifecycle";
 import { useUnifiedApprovalsStore } from "./unifiedApprovals";
 import { newClientRequestId, setNextSendRequestId } from "../services/sendIdentity";
 import { toAttachmentRef, type AttachmentRef } from "../services/attachments";
@@ -801,6 +802,78 @@ export type Activity =
  */
 export interface TopicApplicationPendingView {
   key: string;
+  /** 这条申请的 approval_id（后端身份，失效/提交都按它定位）。 */
+  approvalId: string;
+  /** 稳定操作身份（P1-05：payload.operation_id；旧后端为空串）。 */
+  operationId: string;
+  /** 这条申请属于哪一轮（TOPIC_PHASE 按它归属）。 */
+  turnId: string | null;
+}
+
+/**
+ * 本轮话题处理阶段（唯一来源：后端 TOPIC_PHASE 事件，值等于
+ * `topic_operation.TopicPhase` 的小写字符串）。
+ *
+ * 前端只消费、不自行推进；没有阶段事件（旧后端 / 本轮无话题动作）时保持 null，
+ * 界面不渲染阶段行、也不隐藏既有的流式正文。
+ */
+export type TopicPhase =
+  | "decision_open"
+  | "awaiting_confirmation"
+  | "executing"
+  | "context_preparing"
+  | "answerable"
+  | "recoverable_failure";
+
+const TOPIC_PHASES: ReadonlySet<string> = new Set<string>([
+  "decision_open",
+  "awaiting_confirmation",
+  "executing",
+  "context_preparing",
+  "answerable",
+  "recoverable_failure",
+]);
+
+/**
+ * 阶段序：只前进不后退（旧 / 乱序事件的阶段序更小 → 丢弃）。
+ * recoverable_failure 与 context_preparing 同级：失败发生在准备之后，恢复重试可以再前进。
+ */
+const TOPIC_PHASE_RANK: Record<TopicPhase, number> = {
+  decision_open: 0,
+  awaiting_confirmation: 1,
+  executing: 2,
+  context_preparing: 3,
+  recoverable_failure: 3,
+  answerable: 4,
+};
+
+/** 本轮上下文准备失败后的恢复事实（TOPIC_PHASE.recovery；界面只呈现，不伪造）。 */
+export interface TopicAnswerRecovery {
+  /** 后端恢复记录 id（retry-answer 的路径参数）。 */
+  recordId: string;
+  /** 后端给的真实原因（缺失时界面不编造细节）。 */
+  message: string;
+  /** 是否值得重试：有 record_id 且后端没有明确说不可重试。 */
+  retryable: boolean;
+}
+
+/** TOPIC_PHASE.phase → 认识的阶段；未知值返回 null（不改状态、不猜）。 */
+export function normalizeTopicPhase(value: unknown): TopicPhase | null {
+  const phase = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return TOPIC_PHASES.has(phase) ? (phase as TopicPhase) : null;
+}
+
+/** TOPIC_PHASE.recovery → 恢复事实；没有 record_id 时 retryable=false（没有可重试的凭据）。 */
+export function normalizeTopicRecovery(raw: unknown): TopicAnswerRecovery | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const recordId = String(record.record_id ?? record.recordId ?? "").trim();
+  const message = String(record.message ?? "").trim();
+  return {
+    recordId,
+    message,
+    retryable: record.retryable !== false && Boolean(recordId),
+  };
 }
 
 /**
@@ -2019,6 +2092,11 @@ const sessionStoreDefinition = defineStore("session", {
       turnId: string | null;
       /** switch 的目标话题（create 由随后的 ANCHOR 决定，为 null） */
       targetTopicId: string | null;
+      /** P1-05 稳定操作身份（payload.operation_id；旧后端为空串）。 */
+      operationId: string;
+      /** 参数版本 / 导航版本快照（payload.param_version / base_nav_version；缺失 null）。 */
+      paramVersion: number | null;
+      baseNavVersion: number | null;
     }[],
     /**
      * 话题申请批准后、ANCHOR 真正切换话题前的一次性草稿跟随标记。
@@ -2027,6 +2105,37 @@ const sessionStoreDefinition = defineStore("session", {
      * 话题变化时消费；没有这个标记时，普通导航的草稿规则一字不变。
      */
     _topicDraftFollow: null as { targetTopicId: string | null; turnId: string } | null,
+    /**
+     * 本轮话题处理阶段（TOPIC_PHASE 唯一来源；只消费、不自行推进）。
+     * null = 这一轮没有话题动作 / 旧后端没有该事件 —— 界面不伪造阶段。
+     */
+    topicStage: null as TopicPhase | null,
+    /** 阶段事件的归属身份：只接受同一 active turn + 同一 operation 的推进。 */
+    topicStageTurnId: null as string | null,
+    topicStageOperationId: null as string | null,
+    topicStageApprovalId: null as string | null,
+    /** 上下文准备失败后的恢复事实（retryAnswer 的入口凭据；非失败阶段为 null）。 */
+    topicRecovery: null as TopicAnswerRecovery | null,
+    /** 后端若给 seq：同一轮只接受更大的 seq（重放 / 乱序不改状态）。 */
+    _topicPhaseSeq: null as number | null,
+    /**
+     * 阶段门内暂存的**正式正文**（顺序无关兼容；契约 §3 原文顺序是
+     * 「先交付缓冲正文，随后进入 ANSWERABLE」，而 F 观察到另一种顺序也可能出现）。
+     *
+     * 只按原事件暂存、不进回答流、不改写；answerable 到达后原样回放。
+     * 有界（同一轮最多保留最近几条累计快照），轮结束即清空。
+     */
+    _deferredFormalAnswers: [] as {
+      turnId: string;
+      content: string;
+      streaming: boolean;
+      meta: {
+        deltaId?: string | null;
+        seq?: number | null;
+        stageId?: string | null;
+        callIds?: string[];
+      };
+    }[],
   /**
    * 一轮的可观察阶段（不猜测后台在干什么）：
    * idle 未在跑 / waiting 已提交但还没有任何助手内容 / generating 已有增量内容到达
@@ -2169,8 +2278,15 @@ const sessionStoreDefinition = defineStore("session", {
       const turnId = this.activeTurnId || this.turnQueue.running?.turn_id || "";
       if (!turnId) return null;
       const pending = useUnifiedApprovalsStore().topicPendingForTurn(turnId) ?? null;
-      // 只借稳定身份（key），申请正文与决定入口仍只在统一审批队列里
-      return pending ? { key: pending.key } : null;
+      // 只借稳定身份（key + operation/turn），申请正文与决定入口仍只在统一审批队列里
+      return pending
+        ? {
+            key: pending.key,
+            approvalId: pending.approvalId,
+            operationId: pending.operationId ?? "",
+            turnId: pending.turnId || turnId || null,
+          }
+        : null;
     },
     /** 本对话是否存在等待选择话题的申请（发送限制与等待状态只读这一个派生值）。 */
     topicApprovalPending(): boolean {
@@ -2180,6 +2296,44 @@ const sessionStoreDefinition = defineStore("session", {
     topicApprovalKey(): string | null {
       return this.topicPendingApproval?.key ?? null;
     },
+    /**
+     * 本轮话题阶段（D 的弹窗 / 等待行读取；null = 不渲染阶段行，不伪造）。
+     *
+     * 唯一来源是 TOPIC_PHASE 事件（见 applyTopicPhase）；这里不做任何推断。
+     */
+    stage(): TopicPhase | null {
+      return this.topicStage;
+    },
+    /** 本轮恢复事实（只有 recoverable_failure 之后非 null）。 */
+    recovery(): TopicAnswerRecovery | null {
+      return this.topicRecovery;
+    },
+    /**
+     * 「本轮等待话题选择」造成的发送限制（**只**针对这条对话的发送动作）。
+     *
+     * 与既有的运行 / 排队规则（turnRunning、turnQueue）分开表达：
+     * 这里只说明限制的来源是本申请，不锁死整个应用、不改草稿内容、不影响其它对话。
+     */
+    topicSendLock(): {
+      active: boolean;
+      approvalId: string;
+      operationId: string;
+      turnId: string;
+      reason: string;
+      source: "topic_application";
+    } | null {
+      const pending = this.topicPendingApproval;
+      if (!pending) return null;
+      return {
+        active: true,
+        approvalId: pending.approvalId,
+        operationId: pending.operationId,
+        turnId: pending.turnId ?? this.activeTurnId ?? "",
+        reason: "正在等待你选择话题：这条对话的发送暂时不可用，选择之后会自动恢复。",
+        source: "topic_application",
+      };
+    },
+
     /**
      * 没做完的开发任务 = 还没提交、也还没被放弃的。
      *
@@ -2881,6 +3035,10 @@ const sessionStoreDefinition = defineStore("session", {
       kind: "topic_switch" | "topic_create";
       turnId?: string | null;
       targetTopicId?: string | null;
+      /** P1-05 稳定操作身份（payload.operation_id；旧后端为空串）。 */
+      operationId?: string | null;
+      paramVersion?: number | null;
+      baseNavVersion?: number | null;
     }) {
       const id = String(entry?.approvalId ?? "");
       if (!id) return;
@@ -2889,6 +3047,15 @@ const sessionStoreDefinition = defineStore("session", {
         kind: entry.kind,
         turnId: entry.turnId ?? null,
         targetTopicId: entry.targetTopicId ?? null,
+        operationId: String(entry.operationId ?? "").trim(),
+        paramVersion:
+          typeof entry.paramVersion === "number" && Number.isFinite(entry.paramVersion)
+            ? entry.paramVersion
+            : null,
+        baseNavVersion:
+          typeof entry.baseNavVersion === "number" && Number.isFinite(entry.baseNavVersion)
+            ? entry.baseNavVersion
+            : null,
       };
       this._topicApplications = [
         ...this._topicApplications.filter((item) => item.approvalId !== id),
@@ -2913,11 +3080,16 @@ const sessionStoreDefinition = defineStore("session", {
       if (!tid) {
         this._topicApplications = [];
         this._topicDraftFollow = null;
+        this.resetTopicPhase();
+        this.clearDeferredFormalAnswers();
         return;
       }
+      this.clearDeferredFormalAnswers(tid);
       this._topicApplications = this._topicApplications.filter((item) => item.turnId !== tid);
       const follow = this._topicDraftFollow;
       if (follow && (!follow.turnId || follow.turnId === tid)) this._topicDraftFollow = null;
+      // 阶段只属于这一轮：轮结束 / 权威队列已空闲时收口，避免下一轮读到上一轮的阶段。
+      if (!this.topicStageTurnId || this.topicStageTurnId === tid) this.resetTopicPhase();
     },
     /**
      * 话题申请已获批准（或正在执行）：武装**一次性**草稿跟随。
@@ -2934,6 +3106,224 @@ const sessionStoreDefinition = defineStore("session", {
     /** 清除草稿跟随（拒绝 / 执行失败 / 取消 / 一轮结束）：草稿归属不再改变。 */
     clearTopicDraftFollow() {
       this._topicDraftFollow = null;
+    },
+
+    /* ── 话题阶段（TOPIC_PHASE 唯一消费入口）────────────────────────── */
+
+    /** 新一轮开始 / 本轮收口：阶段与恢复事实一起清空（不让上一轮的状态影响下一轮）。 */
+    resetTopicPhase() {
+      this.topicStage = null;
+      this.topicStageTurnId = null;
+      this.topicStageOperationId = null;
+      this.topicStageApprovalId = null;
+      this.topicRecovery = null;
+      this._topicPhaseSeq = null;
+    },
+
+    /**
+     * 消费一条 TOPIC_PHASE；返回是否真的推进了阶段。
+     *
+     * 丢弃规则（旧事件不改当前位置）：
+     * * 不是当前 active turn（别的轮 / 子任务 / 轮结束后迟到）；
+     * * 同一轮里另一个 operation_id（稳定身份只认第一个）；
+     * * seq 不大于已应用值；
+     * * 阶段回退（answerable / context_preparing 之后迟到的 executing …），
+     *   唯一例外是 recoverable_failure 之后的恢复重试推进。
+     */
+    applyTopicPhase(input: Record<string, unknown>): boolean {
+      const phase = normalizeTopicPhase(input?.phase);
+      if (!phase) return false;
+      const turnId = String(input.turn_id ?? "").trim();
+      const operationId = String(input.operation_id ?? "").trim();
+      const approvalId = String(input.approval_id ?? "").trim();
+      // 阶段只属于当前进行中的那一轮：别的轮 / 轮已结束 / 子任务内部 → 丢弃
+      if (!turnId || !this.activeTurnId || turnId !== this.activeTurnId) return false;
+      // 同一轮只认第一个 operation（operation_id 是稳定身份；别的事件属于旧操作）
+      if (operationId && this.topicStageOperationId && operationId !== this.topicStageOperationId) {
+        return false;
+      }
+      const seqRaw = input.seq;
+      const seq =
+        typeof seqRaw === "number" && Number.isFinite(seqRaw) ? Math.trunc(seqRaw) : null;
+      if (seq !== null && this._topicPhaseSeq !== null && seq <= this._topicPhaseSeq) return false;
+      const current = this.topicStage;
+      if (current) {
+        // ANSWERABLE 之后本轮归属固定：迟到的阶段不改变当前位置
+        if (current === "answerable") return false;
+        if (current === "recoverable_failure") {
+          // 恢复重试：只接受重新进入执行/准备/回答（或再次失败）
+          if (
+            phase !== "recoverable_failure" &&
+            TOPIC_PHASE_RANK[phase] < TOPIC_PHASE_RANK.executing
+          ) {
+            return false;
+          }
+        } else if (
+          phase !== "recoverable_failure" &&
+          TOPIC_PHASE_RANK[phase] < TOPIC_PHASE_RANK[current]
+        ) {
+          // 阶段回退 = 旧 / 乱序事件
+          return false;
+        }
+      }
+      if (current === phase && this.topicStageTurnId === turnId) {
+        // 同一阶段重复：幂等；恢复信息缺失时补齐，不产生其它状态变化
+        if (phase === "recoverable_failure" && !this.topicRecovery) {
+          this.topicRecovery = normalizeTopicRecovery(input.recovery);
+        }
+        return false;
+      }
+      this.topicStage = phase;
+      this.topicStageTurnId = turnId;
+      if (operationId) this.topicStageOperationId = operationId;
+      if (approvalId) this.topicStageApprovalId = approvalId;
+      if (seq !== null) this._topicPhaseSeq = seq;
+      if (phase === "recoverable_failure") {
+        const recovery = normalizeTopicRecovery(input.recovery);
+        this.topicRecovery =
+          recovery ??
+          ({
+            recordId: "",
+            message: "上下文准备失败，正式回答没有生成；可以在恢复入口重试。",
+            retryable: false,
+          } satisfies TopicAnswerRecovery);
+      } else {
+        // 已经推进（含恢复重试成功）→ 旧的失败说明不再成立
+        this.topicRecovery = null;
+      }
+      return true;
+    },
+
+    /**
+     * 正式正文是否可以展示（「可回答」判据，只做最后一道保护）。
+     *
+     * 后端已按阶段门发布正文；这里不靠隐藏已经泄露的事件充数 ——
+     * 只有存在阶段事实且还没到 answerable 时才不把正式正文写进回答流。
+     * 没有阶段事实（旧后端 / 本轮无话题动作）→ true，既有行为一字不变。
+     */
+    acceptsTopicFormalAnswer(turnId?: string | null): boolean {
+      const stage = this.topicStage;
+      if (!stage) return true;
+      const tid = String(turnId ?? "").trim();
+      if (tid && this.topicStageTurnId && tid !== this.topicStageTurnId) return true;
+      return stage === "answerable";
+    },
+
+    /** 阶段未到 answerable 的正式正文：按原事件暂存（有界，不进回答流）。 */
+    holdDeferredFormalAnswer(entry: {
+      turnId?: string | null;
+      content: string;
+      streaming?: boolean;
+      meta?: {
+        deltaId?: string | null;
+        seq?: number | null;
+        stageId?: string | null;
+        callIds?: string[];
+      };
+    }): void {
+      const turnId = String(entry?.turnId ?? this.activeTurnId ?? "").trim();
+      const content = String(entry?.content ?? "");
+      if (!turnId || !content) return;
+      const meta = entry.meta ?? {};
+      const deltaId = String(meta.deltaId ?? "");
+      const seq = typeof meta.seq === "number" && Number.isFinite(meta.seq) ? meta.seq : null;
+      const previousIndex = this._deferredFormalAnswers.findIndex(
+        (item) =>
+          item.turnId === turnId &&
+          ((deltaId && String(item.meta.deltaId ?? "") === deltaId) ||
+            (seq !== null && item.meta.seq === seq && Boolean(deltaId))),
+      );
+      const record = {
+        turnId,
+        content,
+        streaming: entry.streaming !== false,
+        meta: {
+          deltaId: meta.deltaId ?? null,
+          seq,
+          stageId: meta.stageId ?? null,
+          callIds: Array.isArray(meta.callIds) ? meta.callIds.map(String) : [],
+        },
+      };
+      if (previousIndex >= 0) {
+        // 同一 delta 的累计快照：就地替换，不排第二条（与 pushAssistant 的语义一致）
+        const next = [...this._deferredFormalAnswers];
+        next[previousIndex] = record;
+        this._deferredFormalAnswers = next;
+        return;
+      }
+      // 有界：只保留最近的累计快照，避免病态事件流无限增长
+      this._deferredFormalAnswers = [...this._deferredFormalAnswers.slice(-3), record];
+    },
+
+    /** answerable 到达：把本轮暂存的正式正文按原事件顺序原样回放。 */
+    releaseDeferredFormalAnswers(turnId?: string | null): void {
+      const tid = String(turnId ?? this.activeTurnId ?? "").trim();
+      if (!tid) return;
+      const release = this._deferredFormalAnswers.filter((entry) => entry.turnId === tid);
+      if (!release.length) return;
+      this._deferredFormalAnswers = this._deferredFormalAnswers.filter(
+        (entry) => entry.turnId !== tid,
+      );
+      for (const entry of release) {
+        this.pushAssistant(entry.content, false, entry.streaming, entry.meta);
+      }
+    },
+
+    /** 清空暂存的正式正文（轮结束 / 新一轮 / 重置）。 */
+    clearDeferredFormalAnswers(turnId?: string | null): void {
+      const tid = String(turnId ?? "").trim();
+      this._deferredFormalAnswers = tid
+        ? this._deferredFormalAnswers.filter((entry) => entry.turnId !== tid)
+        : [];
+    },
+
+    /**
+     * 恢复入口：只重做本轮还没完成的那一步（不重发用户消息、不重新执行话题操作）。
+     *
+     * 走既有恢复通道 POST /api/recovery/records/{id}/retry-answer；
+     * 失败原因原样返回，不假装成功、不改阶段（阶段仍以后端事件为准）。
+     */
+    async retryTopicAnswer(
+      recordId: string,
+    ): Promise<{ ok: boolean; code: string; message: string }> {
+      const id = String(recordId ?? "").trim();
+      if (!id) {
+        return { ok: false, code: "missing_record", message: "没有可重试的恢复记录。" };
+      }
+      const current = this.topicRecovery;
+      if (current && !current.retryable) {
+        return {
+          ok: false,
+          code: "not_retryable",
+          message: current.message || "这次失败没有可重试的恢复记录。",
+        };
+      }
+      try {
+        const result = await retryTopicAnswerRequest(id);
+        if (!result.ok) {
+          if (this.topicRecovery) {
+            this.topicRecovery = { ...this.topicRecovery, message: result.message };
+          }
+          return result;
+        }
+        /**
+         * 重试成功的回答只由后端持久化（没有 ASSISTANT / TURN_END 事件）：
+         * 用既有的「当前话题历史可能过期 → 一次性补读」入口把它读回对话。
+         * 不轮询、不伪造本地消息；补读失败不影响重试本身，界面沿用既有
+         * history.status / history.error 口径如实显示。
+         */
+        this.markIntentRecordsStale();
+        try {
+          await this.reloadHistoryIfStale();
+        } catch {
+          // 补读是补充信息：失败不把「重试成功」改写成失败
+        }
+        return result;
+      } catch (error) {
+        const message = "没能重新开始回答：" + ((error as Error)?.message || "未知原因");
+        if (this.topicRecovery) this.topicRecovery = { ...this.topicRecovery, message };
+        return { ok: false, code: "network", message };
+      }
     },
 
     /**

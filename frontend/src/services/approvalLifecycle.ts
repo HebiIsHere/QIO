@@ -337,3 +337,77 @@ export function approvalStateLabel(state: string): string {
   const raw = String(state ?? "").trim();
   return raw ? "未知状态（" + raw + "）" : "等待确认";
 }
+
+/* ── 话题回答恢复：只重做未完成步骤 ─────────────────────────────────── */
+
+export interface TopicAnswerRetryResult {
+  ok: boolean;
+  code: string;
+  /** 人话结果（失败时是真实原因，不包装成成功）。 */
+  message: string;
+}
+
+/**
+ * `POST /api/recovery/records/{id}/retry-answer`：上下文准备失败后的恢复入口。
+ *
+ * 只重做**未完成的那一步**（上下文装配 + 回答生成）；不重新执行已成功的话题操作、
+ * 不重发用户消息。前端不伪造成功：后端没有这条通道 / 记录已不存在 / 冲突时如实返回。
+ */
+export async function retryTopicAnswer(recordId: string): Promise<TopicAnswerRetryResult> {
+  const id = String(recordId ?? "").trim();
+  if (!id) {
+    return { ok: false, code: "missing_record", message: "没有可重试的恢复记录。" };
+  }
+  const path = "/api/recovery/records/" + encodeURIComponent(id) + "/retry-answer";
+  try {
+    /**
+     * Lead 冻结的约定：body 可选 {expected_class, expected_status}；
+     * 这里没有可核对的 class/status 就不带（不猜），200 返回
+     * {ok, record_id, turn_id, topic_id, answered, answer_id?}。
+     */
+    const body = await request<{
+      ok?: boolean;
+      message?: string;
+      record_id?: string;
+      turn_id?: string;
+      answered?: boolean;
+    }>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+      timeoutMs: 20_000,
+    });
+    const answered = body?.answered === true;
+    return {
+      ok: true,
+      code: "",
+      message:
+        text(body?.message) ||
+        (answered
+          ? "已按原问题重新生成回答。"
+          : "已请求重新回答；本轮会继续完成未做完的步骤。"),
+    };
+  } catch (error) {
+    const status = Number((error as ApprovalRequestError)?.status ?? 0);
+    const detail = (error as Error)?.message || "未知原因";
+    if (status === 404) {
+      return {
+        ok: false,
+        code: "not_found",
+        message: "恢复入口暂不可用（后端没有这条重试通道，或记录已不存在）；没有重发任何消息。",
+      };
+    }
+    if (status === 409) {
+      return {
+        ok: false,
+        code: "conflict",
+        message: "这条恢复记录的状态已经变化，不能在当前状态下重试：" + detail,
+      };
+    }
+    return {
+      ok: false,
+      code: status ? "failed_" + status : "network",
+      message: "没能重新开始回答：" + detail + "（没有重发任何消息）",
+    };
+  }
+}

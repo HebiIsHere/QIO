@@ -132,7 +132,14 @@ describe("§五.4：元信息静态可读（统一令牌，不靠 hover 才看�
     const meta = w.find(".meta");
     expect(meta.exists()).toBe(true);
     expect(meta.classes()).toContain("mono");
-    expect(meta.text()).toContain("09:42:11");
+    // 生产按**本地时区**显示（MessageItem.formatTime 用 getHours()）；
+    // 测试不能假定运行机是哪个时区（CI 是 UTC，写死 "09:42:11" 只在 +08 成立，
+    // CI run 42760316832 即因此红）。期望值按同一语义从 fixture 构造，行为断言不变。
+    // 同类先例：src/components/conversation/__tests__/entries.test.ts:200。
+    const shown = new Date("2026-11-09T09:42:11+08:00");
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const expected = `${pad(shown.getHours())}:${pad(shown.getMinutes())}:${pad(shown.getSeconds())}`;
+    expect(meta.text()).toContain(expected);
     w.unmount();
   });
 });

@@ -373,7 +373,7 @@ describe("过期 / 失败 / 失效状态就地显示", () => {
     w.unmount();
   });
 
-  it("申请已失效（409 topic_application_stale）：不假成功，只给收口入口", async () => {
+  it("申请已失效（409 topic_application_stale）：不假成功、说明原因、保留恢复入口、收口不补决定", async () => {
     const { unified, approvals } = setup();
     enqueueTopic(approvals);
     openTopic(unified);
@@ -390,16 +390,20 @@ describe("过期 / 失败 / 失效状态就地显示", () => {
     await w.find('[data-test="topic-approve"]').trigger("click");
     await flushPromises();
 
-    expect(w.find('[data-test="topic-stale"]').exists()).toBe(true);
+    // P1R 契约 §5/§8：失效 ≠ 拒绝 —— 原确认不可执行、原因可见、保留恢复入口
+    const invalidated = w.find('[data-test="topic-invalidated"]');
+    expect(invalidated.exists()).toBe(true);
+    expect(invalidated.text()).toContain("没有等待处理的 waiter");
+    expect(invalidated.text()).toContain("没有执行");
     expect(w.find('[data-test="topic-approve"]').exists()).toBe(false);
-    expect(w.find('[data-test="topic-stay"]').exists()).toBe(false);
-    expect(unified.lastNotice).toContain("失效");
+    const stay = w.find('[data-test="topic-stay"]');
+    expect(stay.exists()).toBe(true);
 
-    await w.find('[data-test="topic-stale-ack"]').trigger("click");
+    await stay.trigger("click");
     await flushPromises();
     expect(approvals.queue).toHaveLength(0);
     expect(unified.visible).toBe(false);
-    // 只提交过一次；收口不补决定
+    // 只提交过一次；收口是纯本地动作，不补决定、不写拒绝范围
     expect(mocks.respondTopicApproval).toHaveBeenCalledTimes(1);
     w.unmount();
   });

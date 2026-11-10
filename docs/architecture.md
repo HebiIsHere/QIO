@@ -218,8 +218,16 @@ context_window
 | Reference Topic | 为回答当前问题**临时读取**的另一个话题（检索 / Focus / 实体卡） | 不是导航，不改变 Anchor，也不改变选中态 |
 | Pending Switch | 预测器认为「这段内容可能属于另一个话题」时给出的**建议** | 不是切换本身；用户确认前 Anchor 一动不动 |
 
-位置存在 `cursor` 表（`active` 行 = 当前话题的位置；离开话题时旧位置写入 `history` 行），
-**没有新增表、没有新增迁移**。优先级：用户当前明确选择 > Agent 显式 continue > Topic 历史保存位置 > Topic 默认位置。
+位置存在 `cursor` 表（`active` 行 = 当前话题的位置；离开话题时旧位置写入 `history` 行）。
+优先级：用户当前明确选择 > Agent 显式 continue > Topic 历史保存位置 > Topic 默认位置。
+
+**导航版本（2026-11-10，P1-04）**：位置之外另有一张追加迁移引入的单行表 `navigation_version`，
+只存**单调递增的版本号**与最近一次写入的来源/话题/片段/轮次。它不是位置、不是授权凭据：
+每一次真实位置变化（用户手动进入/切回话题、选历史片段、改接续位置、工具真实导航成功）
+在同一事务里把版本推进一次；渲染、重复事件、草稿编辑、收起/打开弹窗都不推进。
+话题申请建立时快照 `base_nav_version`，确认前与真正写入前各校验一次；写入前那次是
+`compare_and_advance` 条件更新（版本不符则整体回滚），因此不存在「检查一次就永远有效」的窗口。
+版本与位置写入同源在 `services/navigation_version.py` / `services/navigation.py`。
 
 一轮的 Focus 规则：只有「历史位置」（不是当前开放片段）才注入 Focus 块；
 当前开放片段已经由短期转录覆盖，重复注入只是噪声。Focus 块结构是
@@ -539,7 +547,8 @@ npm test
 | `FALLBACK` | `services/app.py`（进入兼容文本模式那一次） | 一次性轻提示 | 是（仅降级时） | 能力降级说明，不重复、不阻塞 |
 | `CREDENTIAL_STATUS` | `api/server.py`（凭据增删改）+ `turn_orchestrator` | `stores/events.ts` | 仅当阻止功能 | 凭据可用性（不含内部标识） |
 | `ANCHOR` | `services/app.py::_publish_anchor_event` | `stores/events.ts` | 是（话题行） | 当前位置变化 |
-| `TOPIC_SWITCH_SUGGESTED` | `services/turn_orchestrator.py` | `TopicSwitchPrompt.vue` | 是 | 推测切换待确认 |
+| `TOPIC_PHASE` | `core/loop.py`（`AgentLoop.set_topic_phase`） | `stores/events.ts` → `session.applyTopicPhase` | 是（阶段行） | 话题阶段（P1-02 输出边界）：`{phase, operation_id?, approval_id?, turn_id, target_topic_id?, recovery?}`；phase ∈ `decision_open / awaiting_confirmation / executing / context_preparing / answerable / recoverable_failure`。只有 `answerable` 允许发布正式回答；其它阶段只表示受控处理状态 |
+| `TOPIC_SWITCH_SUGGESTED` | 已退役（保留枚举用于历史重放归类，**没有生产者**） | `stores/events.ts`（无副作用兼容） | 否 | 旧的「推测切换待确认」；本轮起换题统一为「模型调用原工具 + 程序建申请」，不再发布 |
 | `USAGE` | `core/loop.py` | `stores/events.ts` | 否（仅 Developer Mode） | 单轮 token / 迭代 / 工具计数 |
 | `WARNING` | `services/app.py::make_warning`、`core/loop.py` | `ConversationView.vue` | 是 | 非致命提示 |
 | `ERROR` | `services/app.py::make_error`、`core/loop.py` | `ConversationView.vue` | 是 | 出错了（不承担结束 turn 的职责） |
@@ -682,55 +691,102 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 * **绑定语义（2026-10-06 审计修正）**：`POST /api/turns` 里 `attachment_ids` 的**存在性即语义** ——
   字段出现（含空数组）表示「这条消息就是这些附件（空 = 没有附件）」，**只有缺字段**才走旧客户端兜底
 
-## 21. 话题判断与申请流程（2026-11-10）
+## 21. 话题判断与申请流程（2026-11-10 定稿，同日 P1 修复后修订）
 
-### 21.1 唯一判断入口
+### 21.1 唯一语义判断：主循环模型
 
-- 相似度只作证据：`TopicPredictor` / `affinity.classify` 负责提供候选话题、分值与实体软信号，
-  **不再**登记「待确认切换」、不再发布可执行的 `TOPIC_SWITCH_SUGGESTED`。旧事件类型保留用于
-  兼容重放与显式归类，但不再发布；旧 `/api/topic-switch/confirm|reject` 入口返回 410 退役。
-- 唯一可执行判断来自本轮主模型：系统上下文注入 `agent/services/topic_decision.py` 生成的
-  「统一话题判断证据」（当前话题/范围、当前目标、已确认信息、未完成事项、候选话题、用户此前
-  拒绝范围、明确导航提示），策略文本单源在 `prompts.PROMPTS["TOPIC_DECISION_POLICY"]`。
-  四种结果：延续 / 建议切换已有话题 / 建议创建新话题 / 暂时无法判断（留在当前话题正常回答）。
-- 不新增第二套切换/创建工具：仍复用 `switch_topic` / `create_topic`；`TopicNavigationService`
-  仍是唯一真正的导航写入者（Anchor 单一写入者不变）。
+- **所有对话消息完整进入主循环**。进入主循环之前**没有**任何「这段话是不是要求切换/新建」的
+  程序识别：关键词、正则、包含匹配、固定否定词表、相似度阈值都不再决定能否执行。
+  2026-11-10 前存在的 `detect_explicit_navigation` / `detect_explicit_topic_creation` 与
+  `begin()` 里的轮前 `enter_topic` 直切已整体删除，不留换名的同类旁路。
+- 判断位置唯一：本轮主模型结合用户当前原话、必要近期上下文、候选话题与既有选择，决定
+  「延续 / 主动建议切换 / 主动建议新建 / 无法判断」。相似度（`TopicPredictor` / `affinity`）
+  只提供候选与证据，**不**单独驱动切换弹窗或执行链。
+- 模型需要换题时仍然调用**原工具**，并在参数里声明来源：
+  `switch_topic(topic_id, reason?, intent="user_request"|"suggestion")`、
+  `create_topic(name, reason?, intent="user_request"|"suggestion")`。缺省/未知值一律按
+  `suggestion`（安全侧）。这个值是**受控通道**：只有本轮真实 tool_call 携带的值被消费，
+  客户端字段、历史记录里的旧布尔值、其它轮次/会话都不能提供免确认凭据。
+- `user_request` → 校验参数后**直接执行原工具**，不重复普通确认；`suggestion` → 走 21.2 的
+  话题申请。直接执行也不跳过名称/目标校验、相似话题冲突二次确认及既有非话题安全策略。
+- 手动点击话题、历史选择、默认话题、首次引导、只读检索仍走各自既有入口（`TopicNavigationService`），
+  不经过模型，也不因本轮改造被破坏。
+- 判断规则（含否定、引用、解释、条件、改口、指代等反例）单源在 `prompts.TOPIC_SEMANTIC_POLICY`；
+  `services/topic_decision.py` 只注入证据（当前话题/范围/目标/已确认信息/未完成事项/候选/拒绝范围）。
 
-### 21.2 申请与执行
+### 21.2 操作身份、申请起点与执行
 
-- 工具执行前拦截（`AgentLoop._guarded_execute` → `TopicApplicationBridge.before_tool`）：
-  模型调用话题工具时先建立话题申请（legacy `ApprovalService.request(kind=topic_switch|topic_create)`，
-  复用 approval_id / 有效期 / 单次消费 / `pending_approvals` 持久化与 `APPROVAL_REQUIRED` 事件），
-  本轮暂停等待用户选择；**用户已明确要求**该切换/新建时直接执行、不重复确认（`ctx.explicit_target` /
-  `ctx.explicit_create_name` 只作授权依据，程序不先创建）。
-- 批准：重校验目标是否仍存在、新名称非空、本轮绑定/Anchor 仍是申请时的原话题（用户等待期间手动
-  导航 → 判 stale，不执行、在原话题回答，不覆盖新选择）→ 用（可被用户改写的）参数执行原工具 →
-  `TurnOrchestrator.rebind_turn_to_topic` 把本轮提问与绑定搬到目标话题（只搬本轮这一条）→
-  `rebuild_system_after_topic_application` 重新装配目标话题上下文并替换本轮 system → 继续生成正式回答。
-  提问、回答、轮次记录同属目标话题，不产生重复用户消息，不把原话题历史复制进新话题。
+- **操作身份**：一次逻辑话题操作有稳定 `operation_id`（`services/topic_operation.py` 的
+  `TopicOperation`/`TopicOperationRegistry`）；名称/目标是**带版本的参数**（`param_version`，
+  规范形见 `canonical_params`）。用户改名/改目标推进参数版本，旧版本的批准不能迁移到新版本。
+- **申请记录**：复用 legacy `ApprovalService.request(kind=topic_switch|topic_create)`
+  （approval_id / 有效期 / 单次消费 / `pending_approvals` 持久化 / `APPROVAL_REQUIRED`）。
+  payload 保存足以识别真实起点的快照：`operation_id`、`turn_id`、`user_message_id`、
+  `from_topic_id`、`from_fragment_id`、`base_nav_version`、`param_version`、目标/新名称。
+- **校验三处、写入前 CAS**：确认前（`ApprovalService.respond` 用 `base_nav_version` 复核，
+  失效返回 409 `topic_application_stale`）、实际写入前（工具执行时 `compare_and_advance`
+  条件更新，版本不符整个事务回滚、不落 Anchor/不建话题）、异步恢复时（`require_current`）。
+  失效 ≠ 拒绝：不写拒绝范围、不自动重弹、不自动跳回旧位置；原问题/草稿/恢复入口保留。
+- **状态**：`pending / awaiting_confirmation / approved / executing / executed / context_ready /
+  answered / refused / stale / failed`；create 查重冲突独立记 `conflict_pending / confirmed / declined`
+  （冲突 ≠ 创建成功 ≠ 整轮结束）。
+- **重试与幂等**：同 `operation_id` + 同 `param_version` 的合法重试可以再次进入既有冲突确认流程
+  （`create_topic` 内部相似冲突二次审批保留），不被「本轮已处理过」拦截；不同参数版本需要新申请。
+  双击/重复确认/重复回调/网络重放/超时重试/刷新恢复至多消费一次，已成功操作返回既有结果。
+  稳定操作 ID **不延长**有效期；收起/重试/刷新都不续期。
+- **执行链**：批准 → 目标/名称重校验 → 原工具（`TopicNavigationService` 唯一导航写入者）→
+  `rebind_turn_to_topic` 把本轮提问与绑定搬到目标话题（只搬本轮这一条）→ 重建目标话题上下文 →
+  继续生成正式回答。提问、回答、轮次记录同属目标话题，不产生重复用户消息，不复制原话题全部历史。
 - 拒绝 / 取消申请：不执行工具，在原话题生成正式回答（整轮不标用户停止）；`TopicDiscussionGuard`
-  记录拒绝范围（同轮重复申请直接拦截、跨轮同开放片段的拒绝进入下一轮证据）。
-- 关闭弹窗只收起（不消费申请、不判拒绝）；有效期沿用审批既有规则，不因收起/重启续期。
-- 正式回答泄露防护：模型同时返回正文+话题工具、或先声明回答后请求话题工具时，申请决定前不发出
-  正式回答（一次性档扣住正文；流式迟到路径同 delta_id 改判为过程说明并给出可见 WARNING），
-  最终回答只出现一次。
+  记录拒绝范围（同轮重复申请拦截、跨轮同开放片段的拒绝进入下一轮证据）。关闭弹窗只收起。
 
-### 21.3 前端
+### 21.3 输出边界：话题阶段门（P1-02）
+
+- 阶段枚举与发布判定单源：`services/topic_operation.py` 的 `TopicPhase` /
+  `publishes_formal_answer()`。轮内走向：
+  `decision_open → (awaiting_confirmation ⇒ executing) → context_preparing → answerable`；
+  失败走 `recoverable_failure`（不得发布正式回答）。
+- **`decision_open` 期间不发布任何正式正文**（不发明细 delta、不 one-shot、不写正式消息）。
+  后端缓冲该次模型调用响应，直到知道工具集合：含话题工具调用 → 整段丢弃（不改成「过程说明」发出）；
+  不含 → 一次性 `streaming=false` 交付，随后转 `answerable`，之后的回答调用恢复流式。
+  原生工具模式与 text 兼容档都覆盖；无法在流中途知道工具集合的适配器整段缓冲（时延取舍如实记录）。
+- 事件顺序由后端保证：`TOPIC_PHASE(answerable)` **先于**对应的正式正文事件。
+  `answerable` 后本轮归属固定：迟到的话题工具调用不执行（可观察 WARNING），只按既有正文收尾。
+- 拒绝 → 立即 `answerable`，在原话题回答原问题；批准 → 工具成功 + 上下文就绪后才 `answerable`，
+  只生成一份归属目标话题的回答。不为每轮增加独立判题 LLM 请求。
+
+### 21.4 分步事实与恢复（P1-03）
+
+- `TopicStages` 分开记录 `tool_success / navigation_applied / turn_ownership / context_ready /
+  answer_complete` 与失败阶段，任何一步失败不得被别的成功覆盖。
+- 上下文装配异常/超时/空/不完整 → **不得**继续用旧 system 上下文回答，不清空待重建记录，
+  进入 `recoverable_failure`，发 `ERROR`（code=`topic_context_prepare_failed`，带
+  operation_id / topic_id / failed_stage / recovery）并写恢复记录；本轮不写正式消息。
+- 恢复入口复用既有错误/恢复通道：`POST /api/recovery/records/{id}/retry-answer` 只重做未完成部分
+  （context_prepare 失败→只重装配+回答，不重跑 create/switch、不新增用户消息；answer 失败→只重做回答），
+  幂等；恢复前用导航版本复核最新位置，不覆盖用户后来的手动选择。
+- 已成功的话题操作不回滚、不谎称未发生；消息/轮次最终只有一份正确归属。
+
+### 21.5 前端
 
 - 复用既有中央统一确认弹窗与队列/互斥规则；话题申请是新的 unified kind，正文只显示当前话题、
   目标话题或可编辑新名称、简短原因（不展示原问题/摘要/预览）。主按钮「转到并回答 / 新建并回答」，
   次按钮「在当前话题回答」；右上角关闭=暂时收起（保留已编辑名称，可从入口重开）。
+- 阶段呈现：等待确认 / 已确认执行中 / 目标上下文准备中 / 可回答 / 可恢复失败分开显示，
+  不伪造模型生成中；`TOPIC_PHASE` 事件按 `operation_id` + 当前轮绑定消费，旧轮/旧操作事件丢弃。
+- 失效：409 `topic_application_stale` 或 `APPROVAL_RESULT decision=stale` → 原确认不可执行、
+  给可读原因、保留恢复入口；不改当前位置、不误解锁别的申请、不覆盖草稿。
+- 恢复：上下文准备失败显示真实原因 + 重试入口，保留原问题、草稿与已成功的话题操作。
 - 决定走既有 `POST /api/approvals/{id}/respond`（唯一提交入口，topic_create 可带 `edits.name`）；
-  空名称/目标消失/失效返回结构化错误并就地显示，不假成功；执行中防重复提交。
-- 等待期间：该对话发送按钮与快捷键禁用（可写草稿），过程区/活动状态显示「正在等待你选择话题」；
-  处理后恢复既有发送/排队规则。确认后等待期草稿跟随到确认后的话题且不自动发送；拒绝保留在原话题；
-  目标话题已有草稿保留可恢复能力。
-- 旧话题切换建议入口改为打开同一申请，不再有独立提交路径；普通导航草稿规则不变。
+  名称贯穿关闭/恢复/失败/查重冲突，衔接既有冲突确认，不生成第二份独立申请。
+- 等待期间：该对话发送按钮与快捷键禁用（可写草稿），不锁死整个应用；确认后草稿跟随确认后话题
+  但不自动发送；拒绝保留在原话题；目标话题已有草稿保留且不静默覆盖，禁止通配草稿跟随。
 
-### 21.4 边界
+### 21.6 边界
 
-- 原生工具档与兼容文本档都在工具执行前拦截；无法保证顺序的档位如实降级（不伪装已确认）。
-- 真实模型判断准确率不在回归证明范围：流程测试使用 fake/mock 模型，只证明程序接线、状态传递、
-  证据来源与拒绝范围处理。
+- 原生工具档与兼容文本档都覆盖；无法保证「先申请后回答」的档位如实降级（不伪装已确认）。
+- 真实模型自然语言判断准确率不在回归证明范围：流程测试使用 fake/mock 模型，只证明程序接线、
+  状态传递、证据来源与分支衔接；不得把预设输出包装成真实模型准确率。
 - 后端重启后未处理申请不续期；无等待者时决定返回 409 `topic_application_stale`（不执行、不假成功）。
-- 未新增数据库 schema；申请记录沿用既有审批表。
+- 申请记录沿用既有审批表（无 schema 变更）；导航版本是 2026-11-10 追加迁移引入的单行表，
+  只存单调版本，不存位置或授权。日志/事件/Trace 一律走既有脱敏路径。

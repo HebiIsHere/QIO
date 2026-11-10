@@ -443,7 +443,10 @@ async def test_upload_does_not_block_the_event_loop(async_app, tmp_path):
                         "X-QIO-Name": "big-%d.bin" % index,
                     },
                 )
-                results.append(resp.status_code)
+                # 连正文一起收：CI run 42760316832 只看到 500、没有正文，无法判断
+                # 是「收尾超时」还是「写盘失败」。断言语义不变，只是失败时把真实
+                # detail 带进日志（服务端两条 500 分支同时加了脱敏 warning）。
+                results.append((resp.status_code, resp.text[:400]))
         return results
 
     floor_ms = await _control_floor_ms(async_app)  # 同一次运行内的对照地板（smoke 诊断用）
@@ -453,7 +456,10 @@ async def test_upload_does_not_block_the_event_loop(async_app, tmp_path):
         )
     _report("上传（2 × 99 MB）", max_gap_ms, blocked_ms, stats, floor_ms=floor_ms)
     print("[诊断] 上传档确定性判据：%s" % watcher.summary())
-    assert statuses == [200, 200], ("上传本身应当成功", statuses)
+    assert [code for code, _body in statuses] == [200, 200], (
+        "上传本身应当成功（附真实响应正文，供定位 500 来源）",
+        list(statuses),
+    )
 
     assert not watcher.violations, (
         "上传期间**事件循环线程**上出现了文件 I/O / 哈希（确定性判据）—— "

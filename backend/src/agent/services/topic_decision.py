@@ -13,7 +13,7 @@
 
     build_candidates(prediction, topics_service, limit=5)
     build_topic_decision_state(app, ctx, topic_id, prediction, refuse_scope=None)
-    render_topic_decision_note(state, candidates=None, *, explicit_hint="")
+    render_topic_decision_note(state, candidates=None)
     normalize_refused_attempts(refuse_scope, topic_id=None, limit=None)
 
 渲染正文的策略措辞只在 prompts.PROMPTS["TOPIC_DECISION_POLICY"] 维护；
@@ -58,8 +58,11 @@ class TopicDiscussionState:
     * open_items    —— 尚未解决事项。同样只来自程序来源（ctx.topic_open_items），
       没有就空，不从自然语言里猜；
     * refused_attempts —— 用户此前对换题申请的选择（只来自 refuse_scope）；
-    * candidates    —— 已有话题候选（build_candidates 的排序结果）；
-    * explicit_hint —— 用户本轮已明确要求切换/新建时的事实提示（可被渲染参数覆盖）。
+    * candidates    —— 已有话题候选（build_candidates 的排序结果）。
+
+    这里**没有** explicit_hint / explicit_target / explicit_create_name 之类的
+    「程序已识别明确导航」字段（P1-01 删除）：进入主循环前的程序语义识别已退役，
+    是否换题只来自本轮主模型在工具参数 intent 里声明的值。
     """
 
     topic_id: str
@@ -70,7 +73,6 @@ class TopicDiscussionState:
     open_items: list[str] = field(default_factory=list)
     refused_attempts: list[dict] = field(default_factory=list)
     candidates: list[TopicCandidate] = field(default_factory=list)
-    explicit_hint: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -526,20 +528,6 @@ def _program_string_list(
     return items
 
 
-def _explicit_hint(ctx: Any) -> str:
-    """用户本轮已明确要求切换/新建时的事实提示（程序在 begin() 里识别）。
-
-    新建名称来自本轮用户消息的窄解析，**不在这里逐字复制**（P7：当前消息在
-    模型输入里只出现一次）；只说明「名称见本轮用户消息」。
-    """
-    target = _string(_get_attr(ctx, "explicit_target"))
-    if target:
-        return f"用户本轮已明确要求切换到已有话题 {target}（程序已识别，不需要再申请）。"
-    if _string(_get_attr(ctx, "explicit_create_name")):
-        return "用户本轮已明确要求新建话题（程序已识别，不需要再申请；名称见本轮用户消息）。"
-    return ""
-
-
 def build_topic_decision_state(
     app: Any,
     ctx: Any,
@@ -580,7 +568,6 @@ def build_topic_decision_state(
         candidates=build_candidates(
             prediction, _get_attr(app, "topics"), limit=_POLICY.candidate_limit
         ),
-        explicit_hint=_explicit_hint(ctx),
     )
 
 
@@ -639,8 +626,6 @@ def _render_candidate(candidate: TopicCandidate, current_topic_id: str) -> str:
 def render_topic_decision_note(
     state: TopicDiscussionState,
     candidates: Sequence[TopicCandidate] | None = None,
-    *,
-    explicit_hint: str = "",
 ) -> str:
     """渲染注入 system 的话题判断小节（纯文本，不使用【】标题）。
 
@@ -648,15 +633,18 @@ def render_topic_decision_note(
     本函数只追加本轮事实证据：当前话题、范围、当前目标、用户确认事实、
     未解决事项、拒绝范围、候选话题、明确导航提示。
 
-    candidates 省略时用 state.candidates；explicit_hint 非空时覆盖
-    state.explicit_hint（Lead 在 orchestrator 里传程序识别结果）。
-    不返回 JSON / 可执行载荷：它只是模型上下文文本。
+    candidates 省略时用 state.candidates。不返回 JSON / 可执行载荷：它只是
+    模型上下文文本。语义判断（是否换题 / 新建）只由本轮主模型在工具参数
+    intent 里声明，这里不提供「程序已识别」的 explicit hint。
     """
     if state is None:
         return ""
     parts: list[str] = [
         prompts.TOPIC_DECISION_SECTION_TITLE,
         prompts.PROMPTS["TOPIC_DECISION_POLICY"],
+        # P1-01：话题语义判断的唯一规则区块（含契约 §7 全部反例）；
+        # 不在其他提示词里再写第二套同义规则。
+        prompts.TOPIC_SEMANTIC_POLICY,
     ]
     evidence: list[str] = []
     if state.topic_id:
@@ -690,9 +678,6 @@ def render_topic_decision_note(
             evidence.append(
                 prompts.TOPIC_DECISION_REFUSED.format(attempts="；".join(lines))
             )
-    hint = _string(explicit_hint) or _string(state.explicit_hint)
-    if hint:
-        evidence.append(prompts.TOPIC_DECISION_EXPLICIT_HINT.format(hint=hint))
     chosen = list(candidates) if candidates is not None else list(state.candidates or ())
     if chosen:
         evidence.append(prompts.TOPIC_DECISION_CANDIDATES)

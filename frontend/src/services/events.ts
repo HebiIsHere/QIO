@@ -21,6 +21,8 @@ export const EVENT_TYPES = [
   "FALLBACK",
   "APPROVAL_REQUIRED",
   "APPROVAL_RESULT",
+  // 本轮话题处理阶段（契约 §3；phase ∈ topic_operation.TopicPhase 的小写值）
+  "TOPIC_PHASE",
   "CREDENTIAL_STATUS",
   "SUBAGENT_STATUS",
   "TOOL_CREATE_STATUS",

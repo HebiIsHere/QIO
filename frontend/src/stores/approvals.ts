@@ -30,6 +30,23 @@ export interface ApprovalItem {
    */
   stale?: boolean;
 
+  // ---- P1R：话题申请的失效与操作身份（契约 §5 / §6）----
+  /**
+   * 申请已**失效**（后端结构化判定：409 code=topic_application_stale /
+   * APPROVAL_RESULT decision=stale）。失效 ≠ 拒绝：不写拒绝范围、不自动重弹，
+   * 保留原因并禁用原确认，由用户主动收口或从恢复入口继续。
+   */
+  invalidated?: boolean;
+  invalidatedReason?: string;
+  invalidatedCode?: string;
+  /** 稳定操作身份（P1-05）：payload.operation_id；旧后端没有则为 undefined。 */
+  operationId?: string;
+  /** 带版本的参数（payload.param_version / base_nav_version；缺失 undefined）。 */
+  paramVersion?: number | null;
+  baseNavVersion?: number | null;
+  /** 相似话题二次确认的来源申请（payload.source_approval_id；旧后端 undefined）。 */
+  sourceTopicApprovalId?: string;
+
   // ---- R9 审批生命周期 v2（契约 §5；老后端事件没有这些字段 → 全部可选） ----
   /** 新状态机权威状态：waiting / approved / executing / completed / failed / … */
   state?: string;
@@ -637,6 +654,12 @@ export const useApprovalsStore = defineStore("approvals", {
     /** 最近一次 respond 失败原因（成功后清空）；用于「失败 ≠ 已授权」的可见反馈 */
     error: null as string | null,
     /**
+     * 已经**提交成功**的话题申请收据（按 approval_id 有界保存）。
+     * 双击 / 网络重放 / 重复回调时返回既有成功结果，而不是把「队列里已经没有了」
+     * 说成失败，更不重复提交第二次。
+     */
+    topicReceipts: {} as Record<string, TopicRespondOutcome>,
+    /**
      * 用户已经「稍后处理」：窗口收起但待审批项保留。
      * 直接把窗口藏起来而不做这个标记，会留下一个用户找不到的待审批项；反之
      * 无条件弹出，会在用户正编辑表单时抢走焦点（历史录像：工具确认盖住凭据编辑）。
@@ -688,6 +711,11 @@ export const useApprovalsStore = defineStore("approvals", {
       !!state.inlineId && state.queue.length > 0 && state.queue[0]?.approval_id === state.inlineId,
     /** 内联审批是否被统一审批层接管（接管时内联卡不显示按钮） */
     inlineAllowed: (state) => !state.inlineSuppressed,
+    /** 某个话题申请已经提交成功的收据（幂等：重复提交返回既有结果）。 */
+    topicReceiptFor:
+      (state) =>
+      (approvalId: string): TopicRespondOutcome | null =>
+        state.topicReceipts[String(approvalId ?? "").trim()] ?? null,
   },
   actions: {
     enqueue(
@@ -715,6 +743,27 @@ export const useApprovalsStore = defineStore("approvals", {
         sessionId: opts.sessionId ?? null,
         requestDigest: opts.requestDigest ?? null,
         ...(opts.meta ?? {}),
+        // P1R：操作身份/版本从 payload 结构化读取（旧后端缺失 → 不写，不补默认值）
+        ...(() => {
+          const operationId = String(payload.operation_id ?? "").trim();
+          const paramVersion =
+            typeof payload.param_version === "number" && Number.isFinite(payload.param_version)
+              ? payload.param_version
+              : undefined;
+          const baseNavVersion =
+            typeof payload.base_nav_version === "number" && Number.isFinite(payload.base_nav_version)
+              ? payload.base_nav_version
+              : undefined;
+          const sourceTopicApprovalId = String(
+            payload.source_approval_id ?? payload.source_topic_approval_id ?? "",
+          ).trim();
+          return {
+            ...(operationId ? { operationId } : {}),
+            ...(paramVersion !== undefined ? { paramVersion } : {}),
+            ...(baseNavVersion !== undefined ? { baseNavVersion } : {}),
+            ...(sourceTopicApprovalId ? { sourceTopicApprovalId } : {}),
+          };
+        })(),
         // 到达序号必须最后写：meta 里即使带了同名字段也不能绕过竞态保护
         arrivedSeq: ++this.arrivalSeq,
       });
@@ -774,7 +823,11 @@ export const useApprovalsStore = defineStore("approvals", {
     reconcile(keepIds: string[]) {
       const keep = new Set(keepIds);
       const before = this.queue.length;
-      this.queue = this.queue.filter((a) => keep.has(a.approval_id));
+      /**
+       * P1R：已失效的申请不因「服务端 pending 列表里没有它」被静默删除 ——
+       * 失效 ≠ 拒绝/已处理，用户还需要看到真实原因并主动收口。
+       */
+      this.queue = this.queue.filter((a) => keep.has(a.approval_id) || a.invalidated === true);
       if (this.queue.length !== before) this.error = null;
       if (!this.queue.length) this.deferred = false;
     },
@@ -789,7 +842,11 @@ export const useApprovalsStore = defineStore("approvals", {
       const keep = new Set(keepIds);
       const before = this.queue.length;
       this.queue = this.queue.filter(
-        (item) => keep.has(item.approval_id) || (item.arrivedSeq ?? 0) > sinceSeq,
+        (item) =>
+          keep.has(item.approval_id) ||
+          (item.arrivedSeq ?? 0) > sinceSeq ||
+          // P1R：失效项保留说明与恢复入口，只有用户主动收口才移除
+          item.invalidated === true,
       );
       if (this.queue.length !== before) this.error = null;
       if (!this.queue.length) this.deferred = false;
@@ -1296,6 +1353,12 @@ export const useApprovalsStore = defineStore("approvals", {
     ): Promise<TopicRespondOutcome> {
       const item = this.queue.find((a) => a.approval_id === approvalId);
       if (!item) {
+        /**
+         * 幂等：这次申请此前已经**提交成功**（双击 / 网络重放 / 刷新后的重复回调）
+         * 时返回既有成功结果，不再发第二次请求，也不把「已经处理过」说成失败。
+         */
+        const receipt = this.topicReceipts[approvalId];
+        if (receipt?.ok) return receipt;
         return {
           ok: false,
           code: "not_found",
@@ -1309,6 +1372,17 @@ export const useApprovalsStore = defineStore("approvals", {
           code: "busy",
           message: "另有审批正在提交，等这次提交完成后再试；这次没有提交任何决定。",
           terminal: false,
+        };
+      }
+      if (item.invalidated) {
+        // 失效 ≠ 拒绝：原确认不可执行；原因与恢复入口保留给界面，不提交任何决定
+        return {
+          ok: false,
+          code: item.invalidatedCode || "topic_application_invalidated",
+          message:
+            item.invalidatedReason ||
+            "这项话题申请已经失效（本轮绑定的话题已变化或申请不再等待处理），不会再执行。",
+          terminal: true,
         };
       }
       if (item.stale) {
@@ -1370,7 +1444,20 @@ export const useApprovalsStore = defineStore("approvals", {
           label: item.label ?? "",
           legacy: true,
         });
-        return { ok: true, code: "", message: "", terminal: false };
+        const receipt: TopicRespondOutcome = {
+          ok: true,
+          code: "",
+          message:
+            decision === "rejected"
+              ? "此前已经选择在当前话题回答；没有重复提交。"
+              : "此前已经提交过这次话题选择；没有重复提交。",
+          terminal: false,
+        };
+        this.topicReceipts = {
+          ...Object.fromEntries(Object.entries(this.topicReceipts).slice(-49)),
+          [item.approval_id]: receipt,
+        };
+        return receipt;
       } catch (e) {
         const status = (e as { status?: number }).status;
         const code = approvalErrorCode(e);
@@ -1392,14 +1479,22 @@ export const useApprovalsStore = defineStore("approvals", {
          * 申请已不再等待处理（例如本轮绑定话题已经变化）—— 不假成功，标成失效。
          */
         if (status === 409 && code === "topic_application_stale") {
+          /**
+           * 失效 ≠ 拒绝：不把申请当成「已拒绝」收口，也不写任何拒绝范围；
+           * 保留在队列里说明真实原因（界面禁用原确认并保留恢复入口），
+           * 由用户主动收口（acknowledgeInvalidatedTopic）——不自动重弹。
+           */
+          item.invalidated = true;
+          item.invalidatedCode = code;
+          item.invalidatedReason =
+            "这项话题申请已经失效（本轮绑定的话题已变化或申请不再等待处理），不会再执行。" +
+            (detail ? "（" + detail + "）" : "");
           item.stale = true;
-          this.error = detail;
+          this.error = item.invalidatedReason;
           return {
             ok: false,
             code,
-            message:
-              "这项话题申请已经失效（本轮绑定的话题已变化或申请不再等待处理），不会再执行。" +
-              (detail ? "（" + detail + "）" : ""),
+            message: item.invalidatedReason,
             terminal: true,
           };
         }
