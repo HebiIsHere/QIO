@@ -102,6 +102,9 @@ MODEL_CALL_SITES = {
     "services/followups.py": "首次引导追问结构化任务",
     "services/maintenance.py": "后台维护（旧 dreaming 函数保留，已不在调度器路径）",
     "services/turn_orchestrator.py": "主对话轮次",
+    # P1-03：话题已切换、回答生成失败后的恢复入口 —— 只重做未完成的回答生成，
+    # 使用 prompts.answer_protocol 单一来源，不重跑话题工具、不新增用户消息。
+    "services/topic_recovery.py": "话题回答恢复的单次回答生成（P1-03，prompts 单一来源）",
     "tools/subagent_tool.py": "子任务执行",
 }
 

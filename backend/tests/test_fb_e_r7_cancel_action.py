@@ -90,18 +90,17 @@ async def _start_held_turn(app, hold: asyncio.Event):
 
 async def test_active_cancel_advertises_retry_not_dead_resend(app):
     hold = asyncio.Event()
-    await _start_held_turn(app, hold)
+    adapter = await _start_held_turn(app, hold)
     async with _client(app) as client:
         a = await client.post("/api/turns", json={"message": "A 请回答"})
         assert a.status_code == 200, a.text[:200]
         turn_a = str(a.json()["turn_id"])
+        # in-flight 装置：模型调用已发起并被 hold 卡住（阶段门后首个回答整段
+        # 缓冲，没有实时 ASSISTANT 增量）。
         assert await _wait(
-            lambda: any(
-                str(e.data.get("turn_id")) == turn_a and str(e.data.get("content") or "")
-                for e in _of(app, "ASSISTANT")
-            ),
+            lambda: len(adapter.requests) >= 1,
             timeout=20,
-        ), "装置：A 没有产出流式增量"
+        ), "装置：A 的模型调用没有开始"
 
         cancel = await client.post("/api/turns/%s/cancel" % turn_a)
         assert cancel.status_code == 200, cancel.text[:200]
@@ -121,17 +120,15 @@ async def test_active_cancel_advertises_retry_not_dead_resend(app):
 async def test_every_advertised_action_must_be_usable(app):
     """动作表只列「当前确实可用」的操作：列进去的就必须点得通。"""
     hold = asyncio.Event()
-    await _start_held_turn(app, hold)
+    adapter = await _start_held_turn(app, hold)
     async with _client(app) as client:
         a = await client.post("/api/turns", json={"message": "B 请回答"})
         turn_a = str(a.json()["turn_id"])
+        # in-flight 装置：模型调用已发起并被 hold 卡住。
         assert await _wait(
-            lambda: any(
-                str(e.data.get("turn_id")) == turn_a and str(e.data.get("content") or "")
-                for e in _of(app, "ASSISTANT")
-            ),
+            lambda: len(adapter.requests) >= 1,
             timeout=20,
-        ), "装置：没有流式增量"
+        ), "装置：模型调用没有开始"
         await client.post("/api/turns/%s/cancel" % turn_a)
         assert await _wait(lambda: _turn_end(app, turn_a) is not None, timeout=30)
         end = _turn_end(app, turn_a)

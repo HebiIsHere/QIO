@@ -36,14 +36,11 @@ from agent.services.topic_operation import (
 from agent.tools.base import Tool, ToolResult
 
 #: intent 只允许出现在两个话题工具的 schema 里（契约 P1-01 §2.4）。
+#: schema 只留真实类型与约束：语义说明唯一来源是 prompts.py 的 TOOL_DESCRIPTIONS
+#: （单源约束，见 tests/test_p1_lead_continue_context.py）。
 _INTENT_SCHEMA: dict = {
     "type": "string",
     "enum": ["user_request", "suggestion"],
-    "description": (
-        "这次话题操作的来源（受控语义通道，只能是本轮真实 tool_call 里声明的值）："
-        "user_request = 用户本轮明确要求现在执行这次具体变更（校验后直接执行）；"
-        "suggestion = QIO 主动建议（缺省 / 未知值都按它处理，需用户确认后才执行）。"
-    ),
 }
 
 

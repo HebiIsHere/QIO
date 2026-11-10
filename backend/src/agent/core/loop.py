@@ -785,6 +785,9 @@ class AgentLoop:
         self._gate_active = False
         # 阶段门缓冲的正文（流式路径由 _AssistantStream 收上来）。
         self._call_gate_text = ""
+        # 阶段门工具轮的正文：等工具批次的阶段（stage_id/call_ids）就位后一次性
+        # 进过程区（同一份文字只发一次，不先发再补）。
+        self._pending_gated_interim: dict | None = None
         # 被话题申请拦截的 call（工具没有执行：不记 tool 事实、不参与无进展判定）。
         self._topic_blocked_calls: set[str] = set()
         # 批准并真实换题后待重建的目标话题（工具结果回填之后由 _run 消费）。
@@ -1130,6 +1133,20 @@ class AgentLoop:
         ``calls`` 给出这一批工具时，带上它们的 id；没有后续批次（取消）时两者都为空。
         失败只记日志：过程区文字不该影响工具执行。
         """
+        pending = self._pending_gated_interim
+        if pending is not None:
+            self._pending_gated_interim = None
+            try:
+                await self._emit_assistant(
+                    self._one_shot_payload(
+                        pending["content"],
+                        interim=True,
+                        evidence=None,
+                        calls=list(calls or pending["calls"]),
+                    )
+                )
+            except Exception:  # noqa: BLE001 - 过程区失败不得影响工具执行
+                logger.warning("gated interim flush failed", exc_info=True)
         stream = self._active_stream
         if stream is None:
             return
@@ -1264,16 +1281,14 @@ class AgentLoop:
         if calls:
             # 有普通工具调用：这段正文是过程说明；text 兼容档的 content 是 JSON
             # 协议块，不当作正文展示（与一次性交付路径同一口径）。
+            # 阶段 id / call_ids 在工具批次的叙事就位之后才存在，所以这里**暂存**，
+            # 由 _flush_active_stream 在阶段就位后一次性交付（同一份文字只发一次）。
             self._call_role = "interim"
             if body.strip() and self.adapter.mode == AdapterMode.NATIVE:
-                await self._emit_assistant(
-                    self._one_shot_payload(
-                        _redact_published(body, holdback=False),
-                        interim=True,
-                        evidence=None,
-                        calls=calls,
-                    )
-                )
+                self._pending_gated_interim = {
+                    "content": _redact_published(body, holdback=False),
+                    "calls": calls,
+                }
             return
         # 没有声明、也没有工具调用：未声明的正文按正式回答一次性交付（降级路径）。
         body = _redact_published(body, holdback=False)
@@ -1954,6 +1969,7 @@ class AgentLoop:
         self._topic_keep_decision_open = False
         self._gate_active = False
         self._call_gate_text = ""
+        self._pending_gated_interim = None
         # 每轮一份：上一轮的拦截 / 待重建不能泄漏到下一轮。
         self._topic_blocked_calls = set()
         self._pending_topic_rebuilds = []

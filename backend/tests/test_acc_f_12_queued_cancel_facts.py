@@ -100,14 +100,10 @@ async def test_cancelled_queued_turn_has_persisted_end_facts_and_does_not_touch_
     async with _client(app) as client:
         a = await client.post("/api/turns", json={"message": "A 请回答"})
         turn_a = str(a.json()["turn_id"])
-        streamed = await _wait(
-            lambda: any(
-                str(e.data.get("turn_id")) == turn_a and str(e.data.get("content") or "")
-                for e in _of(app, "ASSISTANT")
-            ),
-            timeout=20,
-        )
-        assert streamed, "装置失效：A 没有产出流式增量"
+        # 阶段门后首个回答整段缓冲、没有实时 ASSISTANT 增量：
+        # in-flight 装置改用「A 的模型调用已开始」这个系统事实。
+        started = await _wait(lambda: len(adapter.requests) >= 1, timeout=20)
+        assert started, "装置失效：A 的模型调用没有开始"
 
         b = await client.post("/api/turns", json={"message": "B 请回答"})
         turn_b = str(b.json()["turn_id"])

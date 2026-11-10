@@ -101,15 +101,11 @@ async def test_queued_turns_do_not_steal_active_turn_ownership(app):
         assert a.status_code == 200, a.text[:200]
         turn_a = str(a.json()["turn_id"])
 
-        # A 已开始且已有可观测的流式 ASSISTANT 增量
-        streamed = await _wait(
-            lambda: any(
-                str(e.data.get("turn_id")) == turn_a and str(e.data.get("content") or "")
-                for e in _of(app, "ASSISTANT")
-            ),
-            timeout=20,
-        )
-        assert streamed, "装置失效：A 没有产出流式增量（provider hold 未生效？）"
+        # A 已开始运行：模型调用已发起并被 provider hold 卡住。
+        # 阶段门（P1-02）后，有话题桥的轮首个回答整段缓冲、不产出实时 ASSISTANT
+        # 增量 —— in-flight 装置改用「模型调用已开始」这个系统事实。
+        started = await _wait(lambda: len(adapter.requests) >= 1, timeout=20)
+        assert started, "装置失效：A 的模型调用没有开始（provider hold 未生效？）"
 
         # A 仍在跑：提交 B、C（应当排队，不改变 A 的活动归属）
         b = await client.post("/api/turns", json={"message": "B 请回答"})
@@ -123,9 +119,11 @@ async def test_queued_turns_do_not_steal_active_turn_ownership(app):
         assert snapshot.get("running") and snapshot["running"]["turn_id"] == turn_a, snapshot
         assert [q["turn_id"] for q in snapshot.get("queued") or []] == [turn_b, turn_c], snapshot
 
-        # 排队期间：活动归属仍是 A —— 不允许 B / C 的 ASSISTANT 事件或 TURN_START
+        # 排队期间：活动归属仍是 A —— 不允许 B / C 的 ASSISTANT 事件或 TURN_START。
+        # 阶段门后 A 的首个回答还整段缓冲（此刻可能一条 ASSISTANT 都还没发布），
+        # 所以断言「不属于 B/C」即可，强度不变。
         assistant_turns = {str(e.data.get("turn_id")) for e in _of(app, "ASSISTANT")}
-        assert assistant_turns == {turn_a}, (
+        assert assistant_turns <= {turn_a}, (
             "B/C 排队改变了 A 的活动归属（出现了别的 turn 的 ASSISTANT 事件）",
             assistant_turns,
         )
@@ -152,7 +150,7 @@ async def test_queued_turns_do_not_steal_active_turn_ownership(app):
 
     # 事件归属：A 的全部 ASSISTANT 事件都带 turn_id=A，且只出现 A 的文字
     a_contents = [str(e.data.get("content") or "") for e in _of(app, "ASSISTANT", turn_a)]
-    assert a_contents, "A 必须有流式 ASSISTANT 事件"
+    assert a_contents, "A 必须有正式 ASSISTANT 事件"
     assert all("B 的回答" not in text and "C 的回答" not in text for text in a_contents)
 
     # 每个 turn 恰好一次 TURN_START / TURN_END

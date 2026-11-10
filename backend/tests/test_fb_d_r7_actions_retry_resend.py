@@ -71,10 +71,9 @@ async def _wait(predicate, timeout: float = 60.0) -> bool:
     return bool(predicate())
 
 
-def _has_streamed(app, turn_id: str) -> bool:
-    return any(
-        str(data.get("content") or "") for data in _events(app, "ASSISTANT", turn_id)
-    )
+def _model_calls_started(adapter) -> int:
+    """in-flight 装置信号：模型调用已发起（阶段门后首个回答整段缓冲，没有实时增量）。"""
+    return len(getattr(adapter, "requests", ()) or ())
 
 
 @pytest.fixture()
@@ -111,7 +110,9 @@ async def test_active_cancel_reports_retry_and_retry_creates_new_turn(app):
         a = await client.post("/api/turns", json={"message": "这一轮会被用户停掉"})
         assert a.status_code == 200, a.text[:200]
         turn_a = str(a.json()["turn_id"])
-        assert await _wait(lambda: _has_streamed(app, turn_a)), "装置失效：A 没有流式增量"
+        assert await _wait(
+            lambda: _model_calls_started(adapter) >= 1
+        ), "装置失效：A 的模型调用没有开始"
 
         cancel = await client.post("/api/turns/%s/cancel" % turn_a)
         assert cancel.status_code == 200 and cancel.json().get("cancelled") is True, cancel.text[:200]
@@ -132,8 +133,10 @@ async def test_active_cancel_reports_retry_and_retry_creates_new_turn(app):
         turn_b = str(b.json()["turn_id"])
         assert turn_b != turn_a, "retry 必须创建新 turn，而不是复活原轮"
 
-        # 闸门（hold_b）把 B 的模型调用钉住：正文已到，但这一轮还没结束
-        assert await _wait(lambda: _has_streamed(app, turn_b)), "B 没有真的调用模型（闸门未生效）"
+        # 闸门（hold_b）把 B 的模型调用钉住：请求已开始但这一轮还没结束
+        assert await _wait(
+            lambda: _model_calls_started(adapter) >= 2
+        ), "B 没有真的调用模型（闸门未生效）"
         assert _turn_end(app, turn_b) is None, "闸门未放行时 B 不得结束（说明闸门确实控住了模型调用）"
 
         hold_b.set()
@@ -216,7 +219,9 @@ async def test_history_normalizes_legacy_cancelled_resend_without_rewriting(app)
     async with _client(app) as client:
         a = await client.post("/api/turns", json={"message": "会被停掉"})
         turn_a = str(a.json()["turn_id"])
-        assert await _wait(lambda: _has_streamed(app, turn_a)), "装置失效"
+        assert await _wait(
+            lambda: _model_calls_started(adapter) >= 1
+        ), "装置失效：模型调用没有开始"
         assert (await client.post("/api/turns/%s/cancel" % turn_a)).json().get("cancelled") is True
         hold.set()
         assert await _wait(lambda: _turn_end(app, turn_a) is not None)

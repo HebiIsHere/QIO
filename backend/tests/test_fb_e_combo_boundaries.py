@@ -230,13 +230,12 @@ async def test_combo_cancel_then_retry_new_turn_and_resend_admission(app):
     async with _client(app) as client:
         first = await client.post("/api/turns", json={"message": "第一轮"})
         turn_first = str(first.json()["turn_id"])
+        # in-flight 装置：模型调用已发起并被 hold 卡住（阶段门后首个回答整段
+        # 缓冲，没有实时 ASSISTANT 增量）。
         assert await _wait(
-            lambda: any(
-                str(e.data.get("turn_id")) == turn_first and str(e.data.get("content") or "")
-                for e in _of(app, "ASSISTANT")
-            ),
+            lambda: len(adapter.requests) >= 1,
             timeout=20,
-        ), "装置：没有流式增量"
+        ), "装置：模型调用没有开始"
 
         await client.post("/api/turns/%s/cancel" % turn_first)
         assert await _wait(lambda: _of(app, "TURN_END", turn_first), timeout=30)

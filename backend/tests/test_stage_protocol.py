@@ -396,14 +396,13 @@ async def test_streamed_interim_text_shares_the_stage_of_its_narrative(tmp_path)
         for e in ctx.bus._history
         if e.type.value == "ASSISTANT" and e.data.get("interim")
     ]
-    # 工具轮（delta 1）的正文：先实时出现、阶段就位后补归属（同一份文字，不发第二次）
+    # 阶段门（P1-02）：工具轮正文整段缓冲，等工具批次的叙事阶段就位后**一次性**
+    # 进过程区 —— 同一份文字只发一次，且这一条就带着 stage_id / call_ids。
     tool_round = [e for e in interim if e["content"] == said]
-    assert len(tool_round) == 2, "工具轮正文先实时出现，阶段就位后补归属（同一份文字，不发第二次）"
-    assert tool_round[0]["stage_id"] is None
-    assert tool_round[0]["delta_id"] == tool_round[-1]["delta_id"]
-    assert tool_round[-1]["stage_id"] == opened["stage_id"]
-    assert tool_round[-1]["call_ids"] == opened["call_ids"] == ["c1"]
-    assert [e["seq"] for e in tool_round] == sorted({e["seq"] for e in tool_round})
+    assert len(tool_round) == 1, "工具轮正文整段缓冲后一次性进过程区（同一份文字只发一次）"
+    assert tool_round[0]["streaming"] is False  # 缓冲后一次性交付，不冒充流式
+    assert tool_round[0]["stage_id"] == opened["stage_id"]
+    assert tool_round[0]["call_ids"] == opened["call_ids"] == ["c1"]
     # 工具轮只有这一份过程说明（契约 §1.1），它不是正式回答
     assert {e["content"] for e in interim} == {said}
     # 工具轮的正文**永不**进正式回答区（审计问题 2）
