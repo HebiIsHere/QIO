@@ -691,7 +691,7 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 * **绑定语义（2026-10-06 审计修正）**：`POST /api/turns` 里 `attachment_ids` 的**存在性即语义** ——
   字段出现（含空数组）表示「这条消息就是这些附件（空 = 没有附件）」，**只有缺字段**才走旧客户端兜底
 
-## 21. 话题判断与申请流程（2026-11-10 定稿，同日 P1 修复后修订）
+## 21. 话题判断与申请流程（2026-11-10 定稿，同日 P1 修复后修订；2026-11-11 复核补修 R1—R4 后修订）
 
 ### 21.1 唯一语义判断：主循环模型
 
@@ -828,9 +828,13 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   只追加、不改历史迁移。日志/事件/Trace 一律走既有脱敏路径。
 - 外部模型调用**不保证** exactly-once：恢复可能在「模型调用完成、正文尚未暂存」之间崩溃从而
   再次调用模型；已实现的是「同一逻辑答案唯一持久化 / 已暂存正文只补存」。不得把该边界写成已消除。
-- 执行租约默认 600s 且无心跳续租：生成中途进程崩溃时，新进程在租约到期前重试会得到
-  202 `recovery_in_progress`（事项可见性已恢复、但暂不可重领）；到期后可重新领取。
-  按实例归属提前收回租约属后续增强，本轮如实保留该窗口。
+- 执行租约按**逻辑答案身份**协调（`topic_answer_runs`，迁移 81/补偿 82）：同一 answer_key
+  只有一个生成执行者；执行权 =（answer_key, generation, owner），有效执行期间按租约间隔
+  心跳续租（短事务、不持写事务、不全局锁），活任务不会仅因固定时间到期被重开；
+  接管只发生在租约到期且 `InstanceRegistry.owner_alive` 明确为 False（真正失效）时，
+  True/None 都不接管。旧执行者迟到的暂存/保存/失败/释放全部因世代 CAS 失败而放弃写入。
+- 旧版本残留边界：执行权以 `topic_answer_runs` 为权威；仅有旧 record.claim_owner 而无对应
+  run 行时按「无执行/可接管」处理（单一进程升级假设），不新增第二套存活判定。
 - 迟到答案排序：迟到答案用真实 `created_at` 追加在原片段末尾。封存片段场景中原问题就是该片段
   最后一条消息，因此天然在原问题之后；若同片段在封存后仍有更晚消息，答案排在末尾而不紧贴原问题
   （不伪造插队，属如实时序）。
@@ -845,10 +849,13 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   recovery_nav_version / failed_stage / message / stages_json / answer_key / answer_id /
   answer_text / last_error / claim_owner / claim_until / attempt_count / created_at / updated_at`。
   读侧兼容旧内存记录（仅无 conn 的纯替身 scope 使用内存回退）。
-- **执行占用/租约**：`retry_topic_answer` 先原子领取（条件更新 `status='pending'` 且租约为空或已过期），
-  领取成功才生成；外部模型调用期间不持有 SQLite 写事务。并发请求：已完成 → 返回同一 `answer_id`；
-  正在执行 → 明确返回处理中（结构化 code，不重复生成）；租约过期可被重新领取；不同恢复事项
-  互不全局串行。
+- **执行占用/租约**：`retry_topic_answer` 先按 `answer_key` 原子领取逻辑答案执行权
+  （`topic_answer_runs`；generation+1、owner 令牌），再原子领取状态为 pending 的记录级租约；
+  领取成功才生成；外部模型调用期间不持有 SQLite 写事务、不用全局锁。并发请求：已完成 →
+  返回同一 `answer_id`；正在执行 → 明确 202 处理中（不重复生成、不调模型）；有效执行期间
+  心跳续租，活任务不因固定到期被重开；租约到期且旧实例被确认退出时才允许接管（generation
+  再 +1）；不同 answer_key 可并行。答案暂存/保存/成功收口/失败更新/释放都校验当前执行权，
+  失去执行权的旧执行者返回 `recovery_execution_superseded` 且零写入。
 - **唯一逻辑答案**：`answer_key = sha256(turn_id + ":" + user_message_id)`（无 user_message_id 时
   退化为 turn_id + operation_id）；答案行以 `answer_key` 唯一约束。多个恢复记录 / 并发请求 /
   重复回调最终只产生一份正式答案。
@@ -881,9 +888,19 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   既有测试改为两阶段，不保留只推进登记的旁路。
 - **ANCHOR 事件**在既有权威字段（topic/fragment/historic/pending_*）外固定携带：
   `origin = manual | topic_operation`、`operation_id`、`param_version`、`turn_id`（仅
-  topic_operation 非空）、`nav_version`（本次写入后的真实版本）、`seq`（进程内单调事件序号）。
+  topic_operation 非空）、`nav_version`（本次写入后的真实版本）、`seq`（进程内单调事件序号）、
+  `instance_id`（进程实例身份：跨重启/重连时 seq 会归零，只有同一实例内才比较 seq）。
   普通手动导航不伪造 operation_id；话题工具真实执行期间由 ContextVar 绑定操作身份，
   只有 `origin=topic_operation` 的成功事件才是草稿跟随的权威依据。
+- **位置事件接受规则**（前端唯一消费入口）：先做操作/轮次关联拒绝（已知被拒绝/失效/被新导航
+  替代的操作、旧轮迟到结果），再按 `nav_version` 主序判定（更小 = 旧位置事件整条拒绝；
+  更大 = 真实新导航；相同只允许合法位置细化，如同话题补充真实片段；缺字段/同版本换片段拒绝）；
+  读不到版本时退回「实例身份 + 进程内 seq」兜底，seq 不跨实例比较。位置接受**不依赖**草稿
+  跟随对象（是否存在/已消费/草稿是否为空）；接受后才统一更新当前位置、待接续提示与草稿跟随，
+  被拒绝的事件不调用 setAnchor、不迁移草稿。`/api/runtime/state` 的 `anchor` 快照与 ANCHOR
+  事件同源，用于重连/重启后建立位置事实；前端不另造第二套位置权威。
+- `recoverable_failure` 不是「拒绝/失效/被新导航替代」的终态证据（恢复重试可能成功），
+  不进入失效操作集合；其迟到事件仍交给 nav_version 顺序规则判定。
 - 草稿跟随不再使用「目标未知就匹配下一次任意导航」的通配语义：目标未知只保留待关联状态，
   不迁移任何草稿；权威成功事件到达后只迁移一次，迁移前复核草稿版本未被用户新编辑覆盖；
   无关手动导航、旧/重复/乱序事件不消费；操作失效按失效收口；目标已有草稿沿用既有保护/恢复机制。
@@ -912,3 +929,21 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 - 零副作用：不改 Anchor、不建片段、不登记接续、不推进导航版本、不建立申请、不执行切换。
   查询本身不是切换决定，也不关闭本轮后续话题决策；相似度前五仍只作自动建议证据，初始提示词
   候选上限不变。工具说明与使用规则单源在 `prompts.py`。
+
+### 21.11 复核补修 R1—R4（2026-11-11）
+
+- **R1 位置快照早于异步装配**：`_snapshot_decision_context` 在 `begin()` 之后、`build_context`
+  之前一次性冻结原问题/来源话题与片段/待接续选择及版本/导航版本；装配后新增只读
+  `_verify_decision_basis`（fresh/superseded/unknown，绝不回填新版本）。装配期间用户改选会
+  让基于旧依据的新导航被写入前 CAS 判 stale；用户浏览不取消原问题，已绑定回答仍按原归属完成；
+  同轮工具导航只通过权威执行结果因果更新。采用新依据必须显式重建上下文与快照（新一轮）。
+- **R2 旧位置事件整条拒绝**：见 §21.8 的位置事件接受规则；位置事实与草稿跟随分离。
+- **R3 历史接续旧请求**：点击路径由 `register_and_position_continuation` 在同一事务完成
+  登记/有效性/Anchor 落位/版本推进；路由区分幂等复用（200 replay 零写入）、失效旧请求
+  （409 `continuation_request_inactive` 零写入）、真实新选择（200 changed，版本 +1、一次 ANCHOR）、
+  同 request_id 参数冲突（409 `continuation_request_conflict` 零写入）。两阶段接续保持不变。
+- **R4 逻辑答案执行权**：见 §21.7 与 §21.6 的租约/接管边界；同一 answer_key 的多条恢复记录
+  共享一个生成执行权，执行世代保证旧执行者不能覆盖新任务状态、暂存或租约。
+- 本轮边界：真实模型语义准确率未验证；外部模型调用不保证 exactly-once；R2 重连/实例变化以
+  事件与快照字段模拟、R3 只覆盖顺序重放、R4 以单进程实例失效模拟。详见
+  `docs/topic-review-r1r4-20261111.md`。未合并 main、未打标签、未发布。

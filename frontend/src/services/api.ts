@@ -1098,6 +1098,26 @@ export const api = {
     request<{
       instance_id: string;
       revision: number;
+      /**
+       * R2：当前权威位置快照（与 ANCHOR 事件同源：AnchorService + navigation_version +
+       * bindings.peek_intent；R3 由 api/server.py 提供）。
+       *
+       * 新后端**总是**返回 anchor 对象：没有 Anchor 时 topic_id / fragment_id 为 null、
+       * historic=false、pending_* 为 null（不伪造位置）；nav_version 读不到才为 null。
+       * 旧后端没有该字段 → 前端保持现状，不伪造位置。
+       */
+      anchor?: {
+        topic_id: string | null;
+        topic_name?: string | null;
+        fragment_id?: string | null;
+        fragment_title?: string | null;
+        historic?: boolean;
+        nav_version?: number | null;
+        pending_intent_id?: string | null;
+        pending_intent_version?: number | null;
+        pending_source_fragment_id?: string | null;
+        pending_source_title?: string | null;
+      } | null;
       turn_queue: {
         instance_id?: string | null;
         revision: number;

@@ -248,6 +248,17 @@ class TurnContext:
     decision_fragment_id: str | None = None
     # 本轮是否在受理时就已排队（事实标记，不参与任何判断）。
     decision_queued: bool = False
+    # R15-R1（契约 §3.2.2）：快照的额外身份事实。位置字段仍只在 begin 之后、
+    # build_context 之前写一次；原用户消息在装配期才落库，因此
+    # decision_user_message_id 在快照时如实 None，装配后只补记这一条身份事实。
+    decision_turn_id: str | None = None
+    decision_user_message_id: str | None = None
+    # 本轮真正采纳的待接续选择及版本（begin 未落实则为 None）。
+    decision_intent_id: str | None = None
+    decision_intent_version: int | None = None
+    # 装配后复核状态：fresh / superseded / unknown（由 _verify_decision_basis 写）；
+    # causal = 同轮工具真实导航成功后的因果更新。None = 旧路径还没复核。
+    decision_basis_state: str | None = None
 
     def __post_init__(self) -> None:
         # F05 事实：受理那一刻就已经在排队（前面还有主 turn / 队列非空）。

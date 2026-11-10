@@ -141,6 +141,8 @@ interface AnchorOptions {
   approvalId?: string | null;
   paramVersion?: number | null;
   seq?: number;
+  /** R2：真实导航会推进 nav_version；同版本换话题按契约拒绝，测试需要时显式给更高版本。 */
+  navVersion?: number;
 }
 
 function anchor(events: EventStore, opts: AnchorOptions) {
@@ -156,7 +158,7 @@ function anchor(events: EventStore, opts: AnchorOptions) {
       approval_id: opts.approvalId ?? null,
       param_version: opts.paramVersion ?? null,
       turn_id: opts.origin === "topic_operation" ? "turn_1" : null,
-      nav_version: 7,
+      nav_version: opts.navVersion ?? 7,
       seq: opts.seq ?? 5,
     }),
   );
@@ -241,12 +243,13 @@ describe("F12 · 无关手动导航不得参与草稿跟随（旧实现 targetTo
     expect(storedText("t2")).toBeNull();
     expect(followOf(session)).not.toBeNull();
 
-    // 本次操作的权威成功结果到达：迁移一次。
+    // 本次操作的权威成功结果到达：迁移一次（真实导航推进 nav_version → v8）。
     authoritative(events, {
       topicId: "t2",
       operationId: "op-match",
       approvalId: id,
       seq: 5,
+      navVersion: 8,
     });
     expect(session.currentTopicId).toBe("t2");
     expect(session.draft).toBe("只跟 op-match");
@@ -310,12 +313,13 @@ describe("F12 · 审批确认身份：改名后版本推进仍是同一次确认
     expect(storedText("t1")).toBe("只跟这次确认");
     expect(followOf(session)).not.toBeNull();
 
-    // 本次确认的权威成功结果：迁移一次。
+    // 本次确认的权威成功结果：迁移一次（真实导航推进 nav_version → v8）。
     authoritative(events, {
       topicId: "t2",
       operationId: "op-approval",
       approvalId: id,
       seq: 5,
+      navVersion: 8,
     });
     expect(session.draft).toBe("只跟这次确认");
     expect(storedText("t2")).toBe("只跟这次确认");

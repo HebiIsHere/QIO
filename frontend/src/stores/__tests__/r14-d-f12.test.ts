@@ -260,8 +260,9 @@ describe("F12 · 无关手动导航不迁移、不提前消费", () => {
     expect(storedText("t1")).toBe("只跟 op-1");
     expect(followOf(session)).not.toBeNull();
 
-    // 本次操作的权威结果：迁移一次
-    authoritativeAnchor(events, { topicId: "t2", operationId: "op-1", seq: 5 });
+    // 本次操作的权威结果：迁移一次。
+    // R2：真实导航会推进 nav_version（同版本换话题按契约拒绝），第二次导航用 v8。
+    authoritativeAnchor(events, { topicId: "t2", operationId: "op-1", seq: 5, navVersion: 8 });
     expect(session.currentTopicId).toBe("t2");
     expect(session.draft).toBe("只跟 op-1");
     expect(storedText("t2")).toBe("只跟 op-1");
@@ -354,12 +355,13 @@ describe("F12 · 只有本次操作的权威成功结果才迁移一次", () => 
     expect(storedText("t2")).toBeNull();
     expect(followOf(session)).not.toBeNull();
 
-    // 本次确认的权威结果仍能迁移
+    // 本次确认的权威结果仍能迁移（真实导航推进版本：v8）
     authoritativeAnchor(events, {
       topicId: "t2",
       operationId: "op-ap",
       approvalId: id,
       seq: 6,
+      navVersion: 8,
     });
     expect(session.draft).toBe("只跟这次确认");
     expect(storedText("t2")).toBe("只跟这次确认");
@@ -438,7 +440,10 @@ describe("F12 · 失效 / 拒绝 / 失败 / 轮结束收口", () => {
     expect(followOf(session)).toBeNull();
 
     authoritativeAnchor(events, { topicId: "t2", operationId: "op-1", seq: 5 });
-    expect(session.draft).toBe("");
+    // R2：失效操作的迟到 ANCHOR 整条拒绝 —— 位置也不动（不再只是保护草稿）。
+    expect(session.currentTopicId).toBe("t1");
+    // 草稿留在原话题的输入框与本机存储里。
+    expect(session.draft).toBe("失效也不搬");
     expect(storedText("t1")).toBe("失效也不搬");
     expect(storedText("t2")).toBeNull();
   });
@@ -453,7 +458,9 @@ describe("F12 · 失效 / 拒绝 / 失败 / 轮结束收口", () => {
     expect(followOf(session)).toBeNull();
 
     authoritativeAnchor(events, { topicId: "t2", operationId: "op-1", seq: 5 });
-    expect(session.currentTopicId).toBe("t2");
+    // R2：拒绝操作的迟到 ANCHOR 整条拒绝 —— 位置/待接续/草稿都不动。
+    expect(session.currentTopicId).toBe("t1");
+    expect(session.draft).toBe("拒绝留在这里");
     expect(storedText("t1")).toBe("拒绝留在这里");
     expect(storedText("t2")).toBeNull();
   });

@@ -504,7 +504,8 @@ class TopicApplicationBridge:
         * 没有快照（旧测试替身 / 子任务 / 旧路径）：退回既有「当前值」口径，
           保持旧行为不破坏。
 
-        返回 dict：topic_id / fragment_id / nav_version / queued / available。
+        返回 dict：topic_id / fragment_id / nav_version / queued / available /
+        basis_state（R15-R1：装配后复核写入的 fresh/superseded/unknown/causal）。
         """
         ctx = self.ctx
         raw = [
@@ -520,6 +521,7 @@ class TopicApplicationBridge:
                 "fragment_id": getattr(ctx, "decision_fragment_id", None),
                 "nav_version": getattr(ctx, "decision_nav_version", None),
                 "queued": bool(getattr(ctx, "decision_queued", False)),
+                "basis_state": getattr(ctx, "decision_basis_state", None),
             }
         return {
             "available": False,
@@ -527,6 +529,7 @@ class TopicApplicationBridge:
             "fragment_id": self._fragment_id(),
             "nav_version": self._nav_version(),
             "queued": False,
+            "basis_state": getattr(ctx, "decision_basis_state", None),
         }
 
     def note_decision_navigation(
@@ -549,6 +552,9 @@ class TopicApplicationBridge:
             ("decision_topic_id", snapshot["topic_id"]),
             ("decision_fragment_id", snapshot["fragment_id"]),
             ("decision_nav_version", snapshot["nav_version"]),
+            # R15-R1（契约 §3.2.6）：同轮工具自己的合法导航是**因果更新**，不是
+            # 装配后重读当前最新位置；依据状态明确记成 causal。
+            ("decision_basis_state", "causal"),
         ):
             try:
                 setattr(self.ctx, name, value)
@@ -558,7 +564,7 @@ class TopicApplicationBridge:
         _trace(
             self.ctx,
             "topic_application_causal_navigation",
-            f"{snapshot['topic_id']}:v{snapshot['nav_version']}",
+            f"{snapshot['topic_id']}:v{snapshot['nav_version']}:basis=causal",
         )
         return snapshot
 
@@ -952,6 +958,26 @@ class TopicApplicationBridge:
             operation.from_topic = snapshot["topic_id"] or self._from_topic()
         if operation.from_fragment is None:
             operation.from_fragment = snapshot["fragment_id"]
+        # R15-R1（契约 §3.2.4）：装配期间权威位置已经改变（_verify_decision_basis
+        # 标 superseded）时，本轮所有操作仍只基于旧依据 —— 不再弹出「等用户确认后
+        # 必然失效」的申请，直接按既有「失效 ≠ 拒绝」口径返回 stale：不执行、
+        # 不跳回旧位置、不写拒绝证据。真正写入前的 CAS 仍在工具执行处兜底。
+        if str(snapshot.get("basis_state") or "") == "superseded":
+            operation.decide(DecisionStatus.STALE)
+            operation.fail_attempt(
+                AttemptStatus.TERMINAL_FAILURE, code="nav_version_changed"
+            )
+            why = self._stale_why_for(operation)
+            _trace(
+                self.ctx,
+                "topic_application_basis_superseded",
+                f"{kind}:{operation.operation_id}:{why}",
+            )
+            stale_result = self._stale_result(kind, arguments, why, operation=operation)
+            self._terminal_results[
+                (operation.operation_id, int(operation.param_version))
+            ] = stale_result
+            return stale_result
         return await self._request_application(call, operation, kind, arguments)
 
     async def _request_application(

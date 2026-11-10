@@ -2078,6 +2078,32 @@ MIGRATIONS.append(
     )
 )
 
+# ── R15-D / R4（2026-11-11 第四轮）：逻辑答案执行权 + 租约心跳（契约 §6）──
+# 只追加迁移 81 + 补偿 82；历史迁移一条不动。表语义见
+# services/topic_recovery.py 与 storage/migration_r15_r4_recovery_lease.py。
+from agent.storage.migration_r15_r4_recovery_lease import (  # noqa: E402
+    COMPENSATION_DDL as _R15_R4_COMPENSATION_DDL,
+)
+from agent.storage.migration_r15_r4_recovery_lease import (  # noqa: E402
+    MIGRATION as _R15_R4_RECOVERY_LEASE_MIGRATION,
+)
+
+MIGRATIONS.append(_R15_R4_RECOVERY_LEASE_MIGRATION)
+
+# 补偿入口（新，82）：补偿 80 的全部语句 + 迁移 81 的建对象语句。
+# 与既有补偿同口径：纯追加 DDL（CREATE TABLE/INDEX IF NOT EXISTS + ADD COLUMN）；
+# 「版本已登记但对象缺失」的存量库由 migrate.verify_required_objects 重放这里补齐，
+# 不改任何数据行。
+MIGRATIONS.append(
+    (
+        82,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 80 for stmt in stmts]
+            + list(_R15_R4_COMPENSATION_DDL)
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 80
+COMPENSATION_VERSION = 82
 

@@ -1,10 +1,11 @@
-"""R14-B 迁移定向测试：79 追加 + 80 补偿（只追加、不改历史迁移）。
+"""R14-B 迁移定向测试：79 追加 + 补偿入口（只追加、不改历史迁移）。
 
 验证四件事：
-* 全新库一次迁移到 80，恢复记录表 / messages 追加列 / 唯一索引齐备；
+* 全新库一次迁移到最新版本（历史轮 79/补偿 80；R15-D 追加 81/补偿 82），
+  恢复记录表 / messages 追加列 / 唯一索引齐备；
 * 旧库（78）升级路径：保留历史数据，升级后才具备恢复记录能力；
 * 唯一逻辑答案约束真的在数据库层生效（NULL 不参与）；
-* 补偿迁移 80 是纯建对象语句，且「版本号已到 80、对象丢失」能被按对象复核补回来。
+* 当前补偿迁移是纯建对象语句，且「版本号已到最新、对象丢失」能被按对象复核补回来。
 """
 
 from __future__ import annotations
@@ -120,8 +121,8 @@ def test_fresh_database_gets_recovery_objects(tmp_path):
     conn = connect(tmp_path / "r14b_fresh.db")
     try:
         assert apply_migrations(conn) == SCHEMA_VERSION
-        assert SCHEMA_VERSION == COMPENSATION_VERSION == 80
-        assert current_version(conn) == 80
+        assert SCHEMA_VERSION == COMPENSATION_VERSION
+        assert current_version(conn) == SCHEMA_VERSION
         assert TOPIC_RECOVERY_TABLE in _tables(conn)
         recovery_columns = _columns(conn, TOPIC_RECOVERY_TABLE)
         expected = {
@@ -232,15 +233,15 @@ def test_answer_key_unique_constraint_in_database(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 4) 补偿迁移 80：纯建对象 + 可在对象丢失后补回
+# 4) 当前补偿迁移：纯建对象 + 可在对象丢失后补回
 # ---------------------------------------------------------------------------
 
 
-def test_compensation_80_is_additive_and_can_restore_lost_objects(tmp_path):
+def test_compensation_migration_is_additive_and_can_restore_lost_objects(tmp_path):
     targets = [target for target, _ in MIGRATIONS]
     assert targets == sorted(set(targets)), f"迁移号必须唯一且递增：{targets[-4:]}"
-    assert targets[-2:] == [79, 80]
-    assert COMPENSATION_VERSION == max(targets) == SCHEMA_VERSION == 80
+    assert targets[-2:] == [SCHEMA_VERSION - 1, SCHEMA_VERSION]
+    assert COMPENSATION_VERSION == max(targets) == SCHEMA_VERSION >= 80
 
     statements = [
         str(statement)
@@ -258,7 +259,7 @@ def test_compensation_80_is_additive_and_can_restore_lost_objects(tmp_path):
     for index in NEW_INDEXES:
         assert index in blob, index
 
-    # 版本已到 80、对象却被删掉：补偿语句能补回对象，且不动历史数据
+    # 版本已到最新、对象却被删掉：补偿语句能补回对象，且不动历史数据
     conn = connect(tmp_path / "r14b_lost.db")
     try:
         apply_migrations(conn)
@@ -280,8 +281,8 @@ def test_compensation_80_is_additive_and_can_restore_lost_objects(tmp_path):
         conn.close()
 
 
-def test_version_80_recorded_but_objects_lost_is_detected_and_compensated(tmp_path):
-    """按对象复核（B01 口径）：版本已到 80 但对象丢失 ⇒ 重放补偿 80 补回。"""
+def test_version_recorded_but_objects_lost_is_detected_and_compensated(tmp_path):
+    """按对象复核（B01 口径）：版本已到最新但对象丢失 ⇒ 重放当前补偿迁移补回。"""
     conn = connect(tmp_path / "r14b_b01.db")
     try:
         apply_migrations(conn)

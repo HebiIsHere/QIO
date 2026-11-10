@@ -36,7 +36,9 @@ from agent.graph.nodes import NodeService
 from agent.memory.fragment import FragmentManager, new_id
 from agent.services.binding import (
     INTENT_CANCELLED,
+    INTENT_REGISTERED,
     INTENT_REPLACED,
+    ContinuationIntent,
     IntentNotActive,
     IntentNotFound,
     TurnBindingService,
@@ -280,6 +282,244 @@ class TopicNavigationService:
             "state": intent.state,
             "inactive": inactive,
         }
+
+    def register_and_position_continuation(
+        self,
+        topic_id: str,
+        fragment_id: str,
+        *,
+        request_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> dict:
+        """点击「从这里继续」：登记 + 有效性判断 + 需要的 Anchor 落位，**同一个事务**。
+
+        R3（契约 §5）：路由不得只取登记结果里的 fragment_id 继续落位。三种情况必须分开：
+
+        * **当前同一选择的幂等复用**（同 request_id 参数一致 / 重复点同一来源，
+          意图仍有效）：changed=False, replay=True，**零位置写入、零版本推进**，
+          回放既有选择与当前 Anchor 事实（只读）；
+        * **已失效旧选择的重放**（意图被 replaced / cancelled）：inactive=True，
+          零位置写入、零版本推进，路由据此返回 409；
+        * **用户真正发起的新选择**（含点当前开放片段）：正常落位；真实改选推进一次
+          导航版本，changed=True。
+
+        同一 request_id 被用于不同 (topic_id, fragment_id) → 返回 conflict=True
+        （路由映射 409 continuation_request_conflict），零写入、零版本推进。
+
+        `transaction()` 可嵌套复用：登记（register_intent_ex）与 Anchor / 版本写入共享
+        同一个 SQLite 事务，任何一步失败整体回滚 —— 不会留下「显示 A、实际接续 B」的
+        半截状态。**点击路径不创建任何片段**：apply_continuation 仍是唯一落实位置。
+        """
+        node = self.nodes.get_topic(topic_id)
+        if node is None:
+            raise TopicNotFound(f"话题不存在：{topic_id}")
+        source = self.fragments.get(fragment_id)
+        if source is None or source.topic_id != topic_id:
+            raise FragmentNotInTopic(f"片段不属于该话题：{fragment_id}")
+
+        bindings = TurnBindingService(self.conn)
+        with transaction(self.conn):
+            existing = bindings.intent_by_request(request_id) if request_id else None
+
+            # 1) request_id 一致性（契约 §5.2.4）：同一个 id 只能对应一个选择。
+            if existing is not None and (
+                existing.topic_id != topic_id
+                or existing.source_fragment_id != fragment_id
+            ):
+                return self._continuation_payload(
+                    position=self._current_position(),
+                    intent_id=None,
+                    intent_version=None,
+                    source_fragment_id=fragment_id,
+                    state=existing.state,
+                    changed=False,
+                    replay=False,
+                    inactive=False,
+                    opens_current=False,
+                    conflict=True,
+                    code="continuation_request_conflict",
+                )
+
+            # 2) 点当前开放片段：普通继续（不登记意图），正常落位并推进一次版本。
+            if source.closed_at is None:
+                nav_version = self._write_continuation_position(
+                    topic_id, fragment_id, turn_id=turn_id
+                )
+                return self._continuation_payload(
+                    position=self._position_after(topic_id, fragment_id, nav_version),
+                    intent_id=None,
+                    intent_version=None,
+                    source_fragment_id=fragment_id,
+                    state=None,
+                    changed=True,
+                    replay=False,
+                    inactive=False,
+                    opens_current=True,
+                    conflict=False,
+                    code=None,
+                )
+
+            # 3) request_id 命中既有意图：按意图状态区分「幂等复用 / 失效拒绝」。
+            if existing is not None:
+                if existing.state == INTENT_REGISTERED:
+                    # 同 request_id 重放：仍是当前选择 → 零写入回放既有事实。
+                    return self._replay_payload(existing, requested_fragment=fragment_id)
+                if existing.state in (INTENT_REPLACED, INTENT_CANCELLED):
+                    # 旧请求不得重新激活，也不得覆盖当前选择。
+                    return self._inactive_payload(existing)
+                # consumed / resolved：已经落实过的旧选择。
+                current = bindings.peek_intent()
+                if current is None:
+                    # 之后没有更新选择 → 回放既有结果（零写入），不重新激活。
+                    return self._replay_payload(existing, requested_fragment=fragment_id)
+                if (
+                    current.topic_id == topic_id
+                    and current.source_fragment_id == fragment_id
+                ):
+                    # 用户后来又点了同一段历史（新意图）：当前选择仍是它 → 回放当前选择。
+                    return self._replay_payload(current, requested_fragment=fragment_id)
+                # 之后已有别的选择：旧请求按失效拒绝，绝不覆盖新选择。
+                return self._inactive_payload(existing)
+
+            # 4) 没有 request_id 命中：重复点同一来源也算幂等复用（零写入）。
+            current = bindings.peek_intent()
+            if (
+                current is not None
+                and current.topic_id == topic_id
+                and current.source_fragment_id == fragment_id
+            ):
+                return self._replay_payload(current, requested_fragment=fragment_id)
+
+            # 5) 真实新选择：登记（替换旧选择）+ 落位 + 推进一次版本，同一事务。
+            registration = bindings.register_intent_ex(
+                topic_id, fragment_id, request_id=request_id
+            )
+            intent = registration.intent
+            if not registration.changed:
+                # 兜底：登记层认为没有改变（同选择被别处先登记）→ 按幂等回放，
+                # 绝不重复推进版本。
+                return self._replay_payload(intent, requested_fragment=fragment_id)
+            nav_version = self._write_continuation_position(
+                topic_id, fragment_id, turn_id=turn_id
+            )
+            return self._continuation_payload(
+                position=self._position_after(topic_id, fragment_id, nav_version),
+                intent_id=intent.intent_id,
+                intent_version=intent.version,
+                source_fragment_id=fragment_id,
+                state=intent.state,
+                changed=True,
+                replay=False,
+                inactive=False,
+                opens_current=False,
+                conflict=False,
+                code=None,
+            )
+
+    # -- register_and_position_continuation 的内部辅助（只读/事务内）--------
+
+    def _current_position(self) -> dict:
+        """当前 Anchor 的只读事实（幂等回放 / 失效拒绝返回它，不写回）。"""
+        anchor = self.anchors.get_active()
+        topic_id = anchor.topic_id if anchor is not None else None
+        fragment_id = anchor.fragment_id if anchor is not None else None
+        return {
+            "topic_id": topic_id,
+            "fragment_id": fragment_id,
+            "fragment_title": self.fragment_title(fragment_id),
+            "historic": self.anchors.is_historic_position(topic_id) if topic_id else False,
+            "nav_version": current_nav_version(self.conn),
+        }
+
+    def _position_after(self, topic_id: str, fragment_id: str, nav_version: int) -> dict:
+        """刚刚写入的位置事实（真实新选择 / 点开放片段之后）。"""
+        return {
+            "topic_id": topic_id,
+            "fragment_id": fragment_id,
+            "fragment_title": self.fragment_title(fragment_id),
+            "historic": self.anchors.is_historic_position(topic_id),
+            "nav_version": nav_version,
+        }
+
+    def _write_continuation_position(
+        self, topic_id: str, fragment_id: str, *, turn_id: str | None
+    ) -> int:
+        """Anchor 落位 + 导航版本推进一次（调用方负责把它放进事务）。"""
+        self.anchors.set_active(topic_id, fragment_id)
+        return cas_or_advance(
+            self.conn,
+            None,
+            source="navigation.continue_from_history",
+            topic_id=topic_id,
+            fragment_id=fragment_id,
+            turn_id=turn_id,
+        )
+
+    def _continuation_payload(
+        self,
+        *,
+        position: dict,
+        intent_id: str | None,
+        intent_version: int | None,
+        source_fragment_id: str | None,
+        state: str | None,
+        changed: bool,
+        replay: bool,
+        inactive: bool,
+        opens_current: bool,
+        conflict: bool,
+        code: str | None,
+    ) -> dict:
+        """register_and_position_continuation 的冻结返回形状（契约 §5.2.2）。"""
+        return {
+            "topic_id": position["topic_id"],
+            "fragment_id": position["fragment_id"],
+            "fragment_title": position["fragment_title"],
+            "historic": position["historic"],
+            "nav_version": position["nav_version"],
+            "intent_id": intent_id,
+            "intent_version": intent_version,
+            "source_fragment_id": source_fragment_id,
+            "state": state,
+            "changed": bool(changed),
+            "replay": bool(replay),
+            "inactive": bool(inactive),
+            "opens_current": bool(opens_current),
+            "conflict": bool(conflict),
+            "code": code,
+        }
+
+    def _replay_payload(self, intent: ContinuationIntent, *, requested_fragment: str) -> dict:
+        """幂等复用：零写入，回放既有选择 + **当前 Anchor 事实**（只读）。"""
+        return self._continuation_payload(
+            position=self._current_position(),
+            intent_id=intent.intent_id,
+            intent_version=intent.version,
+            source_fragment_id=intent.source_fragment_id or requested_fragment,
+            state=intent.state,
+            changed=False,
+            replay=True,
+            inactive=False,
+            opens_current=False,
+            conflict=False,
+            code=None,
+        )
+
+    def _inactive_payload(self, intent: ContinuationIntent) -> dict:
+        """旧请求重放：意图已失效；零写入，返回当前 Anchor 事实供路由如实说明。"""
+        return self._continuation_payload(
+            position=self._current_position(),
+            intent_id=None,
+            intent_version=None,
+            source_fragment_id=intent.source_fragment_id,
+            state=intent.state,
+            changed=False,
+            replay=False,
+            inactive=True,
+            opens_current=False,
+            conflict=False,
+            code=None,
+        )
 
     def apply_continuation(
         self,

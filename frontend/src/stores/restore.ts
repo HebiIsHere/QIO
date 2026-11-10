@@ -163,6 +163,12 @@ async function runRestore(reason: RestoreReason, notice: string): Promise<Restor
 
       // ---- 快照是权威：整份应用（队列先于其它状态，保证「在跑」的归属正确） ----
       session.applyTurnQueue(state.turn_queue);
+      /**
+       * R2：位置权威也在同一份快照里（state.anchor，R3 后端提供）。由
+       * applyRuntimeState 交给 session.applyAuthoritativePositionSnapshot 采用：
+       * 旧后端没有 anchor 字段时什么也不写（不伪造位置），同步期间缓冲的实时
+       * 位置事件在 flushResyncBuffer 里按接受规则补放。
+       */
       events.applyRuntimeState(state);
       // 上次没执行完的用户消息与「那次操作没执行」的审批（与队列同一份快照）。
       // 第三个参数是孤儿记录：它与 interrupted_turns 是两个出口，合并进同一份收件箱 ——

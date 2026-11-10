@@ -356,14 +356,22 @@ class TurnOrchestrator:
         if ctx.cancelled:
             app.bindings.mark_status(ctx.turn_id, "cancelled")
             return
+        # R15-R1（契约 §3.2.1）：判断依据在 begin 落实绑定之后、**异步上下文装配
+        # 之前**一次性冻结。装配期间用户在同一话题改选历史 / 切走再返回 / 改待接续
+        # 位置都会推进权威导航版本；快照必须仍是装配前的旧依据 —— 否则模型基于旧
+        # 依据返回的话题操作会拿「装配后的当前版本」通过写入前 CAS，覆盖用户的新
+        # 选择。整轮只写一次，之后任何情况下不得用当前最新位置补齐。
+        self._snapshot_decision_context(ctx)
         with tracer.phase("context_assembly"):
             plan = await self.build_context(ctx, adapter)
         if ctx.cancelled:
             app.bindings.mark_status(ctx.turn_id, "cancelled")
             return
-        # P102-F05：判断上下文已经建立（绑定 + 本轮用户消息都落定）、任何模型调用
-        # 之前，一次性冻结真实位置快照；本轮后续话题操作只继承它。
-        self._snapshot_decision_context(ctx)
+        # R15-R1（契约 §3.2.3）：装配结束、首次模型调用前只读复核本轮依据是否仍是
+        # 当前权威位置（版本 + Anchor 仅用于复核）。superseded 只记录事实：不停止
+        # 整轮、不改写快照；失效操作由既有写入前 CAS 判 stale，已绑定的回答仍按
+        # 原归属完成。
+        self._verify_decision_basis(ctx)
         with tracer.phase("agent_loop"):
             result = await self.execute_loop(ctx, adapter, plan)
         if result is None:
@@ -533,16 +541,25 @@ class TurnOrchestrator:
         return adapter
 
     def _snapshot_decision_context(self, ctx) -> None:
-        """P102-F05：冻结本轮「判断依据形成时」的真实位置（契约 §3.1）。
+        """R15-R1（契约 §3.2）：冻结本轮「判断依据形成时」的真实位置。
 
-        时机：begin 已落实绑定、build_context 已写入本轮用户消息、**首次模型调用
-        之前**，且整轮只写一次。之后用户手动导航 / 草稿编辑 / 弹窗收起重开都
-        不改变这份快照（旧模型结果不能借此覆盖用户后来的选择）。
+        时机：begin() 已落实绑定（含待接续选择）、**build_context 装配之前**，
+        一轮只写一次。装配期间用户的任何导航都只影响后续轮次，不会把本轮快照
+        更新成新位置（旧模型结果不能借此覆盖用户的新选择）。
 
-        * decision_nav_version —— 真实导航版本（读不到如实 None，不猜数字）；
-        * decision_topic_id / decision_fragment_id —— 本轮真实绑定的话题 / 片段；
+        快照内容（TurnContext 字段 + trace decision_snapshot）：
+
+        * decision_turn_id / decision_user_message_id —— 本轮 turn / 原用户消息
+          （新轮的 user 消息在装配期才落库，这里如实 None；装配后只补这一条
+          身份事实，位置字段仍不再改写）；
+        * decision_topic_id / decision_fragment_id —— begin 落实的实际绑定；
+        * decision_intent_id / decision_intent_version —— 本轮真正采纳的待接续
+          选择及版本（begin 未落实则如实 None）；
+        * decision_nav_version —— 权威导航版本（读不到如实 None，不猜数字）；
         * decision_queued —— 受理时是否已排队（TurnContext 的事实标记）。
-        本轮用户消息 id 就是 ctx.user_message_id（不再重复存一份）。
+
+        边界（契约 §3.2.7）：采用新依据必须显式重建上下文与快照（新一轮由
+        begin 重新建立）；本轮**不新增**「装配后自动重取新依据」的路径。
         """
         app = self.app
         version: int | None = None
@@ -558,24 +575,109 @@ class TurnOrchestrator:
                     "failed to read navigation version for decision snapshot",
                     exc_info=True,
                 )
-        ctx.decision_nav_version = version
+        intent_id = getattr(ctx, "intent_id", None)
+        intent_version = getattr(ctx, "bound_intent_version", None)
+        if intent_version is None:
+            # begin 只落实「已授权的历史接续」；没有落实就不是本轮采纳的依据。
+            intent_id = None
+        ctx.decision_turn_id = str(getattr(ctx, "turn_id", "") or "") or None
+        ctx.decision_user_message_id = getattr(ctx, "user_message_id", None)
         ctx.decision_topic_id = getattr(ctx, "bound_topic", None) or getattr(
             ctx, "current_topic", None
         )
         ctx.decision_fragment_id = getattr(ctx, "bound_fragment_id", None)
+        ctx.decision_intent_id = intent_id
+        ctx.decision_intent_version = intent_version
+        ctx.decision_nav_version = version
         ctx.decision_queued = bool(getattr(ctx, "decision_queued", False))
         tracer = getattr(ctx, "trace", None)
         if tracer is not None:
             tracer.write(
                 "decision_snapshot",
-                "nav=%s topic=%s fragment=%s queued=%s"
+                "turn=%s user_message=%s intent=%s@%s nav=%s topic=%s fragment=%s queued=%s"
                 % (
+                    ctx.decision_turn_id,
+                    ctx.decision_user_message_id,
+                    ctx.decision_intent_id,
+                    ctx.decision_intent_version,
                     ctx.decision_nav_version,
                     ctx.decision_topic_id,
                     ctx.decision_fragment_id,
                     ctx.decision_queued,
                 ),
             )
+
+    def _verify_decision_basis(self, ctx) -> str:
+        """R15-R1（契约 §3.2.3）：装配后、首次模型调用前复核判断依据。
+
+        只读：重新读取当前**权威导航版本**与当前 Anchor，仅用于复核本轮依据是否
+        仍是当前位置 —— **绝不把快照更新为新版本**（那等于再次用装配后的当前值
+        补齐旧绑定）。状态写入 ctx.decision_basis_state 并记 trace：
+
+        * 版本相同 → "fresh"；
+        * 版本已变 → "superseded"，trace 写 decision_basis_superseded（只记录
+          事实，不停止整轮；已绑定的回答仍按原归属完成）；
+        * 版本读不到（快照或当前任一为 None）→ "unknown"（不把未知伪装成
+          fresh / superseded）。
+
+        superseded 后本轮所有话题操作仍只继承快照的 base_nav_version（旧值），
+        由既有写入前 CAS 判 stale：不执行、不弹申请、不跳回旧位置、不写拒绝证据。
+        采用新依据必须显式重建上下文与快照（新一轮 / 既有显式重建入口），本轮
+        不做自动重取（契约 §3.2.7）。
+        """
+        app = self.app
+        tracer = getattr(ctx, "trace", None)
+        current_version: int | None = None
+        conn = getattr(app, "conn", None)
+        if conn is not None:
+            try:
+                from agent.services.navigation_version import current as _current
+
+                current_version = int(_current(conn))
+            except Exception:  # noqa: BLE001 - 读不到版本：unknown，不猜
+                current_version = None
+                logging.getLogger(__name__).warning(
+                    "failed to read navigation version for decision basis check",
+                    exc_info=True,
+                )
+        anchor_topic: str | None = None
+        anchor_fragment: str | None = None
+        try:
+            active = app.navigation.anchors.get_active()
+            if active is not None:
+                anchor_topic = getattr(active, "topic_id", None)
+                anchor_fragment = getattr(active, "fragment_id", None)
+        except Exception:  # noqa: BLE001 - Anchor 只是复核证据，读不到不影响判定
+            logging.getLogger(__name__).warning(
+                "failed to read active anchor for decision basis check", exc_info=True
+            )
+        snapshot_version = getattr(ctx, "decision_nav_version", None)
+        if snapshot_version is None or current_version is None:
+            state = "unknown"
+        elif int(snapshot_version) == int(current_version):
+            state = "fresh"
+        else:
+            state = "superseded"
+        ctx.decision_basis_state = state
+        if tracer is not None:
+            tracer.write(
+                "decision_basis_verified",
+                "state=%s snapshot_nav=%s current_nav=%s anchor_topic=%s anchor_fragment=%s"
+                % (state, snapshot_version, current_version, anchor_topic, anchor_fragment),
+            )
+            if state == "superseded":
+                tracer.write(
+                    "decision_basis_superseded",
+                    "state=superseded snapshot_nav=%s current_nav=%s "
+                    "snapshot_topic=%s anchor_topic=%s"
+                    % (
+                        snapshot_version,
+                        current_version,
+                        getattr(ctx, "decision_topic_id", None),
+                        anchor_topic,
+                    ),
+                )
+        return state
 
     async def build_context(self, ctx, adapter) -> _Plan:
         from agent.core.message_assembly import ContextBlock
@@ -708,6 +810,12 @@ class TurnOrchestrator:
         # 与「消息已保存、只是没生成回答」。
         app.turns.note_user_message(ctx.turn_id, msg_id)
         tracer.write("messages", msg_id)
+        # R15-R1：判断依据快照的**位置字段**在装配前已冻结；「原用户消息」身份
+        # 到这一刻才产生，只补记这一条身份事实（装配后绝不回填位置字段，否则
+        # 等于用当前最新位置补齐旧依据）。
+        if getattr(ctx, "decision_user_message_id", None) is None:
+            ctx.decision_user_message_id = msg_id
+            tracer.write("decision_snapshot_user_message", msg_id)
         # 话题的第一段是懒创建的：这里把真正落库的片段补进本轮绑定（细化，不是改归属）。
         # 不补的话，「本轮正在写入哪个片段」在绑定里是空的 —— 封存时的写入占用检查会漏掉它。
         if not ctx.bound_fragment_id:
@@ -2200,7 +2308,10 @@ class TurnOrchestrator:
         pending = app.bindings.peek_intent()
         bound_version = getattr(ctx, "bound_intent_version", None) or 0
         if pending is not None and pending.version > bound_version:
-            ctx.trace.write("anchor_skipped", fragment_id, pending_intent=pending.intent_id)
+            # 用户在本轮绑定之后又做了更新的接续选择：本轮不推进 Anchor（用户优先）。
+            ctx.trace.write(
+                "anchor_skipped", "%s pending_intent=%s" % (fragment_id, pending.intent_id)
+            )
             return
         if ctx.intent_id:
             # 首轮成功推进：接续提示可以撤下（来源关系永久保留）

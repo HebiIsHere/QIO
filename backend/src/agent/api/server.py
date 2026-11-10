@@ -348,6 +348,52 @@ def _dev_task_row(workspaces, task) -> dict:
     }
 
 
+def _authoritative_anchor_snapshot(ctx) -> dict:
+    """当前权威位置快照（R2 契约 §4.2(b)）：与 _publish_anchor_event **同一数据源**。
+
+    GET /api/runtime/state 是 RESYNC 之后的权威快照。前端只允许用「ANCHOR 事件」
+    或「这份快照」更新位置，所以两边必须来自同一处读取：AnchorService + 单源
+    navigation_version + bindings.peek_intent + 片段标题。任何一边另读一份都可能
+    出现「事件说 A、快照说 B」的双权威 —— 正是 R2 要消灭的问题。
+
+    读不到的事实如实给 None（不猜）；还没有 Anchor 时字段全为 null / False，
+    不伪造一个位置。
+    """
+    from agent.graph.anchors import AnchorService
+    from agent.services.navigation_version import current as current_nav_version
+
+    anchors = AnchorService(ctx.conn)
+    anchor = anchors.get_active()
+    topic_id = anchor.topic_id if anchor is not None else None
+    fragment_id = anchor.fragment_id if anchor is not None else None
+    topic_name = None
+    if topic_id:
+        node = ctx.topics.nodes.get_topic(topic_id)
+        topic_name = node.name if node is not None else topic_id
+    try:
+        nav_version: int | None = int(current_nav_version(ctx.conn))
+    except Exception:  # noqa: BLE001 - 版本读不到时如实 null（与 ANCHOR 事件同口径）
+        logging.getLogger(__name__).warning(
+            "failed to read navigation version for runtime anchor snapshot", exc_info=True
+        )
+        nav_version = None
+    pending = ctx.bindings.peek_intent()
+    return {
+        "topic_id": topic_id,
+        "topic_name": topic_name,
+        "fragment_id": fragment_id,
+        "fragment_title": ctx._fragment_title(fragment_id),
+        "historic": bool(anchors.is_historic_position(topic_id)) if topic_id else False,
+        "nav_version": nav_version,
+        "pending_intent_id": pending.intent_id if pending is not None else None,
+        "pending_intent_version": pending.version if pending is not None else None,
+        "pending_source_fragment_id": pending.source_fragment_id if pending is not None else None,
+        "pending_source_title": (
+            ctx._fragment_title(pending.source_fragment_id) if pending is not None else None
+        ),
+    }
+
+
 def create_app(
     settings: Settings,
     conn: sqlite3.Connection,
@@ -1499,36 +1545,84 @@ def create_app(
             if body.get("continue_from_history"):
                 if not fragment_id:
                     raise HTTPException(status_code=400, detail="fragment_id required to continue")
-                # 阶段 1：点击历史**只登记接续意图**，不创建片段。
-                # 界面显示「将从所选记录继续」；真正的新片段在本轮消息执行时落实。
-                intent = ctx.navigation.register_continuation(
-                    topic_id, str(fragment_id), request_id=body.get("request_id")
+                raw_request_id = body.get("request_id")
+                request_id = (
+                    str(raw_request_id).strip() if raw_request_id is not None else None
+                ) or None
+                # 阶段 1：点击历史**只登记接续意图**，不创建片段（真正的新片段在消息执行时落实）。
+                # R3（契约 §5）：路由必须消费服务层的**有效性结果**。旧请求重放 / 幂等复用 /
+                # 参数冲突都不能只取 fragment_id 再落位 —— 那会让 A→B→重放 A 把 Anchor 改回 A、
+                # pending 留在 B。登记、有效性判断、Anchor 落位与版本推进都在服务层同一事务里。
+                outcome = ctx.navigation.register_and_position_continuation(
+                    topic_id, str(fragment_id), request_id=request_id
                 )
-                # F08：
-                # * 点选已封存历史片段的真实改选，导航版本推进已由 register_continuation
-                #   在同一事务完成（同 request_id 重放 / 重复点同一来源 changed=False 不推进），
-                #   这里只做落位，**不得**再推进第二次版本；
-                # * 点选当前开放片段（opens_current）是「离开历史浏览位置 / 回到真实当前位置」，
-                #   是一次真实位置变化，由 enter_topic 推进一次（重复点击同一位置时
-                #   Anchor 不变，但这是用户显式回到当前位置的动作，保持既有语义）。
-                result = ctx.navigation.enter_topic(
-                    topic_id,
-                    fragment_id=str(fragment_id),
-                    relate=False,
-                    advance_nav_version=bool(intent.get("opens_current")),
-                )
+                if outcome.get("conflict"):
+                    # 同一 request_id 已用于不同选择：不拿旧意图冒充成功（零写入）。
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "ok": False,
+                            "conflict": True,
+                            "code": "continuation_request_conflict",
+                            "request_id": request_id,
+                            "topic_id": outcome["topic_id"],
+                            "fragment_id": outcome["fragment_id"],
+                        },
+                    )
+                if outcome.get("inactive"):
+                    # 旧选择已被替换 / 取消：保持用户后来的选择与当前 Anchor，零写入。
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "ok": False,
+                            "conflict": True,
+                            "code": "continuation_request_inactive",
+                            "state": outcome.get("state"),
+                            "topic_id": outcome["topic_id"],
+                            "fragment_id": outcome["fragment_id"],
+                            "fragment_title": outcome["fragment_title"],
+                            "historic": outcome["historic"],
+                            "nav_version": outcome["nav_version"],
+                            "source_fragment_id": outcome["source_fragment_id"],
+                        },
+                    )
+                if outcome.get("replay"):
+                    # 幂等复用（同 request_id 参数一致 / 重复点同一来源）：
+                    # 零位置写入、零版本推进、零 ANCHOR 广播，只回放既有事实。
+                    return {
+                        "ok": True,
+                        "changed": False,
+                        "replay": True,
+                        "inactive": False,
+                        "topic_id": outcome["topic_id"],
+                        "fragment_id": outcome["fragment_id"],
+                        "fragment_title": outcome["fragment_title"],
+                        "historic": outcome["historic"],
+                        "nav_version": outcome["nav_version"],
+                        "created_fragment_id": None,
+                        "source_fragment_id": outcome["source_fragment_id"] or str(fragment_id),
+                        "intent_id": outcome["intent_id"],
+                        "intent_version": outcome["intent_version"],
+                        "pending": outcome.get("state") == "registered",
+                    }
+                # 真实新选择 / 点当前开放片段：落位与版本推进已在服务层同一事务完成，
+                # 这里只广播**一次**权威 ANCHOR（不重复推进版本）。
                 await ctx._publish_anchor_event()
                 return {
                     "ok": True,
-                    "topic_id": result.topic_id,
-                    "fragment_id": result.fragment_id,
-                    "fragment_title": result.fragment_title,
-                    "historic": result.historic,
+                    "changed": True,
+                    "replay": False,
+                    "inactive": False,
+                    "topic_id": outcome["topic_id"],
+                    "fragment_id": outcome["fragment_id"],
+                    "fragment_title": outcome["fragment_title"],
+                    "historic": outcome["historic"],
+                    "nav_version": outcome["nav_version"],
                     "created_fragment_id": None,
-                    "source_fragment_id": intent.get("source_fragment_id") or str(fragment_id),
-                    "intent_id": intent.get("intent_id"),
-                    "intent_version": intent.get("intent_version"),
-                    "pending": bool(intent.get("intent_id")),
+                    "source_fragment_id": outcome["source_fragment_id"] or str(fragment_id),
+                    "intent_id": outcome["intent_id"],
+                    "intent_version": outcome["intent_version"],
+                    "pending": outcome.get("state") == "registered",
                 }
             else:
                 # 用户明确点「进入这个话题」＝从最新位置继续，不恢复旧位置。
@@ -2800,6 +2894,9 @@ def create_app(
         """
         return {
             "instance_id": instance_id,
+            # R2 契约 §4.2(b)：权威位置快照（与 ANCHOR 事件同源）。前端 RESYNC /
+            # 首次加载只允许从这里或 ANCHOR 事件建立位置事实。
+            "anchor": _authoritative_anchor_snapshot(ctx),
             "revision": ctx.turns.snapshot()["revision"],
             "turn_queue": ctx.turns.snapshot(),
             "approvals": ctx.approvals.pending(),

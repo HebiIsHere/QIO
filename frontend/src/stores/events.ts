@@ -6,7 +6,13 @@ import {
   type EventStreamHandle,
   type EventType,
 } from "../services/events";
-import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
+import {
+  useSessionStore,
+  type RuntimeAnchorSnapshot,
+  type ToolExecutionSnapshot,
+  type ToolPresentation,
+  type ToolStatus,
+} from "./session";
 import { useUnifiedApprovalsStore } from "./unifiedApprovals";
 import { approvalMetaFromPending, useApprovalsStore } from "./approvals";
 import { toPendingApproval } from "../services/approvalLifecycle";
@@ -797,6 +803,11 @@ export const useEventStore = defineStore("events", {
               });
               session.dropTopicApplication(approvalId);
               session.clearTopicDraftFollow();
+              // R2：后端判定的失效操作不会再成功 —— 登记失效操作身份，
+              // 它迟到的 ANCHOR 必须整条拒绝（不重新导航、不迁移草稿）。
+              session.rememberInvalidTopicOperation(
+                registeredOperationId || eventOperationId,
+              );
               if (session.activity === "approval") {
                 session.activity = session.turnPhase === "generating" ? "generating" : "waiting";
               }
@@ -842,7 +853,12 @@ export const useEventStore = defineStore("events", {
               // executed / rejected / cancelled / expired / invalidated / failed：登记收口。
               // executed 不动已武装的跟随（ANCHOR 可能就在同一顺序里）；其余结局一律清除。
               session.dropTopicApplication(approvalId);
-              if (phase !== "executed") session.clearTopicDraftFollow();
+              if (phase !== "executed") {
+                session.clearTopicDraftFollow();
+                // R2：非 executed 终态 = 这次操作不会再成功 → 登记失效操作身份，
+                // 它迟到的 ANCHOR 不得重新导航或迁移草稿。
+                session.rememberInvalidTopicOperation(registeredOperationId || eventOperationId);
+              }
             }
             /**
              * 话题申请不把整轮标成 activity="approval"（等待状态由统一队列派生）；
@@ -880,6 +896,10 @@ export const useEventStore = defineStore("events", {
               operationId: d.operation_id as string | null,
               turnId: d.turn_id as string | null,
             });
+            // R2：recoverable_failure 不是「被拒绝 / 已失效 / 已被新导航替代」的
+            // 终态证据（恢复重试可能成功，且它的导航可能已真实发生），因此这里不登记
+            // invalid 操作；它迟到的位置事件仍交给 nav_version 顺序规则判定，不能被
+            // 整条拉黑（否则恢复成功后的权威事件会被误拒）。草稿跟随已按失败收口。
           }
           /**
            * answerable = 允许发布正式正文：把顺序容错暂存的那份按原事件回放
@@ -897,55 +917,41 @@ export const useEventStore = defineStore("events", {
           if (!topicId) break;
           const fragmentId = (d.fragment_id as string | null) ?? null;
           const fragmentTitle = (d.fragment_title as string | null) ?? null;
-          /**
-           * F12：旧 / 别的操作的权威 ANCHOR 不得跳当前导航，也不得提前消费跟随。
-           *
-           * 判据只来自事件自带的受控字段：
-           * * origin=topic_operation 且 operation_id 与已武装跟随的操作不同 → 别的操作
-           *   的迟到结果，整条不应用（手动导航没有 operation_id，不受影响）；
-           * * origin=topic_operation 且 turn_id 属于**另一个**已知活动轮 → 旧轮迟到事件，
-           *   整条不应用（不把当前位置跳回旧轮）。
-           */
-          const anchorOrigin = String(d.origin ?? "").trim();
-          const anchorOperationId = String(d.operation_id ?? "").trim();
-          const anchorTurnId = String(d.turn_id ?? "").trim();
-          const armedFollow = session._topicDraftFollow;
-          const armedOperationId = String(armedFollow?.operationId ?? "").trim();
-          if (
-            anchorOrigin === "topic_operation" &&
-            armedFollow &&
-            armedOperationId &&
-            anchorOperationId !== armedOperationId
-          ) {
-            break;
-          }
-          if (
-            anchorOrigin === "topic_operation" &&
-            anchorTurnId &&
-            session.activeTurnId &&
-            anchorTurnId !== session.activeTurnId
-          ) {
-            break;
-          }
           const beforeKey = `${session.currentTopicId ?? ""}|${session.anchorFragmentId ?? ""}|${session.anchorHistoric}`;
           /**
-           * F12：本次 ANCHOR 是否是「本次话题操作的权威成功结果」。
+           * R2：ANCHOR 是**位置事件**，先走统一的接受入口（契约 §4.3）。
            *
-           * 只有 origin=topic_operation 且 operation_id 与武装草稿跟随时绑定的一致，
-           * 才允许迁移一次；普通手动导航（origin=manual / operation_id=null）永远不消费。
-           * 旧 / 重复 / 乱序事件由 session 按 operation + seq 丢弃（不提前消费）。
+           * 判定顺序在 session.acceptTopicPositionEvent 内固定：
+           * * 操作 / 轮次关联拒绝：invalid 集合里的操作、旧轮迟到结果；
+           * * 位置顺序：nav_version 主序、同版本只允许合法细化、读不到版本时
+           *   退回 instance_id + seq 兜底（seq 不跨实例比较）；
+           * * 位置接受不依赖草稿跟随对象（是否存在 / 是否已消费 / 草稿是否非空）。
+           *
+           * rejected 事件整条丢弃：不迁移草稿、不改 pending、不改当前位置。
+           * accepted 后由该入口统一更新位置 / 待接续 / 草稿跟随；事件层再按事件
+           * 原文落一次展示字段（同值幂等）并决定是否重载消息。
            */
-          session.applyAuthoritativeTopicAnchor({
-            origin: d.origin,
-            operationId: d.operation_id,
-            approvalId: d.approval_id,
-            paramVersion: d.param_version,
-            turnId: d.turn_id,
+          const position = session.acceptTopicPositionEvent({
             topicId,
             fragmentId,
-            navVersion: d.nav_version,
-            seq: d.seq,
+            fragmentTitle,
+            historic: Boolean(d.historic),
+            navVersion: d.nav_version as number | null,
+            instanceId: d.instance_id as string | null,
+            seq: d.seq as number | null,
+            origin: d.origin as string | null,
+            operationId: d.operation_id as string | null,
+            approvalId: d.approval_id as string | null,
+            paramVersion: d.param_version as number | null,
+            turnId: d.turn_id as string | null,
+            topicName: (d.topic_name as string | null) ?? null,
+            pendingIntentId: (d.pending_intent_id as string | null) ?? null,
+            pendingIntentVersion: d.pending_intent_version as number | null,
+            pendingSourceFragmentId: d.pending_source_fragment_id as string | null,
+            pendingSourceTitle: (d.pending_source_title as string | null) ?? null,
           });
+          if (!position.accepted) break;
+          // 仅 accepted 才落位置与待接续提示（rejected 三者都不动）。
           session.setAnchor(
             topicId,
             fragmentId,
@@ -1214,6 +1220,13 @@ export const useEventStore = defineStore("events", {
      *   「没收到 TOOL_END」不等于「结果未知」；只有服务器也拿不出记录时才 unknown。
      */
     applyRuntimeState(state: {
+      /**
+       * R2：权威位置快照（/api/runtime/state）。旧后端没有 anchor 字段 → 不传，
+       * 下面保持现状（不伪造位置 / 接续）。
+       */
+      anchor?: RuntimeAnchorSnapshot | null;
+      /** R2：快照所属实例（顶层已有；旧后端可能没有）。 */
+      instance_id?: string | null;
       approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
       /**
        * 旧审批中断事实（B-CP1 /api/runtime/state）：只读展示，不是待办。
@@ -1256,6 +1269,14 @@ export const useEventStore = defineStore("events", {
       }[];
     }) {
       const session = useSessionStore();
+      /**
+       * R2：权威位置快照。位置只由 ANCHOR / 这份快照更新（前端不另造位置权威）：
+       * 先采用快照，再把同步期间缓冲的位置事件按接受规则补放（restore 负责）。
+       * 旧后端没有 anchor 字段时这里什么也不写 —— 保持现状，不伪造。
+       */
+      if (state.anchor) {
+        session.applyAuthoritativePositionSnapshot(state.anchor, state.instance_id ?? null);
+      }
       // 每轮结束事实：重连后失败的那一轮仍然说得出为什么（旧记录没有就不写）
       session.applyTurnFactsSnapshot(state.turn_facts);
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));

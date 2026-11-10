@@ -916,6 +916,110 @@ export interface TopicDraftFollow {
 }
 
 /**
+ * R2：当前位置事实（前端只消费后端权威位置，不另造位置权威）。
+ *
+ * `navVersion` 是主序（后端 navigation_version 单调版本）；只有读不到版本时
+ * （旧后端 / 快照缺字段）才退回 `instanceId + seq` 兜底 —— seq 是进程内序号，
+ * 跨重启会归零，所以只在同一实例内比较。
+ */
+export interface TopicPositionFacts {
+  topicId: string;
+  fragmentId: string | null;
+  historic: boolean;
+  navVersion: number | null;
+  /** 采用这条事实时的后端实例身份（null = 旧后端没有实例字段）。 */
+  instanceId: string | null;
+  /** 进程内事件序号（仅同实例可比；旧后端没有为 null）。 */
+  seq: number | null;
+  /** 最近一次写入来源：权威快照 / 实时位置事件。 */
+  source: "snapshot" | "anchor";
+}
+
+/** R2：位置事件接受结果（E/F 独立断言 accepted / reason / migrated）。 */
+export interface TopicPositionAcceptResult {
+  accepted: boolean;
+  /** 接受 / 拒绝原因（契约 §4.3 冻结字符串）。 */
+  reason: string;
+  /** 本次接受是否真的迁移了一次草稿（只有权威话题操作成功结果可能为 true）。 */
+  migrated: boolean;
+}
+
+/**
+ * R2：位置事件输入（契约 §4.3）。
+ *
+ * 同时接受 camelCase（契约冻结的字段名）与 ANCHOR 事件的 snake_case 原文：
+ * 事件层可以直接把事件 data 传进来，独立验证者也可以按冻结接口直接调用。
+ */
+export interface TopicPositionEventInput {
+  topicId?: string | null;
+  topic_id?: string | null;
+  fragmentId?: string | null;
+  fragment_id?: string | null;
+  fragmentTitle?: string | null;
+  fragment_title?: string | null;
+  topicName?: string | null;
+  topic_name?: string | null;
+  historic?: boolean | null;
+  navVersion?: number | null;
+  nav_version?: number | null;
+  instanceId?: string | null;
+  instance_id?: string | null;
+  seq?: number | null;
+  origin?: string | null;
+  operationId?: string | null;
+  operation_id?: string | null;
+  approvalId?: string | null;
+  approval_id?: string | null;
+  paramVersion?: number | null;
+  param_version?: number | null;
+  turnId?: string | null;
+  turn_id?: string | null;
+  pendingIntentId?: string | null;
+  pending_intent_id?: string | null;
+  pendingIntentVersion?: number | null;
+  pending_intent_version?: number | null;
+  pendingSourceFragmentId?: string | null;
+  pending_source_fragment_id?: string | null;
+  pendingSourceTitle?: string | null;
+  pending_source_title?: string | null;
+}
+
+/** `/api/runtime/state` 的权威 anchor 快照（契约 §4.2(b)；旧后端可能没有该字段）。 */
+export interface RuntimeAnchorSnapshot {
+  topic_id?: string | null;
+  topic_name?: string | null;
+  fragment_id?: string | null;
+  fragment_title?: string | null;
+  historic?: boolean | null;
+  nav_version?: number | null;
+  pending_intent_id?: string | null;
+  pending_intent_version?: number | null;
+  pending_source_fragment_id?: string | null;
+  pending_source_title?: string | null;
+}
+
+/** R2：读取位置事件字段（camelCase 优先，兼容 ANCHOR 事件原文的 snake_case）。 */
+function readTopicPositionField(
+  input: Record<string, unknown>,
+  camel: string,
+  snake: string,
+): unknown {
+  const camelValue = input[camel];
+  return camelValue !== undefined ? camelValue : input[snake];
+}
+
+/** R2：整数归一（非数字 / 非有限值如实 null，不猜）。 */
+function normalizePositionInt(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw) : null;
+}
+
+/** R2：id 归一（去空白；空串如实 null）。 */
+function normalizePositionId(raw: unknown): string | null {
+  const id = String(raw ?? "").trim();
+  return id || null;
+}
+
+/**
  * 一条**持久**话题回答恢复事项（F04：独立于活动轮次）。
  *
  * 来源：`GET /api/recovery/records`（kind=topic_answer_recovery，权威清单）与
@@ -2256,6 +2360,21 @@ const sessionStoreDefinition = defineStore("session", {
      */
     _topicDraftFollow: null as TopicDraftFollow | null,
     /**
+     * R2：当前位置事实（位置接受判定的唯一本地依据）。
+     *
+     * 只由权威快照（applyAuthoritativePositionSnapshot）或接受的位置事件
+     * （acceptTopicPositionEvent）写入。位置接受**不依赖** `_topicDraftFollow`
+     * 是否存在 / 是否已消费 / 草稿是否非空 —— 草稿跟随是另一件事。
+     */
+    _positionFacts: null as TopicPositionFacts | null,
+    /**
+     * R2：已知被拒绝 / 失效 / 被新导航替代的话题操作 id（有界，幂等登记）。
+     *
+     * 操作进入终态（APPROVAL_RESULT 非 executed、TOPIC_PHASE recoverable_failure）
+     * 时登记；它们迟到的位置事件整条拒绝，不得重新导航、不得迁移草稿。
+     */
+    _invalidTopicOperationIds: [] as string[],
+    /**
      * 本轮话题处理阶段（TOPIC_PHASE 唯一来源；只消费、不自行推进）。
      * null = 这一轮没有话题动作 / 旧后端没有该事件 —— 界面不伪造阶段。
      */
@@ -3480,6 +3599,265 @@ const sessionStoreDefinition = defineStore("session", {
         expectedSeq: follow.draftSeq,
       });
       return { applied: true, migrated: moved.moved, reason: moved.reason };
+    },
+
+    /** R2：登记一个已知失效 / 被拒绝 / 被新导航替代的话题操作 id（有界，幂等）。 */
+    rememberInvalidTopicOperation(operationId?: unknown) {
+      const id = normalizePositionId(operationId);
+      if (!id) return;
+      if (this._invalidTopicOperationIds.includes(id)) return;
+      // 有界：只保留最近 200 条；1 条已失效操作迟到的成功事件同样不得生效。
+      this._invalidTopicOperationIds = [...this._invalidTopicOperationIds.slice(-199), id];
+    },
+    /** R2：该操作是否已被判定失效 / 被新导航替代（迟到的成功事件整条拒绝）。 */
+    isTopicOperationInvalid(operationId?: unknown): boolean {
+      const id = normalizePositionId(operationId);
+      return Boolean(id) && this._invalidTopicOperationIds.includes(id as string);
+    },
+
+    /**
+     * R2：采用一份服务器权威位置快照（/api/runtime/state 的 anchor）。
+     *
+     * 快照是权威的 position / pending 来源；但若本地已经有**更新**的实时位置
+     * （navVersion 更大），不倒退 —— 只按快照更新待接续提示并补齐缺失字段。
+     * 旧实例的本地 seq 不复用：快照没有 seq，采用快照后 seq 如实置 null。
+     * 旧后端没有 anchor 字段时调用方不传 / 传 null：这里保持现状，不伪造位置。
+     */
+    applyAuthoritativePositionSnapshot(
+      anchor?: RuntimeAnchorSnapshot | Record<string, unknown> | null,
+      instanceId?: string | null,
+    ): { applied: boolean; reason: string; keptNewerLocal: boolean } {
+      if (!anchor || typeof anchor !== "object") {
+        return { applied: false, reason: "no_snapshot", keptNewerLocal: false };
+      }
+      const record = anchor as Record<string, unknown>;
+      const topicId = normalizePositionId(readTopicPositionField(record, "topicId", "topic_id"));
+      if (!topicId) return { applied: false, reason: "no_topic", keptNewerLocal: false };
+      const instance = normalizePositionId(instanceId) ?? this.instanceId;
+      if (instance) this.adoptInstance(instance);
+      const snapshotVersion = normalizePositionInt(
+        readTopicPositionField(record, "navVersion", "nav_version"),
+      );
+      const fragmentId = normalizePositionId(
+        readTopicPositionField(record, "fragmentId", "fragment_id"),
+      );
+      const fragmentTitleRaw = readTopicPositionField(record, "fragmentTitle", "fragment_title");
+      const fragmentTitle =
+        fragmentTitleRaw === undefined ? null : ((fragmentTitleRaw as string | null) ?? null);
+      const topicNameRaw = readTopicPositionField(record, "topicName", "topic_name");
+      const historicRaw = readTopicPositionField(record, "historic", "historic");
+      const historic = Boolean(historicRaw);
+      const pendingIntentId = normalizePositionId(
+        readTopicPositionField(record, "pendingIntentId", "pending_intent_id"),
+      );
+      const pendingSourceTitleRaw = readTopicPositionField(
+        record,
+        "pendingSourceTitle",
+        "pending_source_title",
+      );
+      const pendingSourceTitle =
+        pendingSourceTitleRaw === undefined
+          ? null
+          : ((pendingSourceTitleRaw as string | null) ?? null);
+      const facts = this._positionFacts;
+      /**
+       * 契约 §4.3(5)：快照是权威 pending / position 来源，但本地已有更新的实时事实时
+       * 保留更**新**者（不倒退）；快照仍用于补齐缺失字段（pending 始终以服务器为准）。
+       */
+      const localNewer = Boolean(
+        facts &&
+          facts.navVersion !== null &&
+          snapshotVersion !== null &&
+          facts.navVersion > snapshotVersion,
+      );
+      this.setPendingContinuation(
+        pendingIntentId ? { intentId: pendingIntentId, sourceTitle: pendingSourceTitle } : null,
+      );
+      if (localNewer && facts) {
+        if (instance && facts.instanceId !== instance) {
+          // 新的权威实例：旧实例的 seq 基线一并作废（不跨实例比较）。
+          this._positionFacts = { ...facts, instanceId: instance, seq: null };
+        }
+        return { applied: false, reason: "kept_newer_local", keptNewerLocal: true };
+      }
+      this._positionFacts = {
+        topicId,
+        fragmentId,
+        historic,
+        navVersion: snapshotVersion,
+        instanceId: instance ?? null,
+        seq: null,
+        source: "snapshot",
+      };
+      this.setAnchor(
+        topicId,
+        fragmentId,
+        topicNameRaw === undefined ? undefined : ((topicNameRaw as string | null) ?? null),
+        fragmentId ? { id: fragmentId, title: fragmentTitle } : null,
+        historic,
+      );
+      return { applied: true, reason: "snapshot", keptNewerLocal: false };
+    },
+
+    /**
+     * R2：接受 / 拒绝一条位置事件（契约 §4.3）。返回 accepted / reason / migrated。
+     *
+     * 步骤固定：
+     * 1. 操作 / 轮次关联拒绝（invalid 集合、stale turn）—— 即使带着更新的 nav_version
+     *    也不得生效；
+     * 2. 位置顺序判定（nav_version 主序；同版本只允许合法细化；读不到版本时退回
+     *    实例身份 + seq 兜底）；
+     * 3. 接受后统一更新当前位置、待接续提示，并在最后迁移草稿跟随（rejected 时三者都不动）。
+     *
+     * 位置接受**不依赖**草稿跟随对象是否存在 / 是否已消费 / 草稿是否非空。
+     */
+    acceptTopicPositionEvent(
+      input?: TopicPositionEventInput | Record<string, unknown> | null,
+    ): TopicPositionAcceptResult {
+      const reject = (reason: string): TopicPositionAcceptResult => ({
+        accepted: false,
+        reason,
+        migrated: false,
+      });
+      if (!input || typeof input !== "object") return reject("no_input");
+      const record = input as Record<string, unknown>;
+      const topicId = normalizePositionId(readTopicPositionField(record, "topicId", "topic_id"));
+      if (!topicId) return reject("no_topic");
+      const fragmentId = normalizePositionId(
+        readTopicPositionField(record, "fragmentId", "fragment_id"),
+      );
+      const historicRaw = readTopicPositionField(record, "historic", "historic");
+      const historic = Boolean(historicRaw);
+      const navVersion = normalizePositionInt(
+        readTopicPositionField(record, "navVersion", "nav_version"),
+      );
+      const instanceId = normalizePositionId(
+        readTopicPositionField(record, "instanceId", "instance_id"),
+      );
+      const seq = normalizePositionInt(readTopicPositionField(record, "seq", "seq"));
+      const origin = String(record.origin ?? "").trim();
+      const operationId = normalizePositionId(
+        readTopicPositionField(record, "operationId", "operation_id"),
+      );
+      const turnId = normalizePositionId(readTopicPositionField(record, "turnId", "turn_id"));
+      /**
+       * 第一步：操作 / 轮次关联拒绝（契约 §4.3）。与位置顺序无关，先做 ——
+       * 被拒绝 / 失效 / 被新导航替代的操作，以及旧轮迟到的结果，不得重新导航或迁移草稿。
+       */
+      if (origin === "topic_operation" && operationId && this.isTopicOperationInvalid(operationId)) {
+        return reject("invalidated_operation");
+      }
+      if (origin === "topic_operation" && turnId && this.activeTurnId && turnId !== this.activeTurnId) {
+        return reject("stale_turn");
+      }
+      /**
+       * 第二步：位置顺序判定。nav_version 是主序；读不到版本时退回「实例身份 + 进程内
+       * seq」兜底（契约 §4.3(2)）：seq 只在同一实例内可比，新实例事件重置本地 seq 基线。
+       */
+      const facts = this._positionFacts;
+      const factsVersion = facts?.navVersion ?? null;
+      const factsFragmentId = facts?.fragmentId ?? null;
+      const sameTopic = Boolean(facts && facts.topicId === topicId);
+      let reason = "baseline";
+      if (facts) {
+        if (navVersion !== null && factsVersion !== null) {
+          if (navVersion < factsVersion) return reject("stale_nav_version");
+          if (navVersion > factsVersion) {
+            reason = "new_nav_version";
+          } else if (!sameTopic) {
+            return reject("topic_conflict_same_version");
+          } else if (factsFragmentId === null && fragmentId !== null) {
+            reason = "fragment_refinement";
+          } else if (factsFragmentId === fragmentId) {
+            // 同话题、同片段：幂等；仅 historic 标记变化也不挪位置（只更新提示）。
+            reason = facts.historic === historic ? "idempotent" : "historic_update";
+          } else if (fragmentId === null) {
+            // 缺字段事件不得抹掉已知真实片段（旧 / 不完整事件）。
+            return reject("ambiguous_same_version");
+          } else {
+            // 同版本却换成另一个非空片段 = 没有版本推进的位置变化，拒绝。
+            return reject("fragment_conflict_same_version");
+          }
+        } else if (instanceId !== null && facts.instanceId !== null && instanceId !== facts.instanceId) {
+          // 两边实例都已知且不同：只有「当前已采用的权威实例」的事件算新实例基线。
+          if (instanceId !== this.instanceId) return reject("stale_instance");
+          reason = "new_instance";
+        } else if (seq !== null && facts.seq !== null) {
+          if (seq <= facts.seq) return reject("stale_seq");
+          reason = "new_seq";
+        } else {
+          reason = "no_order_facts";
+        }
+      }
+      /**
+       * 第三步：接受 → 统一更新。位置事实先写（它只描述后端权威位置）；
+       * 再把待接续提示更新为事件值；最后迁移草稿跟随。
+       *
+       * 顺序说明：草稿迁移必须留在 setAnchor **之前** —— 草稿保存器同步监听
+       * currentTopicId，先落位置会按普通切话题规则重绑输入框、清掉等待期间的草稿，
+       * 迁移前复核会因此失败。位置事实与 pending 先于迁移更新，所以对调用方而言
+       * 「位置 / 待接续 / 草稿」仍然是接受后统一可见的新值，rejected 时三者都不动。
+       */
+      const nextInstanceId = instanceId ?? facts?.instanceId ?? this.instanceId ?? null;
+      const instanceChanged = Boolean(
+        facts && facts.instanceId !== null && nextInstanceId !== null && facts.instanceId !== nextInstanceId,
+      );
+      const nextSeq = seq !== null ? seq : instanceChanged ? null : facts?.seq ?? null;
+      const nextVersion =
+        navVersion !== null ? navVersion : instanceChanged ? null : facts?.navVersion ?? null;
+      this._positionFacts = {
+        topicId,
+        fragmentId,
+        historic,
+        navVersion: nextVersion,
+        instanceId: nextInstanceId,
+        seq: nextSeq,
+        source: "anchor",
+      };
+      const pendingIntentId = normalizePositionId(
+        readTopicPositionField(record, "pendingIntentId", "pending_intent_id"),
+      );
+      this.setPendingContinuation(
+        pendingIntentId
+          ? {
+              intentId: pendingIntentId,
+              sourceTitle:
+                (readTopicPositionField(record, "pendingSourceTitle", "pending_source_title") as
+                  | string
+                  | null
+                  | undefined) ?? null,
+            }
+          : null,
+      );
+      const migrated = this.applyAuthoritativeTopicAnchor({
+        origin: record.origin,
+        operationId,
+        approvalId: record.approvalId ?? record.approval_id,
+        paramVersion: record.paramVersion ?? record.param_version,
+        turnId,
+        topicId,
+        fragmentId,
+        navVersion,
+        seq,
+      }).migrated;
+      const topicNameRaw = readTopicPositionField(record, "topicName", "topic_name");
+      this.setAnchor(
+        topicId,
+        fragmentId,
+        topicNameRaw === undefined ? undefined : ((topicNameRaw as string | null) ?? null),
+        fragmentId
+          ? {
+              id: fragmentId,
+              title:
+                (readTopicPositionField(record, "fragmentTitle", "fragment_title") as
+                  | string
+                  | null
+                  | undefined) ?? null,
+            }
+          : undefined,
+        historic,
+      );
+      return { accepted: true, reason, migrated };
     },
 
     /* ── 话题阶段（TOPIC_PHASE 唯一消费入口）────────────────────────── */

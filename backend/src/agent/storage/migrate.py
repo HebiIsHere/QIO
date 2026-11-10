@@ -168,6 +168,10 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # R14-B（迁移 79）：话题回答恢复记录持久化（F03/F04）。缺表时恢复事项在
         # 进程重启后消失；补偿迁移 80 里有对应 CREATE TABLE。
         "topic_recovery_records",
+        # R15-D / R4（迁移 81）：逻辑答案执行权。缺表时同一 answer_key 的多个恢复
+        # 记录会各调一次模型、活任务租约到期会被重复接管；补偿迁移 82 里有对应
+        # CREATE TABLE。
+        "topic_answer_runs",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -274,6 +278,12 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # answer_key 唯一保证同一逻辑答案只有一份权威正文。补偿 80 有 ADD COLUMN。
         "messages.answer_key",
         "messages.late_answer_of_message_id",
+        # R15-D / R4（迁移 81）：恢复记录的执行权令牌与心跳时间。缺了它们，记录侧
+        # 写操作无法与 answer_key 代次做 CAS（旧执行者可能覆盖新任务状态）；
+        # 补偿迁移 82 里有对应 ADD COLUMN。
+        "topic_recovery_records.execution_generation",
+        "topic_recovery_records.execution_owner",
+        "topic_recovery_records.last_heartbeat_at",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -332,6 +342,9 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_topic_recovery_answer_key",
         "idx_messages_answer_key",
         "idx_messages_late_answer",
+        # R15-D / R4（迁移 81）：执行权按状态/租约与按实例检索；补偿 82 有 CREATE INDEX。
+        "idx_topic_answer_runs_status",
+        "idx_topic_answer_runs_owner",
     ),
 }
 

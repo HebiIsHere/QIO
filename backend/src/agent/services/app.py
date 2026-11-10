@@ -1376,6 +1376,7 @@ class AppContext:
         * `operation_id` / `param_version` / `turn_id`：仅 topic_operation 非空；
         * `nav_version`：本次写入后的真实导航版本（navigation_version 单源）；
         * `seq`：进程内单调事件序号（乱序/重放时可比较）。
+        * instance_id：进程实例身份（R2：跨重启/重连时 seq 会归零，靠它区分实例）。
         手动导航不伪造 operation_id；前端不得用 targetTopicId=null 通配跟随。
         """
         from agent.api.events import EventType, make_event
@@ -1422,6 +1423,9 @@ class AppContext:
                     "approval_id": approval_id,
                     "nav_version": nav_version,
                     "seq": self._anchor_event_seq,
+                    # R2：位置事件的实例身份。跨重启/重连时 seq 会归零，
+                    # 前端靠 instance_id 判断「seq 只在同一实例内可比」。
+                    "instance_id": self.instance_id,
                 },
             )
         )
