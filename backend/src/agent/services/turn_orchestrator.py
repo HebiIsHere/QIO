@@ -500,12 +500,31 @@ class TurnOrchestrator:
             if ctx.intent_id:
                 intent = app.bindings.intent_by_id(ctx.intent_id)
                 if intent is not None and intent.state in ("registered", "resolved"):
-                    applied = app.navigation.apply_continuation(intent.topic_id, ctx.intent_id)
-                    topic = applied.topic_id
-                    fragment_id = applied.fragment_id
-                    intent_version = intent.version
-                    ctx.current_topic = topic
-                    await app._publish_anchor_event()
+                    # R16：落实接续经统一入口（apply_continuation 转换，nav 不推进）。
+                    # 内部前提被并发真实导航替代时 superseded：如实跳过，不覆盖用户选择。
+                    from agent.services.navigation import PositionCommandRejected
+
+                    try:
+                        applied = app.navigation.apply_continuation(
+                            intent.topic_id,
+                            ctx.intent_id,
+                            turn_id=ctx.turn_id,
+                        )
+                    except PositionCommandRejected as exc:
+                        ctx.trace.write(
+                            "apply_continuation_skipped",
+                            str(getattr(exc.result, "code", None) or exc),
+                        )
+                    else:
+                        topic = applied.topic_id
+                        fragment_id = applied.fragment_id
+                        intent_version = intent.version
+                        ctx.current_topic = topic
+                        if applied.changed:
+                            await app._publish_anchor_event(
+                                position=applied.position,
+                                command_id=applied.command_id,
+                            )
             if fragment_id is None:
                 open_fragment = app.fragments.open_fragment(topic)
                 fragment_id = open_fragment.id if open_fragment is not None else None
@@ -536,8 +555,21 @@ class TurnOrchestrator:
             active_anchor = app.navigation.anchors.get_active()
             if active_anchor is None or active_anchor.topic_id != topic:
                 # 例行补锚点：不是用户/工具的导航决策，不推进导航版本（P1-04）。
-                app.navigation.enter_topic(topic, advance_nav_version=False)
-                await app._publish_anchor_event()
+                # R16：internal_refine 转换（确定性 scope 带 phase，expected_position_version 对前提做 CAS）。
+                refined = app.navigation.enter_topic(
+                    topic,
+                    advance_nav_version=False,
+                    turn_id=ctx.turn_id,
+                    expected_position_version=int(
+                        app.position_state.current_position_version()
+                    ),
+                    internal_scope=f"{ctx.turn_id}:begin:{topic}",
+                    phase="begin",
+                )
+                if refined.changed:
+                    await app._publish_anchor_event(
+                        position=refined.position, command_id=refined.command_id
+                    )
         return adapter
 
     def _snapshot_decision_context(self, ctx) -> None:
@@ -2149,6 +2181,26 @@ class TurnOrchestrator:
                 continue_same_stage=True,
             )
             if sealed is not None:
+                # R16（§3.3/§14.5）：封存完成后由 orchestrator 调 auto_segment 转换
+                #（position_version 一律 +1，nav_version 不推进，pending 不动），
+                # 再广播一次同源完整位置事件 —— 内部推进也让前端能接受。
+                segment = app.navigation.apply_auto_segment(
+                    final_topic,
+                    sealed.id,
+                    turn_id=getattr(ctx, "turn_id", None),
+                    expected_position_version=int(
+                        app.position_state.current_position_version()
+                    ),
+                )
+                if segment.status == "applied":
+                    await app._publish_anchor_event(
+                        position=segment.position, command_id=segment.command_id
+                    )
+                elif segment.status != "replay" and ctx.trace is not None:
+                    ctx.trace.write(
+                        "auto_segment_skipped",
+                        str(segment.code or segment.status),
+                    )
                 await self._refresh_topic_vector(ctx, final_topic)
                 # 派生工作（摘要 / 知识抽取）是后台任务：把 tracer 交下去，
                 # 失败与本地修正才会落进这一轮的 trace，而不是只留在日志里。
@@ -2274,10 +2326,24 @@ class TurnOrchestrator:
 
         if mode != "enabled" or not decision.is_split or decision.reason != REASON_PHASE_CHANGE:
             return
+        before_position = int(app.position_state.current_position_version())
         sealed = app.memory_lifecycle.seal_fragment(
             topic, reason="stage_change", tracer=ctx.trace
         )
         if sealed is None:
+            return
+        # R16（§3.3 补充冻结）：封存 + 新建子片段按 auto_segment + internal_refine
+        # 两条转换分别记账，不得合并成一次「用户导航」。
+        segment = app.navigation.apply_auto_segment(
+            topic,
+            sealed.id,
+            turn_id=getattr(ctx, "turn_id", None),
+            expected_position_version=before_position,
+            source="turn.boundary_segment",
+        )
+        if segment.status not in ("applied", "replay"):
+            if ctx.trace is not None:
+                ctx.trace.write("boundary_segment_skipped", str(segment.code or segment.status))
             return
         child = app.fragments.create_child(
             topic,
@@ -2287,6 +2353,18 @@ class TurnOrchestrator:
             same_stage=False,
         )
         ctx.bound_fragment_id = child
+        refined = app.navigation.apply_internal_refine(
+            topic,
+            child,
+            turn_id=getattr(ctx, "turn_id", None),
+            phase="boundary",
+            expected_position_version=int(segment.position_version),
+            source="turn.boundary_split",
+            internal_scope=f"{getattr(ctx, 'turn_id', None)}:boundary:{child}",
+            causal={"sealed_fragment_id": sealed.id},
+        )
+        if refined.status not in ("applied", "replay") and ctx.trace is not None:
+            ctx.trace.write("boundary_refine_skipped", str(refined.code or refined.status))
         if ctx.trace is not None:
             ctx.trace.write("boundary_split", f"{sealed.id} -> {child}")
 
@@ -2313,9 +2391,6 @@ class TurnOrchestrator:
                 "anchor_skipped", "%s pending_intent=%s" % (fragment_id, pending.intent_id)
             )
             return
-        if ctx.intent_id:
-            # 首轮成功推进：接续提示可以撤下（来源关系永久保留）
-            app.bindings.consume_intent(ctx.intent_id)
         anchors = app.navigation.anchors
         active = anchors.get_active()
         # 本轮执行期间发生了更新的导航（工具切/建话题）：位置归新的导航，
@@ -2323,22 +2398,41 @@ class TurnOrchestrator:
         if active is not None and active.topic_id and active.topic_id != final_topic:
             ctx.trace.write("anchor_kept", f"{active.topic_id} (turn_fragment={fragment_id})")
             return
-        if (
-            active is not None
-            and active.topic_id == final_topic
-            and active.fragment_id == fragment_id
-        ):
-            return
-        # 轮末把位置推进到本轮真实片段：这是**位置细化**，不是导航决策。
-        # 推进版本会让「同一轮工具换题 + 收尾落位」被记成两次导航，恢复入口
-        # 会把自己的记录误判成用户后来又切走了（P1-03/P1-04 接缝）。
-        app.navigation.enter_topic(
-            final_topic,
-            fragment_id=fragment_id,
-            relate=False,
-            advance_nav_version=False,
+        # R16：轮末推进到本轮真实片段 + 成功收尾消费接续意图 = 同一个 internal_refine
+        # 转换（nav_version 不推进，position_version 在真实变化时 +1；无变化不广播）。
+        from agent.services.position_state import (
+            KIND_INTERNAL_REFINE,
+            NavCommandIdentity,
+            PositionTransition,
         )
-        await app._publish_anchor_event()
+
+        result = app.position_state.apply(
+            PositionTransition(
+                kind=KIND_INTERNAL_REFINE,
+                source="turn.advance_anchor",
+                identity=NavCommandIdentity.internal(
+                    KIND_INTERNAL_REFINE,
+                    f"{ctx.turn_id}:post_turn:{fragment_id}",
+                ),
+                initiator="internal",
+                target_topic_id=final_topic,
+                target_fragment_id=fragment_id,
+                expected_position_version=int(
+                    app.position_state.current_position_version()
+                ),
+                pending="consume" if ctx.intent_id else "keep",
+                pending_intent_id=ctx.intent_id if ctx.intent_id else None,
+                turn_id=ctx.turn_id,
+            )
+        )
+        if result.status not in ("applied", "replay"):
+            ctx.trace.write("anchor_skipped", str(result.code or result.status))
+            return
+        if result.replay or not result.changed:
+            return
+        await app._publish_anchor_event(
+            position=result.position, command_id=result.command_id
+        )
 
     def finish(self, ctx, plan: _Plan, result, final_topic: str) -> None:
         app = self.app
