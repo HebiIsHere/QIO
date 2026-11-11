@@ -947,3 +947,112 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 - 本轮边界：真实模型语义准确率未验证；外部模型调用不保证 exactly-once；R2 重连/实例变化以
   事件与快照字段模拟、R3 只覆盖顺序重放、R4 以单进程实例失效模拟。详见
   `docs/topic-review-r1r4-20261111.md`。未合并 main、未打标签、未发布。
+
+## 22. 话题系统结构整理：统一位置状态、导航命令身份与逻辑答案生命周期（2026-11-11 · P105）
+
+本节记录 R16 的三项结构整理：完整位置状态与统一变更入口、所有导航请求的命令身份与幂等/失效、
+同一逻辑答案的执行权/共享暂存/最终保存。共享契约见 `docs/topic-unify-20261111-contract.md`。
+
+### 22.1 唯一权威：完整位置状态
+
+- 完整位置状态由**既有权威存储同源读取**组成，不新建第二份 Anchor/pending 权威：
+  `cursor` active 行（`AnchorService`，话题/片段）、`AnchorService.is_historic_position` 语义（historic）、
+  `continuation_intents` 唯一 registered（待接续意图/来源/版本）、`navigation_version`（导航决定版本）、
+  单行表 `position_state`（完整位置状态版本 + db_identity + 因果字段）、当前话题的 open_fragment_id
+  （完整状态内部事实）。展示标题在同一读取内补全。
+- wire 形状（ANCHOR 事件、`GET /api/runtime/state` 的 `anchor`、导航 HTTP 响应共用）：
+  `{topic_id, topic_name, fragment_id, fragment_title, historic, pending_intent_id,
+  pending_intent_version, pending_source_fragment_id, pending_source_title, nav_version,
+  position_version, position_identity}`。后端只允许用 `PositionStateService.read()` 生成这份对象，
+  事件与快照不得分别读位置与 pending 后拼接。
+- 因果字段：`position_state.last_source / last_turn_id / last_operation_id / last_nav_version / updated_at`；
+  数据库身份复用 `storage/db_identity.py` 的 `ensure_instance_id`（`settings['db.instance_id']`）。
+
+### 22.2 两类版本（职责严格分开、都持久化）
+
+- **nav_version（导航决定版本）**：只表示用户/工具的**真实导航决定**，用于判断旧申请/旧命令是否失效。
+  推进来源：手动进入/切换/新建、从封存历史继续（真实改选）、返回当前开放片段（位置或 pending 真实变化）、
+  工具 switch/create 真实成功。不推进：重放、渲染、草稿编辑、弹窗收起、取消接续（取消不是新的导航选择）、
+  自动分段、内部片段细化、接续落实。
+- **position_version（完整位置状态版本）**：用于排序完整位置状态。任何真实状态变化推进一次：
+  话题/片段/historic/待接续意图事实/当前话题开放片段变化；自动容量分段一律 +1（causal 记 sealed 片段）；
+  内部落位（轮末推进到本轮真实片段、边界细化）在真实变化时 +1。无变化与幂等重放不推进。
+- 进程内 `seq` 只作同实例乱序兜底；跨重启/跨实例排序依赖持久化版本 + `position_identity`。
+- 数据库身份变化只能由启动期 `PositionStateService.ensure_identity()`（权威重建流程）把 position_version
+  归零并采用新身份；实时事件/命令不得自行切换身份。命令历史保留，replay 返回既有结果 + 当前 position。
+
+### 22.3 统一变更入口与转换表
+
+- `backend/src/agent/services/position_state.py` 的 `PositionStateService.apply(transition)` 是**唯一位置写入口**：
+  同一 SQLite 事务内完成命令身份/参数摘要校验、CAS/前提校验、Anchor 写入、pending 意图写入、两类版本推进、
+  命令结果行写入；事务提交后才由调用方用 `CommandResult.position` 发布（同源完整状态）。拒绝类命令零业务副作用；
+  首次被拒身份允许只写一行 rejected/superseded 命令事实供重放。
+- `TopicNavigationService` 的 enter_topic / register_continuation / register_and_position_continuation /
+  apply_continuation / create_topic / cancel_continuation 变为薄包装；新增 apply_auto_segment / apply_internal_refine
+  服务内部转换；`turn_orchestrator` 的轮首接续落实/补锚点、轮末位置推进、边界分段、容量分段全部调用统一入口；
+  低层 `AnchorService` / `TurnBindingService` / `fragments` 写方法保留，但业务层不得绕过。
+- 转换表（kind → 语义）：
+  `enter_topic`（最新位置/工具切换）、`select_history`（点击路径 move_anchor=true；工具登记路径不动 Anchor）、
+  `open_fragment`（返回开放片段并结束旧待接续）、`create_topic`、`apply_continuation`（机械落实，不再计导航决定）、
+  `internal_refine`（轮首补锚点/轮末落位/边界细化）、`auto_segment`（容量封存一律 position +1）、
+  `cancel_continuation`（nav 不推进、position 因 pending 变化）。
+- 边界策略的封存+新建子片段按 auto_segment + internal_refine 两条转换分别记账，不合并成用户导航。
+
+### 22.4 导航命令身份、重放、冲突与失效
+
+- 持久表 `navigation_commands`：`command_id == identity_key`，身份三类：
+  `request:<client_request_id>`（手动导航：进入/返回/选历史/取消）、
+  `operation:<operation_id>:<param_version>`（工具 switch/create/continue 真实执行身份）、
+  `internal:<command_kind>:<scope>`（自动分段/内部细化/接续落实，确定性 scope + expected_position_version 前提）。
+- 参数摘要 `param_digest` 由 `apply()` 从精确执行参数计算（topic/fragment/name/pending 动作等；不含 CAS 前提/展示字段）：
+  同身份同摘要 → 返回既有结果 + **当前** position（replay=true/changed=false/零写入/零版本/不广播）；
+  同身份不同摘要 → 409 `navigation_command_conflict`，零写入且不新增行；
+  命中 rejected/superseded → 返回既有拒绝事实（零写入）；
+  真实新命令 → 按转换表推进并广播一次同源 ANCHOR。
+- 手动导航必填 `request_id` + `base_nav_version`（缺 400 `navigation_request_id_required` / `navigation_basis_required`；
+  依据过期 409 `navigation_command_stale`）；前端手动导航单飞串行，每次真实用户动作新 UUID、网络重试复用同一身份与依据。
+- 已失效旧请求永不重新获得位置控制权：request/operation 身份行本轮不做清理（低频、体积可控；未来清理需 tombstone
+  或由前提拒绝）。命令结果按身份行持久化，跨进程重启后重放仍返回既有结局。
+- 旧依据保护：本轮判断依据在异步上下文装配前冻结，装配后只读复核（fresh/superseded/unknown），不回填新版本；
+  用户浏览/改选只让基于旧依据的新导航失效，不取消原问题。
+
+### 22.5 前端：整份位置状态唯一接受入口
+
+- `session.acceptPositionState(input, source)` 是 ANCHOR 事件、`/api/runtime/state` 快照、导航 HTTP 响应（含
+  APPROVAL_RESULT 携带的 position）唯一的接受入口；业务代码不再直接 setAnchor/setAnchorAndSync 做导航，
+  `setAnchor` 只作接受入口内部视图赋值（兼容旧测试）。
+- 整份接受规则：无本地事实 → 采用（baseline）；`position_identity` 不同 → 权威快照重建基线 / 实时事件与旧命令
+  拒绝（stale_position_identity）；`position_version` 更旧 → 整份拒绝（stale_position_state）；相同 → 内容相同幂等
+  （零副作用）、内容冲突不合并并记录 `_positionStateConflict` + single-flight 触发权威恢复；更新 → 整份采用
+  （位置 → Anchor 视图 → pending 一次完成）。同版本内容比较排除展示标题与 instance/seq。
+- 草稿跟随有独立幂等消费身份（`_draftFollowConsumed`）：只有匹配本次操作身份（command_id/operation+param_version
+  或 approval_id）的权威成功结果迁移一次；无关手动导航不消费；旧/被更新选择替代的结果不搬并清除跟随；重复结果零副作用；
+  重连快照先到时跟随仍武装、等待正文不从输入框消失；目标已有草稿保护；始终不自动发送。
+
+### 22.6 逻辑答案：执行权、阶段、共享暂存与最终保存
+
+- `topic_answer_runs`（迁移 81）是同一逻辑答案（answer_key）的唯一执行权行；迁移 83 追加 `phase` 与
+  `staged_answer/staged_at/staged_model`。phase：waiting → preparing → generating → staged（生成成功待补存）→ answered；
+  失败可恢复走 failed。执行权 =（answer_key, generation, owner），模型/装配期间心跳续租，不持写事务、不全局锁。
+- 暂存正文唯一权威是 run 行的 staged_answer（按 answer_key 共享）：记录 A 生成成功但保存失败后，记录 B 即使是另一条
+  恢复记录，也先查唯一答案 → run.staged_answer → 旧 record.answer_text 只读兜底（同事务转写 run 并清旧列），命中则只补存
+  不再生成。不得给每条恢复记录复制正文。
+- 正式保存：保存事务内校验执行权 → 唯一 answer_key 写入/复用 → 所有同 answer_key pending 记录 answered（相同 answer_id）
+  → run phase=answered 且清空暂存；旧执行者迟到的暂存/保存/成功/失败/释放均被写入权 CAS 拒绝（`recovery_execution_superseded`，
+  零行改动）。恢复入口只读复核导航版本，不导航、不改 pending、不抢新轮次。
+- 外部模型调用**不保证**严格 exactly-once：崩溃发生在模型返回与结果持久化之间仍可能再次调用；保证的是同一逻辑答案
+  唯一持久化、共享暂存只补存与执行权/世代收口。
+
+### 22.7 迁移与兼容
+
+- 只追加迁移 **83**（position_state / navigation_commands / topic_answer_runs 追加列 + phase 回填）与补偿 **84**；
+  `SCHEMA_VERSION = COMPENSATION_VERSION = 84`；`migrate.REQUIRED_OBJECTS` 同步。历史迁移未改。
+- 旧库升级：迁移补齐对象；旧恢复记录无 run 行按「无执行/可接管」处理；旧 record.answer_text 只读兜底；
+  不复制、不清空真实用户数据。新旧切换后不长期双写：新暂存只写 run 行，事件/快照只读统一入口。
+
+### 22.8 边界与未验证
+
+- fake/scripted 模型只证明接线与分支衔接，不证明中文语义准确率；模拟事件不是浏览器端到端；
+- 界面实际核对按本轮能力如实记录；外部模型 exactly-once 边界如 §22.6；
+- 本轮未合并 main、未打标签、未发布、未改变生产更新源；详细证据与唯一全量批次/唯一 CI 身份见
+  `docs/topic-unify-20261111.md` 与本地台账。
