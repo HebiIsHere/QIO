@@ -51,10 +51,12 @@ R14-B 的幂等边界（F03/F04/F13）
    回答共用 :func:`answer_key_for`；正式保存事务内先查既有正式答案（含旧库 answer_key 为空的
    **可靠归属**：同 turn / 同原用户消息 / 该轮恰好一条正式 assistant 候选 / 同片段同话题，
    不满足当作不存在、不猜），已存在则复用原 answer_id、不新增第二条；保存成功与同 answer_key
-   的 pending 恢复记录、执行行（answered / answer_id / 清暂存）**同一事务**提交；保存失败先
-   写共享暂存（run 行 staged_*，phase=staged）再抛**原异常**，任意同 answer_key 的恢复记录之后
-   只补存、不再调用模型；旧库可靠命中时同事务补写 answer_key（默认不新增迁移：SQLite 无
-   sha256，运行时懒关联比批量迁移更可靠）。
+   的 pending 恢复记录、执行行（answered / answer_id / 清暂存）**同一事务**提交；保存失败在
+   **同一事务**写共享暂存（run 行 staged_*，phase=staged）**并 upsert 一条
+   failed_stage="answer" 的 pending 恢复记录**（R18-B：同 answer_key 复用既有 pending 记录的
+   record_id、已 answered 不复活；另一活跃执行者持有时不覆盖也不建记录），再抛**原异常**；
+   任意同 answer_key 的恢复记录之后只补存、不再调用模型；旧库可靠命中时同事务补写
+   answer_key（默认不新增迁移：SQLite 无 sha256，运行时懒关联比批量迁移更可靠）。
 
 阶段/失败语义的唯一来源仍是 `services/topic_operation.py`（不在这里另造一套）。
 """
@@ -1987,22 +1989,96 @@ def _save_normal_answer_locked(
     }
 
 
+#: 普通回答保存失败时的可读说明（进恢复清单，脱敏、不暴露内部异常原文）。
+NORMAL_ANSWER_STASH_MESSAGE = "普通回答已生成但保存失败，可从此处重试补存"
+
+
+def _upsert_normal_answer_recovery_record(
+    conn: sqlite3.Connection,
+    *,
+    scope: Any,
+    answer_key: str,
+    failure: str,
+    turn_id: str,
+    topic_id: str | None,
+    user_message_id: str | None,
+    fragment_id: str | None,
+    recovery_nav_version: int | None,
+) -> str | None:
+    """在**调用方事务内**为普通回答保存失败 upsert 一条 pending 恢复记录。
+
+    同一 answer_key 已有 pending 记录时复用其 record_id 更新（不产生多条）；
+    只有 answered 记录时**不复活**（返回 None，不新建）。turn/topic/user_message/
+    fragment 如实写入（fragment 解析不到由 record_topic_failure 落 NULL）。
+    返回写出的 record_id（没有写返回 None）；写入失败向上抛，由调用方事务整体回滚。
+    """
+    existing = conn.execute(
+        f"SELECT record_id, status FROM {TOPIC_RECOVERY_TABLE} WHERE answer_key = ? "
+        "ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at, record_id "
+        "LIMIT 1",
+        (str(answer_key),),
+    ).fetchone()
+    if existing is not None and str(existing["status"]) == "answered":
+        logger.info(
+            "save_normal_answer: 同 answer_key 已有 answered 恢复记录，不复活/不新建"
+            "（answer_key=%s）",
+            str(answer_key)[:12],
+        )
+        return None
+    record_id = (
+        str(existing["record_id"]) if existing is not None else new_record_id()
+    )
+    stages = TopicStages()
+    stages.failed_stage = "answer"
+    stages.failure = str(failure or "")
+    record_topic_failure(
+        scope,
+        turn_id=str(turn_id or ""),
+        topic_id=str(topic_id) if topic_id else None,
+        failed_stage="answer",
+        message=NORMAL_ANSWER_STASH_MESSAGE,
+        fragment_id=fragment_id,
+        user_message_id=user_message_id,
+        recovery_nav_version=recovery_nav_version,
+        stages=stages,
+        record_id=record_id,
+    )
+    return record_id
+
+
 def _stash_normal_answer_failure(
     conn: sqlite3.Connection,
     *,
+    scope: Any,
     answer_key: str,
     answer: str,
     failure: str,
     model: str | None,
+    turn_id: str = "",
+    topic_id: str | None = None,
+    user_message_id: str | None = None,
+    fragment_id: str | None = None,
 ) -> bool:
-    """普通保存失败：把正文写进**共享暂存唯一权威**（run 行）后由调用方抛出原异常。
+    """普通保存失败：**同一事务**写共享暂存（run 行）+ upsert 一条 pending 恢复记录。
+
+    (a) topic_answer_runs 的 staged_answer/staged_at/staged_model，phase=staged、
+        status='pending'、释放 owner/租约（共享暂存唯一权威，保持 R16-D 语义）；
+    (b) topic_recovery_records 一条 pending 记录：kind=RECOVERY_KIND、
+        failed_stage="answer"、answer_key 与暂存同源、turn/topic/user_message/fragment
+        如实（解析不到如实 NULL）、recovery_nav_version=失败时刻真实导航版本；
+        同一 answer_key 已有 pending 记录时复用其 record_id 更新（不得多条），
+        已 answered 不复活。
 
     返回 False = 没有安全写入（执行行已 answered / 另一个活跃执行者持有写入权 /
-    执行权表不可用）：这时**不覆盖**别人的暂存与租约（I11），调用方仍抛原异常。
+    执行权表不可用）：这时**不覆盖**别人的暂存与租约（I11），也**不建记录**，
+    调用方仍抛原异常。两部分在同一个事务里：任一步失败整体回滚（不留 staged 半截），
+    异常向上抛，由调用方保留原异常优先。
     """
     if not _run_table_available(conn):
         return False
     now = _now_iso()
+    # 失败时刻的真实导航版本（用于恢复前复核）；读不到如实 None，不猜数字。
+    recovery_nav_version = _current_navigation_version(scope)
     with transaction(conn):
         row = _ensure_execution_row(conn, answer_key)
         if row is None:
@@ -2033,6 +2109,18 @@ def _stash_normal_answer_failure(
                 "WHERE status = 'pending' AND answer_key = ? AND answer_text IS NOT NULL",
                 (now, str(answer_key)),
             )
+            # (b) R18-B：同一事务内建/复用 pending 恢复记录，让既有「重试回答」入口可见。
+            _upsert_normal_answer_recovery_record(
+                conn,
+                scope=scope,
+                answer_key=str(answer_key),
+                failure=str(failure or ""),
+                turn_id=str(turn_id or ""),
+                topic_id=topic_id,
+                user_message_id=user_message_id,
+                fragment_id=fragment_id,
+                recovery_nav_version=recovery_nav_version,
+            )
     return True
 
 
@@ -2059,8 +2147,10 @@ def save_normal_answer(
       **同一事务**收口；不存在则按普通回答原有语义写入一条 assistant 消息（片段由轮次
       绑定解析、content_type / model / raw / 原轮次全部保留，且带 answer_key）。
     * 并发唯一性靠既有 messages.answer_key 部分唯一索引，冲突时回查既有一份。
-    * 保存失败时先把正文写入共享暂存唯一权威（run 行 staged_*，phase=staged）再抛出
-      **原异常**；暂存本身失败不掩盖原异常；另一个活跃执行者的暂存 / 租约不覆盖（I11）。
+    * 保存失败时在**同一事务**内写共享暂存唯一权威（run 行 staged_*，phase=staged）并
+      upsert 一条 failed_stage="answer" 的 pending 恢复记录（同 answer_key 复用既有
+      pending 的 record_id；已 answered 不复活），再抛出**原异常**；暂存/记录本身失败
+      不掩盖原异常、整体回滚不留半截；另一个活跃执行者的暂存 / 租约不覆盖（I11）。
 
     返回：{"answer_id": str, "created": bool, "existing": bool,
     "closed_record_ids": list[str], "answer_key": str}。
@@ -2109,10 +2199,15 @@ def save_normal_answer(
         try:
             _stash_normal_answer_failure(
                 conn,
+                scope=scope,
                 answer_key=answer_key,
                 answer=str(content or ""),
                 failure=_error_detail(original),
                 model=model,
+                turn_id=turn,
+                topic_id=str(topic_id or ""),
+                user_message_id=user_message,
+                fragment_id=fragment_id,
             )
         except Exception:  # noqa: BLE001 - 暂存异常不得掩盖原异常
             logger.warning(
