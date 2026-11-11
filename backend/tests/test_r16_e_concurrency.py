@@ -18,8 +18,9 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
+import time
 import uuid
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -240,14 +241,20 @@ class _GatedAdapter:
     supports_stream = False
     protocol_in_prompt = False
 
-    def __init__(self, release: threading.Event) -> None:
+    def __init__(self, release: threading.Event, entered: threading.Event) -> None:
         self.release = release
         self.calls = 0
+        # 自己的 started：按连接顺序控制「先让谁真正进入模型调用」。
         self.started = threading.Event()
+        # 共享 entered：任一执行者首次进入 complete 即 set；主线程只等它。
+        self.entered = entered
+        self._calls_lock = threading.Lock()
 
     async def complete(self, messages, tools, **kwargs):  # noqa: ANN001, ANN003
-        self.calls += 1
+        with self._calls_lock:
+            self.calls += 1
         self.started.set()
+        self.entered.set()
         # 受控阻塞（有界），由主线程放行；不占用事件循环
         await asyncio.to_thread(self.release.wait, 20.0)
         return Completion(
@@ -305,12 +312,19 @@ def _prepare_answer_race(ctx: AppContext) -> tuple[str, str, str, str]:
     return topic_id, fragment.id, record_a, record_b
 
 
-def test_two_connections_same_answer_key_single_executor(two: _TwoBackends):
-    topic_id, fragment_id, record_a, record_b = _prepare_answer_race(two.ctx1)
+def _run_answer_key_race(two: _TwoBackends, *, first: str) -> dict:
+    """确定性双连接竞争：先让 `first` 一方真正进入模型调用，再启动另一方。
 
+    * 共享 entered 事件：任一执行者首次进入 complete 即 set，主线程只等它，
+      不再按 A、B 顺序各等 20s（契约 §2.6）；
+    * 执行者阻塞释放放在 try/finally：断言失败/异常也 release.set()，不留挂起执行者；
+    * 非执行者必须在执行者被阻塞期间返回结构化 202 recovery_in_progress。
+    """
+    topic_id, fragment_id, record_a, record_b = _prepare_answer_race(two.ctx1)
     release = threading.Event()
-    adapter_a = _GatedAdapter(release)
-    adapter_b = _GatedAdapter(release)
+    entered = threading.Event()
+    adapter_a = _GatedAdapter(release, entered)
+    adapter_b = _GatedAdapter(release, entered)
 
     async def build_a():
         return adapter_a
@@ -321,30 +335,81 @@ def test_two_connections_same_answer_key_single_executor(two: _TwoBackends):
     two.ctx1.build_adapter = build_a  # type: ignore[assignment]
     two.ctx2.build_adapter = build_b  # type: ignore[assignment]
 
+    if first == "a":
+        winner_ctx, winner_record, winner_adapter = two.ctx1, record_a, adapter_a
+        loser_ctx, loser_record, loser_adapter = two.ctx2, record_b, adapter_b
+    elif first == "b":
+        winner_ctx, winner_record, winner_adapter = two.ctx2, record_b, adapter_b
+        loser_ctx, loser_record, loser_adapter = two.ctx1, record_a, adapter_a
+    else:  # pragma: no cover - 调用方固定两种顺序
+        raise AssertionError(f"未知的获胜顺序：{first!r}")
+
     def retry(ctx: AppContext, record_id: str):
         return asyncio.run(topic_recovery.retry_topic_answer(ctx, record_id))
 
+    loser_result: dict | None = None
     with ThreadPoolExecutor(max_workers=2) as pool:
-        future_a = pool.submit(retry, two.ctx1, record_a)
-        future_b = pool.submit(retry, two.ctx2, record_b)
-        # 有界等待：一定要有一个执行者进入模型调用（不 sleep）
-        entered = adapter_a.started.wait(20.0) or adapter_b.started.wait(20.0)
-        assert entered, "没有执行者进入模型调用：并发执行权没有被领取"
-        done, _ = wait([future_a, future_b], timeout=20.0, return_when=FIRST_COMPLETED)
-        assert done, "非执行者必须在执行期间返回结构化「处理中」，不能一起等待"
-        loser_result = next(iter(done)).result()
-        assert loser_result.get("in_progress") is True, loser_result
-        assert loser_result.get("code") == "recovery_in_progress", loser_result
-        assert int(loser_result.get("status_code", 0)) == 202, loser_result
-        release.set()
-        results = [f.result(timeout=30) for f in (future_a, future_b)]
+        winner_future = pool.submit(retry, winner_ctx, winner_record)
+        try:
+            # 1) 只等共享 entered：任一执行者进入模型调用即可；不按连接顺序各等 20s。
+            started_at = time.monotonic()
+            assert entered.wait(20.0), "没有执行者进入模型调用：并发执行权没有被领取"
+            entered_seconds = time.monotonic() - started_at
+            assert entered_seconds < 10.0, (
+                "主线程空等了 %.1fs 才看到执行者进入模型调用（旧等待顺序缺陷）"
+                % entered_seconds
+            )
+            assert winner_adapter.started.is_set(), (
+                "先启动的一方必须成为执行者（确定性顺序）"
+            )
+            # 2) 执行者已真正进入模型调用后再启动另一方：非执行者必须结构化 202，不能一起等。
+            loser_future = pool.submit(retry, loser_ctx, loser_record)
+            loser_result = loser_future.result(timeout=20.0)
+            assert loser_adapter.started.is_set() is False, "非执行者不得进入模型调用"
+        finally:
+            # 断言失败/异常也必须放行执行者，不留挂起执行者。
+            release.set()
+        winner_result = winner_future.result(timeout=30.0)
 
-    winner_result = next(r for r in results if not r.get("in_progress"))
-    assert winner_result.get("ok") is True and winner_result.get("answered") is True, winner_result
-    assert adapter_a.calls + adapter_b.calls == 1, (
+    assert loser_result is not None
+    assert winner_adapter.calls + loser_adapter.calls == 1, (
         "同一 answer_key 只能有一次真实模型生成，实际调用=%d"
-        % (adapter_a.calls + adapter_b.calls)
+        % (winner_adapter.calls + loser_adapter.calls)
     )
+    return {
+        "topic_id": topic_id,
+        "fragment_id": fragment_id,
+        "record_a": record_a,
+        "record_b": record_b,
+        "winner_result": winner_result,
+        "loser_result": loser_result,
+    }
+
+
+@pytest.mark.parametrize("first", ["a", "b"], ids=["a-wins", "b-wins"])
+def test_two_connections_same_answer_key_single_executor(
+    two: _TwoBackends, first: str
+):
+    """双连接并发同一 answer_key：A 先进入 / B 先进入两种确定性顺序（契约 §2.6 / E1）。
+
+    * 先启动的一方真正进入模型调用后才启动另一方 → 执行者确定，不靠调度运气；
+    * 非执行者必须返回结构化 202 `recovery_in_progress`，不能一起等；
+    * 无论谁赢：只生成一次、只有一份正式答案、两条恢复记录收口到同一 answer_id。
+    """
+    race = _run_answer_key_race(two, first=first)
+
+    loser_result = race["loser_result"]
+    assert loser_result.get("in_progress") is True, loser_result
+    assert loser_result.get("code") == "recovery_in_progress", loser_result
+    assert int(loser_result.get("status_code", 0)) == 202, loser_result
+
+    winner_result = race["winner_result"]
+    assert winner_result.get("ok") is True and winner_result.get("answered") is True, (
+        winner_result
+    )
+
+    fragment_id = race["fragment_id"]
+    record_a, record_b = race["record_a"], race["record_b"]
 
     # 一份正式答案 + 两条记录同一 answer_id 收口 + 执行行 phase/暂存干净（I12/§14.6）
     messages = two.conn1.execute(
@@ -355,6 +420,7 @@ def test_two_connections_same_answer_key_single_executor(two: _TwoBackends):
     assert len(messages) == 1, [dict(r) for r in messages]
     assert messages[0]["content"].endswith("共享暂存后的唯一答案")
     assert messages[0]["fragment_id"] == fragment_id, "正式答案必须写回原归属片段（I14）"
+    assert messages[0]["id"] == winner_result.get("answer_id")
 
     answer_key = str(
         two.conn1.execute(
