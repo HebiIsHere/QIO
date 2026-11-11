@@ -124,7 +124,7 @@ async def test_switch_request_does_not_move_the_anchor_before_the_model(
     assert "anchor_at_model" in seen, "本轮确实调用了模型"
     # fake 模型没有请求工具：程序不得自己把用户挪到 b。
     assert AnchorService(ctx.conn).get_active().topic_id == a
-    assert ctx.navigation.pending_switch() is None
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     assert asked == [], "没有工具调用就不应建立话题申请"
 
 
@@ -166,7 +166,7 @@ async def test_non_requests_never_navigate_programmatically(
 
     assert result["ok"] is True
     assert AnchorService(ctx.conn).get_active().topic_id == a
-    assert ctx.navigation.pending_switch() is None
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     assert {n.id for n in ctx.topics.nodes.list_topics()} == before, "程序不得新建话题"
     assert asked == [], "程序不得在模型调用前判断「明确请求」"
 
@@ -240,7 +240,7 @@ async def test_predictor_switch_signal_no_longer_produces_an_executable_suggesti
     assert result["ok"] is True
     # 相似度只是证据：既不能移动用户，也不能自行产生「待确认切换」或可执行建议。
     assert AnchorService(ctx.conn).get_active().topic_id == a, "推测不得自行移动用户"
-    assert ctx.navigation.pending_switch() is None
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     assert collected == [], "旧的可执行切换建议事件必须退役"
 
 
@@ -276,19 +276,11 @@ async def test_create_request_is_not_registered_or_executed_by_the_program(
 # -- 导航原语（内部）：待确认切换仍只登记、不移动 Anchor -------------------
 
 
-def test_pending_switch_never_moves_the_anchor(ctx: AppContext):
-    a = _topic(ctx, "QIO 前端")
-    b = _topic(ctx, "顺丁橡胶降解")
+def test_legacy_pending_switch_entries_are_retired(ctx: AppContext):
+    """旧「待确认切换」机制已退役：推测不写 pending 位置事实，也没有第二套确认入口。"""
     nav: TopicNavigationService = ctx.navigation
-    nav.enter_topic(a)
-
-    nav.request_switch(b, reason="看起来属于另一个话题")
-    assert AnchorService(ctx.conn).get_active().topic_id == a
-    assert nav.pending_switch()["topic_id"] == b
-
-    nav.reject_switch()
-    assert nav.pending_switch() is None
-    assert AnchorService(ctx.conn).get_active().topic_id == a
+    for name in ("request_switch", "pending_switch", "confirm_switch", "reject_switch"):
+        assert not hasattr(nav, name), f"旧待确认切换入口未退役：{name}"
 
 
 # -- 旧 HTTP 入口退役：不得保留可独立提交的旧确认路径 ----------------------
@@ -306,7 +298,6 @@ def test_legacy_topic_switch_http_entries_are_retired(db_conn, settings):
         a = _topic(ctx, "QIO 前端")
         b = _topic(ctx, "顺丁橡胶降解")
         ctx.navigation.enter_topic(a)
-        ctx.navigation.request_switch(b, reason="推测")
 
         for path in ("/api/topic-switch/confirm", "/api/topic-switch/reject"):
             resp = client.post(path)

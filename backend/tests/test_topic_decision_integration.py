@@ -166,7 +166,7 @@ async def test_continuation_correction_followup_do_not_request_topic_change(
     assert result["turn"]["final_content"] == "好的。"
     assert approval_calls == [], "延续/纠正/追问不得发起话题申请"
     assert collected == [], "旧预测器路径不得再发布可执行切换建议"
-    assert ctx.navigation.pending_switch() is None
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     assert AnchorService(ctx.conn).get_active().topic_id == topic
 
 
@@ -204,7 +204,7 @@ async def test_high_similarity_prediction_does_not_publish_executable_switch(
     assert result["ok"] is True
     assert approval_calls == []
     assert collected == [], "预测器/分类器不得再发布可执行 TOPIC_SWITCH_SUGGESTED"
-    assert ctx.navigation.pending_switch() is None, "高相似度不等于自动触发切换"
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     assert AnchorService(ctx.conn).get_active().topic_id == current
 
     system = _system_text(adapter)
