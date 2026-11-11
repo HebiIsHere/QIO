@@ -102,6 +102,7 @@ __all__ = [
     "inbox_record",
     "retry_topic_answer",
     "write_recovered_answer",
+    "save_normal_answer",
 ]
 
 
@@ -1652,6 +1653,58 @@ def _save_answer(
                 stored_answer = str(row["content"] or answer)
         _finalize_answer_locked(conn, execution, message_id)
     return {"answer_id": message_id, "answer": stored_answer}
+
+
+def save_normal_answer(
+    scope: Any,
+    *,
+    topic_id: str,
+    turn_id: str,
+    user_message_id: str | None,
+    content: str,
+    content_type: str = "text",
+    model: str | None = None,
+    raw: dict | None = None,
+    fragment_id: str | None = None,
+) -> dict:
+    """R17 冻结接口：普通正式回答的统一保存入口（脚手架占位，由 r17/D 实现）。
+
+    契约见 docs/topic-unify-r17-contract-20261111.md §2.5：
+    * 与恢复回答复用 :func:`answer_key_for`：按原轮次 + 原用户消息确定唯一逻辑答案身份；
+    * 正式保存时应用既有唯一性规则（messages.answer_key 部分唯一索引）：同一逻辑答案已存在
+      → 返回原 answer_id，不新增第二条正式消息；
+    * 同 answer_key 的 pending 恢复记录与执行行与答案写入**同一事务**收口；
+    * 保存失败时先把正文写入共享暂存（run 行 staged_*）再抛出，任意同 answer_key 的恢复
+      记录之后只补存、不再调用模型；
+    * 保留内容类型 / 模型信息 / 验证元数据 / 原轮次与片段归属。
+
+    返回：`{"answer_id": str, "created": bool, "existing": bool,
+    "closed_record_ids": list[str], "answer_key": str}`。
+
+    当前是脚手架占位实现（行为 = 旧 append_message，不写 answer_key）：由 r17/D 替换。
+    """
+    app = scope if hasattr(scope, "memory") else getattr(scope, "app", scope)
+    memory = getattr(app, "memory", None)
+    if memory is None:
+        raise RecoveryPersistError("没有可用的 memory 写入通道，普通正式回答无法保存")
+    message_id, _ = memory.append_message(
+        topic_id=str(topic_id),
+        role="assistant",
+        content=str(content or ""),
+        content_type=str(content_type or "text"),
+        model=model,
+        raw=raw,
+        fragment_id=fragment_id,
+        turn_id=str(turn_id or "") or None,
+    )
+    return {
+        "answer_id": str(message_id),
+        "created": True,
+        "existing": False,
+        "closed_record_ids": [],
+        "answer_key": "",
+        "user_message_id": user_message_id,
+    }
 
 
 def _stash_answer_failure(
