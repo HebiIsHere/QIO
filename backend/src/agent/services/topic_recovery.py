@@ -105,6 +105,7 @@ __all__ = [
     "list_records",
     "update_record",
     "find_pending",
+    "find_pending_by_answer_key",
     "mark_answered",
     "claim_record",
     "release_claim",
@@ -694,6 +695,33 @@ def find_pending(
             continue
         return record
     return None
+
+
+def find_pending_by_answer_key(scope: Any, answer_key: str) -> dict | None:
+    """只读：按 answer_key 找**已提交**的 pending 恢复记录（R19-B 通知用）。
+
+    找不到返回 None（没有可通知的事实，调用方不得伪造事件）；查询失败同样返回
+    None 并只记日志 —— 通知路径不能反过来吞噬/掩盖原保存异常。
+    """
+    key = str(answer_key or "")
+    if not key:
+        return None
+    conn = _conn_of(scope)
+    if conn is None or not _table_available(conn):
+        return None
+    try:
+        row = conn.execute(
+            f"SELECT {_RECORD_COLUMNS} FROM {TOPIC_RECOVERY_TABLE} "
+            "WHERE answer_key = ? AND status = 'pending' "
+            "ORDER BY created_at, record_id LIMIT 1",
+            (key,),
+        ).fetchone()
+    except sqlite3.Error:  # noqa: BLE001 - 查不到 = 不发事件，不掩盖原异常
+        logger.warning(
+            "failed to find pending topic recovery record for notify", exc_info=True
+        )
+        return None
+    return _row_to_record(row) if row is not None else None
 
 
 def mark_answered(scope: Any, record_id: str, answer: str) -> dict | None:

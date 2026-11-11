@@ -27,7 +27,14 @@ from agent.services.navigation import (
     take_tool_navigation,
 )
 from agent.services.predict import TopicPrediction
-from agent.services.topic_recovery import TopicContextPrepareError, save_normal_answer
+from agent.services.topic_recovery import (
+    ACTION_RETRY_ANSWER,
+    RECOVERY_KIND,
+    TopicContextPrepareError,
+    answer_key_for,
+    find_pending_by_answer_key,
+    save_normal_answer,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
     from agent.adapters.base import ChatMessage
@@ -2035,16 +2042,23 @@ class TurnOrchestrator:
         # R17-A（契约 §2.5）：普通正式回答改走冻结的统一保存入口（answer_key 身份、
         # 唯一性、共享暂存收口都在它内部完成；签名冻结，D 负责真实实现）。这里只
         # 消费返回的 answer_id，原有 formal_answer / 互动无回复前提与 trace 语义不变。
-        saved = save_normal_answer(
-            app,
-            topic_id=final_topic,
-            turn_id=ctx.turn_id,
-            user_message_id=getattr(ctx, "user_message_id", None),
-            content=result.final_content or "",
-            content_type="text",
-            model=adapter.model,
-            raw=verification_raw(result),
-        )
+        try:
+            saved = save_normal_answer(
+                app,
+                topic_id=final_topic,
+                turn_id=ctx.turn_id,
+                user_message_id=getattr(ctx, "user_message_id", None),
+                content=result.final_content or "",
+                content_type="text",
+                model=adapter.model,
+                raw=verification_raw(result),
+            )
+        except Exception:
+            # R19-B（契约 §2.2）：保存失败时 save_normal_answer 已在**已提交事务**里
+            # 写好共享暂存 + pending 恢复记录；这里只在查得到已提交记录时通知前端
+            # 刷新收件箱。通知失败不得掩盖原异常、不改变轮次结局（原异常照抛）。
+            await self._notify_recovery_inbox_changed(ctx)
+            raise
         assistant_msg_id = saved["answer_id"]
         ctx.final_verification = getattr(result, "verification", None)
         ctx.trace.write("messages", assistant_msg_id)
@@ -2056,6 +2070,41 @@ class TurnOrchestrator:
         ctx.position_fragment_id = row["fragment_id"] if row is not None else None
         return final_topic
 
+
+    async def _notify_recovery_inbox_changed(self, ctx) -> None:
+        """保存失败后通知前端刷新恢复清单（事件只表示「可能变了」）。
+
+        只在按 answer_key 查到**已提交** pending 记录时发布；查不到（暂存 / 记录
+        没写成功、被另一活跃执行者持有）就不发 —— 绝不伪造「清单已变化」的事实。
+        事件不是清单权威：前端收到后仍走既有 GET /api/recovery/records。
+        """
+        try:
+            answer_key = answer_key_for(
+                str(getattr(ctx, "turn_id", "") or ""),
+                user_message_id=getattr(ctx, "user_message_id", None),
+            )
+            record = find_pending_by_answer_key(self.app, answer_key)
+            if record is None:
+                return
+            await self.app.bus.publish(
+                make_event(
+                    EventType.RECOVERY_INBOX_CHANGED,
+                    {
+                        "record_id": str(record.get("record_id") or ""),
+                        "turn_id": str(
+                            record.get("turn_id") or getattr(ctx, "turn_id", "") or ""
+                        ),
+                        "topic_id": str(record.get("topic_id") or ""),
+                        "kind": str(record.get("kind") or RECOVERY_KIND),
+                        "failed_stage": str(record.get("failed_stage") or "answer"),
+                        "action": ACTION_RETRY_ANSWER,
+                    },
+                )
+            )
+        except Exception:  # noqa: BLE001 - 通知任何异常都不得掩盖原异常
+            logging.getLogger(__name__).warning(
+                "RECOVERY_INBOX_CHANGED 通知失败（原异常优先抛出）", exc_info=True
+            )
 
     def _finish_interactive_turn(self, ctx, *, failed: bool = False) -> None:
         """互动 Turn 收尾：释放意图执行认领、记录真实失败、由服务端安排自动重试。
