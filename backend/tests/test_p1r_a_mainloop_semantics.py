@@ -118,7 +118,7 @@ async def test_anchor_is_unchanged_at_the_first_model_call(ctx: AppContext, monk
     assert seen["anchor_at_model"] == a, "轮前 anchor 在模型调用前就被移动了"
     assert seen["user_text"] == "切到 顺丁橡胶降解", "用户原话必须完整进入主循环"
     assert _anchor(ctx) == a, "fake 模型未请求工具，程序不得替用户切换"
-    assert ctx.navigation.pending_switch() is None
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     assert asked == []
 
 
@@ -159,7 +159,7 @@ async def test_negation_quotation_and_discussion_do_not_navigate(
     assert result["ok"] is True
     assert _user_texts(adapter)[-1] == message
     assert _anchor(ctx) == a, f"程序被非请求句移动了位置：{message}"
-    assert ctx.navigation.pending_switch() is None
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     assert {node.id for node in ctx.topics.nodes.list_topics()} == before, "程序不得新建话题"
     assert asked == [], "程序不得在进入主循环前判断「明确请求」"
 

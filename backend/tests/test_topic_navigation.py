@@ -153,41 +153,15 @@ def test_continue_from_history_on_open_fragment_is_a_plain_enter(ctx: AppContext
     assert AnchorService(ctx.conn).get_active().fragment_id == open_frag
 
 
-def test_pending_switch_never_moves_the_anchor(ctx: AppContext, nav: TopicNavigationService):
-    a = ctx.topics.nodes.create_topic("甲话题").id
-    b = ctx.topics.nodes.create_topic("乙话题").id
-    nav.enter_topic(a)
+def test_legacy_pending_switch_entries_are_retired(nav: TopicNavigationService):
+    """旧「待确认切换」业务写入 API 已退役（契约 §4/§9）。
 
-    suggestion = nav.request_switch(b, reason="用户提到了另一个话题")
-
-    assert suggestion["topic_id"] == b
-    assert AnchorService(ctx.conn).get_active().topic_id == a, "只是建议，不得移动用户"
-    assert nav.pending_switch()["topic_id"] == b
-
-
-def test_reject_switch_keeps_current_topic(ctx: AppContext, nav: TopicNavigationService):
-    a = ctx.topics.nodes.create_topic("甲话题").id
-    b = ctx.topics.nodes.create_topic("乙话题").id
-    nav.enter_topic(a)
-    nav.request_switch(b)
-
-    nav.reject_switch()
-
-    assert nav.pending_switch() is None
-    assert AnchorService(ctx.conn).get_active().topic_id == a
-
-
-def test_confirm_switch_moves_the_anchor(ctx: AppContext, nav: TopicNavigationService):
-    a = ctx.topics.nodes.create_topic("甲话题").id
-    b = ctx.topics.nodes.create_topic("乙话题").id
-    nav.enter_topic(a)
-    nav.request_switch(b)
-
-    result = nav.confirm_switch()
-
-    assert result is not None and result.topic_id == b
-    assert nav.pending_switch() is None
-    assert AnchorService(ctx.conn).get_active().topic_id == b
+    R16 起 Anchor/pending 的唯一业务写入口是 services/position_state.py 的统一入口；
+    旧 pending 行机制没有生产调用方（/api/topic-switch/* 已 410），不得保留第二套
+    业务写入方法。底层 AnchorService 的 pending 辅助函数本身保留。
+    """
+    for name in ("request_switch", "pending_switch", "confirm_switch", "reject_switch"):
+        assert not hasattr(nav, name), f"旧待确认切换入口未退役：{name}"
 
 
 def test_topic_prediction_and_retrieval_never_write_the_anchor(ctx: AppContext, nav: TopicNavigationService):

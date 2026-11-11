@@ -100,18 +100,33 @@ async def test_failed_turn_does_not_advance_anchor_or_create_history(ctx: AppCon
     assert _snapshot(ctx) == before, "失败不得产生新的历史位置"
 
 
-async def test_failed_turn_keeps_a_pending_suggestion_intact(ctx: AppContext, monkeypatch):
-    a = ctx.topics.nodes.create_topic("甲话题").id
-    b = ctx.topics.nodes.create_topic("乙话题").id
-    ctx.navigation.enter_topic(a)
-    ctx.navigation.request_switch(b, reason="推测")
+async def test_failed_turn_keeps_a_registered_continuation_intact(ctx: AppContext, monkeypatch):
+    """失败轮不得吞掉「已登记待落实的接续选择」（统一位置入口的 pending 事实）。
+
+    旧「待确认切换」原语已退役（R16 契约 §4/§9）；等待中的用户选择用
+    continuation_intents 的 registered 状态表达，由统一入口写入。
+    """
+    from agent.services.position_state import NavCommandIdentity
+
+    topic = ctx.topics.nodes.create_topic("甲话题").id
+    hist = _seed_fragment(ctx, topic, closed=True)
+    ctx.navigation.enter_topic(topic)
+    registered = ctx.navigation.register_continuation(
+        topic, hist, identity=NavCommandIdentity.operation("op-fail-pending", 1)
+    )
+    assert registered["intent_id"]
     _install(ctx, monkeypatch, CapturingAdapter(fail=True))
 
-    await ctx.run_turn("这一轮会失败", topic_id=a)
+    await ctx.run_turn("这一轮会失败", topic_id=topic)
 
-    pending = ctx.navigation.pending_switch()
-    assert pending is not None and pending["topic_id"] == b, "失败不得吞掉待确认切换"
-    assert AnchorService(ctx.conn).get_active().topic_id == a
+    # 轮首会按两阶段契约「落实」这条已登记接续（resolved）；失败轮不得把它取消/替换，
+    # 也不得把用户位置挪出原话题。
+    intent = ctx.bindings.intent_by_id(registered["intent_id"])
+    assert intent is not None, "失败不得吞掉已登记的接续选择"
+    assert intent.state in ("registered", "resolved"), (
+        f"失败轮不得取消/替换已登记接续（实际 {intent.state}）"
+    )
+    assert AnchorService(ctx.conn).get_active().topic_id == topic
 
 
 async def test_cancelled_turn_does_not_advance_anchor_or_create_history(ctx: AppContext, monkeypatch):

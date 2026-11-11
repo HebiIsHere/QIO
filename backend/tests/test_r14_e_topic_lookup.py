@@ -124,7 +124,7 @@ def _snapshot(app: AppContext) -> dict:
         "active_topic": getattr(active, "topic_id", None),
         "active_fragment": getattr(active, "fragment_id", None),
         "nav_version": navigation_version.current(app.conn),
-        "pending_switch": app.navigation.pending_switch(),
+        "legacy_pending_switch_retired": not hasattr(app.navigation, "pending_switch"),
         "intent": app.bindings.peek_intent(),
         "counts": counts,
     }

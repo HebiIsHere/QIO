@@ -134,7 +134,6 @@ class TopicNavigationService:
         self.fragments = FragmentManager(conn)
         self.bindings = TurnBindingService(conn)
         self.positions = PositionStateService(conn)
-        self._pending_reason: str = ""
 
     # -- 统一入口辅助 -----------------------------------------------------
     def _identity_for(
@@ -951,53 +950,12 @@ class TopicNavigationService:
             )
         )
 
-    # -- 待确认切换（历史遗留；生产无调用方，保留兼容 API）---------------
-
-    def request_switch(self, topic_id: str, *, reason: str = "") -> dict:
-        node = self.nodes.get_topic(topic_id)
-        if node is None:
-            raise TopicNotFound(f"话题不存在：{topic_id}")
-        self.anchors.request_pending(topic_id)
-        self._pending_reason = reason
-        return {"topic_id": topic_id, "topic_name": node.name, "reason": reason}
-
-    def pending_switch(self) -> dict | None:
-        pending = self.anchors.get_pending()
-        if pending is None or not pending.topic_id:
-            return None
-        node = self.nodes.get_topic(pending.topic_id)
-        if node is None:
-            return None
-        return {
-            "topic_id": pending.topic_id,
-            "topic_name": node.name,
-            "fragment_id": pending.fragment_id,
-            "reason": self._pending_reason,
-        }
-
-    def confirm_switch(
-        self,
-        *,
-        expected_nav_version: int | None = None,
-        turn_id: str | None = None,
-        identity: NavCommandIdentity | None = None,
-    ) -> NavigationResult | None:
-        pending = self.pending_switch()
-        if pending is None:
-            return None
-        result = self.enter_topic(
-            pending["topic_id"],
-            fragment_id=pending["fragment_id"],
-            expected_nav_version=expected_nav_version,
-            turn_id=turn_id,
-            identity=identity,
-        )
-        self.reject_switch()
-        return result
-
-    def reject_switch(self) -> None:
-        self.anchors.discard_pending()
-        self._pending_reason = ""
+    # -- 旧「待确认切换」原语：R16 已删除（契约 §4/§9）--------------------
+    # request_switch / pending_switch / confirm_switch / reject_switch 曾把「程序推测的
+    # 切换建议」写进 cursor 的 pending 行。唯一生产入口（/api/topic-switch/*）已 410 退役，
+    # 待落实的用户选择统一用 continuation_intents 表达并由统一位置入口写入，
+    # 因此这里不再保留第二套业务写入方法（底层 AnchorService 的 pending 辅助保留，
+    # 但业务层不得调用；生产测试 test_topic_navigation 有架构守卫）。
 
     # -- 只读辅助 ---------------------------------------------------------
 

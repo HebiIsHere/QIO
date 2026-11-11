@@ -185,7 +185,7 @@ async def test_high_similarity_alone_never_emits_an_executable_suggestion(
 
     assert result["ok"] is True
     assert AnchorService(ctx.conn).get_active().topic_id == a
-    assert ctx.navigation.pending_switch() is None
+    assert not hasattr(ctx.navigation, "pending_switch"), "旧待确认切换机制已退役"
     suggestions = [e for e in published if e["type"].endswith("TOPIC_SWITCH_SUGGESTED")]
     assert suggestions == [], f"相似度不得单独产生可执行建议：{suggestions}"
 
