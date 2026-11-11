@@ -613,7 +613,7 @@ class PositionStateService:
         position = self.read()
         nav_version, position_version = self._current_versions(position)
         status = str(row.get("status") or STATUS_APPLIED)
-        result = dict(row.get("result") or {})
+        result = dict(row.get("result_json") or {})
         code = result.get("code")
         if status == STATUS_APPLIED:
             code = None
@@ -681,6 +681,20 @@ class PositionStateService:
         identity = transition.identity
         if identity is None:
             raise ValueError("位置转换必须携带命令身份")
+        # §14.8：apply 自己复查 kind 与 identity_key 前缀一致（不依赖构造函数，
+        # object.__new__ / 反序列化绕过 __post_init__ 时也必须在这里拒绝）。
+        if identity.kind not in _IDENTITY_KINDS:
+            raise ValueError(f"非法导航命令身份 kind：{identity.kind!r}")
+        prefix = {
+            "request": "request:",
+            "operation": "operation:",
+            "internal": "internal:",
+        }[identity.kind]
+        if not str(identity.identity_key or "").startswith(prefix):
+            raise ValueError(
+                f"identity_key 前缀与 kind 不一致：kind={identity.kind!r} "
+                f"key={identity.identity_key!r}"
+            )
         if identity.kind == "internal":
             command_kind = identity.command_kind
             if command_kind is not None and command_kind != kind:
@@ -796,7 +810,12 @@ class PositionStateService:
         if kind == KIND_CREATE_TOPIC:
             return True
         if kind == KIND_SELECT_HISTORY:
-            return bool(registration_changed)
+            # §14.5：工具登记路径（move_anchor=False）只按登记是否真实改变推进；
+            # 点击路径（move_anchor=True）Anchor 真实移动到历史片段也是导航决定。
+            return bool(
+                registration_changed
+                or (transition.effective_move_anchor() and anchor_changed)
+            )
         # cancel_continuation / apply_continuation / internal_refine / auto_segment:
         # 不推进导航决定版本（§3.3 + §14.9）。
         return False
@@ -905,7 +924,15 @@ class PositionStateService:
         pending_cleared_intent_id: str | None = None
         pending_result: dict[str, Any] = {}
         registration_changed = False
-        if kind in CLEARING_KINDS:
+        # §14.5：只有**真实用户/工具导航决定**才清除全局唯一 registered 意图。
+        # 旧调用方合成的 anonymous internal 身份（fixture / 兼容路径）不是导航决定，
+        # 不得因为「例行补锚点」之类的位置写入误清用户等待中的接续申请。
+        real_navigation_decision = (
+            kind in CLEARING_KINDS
+            and str(transition.initiator) in ("user", "tool")
+            and ":anonymous:" not in transition.identity.identity_key
+        )
+        if real_navigation_decision:
             current_intent = bindings.peek_intent()
             if current_intent is not None:
                 bindings.cancel_intent(current_intent.intent_id)
@@ -978,7 +1005,10 @@ class PositionStateService:
 
         # 3) Anchor：只有 target_topic_id 非 None 且允许移动时才写。
         anchor_changed = False
-        if target_topic is not None and transition.effective_move_anchor():
+        # create_topic 时 target_topic 在事务内才产生：默认语义是「写入新话题」；
+        # move_anchor=False 只用于显式声明「不搬 Anchor」的调用方。
+        should_move_anchor = transition.move_anchor is not False
+        if target_topic is not None and should_move_anchor:
             active = anchors.get_active()
             if (
                 active is None

@@ -218,14 +218,19 @@ def test_planet_selection_never_writes_the_anchor(ctx: AppContext, nav: TopicNav
 
 
 def test_anchor_writes_are_centralized_in_the_navigator():
-    """架构守卫：除了锚点服务自己，只有 Navigator 允许写 anchor。"""
+    """架构守卫：Anchor 只能有一个写入者（R16 契约 §4：统一位置变更入口）。
+
+    底层锚点服务自己保留写方法；业务层唯一写者是 services/position_state.py 的
+    PositionStateService.apply（R16 起 Anchor 的唯一写入点）。Navigator 只是它的薄包装，
+    不得再绕过统一入口直接写 anchor。
+    """
     import re
 
     src = Path(__file__).resolve().parents[1] / "src" / "agent"
-    # R16（契约 §4）：唯一写者从 Navigator 收口到统一变更入口 PositionStateService。
+    # R16（契约 §4）：Anchor 的唯一业务写入点收口到统一变更入口 PositionStateService；
+    # Navigator 只是薄包装，不得再直接写 anchor。
     allowed = {
         "graph/anchors.py",
-        "services/navigation.py",
         "services/position_state.py",
     }
     offenders: list[str] = []
@@ -236,7 +241,7 @@ def test_anchor_writes_are_centralized_in_the_navigator():
         text = path.read_text(encoding="utf-8")
         if re.search(r"\.(set_active|restore_position|confirm_pending)\(\s*(topic_id|[a-z_]+)", text):
             offenders.append(rel)
-    assert offenders == [], f"这些模块绕过 Navigator 直接写 anchor：{offenders}"
+    assert offenders == [], f"这些模块绕过统一位置入口直接写 anchor：{offenders}"
 
 
 # -- HTTP 层：两个动作必须能被明确区分 ------------------------------------

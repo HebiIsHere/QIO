@@ -135,13 +135,28 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
+def _complete(conn: sqlite3.Connection) -> bool:
+    """迁移 83 的对象是否都已就位（用于独立 apply 的幂等短路）。"""
+    if not (_table_exists(conn, POSITION_STATE_TABLE) and _table_exists(conn, NAVIGATION_COMMANDS_TABLE)):
+        return False
+    for column in ("phase", "staged_answer", "staged_at", "staged_model"):
+        if not _column_exists(conn, "topic_answer_runs", column):
+            return False
+    return conn.execute(
+        f"SELECT 1 FROM {POSITION_STATE_TABLE} WHERE id = 1"
+    ).fetchone() is not None
+
+
 def apply(conn: sqlite3.Connection) -> list[str]:
-    """幂等应用迁移 83（对象已在 -> 对应语句跳过）；返回本次真正执行的语句。
+    """幂等应用迁移 83（对象/列已在 -> 对应语句跳过）；返回本次真正执行的语句。
 
     生产路径由 schema.py 统一应用；这里只给定向测试和被单独引用的集成方使用，
-    不写 schema_version。
+    不写 schema_version。数据语句（种子行 / phase 回填）只在对应对象首次建出时执行一次，
+    重复调用不会重复改数据。
     """
     executed: list[str] = []
+    if _complete(conn):
+        return executed
     with transaction(conn):
         for statement in MIGRATION[1]:
             upper = " ".join(str(statement).split()).upper()
@@ -150,6 +165,15 @@ def apply(conn: sqlite3.Connection) -> list[str]:
                 table = parts[2]
                 column = parts[5]
                 if _column_exists(conn, table, column):
+                    continue
+            if upper.startswith("INSERT OR IGNORE"):
+                if conn.execute(
+                    f"SELECT 1 FROM {POSITION_STATE_TABLE} WHERE id = 1"
+                ).fetchone() is not None:
+                    continue
+            if upper.startswith("UPDATE") and "TOPIC_ANSWER_RUNS" in upper:
+                # 回填只在 phase 列首次出现时执行一次。
+                if _column_exists(conn, "topic_answer_runs", "phase"):
                     continue
             conn.execute(statement)
             executed.append(statement)
