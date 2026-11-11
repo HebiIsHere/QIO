@@ -1126,3 +1126,31 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
   （R17 §7 已知边界继续保留）；外部模型调用不保证严格 exactly-once。详见
   `docs/topic-unify-r18-contract-20261111.md` 与 `docs/topic-unify-r18-20261111.md`。
 
+### 22.11 R19 复核补修（2026-11-11 · 第八轮）
+
+补修 `9de91bb`（R18 交付）复核确认的两个剩余缺口；既有 I01—I14、完整位置状态、两类版本、统一入口、
+依据链、共享暂存与写入权规则全部沿用，不新增第二套权威。
+
+- **首次互动板提交的默认话题（P1）**：互动板提交受理入口 `interactive_store.submit` 的 `accept_turn`
+  在受理快照没有 `topic_id`（受理这一刻还没有当前位置）时，按既有兜底语义
+  `AppContext.current_topic()` **只读解析**默认话题（无 active Anchor 时取默认话题、必要时创建默认
+  话题节点），把结果写回**同一份** `basis["topic_id"]`，并作为
+  `ctx.turns.submit(message, topic, basis=basis)` 的 topic 与 `turn.board_topic_id`。该解析不
+  `enter_topic`、不写 Anchor/cursor、不推进任何版本；解析失败如实告警并按旧路径降级。位置版本沿用同一份
+  受理快照；之后排队/准备期间用户导航到 B，轮首补锚与轮末推进仍按 R17 依据链 CAS 被拒（零位置副作用
+  零广播），提问与回答仍写入受理时解析出的默认话题。
+- **保存失败后的恢复清单可见性（P2）**：R18 已保证普通回答保存失败时同事务写共享暂存 + pending
+  恢复记录；本轮补上「通知前端刷新」：新增 SSE 事件 `RECOVERY_INBOX_CHANGED`（载荷 record_id /
+  turn_id / topic_id / kind / failed_stage / action，归入 `CRITICAL_EVENTS`，背压时不静默丢，
+  溢出触发 RESYNC 时前端仍会重新拉清单）。`turn_orchestrator.persist` 在
+  `save_normal_answer` 抛错路径按 `answer_key_for` 查**已提交** pending 记录，查到才发布事件，
+  随后原异常照抛；查不到不发、通知异常不掩盖原异常。前端收到事件复用既有
+  `session.loadRecoveryInbox()`：同实例已有清单请求在途时不并发第二个请求，只登记「完成后补拉一轮」，
+  由该请求 finally 解锁后补拉，保证新记录最终可见；普通并发调用的单飞语义不变。点击「重试回答」仍走
+  既有 `retry-answer` 补存入口，协议与乐观成功语义未改。
+- 边界：P1 只修互动板提交入口（`/api/turns`、重发、`start_interactive_turn` 等保持现行为）；P2 通知只覆盖
+  `persist` 普通正式回答保存失败路径，`retry-answer` 自身失败不新增通知；事件不是清单权威，权威仍是
+  `GET /api/recovery/records`；旧前端忽略未知事件（保持现状），新前端 + 旧后端仍靠既有连接/RESYNC 刷新。
+  详见 `docs/topic-unify-r19-contract-20261111.md` 与 `docs/topic-unify-r19-20261111.md`。
+
+
