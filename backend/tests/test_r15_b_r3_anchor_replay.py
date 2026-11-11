@@ -254,11 +254,14 @@ def test_runtime_state_anchor_snapshot_matches_anchor_event_facts(client: TestCl
 
     # 取消待接续：pending 字段清空，位置与版本不变（§14.9：取消不推进 nav_version）。
     version_before = _nav(ctx)
+    # R17 §2.2：取消命令必须明确关联目标选择（id + 版本）。
     cancelled = client.post(
         "/api/anchor/continue/cancel",
         json={
             "request_id": "req-snapshot-cancel",
             "base_nav_version": navigation_version.current(ctx.conn),
+            "pending_intent_id": intent.intent_id,
+            "pending_intent_version": intent.version,
         },
     )
     assert cancelled.status_code == 200, cancelled.text
@@ -418,11 +421,16 @@ def test_replay_after_cancel_is_inactive_and_changes_nothing(client: TestClient)
     first = _continue(client, topic, hist_a, request_id="req-cancel")
     assert first.status_code == 200, first.text
     version_after_click = _nav(ctx)
+    # R17 §2.2：取消命令必须明确关联目标选择（id + 版本）。
+    intent = ctx.bindings.intent_by_request("req-cancel")
+    assert intent is not None
     cancelled = client.post(
         "/api/anchor/continue/cancel",
         json={
             "request_id": "req-cancel-call",
             "base_nav_version": navigation_version.current(ctx.conn),
+            "pending_intent_id": intent.intent_id,
+            "pending_intent_version": intent.version,
         },
     )
     assert cancelled.status_code == 200, cancelled.text

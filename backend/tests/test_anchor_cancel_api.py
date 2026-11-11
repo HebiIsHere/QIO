@@ -65,28 +65,41 @@ def test_cancel_continuation_leaves_no_trace(client: TestClient):
     ).json()
     assert registered["pending"] is True
     assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1
+    intent = ctx.bindings.peek_intent()
+    assert intent is not None, "登记成功后必须存在待落实接续（取消目标）"
 
     # 发送前取消：意图作废，仍然没有任何新片段
+    # R17 §2.2：取消必须明确携带目标（id + 版本），服务端不再隐式取消「当前接续」。
     cancelled = client.post(
         "/api/anchor/continue/cancel",
         json={
             "request_id": "req-cancel-trace-cancel",
             "base_nav_version": current_nav_version(ctx.conn),
+            "pending_intent_id": intent.intent_id,
+            "pending_intent_version": intent.version,
         },
     ).json()
     assert cancelled["ok"] is True and cancelled["cancelled"] is True
     assert ctx.bindings.peek_intent() is None
     assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1
 
-    # 再取消一次：幂等，不报错
+    # 再取消一次同一个（已失效的）目标：R17 §2.2 冻结为 409 inactive，
+    # 仍然零位置写入、零广播、不复活任何接续（「不发消息就不留痕迹」语义不变）。
     again = client.post(
         "/api/anchor/continue/cancel",
         json={
             "request_id": "req-cancel-trace-again",
             "base_nav_version": current_nav_version(ctx.conn),
+            "pending_intent_id": intent.intent_id,
+            "pending_intent_version": intent.version,
         },
-    ).json()
-    assert again["ok"] is True and again["cancelled"] is False
+    )
+    assert again.status_code == 409, again.text
+    again_body = again.json()
+    assert again_body["ok"] is False and again_body["inactive"] is True
+    assert again_body["code"] == "continuation_request_inactive", again_body
+    assert ctx.bindings.peek_intent() is None
+    assert ctx.conn.execute("SELECT COUNT(*) c FROM fragments").fetchone()["c"] == 1
 
 
 def test_cancel_broadcasts_anchor_event_so_the_hint_can_disappear(client: TestClient):
@@ -112,12 +125,16 @@ def test_cancel_broadcasts_anchor_event_so_the_hint_can_disappear(client: TestCl
         },
     )
     before = len(ctx.bus._history)  # noqa: SLF001 - 测试直接读总线历史，避免再开一条 SSE
+    intent = ctx.bindings.peek_intent()
+    assert intent is not None, "登记成功后必须存在待落实接续（取消目标）"
 
     client.post(
         "/api/anchor/continue/cancel",
         json={
             "request_id": "req-cancel-broadcast-cancel",
             "base_nav_version": current_nav_version(ctx.conn),
+            "pending_intent_id": intent.intent_id,
+            "pending_intent_version": intent.version,
         },
     )
 

@@ -58,6 +58,7 @@ from agent.services.binding import (
     INTENT_REGISTERED,
     INTENT_REPLACED,
     INTENT_RESOLVED,
+    ContinuationIntent,
     IntentNotFound,
     TurnBindingService,
 )
@@ -119,6 +120,8 @@ REASON_NAV_STALE = "navigation_command_stale"
 REASON_POSITION_STALE = "position_state_stale"
 REASON_INTENT_INACTIVE = "continuation_request_inactive"
 REASON_CONFLICT = "navigation_command_conflict"
+#: §2.2：取消命令目标身份不匹配（意图不存在/不是当前 registered/版本不一致）。
+REASON_CANCEL_TARGET_MISMATCH = "continuation_cancel_target_mismatch"
 
 _INITIATORS = ("user", "tool", "internal", "recovery")
 _IDENTITY_KINDS = ("request", "operation", "internal")
@@ -174,6 +177,10 @@ def param_digest(transition: "PositionTransition") -> str:
         "new_topic_name": transition.new_topic_name,
         "causal": dict(transition.causal or {}),
     }
+    # §2.2：只有目标版本真正参与执行语义时才计入摘要 —— None 表示旧调用方未携带目标版本，
+    # 必须保持旧库已存摘要不变（I05 不因新增字段误报冲突）。
+    if transition.pending_intent_version is not None:
+        payload["pending_intent_version"] = int(transition.pending_intent_version)
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
@@ -292,6 +299,8 @@ class PositionTransition:
     pending_fragment_id: str | None = None
     pending_request_id: str | None = None
     pending_intent_id: str | None = None
+    #: R17 §2.2：取消接续命令的目标意图版本（None=旧调用方/未携带；只在非 None 时计入摘要）。
+    pending_intent_version: int | None = None
     nav_decision: bool | None = None
     move_anchor: bool | None = None
     turn_id: str | None = None
@@ -715,6 +724,17 @@ class PositionStateService:
                 raise ValueError("pending=register 缺少 pending_fragment_id/target_fragment_id")
         if transition.pending in ("resolve", "consume") and not transition.pending_intent_id:
             raise ValueError(f"pending={transition.pending} 缺少 pending_intent_id")
+        # §2.2：目标版本参与取消命令身份；类型错误是调用方错误，不能静默忽略。
+        if transition.pending_intent_version is not None:
+            version = transition.pending_intent_version
+            if isinstance(version, bool) or not isinstance(version, int):
+                raise ValueError(
+                    f"pending_intent_version 必须是 int 或 None：{version!r}"
+                )
+            if transition.pending == "cancel" and not transition.pending_intent_id:
+                raise ValueError(
+                    "pending=cancel 携带 pending_intent_version 时必须同时提供 pending_intent_id"
+                )
         if kind == KIND_CREATE_TOPIC and transition.target_topic_id is None:
             if not str(transition.new_topic_name or "").strip():
                 raise ValueError("create_topic 需要 new_topic_name 或已建好的 target_topic_id")
@@ -752,6 +772,78 @@ class PositionStateService:
             position=position,
             result=result,
         )
+
+    def _cancel_target_rejection(
+        self,
+        transition: PositionTransition,
+        target: ContinuationIntent | None,
+        bindings: TurnBindingService,
+    ) -> CommandResult | None:
+        """§2.2 取消命令的目标身份校验（必须在事务内、任何位置写入之前调用）。
+
+        只有显式携带 `pending_intent_id` 的取消才校验目标；`pending_intent_id is None`
+        的旧调用方保持既有「取消当前 registered」行为（兼容路径，不在这里拒绝）。
+        返回 None = 目标就是当前唯一可取消的 registered 意图；否则返回拒绝结果
+        （零位置写入、零广播，由 apply 只在事务内补一行拒绝事实供重放）。
+        """
+        target_id = str(transition.pending_intent_id or "")
+        expected_version = transition.pending_intent_version
+        base_extra = {
+            "target_intent_id": target_id,
+            "target_intent_version": expected_version,
+        }
+        if target is None:
+            return self._reject(
+                transition,
+                status=STATUS_REJECTED,
+                code=REASON_CANCEL_TARGET_MISMATCH,
+                reason=f"取消目标接续意图不存在：{target_id}",
+                extra={
+                    **base_extra,
+                    "actual_intent_id": None,
+                    "actual_intent_version": None,
+                    "state": None,
+                },
+            )
+        base_extra.update(
+            {"actual_intent_id": target.intent_id, "actual_intent_version": target.version}
+        )
+        # 目标真实存在，但已被 replace/cancel/resolve/consume：既有失效语义（409 inactive）。
+        if target.state != INTENT_REGISTERED:
+            return self._reject(
+                transition,
+                status=STATUS_REJECTED,
+                code=REASON_INTENT_INACTIVE,
+                reason=f"接续意图已失效（{target.state}），不能取消：{target_id}",
+                extra={**base_extra, "state": target.state},
+            )
+        current = bindings.peek_intent()
+        if current is None or current.intent_id != target.intent_id:
+            # 防御：全局唯一 registered 不变量被破坏时不猜测「当前」是哪一条。
+            return self._reject(
+                transition,
+                status=STATUS_REJECTED,
+                code=REASON_CANCEL_TARGET_MISMATCH,
+                reason=f"取消目标不是当前 registered 接续意图：{target_id}",
+                extra={
+                    **base_extra,
+                    "actual_intent_id": current.intent_id if current is not None else None,
+                    "actual_intent_version": current.version if current is not None else None,
+                    "state": target.state,
+                },
+            )
+        if expected_version is not None and int(expected_version) != int(target.version):
+            return self._reject(
+                transition,
+                status=STATUS_REJECTED,
+                code=REASON_CANCEL_TARGET_MISMATCH,
+                reason=(
+                    f"取消目标版本不一致（请求 {int(expected_version)}，"
+                    f"当前 {int(target.version)}）：{target_id}"
+                ),
+                extra={**base_extra, "state": target.state},
+            )
+        return None
 
     def _insert_command(
         self,
@@ -938,20 +1030,30 @@ class PositionStateService:
                 bindings.cancel_intent(current_intent.intent_id)
                 pending_cleared_intent_id = current_intent.intent_id
         if transition.pending == "cancel":
-            intent = (
-                bindings.intent_by_id(transition.pending_intent_id)
-                if transition.pending_intent_id
-                else bindings.peek_intent()
-            )
+            if transition.pending_intent_id is None:
+                # 旧调用方兼容路径（§2.2）：未携带目标身份 = 取消当前 registered。
+                intent = bindings.peek_intent()
+            else:
+                # §2.2：显式目标必须在事务内先校验，且必须在任何位置写入之前拒绝。
+                target = bindings.intent_by_id(transition.pending_intent_id)
+                rejection = self._cancel_target_rejection(transition, target, bindings)
+                if rejection is not None:
+                    return rejection
+                intent = target
             if intent is not None and intent.state == INTENT_REGISTERED:
                 cancelled = bindings.cancel_intent(intent.intent_id)
                 pending_cleared_intent_id = cancelled.intent_id
                 pending_result = {
                     "cancelled": True,
                     "cancelled_intent_id": cancelled.intent_id,
+                    "intent_version": cancelled.version,
                 }
             else:
-                pending_result = {"cancelled": False, "cancelled_intent_id": None}
+                pending_result = {
+                    "cancelled": False,
+                    "cancelled_intent_id": None,
+                    "intent_version": None,
+                }
         elif transition.pending == "register":
             registration = bindings.register_intent_ex(
                 transition.pending_topic_id or target_topic,

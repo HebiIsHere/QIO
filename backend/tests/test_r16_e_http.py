@@ -199,13 +199,25 @@ def _navigate(
     return _post_anchor(client, body)
 
 
-def _cancel(client: TestClient, *, request_id: str | None = None, base_nav_version: int | None = None):
+def _cancel(
+    client: TestClient,
+    *,
+    request_id: str | None = None,
+    base_nav_version: int | None = None,
+    pending_intent_id: str | None = None,
+    pending_intent_version: int | None = None,
+):
     if base_nav_version is None:
         base_nav_version = int(_anchor(client)["nav_version"])
     body = {
         "request_id": request_id or _new_request_id("cancel"),
         "base_nav_version": base_nav_version,
     }
+    # R17 §2.2：取消必须明确关联目标选择（id 必填、版本可选）。
+    if pending_intent_id is not None:
+        body["pending_intent_id"] = pending_intent_id
+    if pending_intent_version is not None:
+        body["pending_intent_version"] = pending_intent_version
     return client.post("/api/anchor/continue/cancel", json=body)
 
 
@@ -575,9 +587,16 @@ def test_cancel_continuation_advances_pending_and_is_idempotent(backend):
     nav1 = picked.json()["nav_version"]
     pos1 = picked.json()["position_version"]
 
+    intent = ctx.bindings.peek_intent()
+    assert intent is not None, "登记成功后必须存在待落实接续（取消目标）"
     request_id = _new_request_id("cancel")
     events_before = len(_anchor_events(ctx))
-    cancelled = _cancel(client, request_id=request_id)
+    cancelled = _cancel(
+        client,
+        request_id=request_id,
+        pending_intent_id=intent.intent_id,
+        pending_intent_version=intent.version,
+    )
     assert cancelled.status_code == 200, cancelled.text
     body = cancelled.json()
     assert body["changed"] is True
@@ -589,17 +608,29 @@ def test_cancel_continuation_advances_pending_and_is_idempotent(backend):
     assert len(_anchor_events(ctx)) == events_before + 1, "pending 消失必须广播一次 ANCHOR"
 
     facts = _facts(ctx)
-    replay = _cancel(client, request_id=request_id)
+    replay = _cancel(
+        client,
+        request_id=request_id,
+        pending_intent_id=intent.intent_id,
+        pending_intent_version=intent.version,
+    )
     assert replay.status_code == 200, replay.text
     replay_body = replay.json()
     assert replay_body["replay"] is True and replay_body["changed"] is False
     assert _facts(ctx) == facts
     assert len(_anchor_events(ctx)) == events_before + 1
 
-    # 没有 pending 时的再次取消（新动作）：零变化，仍留命令行
-    again = _cancel(client)
-    assert again.status_code == 200, again.text
+    # 携带已失效目标的再次取消（新动作）：R17 §2.2 冻结为 409 inactive，
+    # 零变化，仍留一行拒绝事实（不再有无目标 no-op 200 旧路径）。
+    again = _cancel(
+        client,
+        pending_intent_id=intent.intent_id,
+        pending_intent_version=intent.version,
+    )
+    assert again.status_code == 409, again.text
     again_body = again.json()
+    assert again_body["ok"] is False and again_body["inactive"] is True
+    assert again_body["code"] == "continuation_request_inactive"
     assert again_body["changed"] is False and again_body["replay"] is False
     assert again_body["position"]["pending_intent_id"] is None
     after = _facts(ctx)

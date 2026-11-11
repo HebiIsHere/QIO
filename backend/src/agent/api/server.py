@@ -490,6 +490,25 @@ async def _run_manual_navigation(ctx, transition) -> JSONResponse:
     return _manual_navigation_response(ctx, command)
 
 
+def _submission_basis(ctx) -> dict:
+    """R17 §2.1 轮次受理依据快照（只读、受理这一刻一次性读取）。
+
+    「/api/turns」用它把提交瞬间的话题/片段/接续/两类版本交给 TurnManager：之后
+    排队与执行期间用户再导航，旧轮次不得用事后重读的「当前最新位置」回填依据
+    （I01/I08；basis 键集由 R17 契约冻结，缺省/None 表示旧调用方）。
+    """
+    position = _position_snapshot(ctx)
+    pending = ctx.bindings.peek_intent()
+    return {
+        "topic_id": position.get("topic_id"),
+        "fragment_id": position.get("fragment_id"),
+        "intent_id": pending.intent_id if pending is not None else None,
+        "intent_version": pending.version if pending is not None else None,
+        "nav_version": int(position.get("nav_version") or 0),
+        "position_version": int(position.get("position_version") or 0),
+    }
+
+
 def create_app(
     settings: Settings,
     conn: sqlite3.Connection,
@@ -2553,7 +2572,12 @@ def create_app(
 
     @app.post("/api/anchor/continue/cancel")
     async def cancel_continuation(body: dict | None = None) -> dict:
-        """取消待落实接续（契约 §5/§14.2）：命令身份 request:<id> + 依据版本。"""
+        """取消待落实接续（契约 §5/§14.2 + R17 §2.2）：命令身份 + 依据 + 取消目标。
+
+        取消必须明确关联目标选择（pending_intent_id 必填，+可选版本）：服务端绝不
+        隐式取消「请求到达时刚好存在」的更新接续；目标不存在/已失效/版本不一致由
+        统一入口在事务内先校验、零副作用拒绝（409）。
+        """
         from agent.services.position_state import NavCommandIdentity, PositionTransition
 
         body = body if isinstance(body, dict) else {}
@@ -2563,6 +2587,23 @@ def create_app(
         base_nav_version = body.get("base_nav_version")
         if isinstance(base_nav_version, bool) or not isinstance(base_nav_version, int):
             return _nav_request_error(ctx, 400, "navigation_basis_required")
+        raw_target = body.get("pending_intent_id")
+        if raw_target is None or (
+            isinstance(raw_target, str) and not raw_target.strip()
+        ):
+            return _nav_request_error(ctx, 400, "continuation_cancel_target_required")
+        if not isinstance(raw_target, str):
+            return _nav_request_error(ctx, 400, "continuation_cancel_target_invalid")
+        raw_target_version = body.get("pending_intent_version")
+        target_intent_version: int | None = None
+        if raw_target_version is not None:
+            if isinstance(raw_target_version, bool) or not isinstance(
+                raw_target_version, int
+            ):
+                return _nav_request_error(
+                    ctx, 400, "continuation_cancel_target_invalid"
+                )
+            target_intent_version = int(raw_target_version)
         transition = PositionTransition(
             kind="cancel_continuation",
             source="manual.cancel_continuation",
@@ -2570,6 +2611,8 @@ def create_app(
             initiator="user",
             base_nav_version=base_nav_version,
             pending="cancel",
+            pending_intent_id=raw_target.strip(),
+            pending_intent_version=target_intent_version,
             result_extra={"origin": "manual"},
         )
         return await _run_manual_navigation(ctx, transition)
@@ -2639,7 +2682,9 @@ def create_app(
                     "bound_attachment_ids": list(facts["attachment_ids"]),
                     "receipt": facts,
                 }
-        pending = ctx.bindings.peek_intent()
+        # R17 §2.1（冻结接缝）：受理这一刻冻结完整依据快照并交给 TurnManager；A 的
+        # reserve(basis=...) 记录后按受理依据链做 CAS，旧排队轮次不得用最新位置回填。
+        basis = _submission_basis(ctx)
         # 附件（契约 §1.4）：attachment_ids 的**存在性**即语义 ——
         # 字段出现（含空列表）= 显式，只绑列出的这些，[] 表示这一轮没有附件；
         # 字段缺失才走旧客户端兜底（把本话题下还没绑定任何轮次的附件绑上来）。
@@ -2673,11 +2718,13 @@ def create_app(
             turn = ctx.turns.reserve(
                 message,
                 topic_id,
-                intent_id=pending.intent_id if pending else None,
+                intent_id=basis["intent_id"],
                 prepare_id=prepare_id,
                 # 契约 5：预留也要绑定请求身份 —— 同一个 client_request_id 重试
                 # 必须命中同一轮（幂等受理），绝不产生第二条 turn。
                 request_id=request_id,
+                # R17 §2.1：受理之前的依据快照（冻结签名；旧调用方不传）。
+                basis=basis,
             )
         except TurnAcceptError:
             # 契约 C2：台账写不进去 = 这条消息**没有被接受**。绝不能返回 200：
