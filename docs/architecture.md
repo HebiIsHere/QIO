@@ -1095,3 +1095,34 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 - 边界：R16 既有「边界分段被拒时片段封存在 CAS 之前」结构未改（位置写入本身零副作用）；工具导航依据
   捕获来自本回合命令结果行而非当前位置；外部模型调用不保证严格 exactly-once。详见
   `docs/topic-unify-r17-contract-20261111.md` 与 `docs/topic-unify-r17-20261111.md`。
+
+### 22.10 R18 复核补修（2026-11-11 · 第七轮）
+
+补修 `2384a0af` 复核确认的两个剩余缺口（R17 交付记录 §7 已列明的已知边界）；I01—I14、完整位置状态、
+两类版本、统一入口、命令身份、共享暂存与写入权规则全部沿用，不新增第二套权威。
+
+- **互动板提交的受理依据（P1）**：互动板提交生产入口
+  `POST /api/interactive/boards/{board_id}/submissions` 的受理在 `interactive_store.submit` 内的
+  `accept_turn` 完成。此前它只用 `ctx.current_topic()` 调 `TurnManager.submit`、**不传依据**，排队期间
+  用户手动导航后旧轮 `begin` 的轮首补锚会临时读实时 `position_version` 做 CAS，把权威位置改回受理话题并
+  广播 ANCHOR。修复：受理快照读取提取为共享只读入口
+  `backend/src/agent/services/turn_basis.py::submission_basis(ctx)`（`topic_id/fragment_id/
+  intent_id/intent_version/nav_version/position_version`），`/api/turns`、`/api/turns/{id}/resend`
+  与互动板提交共用同一来源；`accept_turn` 在受理这一刻只读一次快照，轮次原话题与 `turn.board_topic_id`
+  都取快照 topic，`ctx.turns.submit(..., basis=basis)`（`intent_id` 仍不传，互动板提交不是落实接续）。
+  之后排队轮的位置写入沿用 R17 依据链 CAS：失效时轮首补锚/轮末推进被拒（trace `begin_anchor_superseded`、
+  `position_basis_superseded`），零位置副作用零广播；用户消息与正式回答仍按受理归属写入原话题/片段。
+- **普通回答保存失败后的可重试恢复（P2）**：`topic_recovery.save_normal_answer` 生成成功但保存失败时，
+  此前只写 `topic_answer_runs` 共享暂存，不建恢复记录，既有「重试回答」入口形同虚设。修复：失败路径在
+  **同一事务**内 (a) 写共享暂存唯一权威（`staged_answer/staged_at/staged_model`、`phase=staged`、
+  `status=pending`、释放 owner/租约）与 (b) upsert 一条 `topic_recovery_records` pending 记录
+  （`failed_stage="answer"`、turn/topic/user_message/fragment 如实、`answer_key` 与暂存同源、
+  `recovery_nav_version` 取失败时刻真实导航版本、可读脱敏说明）。同一 `answer_key` 已有 pending 记录时
+  复用其 `record_id`（不产生多条）；已 answered 不复活；另一活跃执行者持有写入权/已 answered/执行权表
+  不可用时不覆盖别人、不建记录、仍抛原异常；两部分任一步失败整体回滚，异常不掩盖原异常。未改 schema、
+  未改路由/清单协议、未改冻结签名；既有执行权与共享暂存语义不变，`retry-answer` 命中暂存后只补存、
+  不调模型、不重复写原问题，成功后同事务收口为 answered。
+- 边界：`start_interactive_turn`（意图确认/续作/启动恢复）、`app.run_turn`、notify 轮保持 `basis=None`
+  （R17 §7 已知边界继续保留）；外部模型调用不保证严格 exactly-once。详见
+  `docs/topic-unify-r18-contract-20261111.md` 与 `docs/topic-unify-r18-20261111.md`。
+
