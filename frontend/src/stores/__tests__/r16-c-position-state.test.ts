@@ -139,7 +139,10 @@ function positionOf(session: Session) {
 }
 
 function pendingOf(session: Session) {
-  return session.pendingContinuation;
+  // R17-C：本地载荷新增 intentVersion（取消命令的目标身份）。旧用例按原来的
+  // 「提示文案可见事实」比较；新字段由 r17-c-cancel-position.test.ts 专项断言。
+  const pending = session.pendingContinuation;
+  return pending ? { intentId: pending.intentId, sourceTitle: pending.sourceTitle } : null;
 }
 
 function factsOf(session: Session): Record<string, unknown> | null {
@@ -940,21 +943,28 @@ describe("R16-C · 手动导航：显式身份 + 单飞串行（§14.2）", () =
     expect(api.getRuntimeState).toHaveBeenCalledTimes(1);
   });
 
-  it("取消旧接续选择也带显式身份与 base_nav_version", async () => {
+  it("取消旧接续选择也带显式身份、目标与 base_nav_version", async () => {
     const { session } = setup();
     accept(session, wire({ nav_version: 5, position_version: 5 }));
     session.setPendingContinuation({ intentId: "intent-a", sourceTitle: "历史片段 A" });
     vi.mocked(api.cancelContinuation).mockClear();
 
-    const ok = await session.cancelPendingContinuation();
-    expect(ok).toBe(true);
+    const result = await session.cancelPendingContinuation();
+    expect(result.ok).toBe(true);
+    expect(result.commandSucceeded).toBe(true);
+    expect(result.stateAdopted).toBe(true);
     expect(api.cancelContinuation).toHaveBeenCalledTimes(1);
     const options = vi.mocked(api.cancelContinuation).mock.calls[0][0] as {
       requestId: string;
       baseNavVersion: number;
+      pendingIntentId: string;
+      pendingIntentVersion: number | null;
     };
     expect(options.baseNavVersion).toBe(5);
     expect(typeof options.requestId).toBe("string");
+    // R17-C（契约 §2.2）：取消命令必须标明目标意图。
+    expect(options.pendingIntentId).toBe("intent-a");
+    expect(options.pendingIntentVersion).toBeNull();
     expect(session.pendingContinuation).toBeNull();
   });
 });
@@ -978,7 +988,12 @@ describe("R16-C · api 写请求携带 request_id / base_nav_version（§14.2）
       requestId: "req-continue-1",
       baseNavVersion: 8,
     });
-    await actual.api.cancelContinuation({ requestId: "req-cancel-1", baseNavVersion: 9 });
+    await actual.api.cancelContinuation({
+      requestId: "req-cancel-1",
+      baseNavVersion: 9,
+      pendingIntentId: "intent-c1",
+      pendingIntentVersion: 3,
+    });
 
     expect(calls).toHaveLength(3);
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
@@ -997,6 +1012,9 @@ describe("R16-C · api 写请求携带 request_id / base_nav_version（§14.2）
     expect(JSON.parse(String(calls[2].init.body))).toMatchObject({
       request_id: "req-cancel-1",
       base_nav_version: 9,
+      // R17-C（契约 §2.2）：取消命令携带目标意图身份。
+      pending_intent_id: "intent-c1",
+      pending_intent_version: 3,
     });
   });
 });

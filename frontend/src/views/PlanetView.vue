@@ -1344,16 +1344,16 @@ async function continueFrom(payload: { topicId: string; fragmentId: string | nul
      * * 成功响应里的 position 由 acceptPositionState 整份接受（本页不再
      *   setAnchor/setAnchorAndSync 直接改业务导航）。
      *
-     * 落到「某话题的最新位置 / 当前开放片段」时，旧的未落实接续选择先原子取消；
-     * 选中历史片段时由后端登记时替换旧意图，不需要前端先取消。
+     * R17-C（契约 §2.4）：一次点击只发**一个**导航命令 ——
+     * 「进入话题最新位置」= enter_topic（fragment=null），
+     * 「返回当前开放片段 / 选择历史片段」= continue_from_history + 该片段；
+     * 不再先发独立的取消命令（后端在同一事务里清理不再适用的旧 registered 接续）。
      * 只浏览不经过这里，所以浏览不会取消用户已经做出的接续选择。
      */
-    const opensCurrentPosition = !fragmentId || !payload.historic;
     const result = await session.manualNavigation({
       kind: fragmentId ? "continue_from_history" : "enter_topic",
       topicId,
       fragmentId,
-      cancelPending: opensCurrentPosition,
       historic: payload.historic,
     });
     if (!result.ok) {

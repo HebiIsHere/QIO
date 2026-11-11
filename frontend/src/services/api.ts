@@ -773,6 +773,18 @@ export interface NavigationRequestOptions {
 }
 
 /**
+ * R17-C（契约 §2.2）：取消接续命令的请求依据。
+ *
+ * 取消是**有目标**的命令：只允许取消 `pendingIntentId` 指向的那一次 registered 选择；
+ * 服务端据此拒绝「取消 A 的请求恰好取消了后来的 B」。版本可选（本地未知时为 null），
+ * 给了就必须与服务端 registered 意图版本一致。
+ */
+export interface CancelContinuationRequestOptions extends NavigationRequestOptions {
+  pendingIntentId: string;
+  pendingIntentVersion: number | null;
+}
+
+/**
  * R16（契约 §3.1）：完整位置状态 wire（snake_case）。
  *
  * 事件、runtime 快照、导航 HTTP 结果使用同一份形状；前端只经
@@ -823,6 +835,17 @@ export interface NavigationCommandResponse {
 /** R16：把显式身份写进请求体（两者都是冻结必填字段，见契约 §14.2/§14.8）。 */
 function navigationRequestFields(options: NavigationRequestOptions): Record<string, unknown> {
   return { request_id: options.requestId, base_nav_version: options.baseNavVersion };
+}
+
+/** R17-C（契约 §2.2）：取消命令额外携带目标意图身份（pending_intent_id 必填）。 */
+function cancelContinuationRequestFields(
+  options: CancelContinuationRequestOptions,
+): Record<string, unknown> {
+  return {
+    ...navigationRequestFields(options),
+    pending_intent_id: options.pendingIntentId,
+    pending_intent_version: options.pendingIntentVersion,
+  };
 }
 
 export const api = {
@@ -1412,12 +1435,17 @@ export const api = {
         ...navigationRequestFields(options),
       }),
     }),
-  /** 取消「下一条消息从这段历史继续」的登记（不发消息就不留痕迹）。 */
-  cancelContinuation: (options: NavigationRequestOptions) =>
+  /**
+   * 取消「下一条消息从这段历史继续」的登记（不发消息就不留痕迹）。
+   *
+   * R17-C（契约 §2.2）：取消是带目标的命令 —— 请求体必须带 pending_intent_id
+   * （以及已知时的 pending_intent_version），服务端只允许取消这个目标。
+   */
+  cancelContinuation: (options: CancelContinuationRequestOptions) =>
     request<NavigationCommandResponse>("/api/anchor/continue/cancel", {
       method: "POST",
       body: JSON.stringify({
-        ...navigationRequestFields(options),
+        ...cancelContinuationRequestFields(options),
       }),
     }),
   /**

@@ -63,9 +63,9 @@ describe("历史 A → 明确进入 B 最新位置", () => {
     session.setPendingContinuation(HISTORY_A);
     expect(session.pendingContinuation).not.toBeNull();
 
-    // 用户点「进入 B（最新位置）」：明确改变起点 → 先取消旧登记
-    const cancelled = await session.cancelPendingContinuation();
-    expect(cancelled).toBe(true);
+    // R17-C：用户单独点击取消旧登记（明确改变起点已改为一个原子导航命令）
+    const result = await session.cancelPendingContinuation();
+    expect(result.ok).toBe(true);
     expect(cancelContinuation).toHaveBeenCalledTimes(1);
     expect(session.pendingContinuation).toBeNull(); // 界面提示与后台状态同步
 
@@ -86,17 +86,19 @@ describe("历史 A → 明确进入 B 最新位置", () => {
     session.setPendingContinuation(HISTORY_A);
     cancelContinuation.mockRejectedValueOnce(new Error("POST /api/anchor/continue/cancel -> 500"));
 
-    const cancelled = await session.cancelPendingContinuation();
+    const result = await session.cancelPendingContinuation();
 
-    expect(cancelled).toBe(false);
-    expect(session.pendingContinuation).toEqual(HISTORY_A); // 没被清掉
+    expect(result.ok).toBe(false);
+    expect(result.commandSucceeded).toBe(false);
+    expect(session.pendingContinuation).toMatchObject(HISTORY_A); // 没被清掉
     expect(session.lastError).toContain("没能取消");
     expect(session.currentTopicId).toBe("A");
   });
 
   it("没有登记时取消是 no-op：不产生任何请求", async () => {
     const { session } = setup();
-    expect(await session.cancelPendingContinuation()).toBe(true);
+    const result = await session.cancelPendingContinuation();
+    expect(result.ok).toBe(true);
     expect(cancelContinuation).not.toHaveBeenCalled();
   });
 });
@@ -119,7 +121,10 @@ describe("只浏览不取消选择", () => {
       },
     });
 
-    expect(session.pendingContinuation).toEqual({ intentId: "intent_A", sourceTitle: "历史片段 A" });
+    expect(session.pendingContinuation).toMatchObject({
+      intentId: "intent_A",
+      sourceTitle: "历史片段 A",
+    });
     expect(cancelContinuation).not.toHaveBeenCalled();
   });
 

@@ -97,7 +97,11 @@ function positionOf(session: Session) {
 }
 
 function pendingOf(session: Session) {
-  return session.pendingContinuation;
+  // R17-C（Lead 授权的最小冻结接口适配）：本地载荷新增 intentVersion（取消命令的
+  // 目标身份）。旧用例按原来的「提示文案可见事实」比较；新字段由
+  // r17-c-cancel-position.test.ts 专项断言。
+  const pending = session.pendingContinuation;
+  return pending ? { intentId: pending.intentId, sourceTitle: pending.sourceTitle } : null;
 }
 
 function factsOf(session: Session) {
