@@ -231,6 +231,9 @@ class SwitchTopicTool(Tool):
         from agent.services.position_state import PositionStateService, PositionTransition
 
         try:
+            from agent.services.navigation import relate_topics
+
+            previous = AnchorService(self.conn).get_active()
             target_fragment = AnchorService(self.conn).position_fragment(topic_id)
             transition = PositionTransition(
                 kind="enter_topic",
@@ -266,6 +269,15 @@ class SwitchTopicTool(Tool):
             return failure
         # 本轮是模型自己换的话题：整轮归属跟着走（用户导航不会走到这里）。
         note_tool_navigation(topic_id)
+        # R16 回归修复（全量批次失败项）：工具真实切换/新建成功后恢复既有
+        # 「切换话题会建立 related 边」的派生事实（与 TopicNavigationService 包装一致；
+        # 位置权威仍是统一入口，这条边只是话题关系证据，不是位置写入）。
+        if (
+            previous is not None
+            and previous.topic_id
+            and previous.topic_id != topic_id
+        ):
+            relate_topics(self.conn, previous.topic_id, topic_id)
         facts = _command_success_facts(
             result,
             operation_id=str(operation.operation_id),
@@ -625,6 +637,7 @@ class CreateTopicTool(Tool):
         """R16（契约 §4/§5）：create_topic 经统一入口，身份 = operation:<opID>:<pv>。"""
         from agent.services.position_state import PositionStateService, PositionTransition
 
+        previous = AnchorService(self.conn).get_active()
         try:
             result = PositionStateService(self.conn).apply(
                 PositionTransition(
@@ -662,6 +675,14 @@ class CreateTopicTool(Tool):
         stored = dict(result.result or {})
         topic_id = stored.get("new_topic_id") or stored.get("topic_id") or result.position.get("topic_id")
         note_tool_navigation(str(topic_id))
+        if (
+            previous is not None
+            and previous.topic_id
+            and previous.topic_id != str(topic_id)
+        ):
+            from agent.services.navigation import relate_topics
+
+            relate_topics(self.conn, previous.topic_id, str(topic_id))
         facts = _command_success_facts(
             result,
             topic_id=str(topic_id),

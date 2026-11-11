@@ -497,16 +497,16 @@ async def test_mid_assembly_continuation_reselection_is_stale(tmp_path, monkeypa
     # 用户新选择仍在（改选后的接续意图，未被旧操作消费）。
     pending = app.bindings.peek_intent()
     assert pending is not None and pending.source_fragment_id == hist2
-    # 版本分三次真实推进：装配前登记接续（+1）、begin 落实接续（+1）、
-    # 装配期间改选接续（+1）；旧操作没有推进。
-    user_version = version_before + 3
+    # R16 冻结语义：登记接续是真实导航决定（+1），begin 落实接续是机械落实（navigation
+    # 决定版本不推进），装配期间改选接续是新的用户选择（+1）；旧操作没有推进。
+    user_version = version_before + 2
     assert navigation_version.current(app.conn) == user_version
     # 回答落在 begin 落实的原绑定片段里。
     rows = _turn_messages(app, ctx.turn_id)
     assert [row["fragment_id"] for row in rows if row["role"] == "user"] == [applied_fragment]
     assert [row["fragment_id"] for row in rows if row["role"] == "assistant"] == [applied_fragment]
     # 快照：装配前（begin 落实接续之后）的版本与意图；复核 superseded。
-    assert getattr(ctx, "decision_nav_version", None) == version_before + 2
+    assert getattr(ctx, "decision_nav_version", None) == version_before + 1
     assert getattr(ctx, "decision_intent_id", None) == first_registration["intent_id"]
     assert getattr(ctx, "decision_intent_version", None) == first_registration["intent_version"]
     assert getattr(ctx, "decision_basis_state", None) == "superseded"
@@ -631,12 +631,13 @@ async def test_snapshot_precedes_assembly_and_records_real_fields(tmp_path, monk
     assert "snapshot" in order and "build_context_enter" in order
     assert order.index("snapshot") < order.index("build_context_enter")
     assert order.index("build_context_exit") < order.index("verify")
-    # 2) 快照位置字段：begin 落实接续后的真实绑定（版本 = 登记 +1、落实 +1）。
+    # 2) 快照位置字段：begin 落实接续后的真实绑定（版本 = 登记 +1；R16 冻结语义下
+    #    机械落实接续不再被算作用户的新导航决定，nav_version 不因落实再 +1）。
     snapshot = captured["snapshot_fields"]
     assert snapshot["turn_id"] == ctx.turn_id
     assert snapshot["topic_id"] == topic_a
     assert snapshot["fragment_id"] == ctx.bound_fragment_id
-    assert snapshot["nav_version"] == version_before + 2
+    assert snapshot["nav_version"] == version_before + 1
     assert snapshot["intent_id"] == registration["intent_id"]
     assert snapshot["intent_version"] == registration["intent_version"]
     assert snapshot["queued"] is False
@@ -645,7 +646,7 @@ async def test_snapshot_precedes_assembly_and_records_real_fields(tmp_path, monk
     assert ctx.decision_user_message_id == ctx.user_message_id
     assert ctx.decision_user_message_id is not None
     # 3) 位置快照没有被装配完成后的当前值改写。
-    assert ctx.decision_nav_version == version_before + 2
+    assert ctx.decision_nav_version == version_before + 1
     assert ctx.decision_topic_id == topic_a
     assert ctx.decision_fragment_id == ctx.bound_fragment_id
     assert ctx.decision_basis_state == "fresh"
