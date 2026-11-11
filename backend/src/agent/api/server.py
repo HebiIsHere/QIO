@@ -3104,15 +3104,20 @@ def create_app(
         )
         if precheck:
             raise _attachment_failure(precheck)
-        pending = ctx.bindings.peek_intent()
+        # R17 §2.1（P1-1 同路径）：重发也是一条真实受理 —— 它会跑 begin 的轮首补锚、
+        # 内部片段落位与轮末推进。必须在受理这一刻冻结依据快照并交给 TurnManager；
+        # 否则排队/准备期间用户手动导航后，重发轮 begin 会以实时 position_version
+        # 做 CAS 把位置改回原轮话题并广播 ANCHOR（与 /api/turns 同一缺陷路径）。
+        basis = _submission_basis(ctx)
         # R6 §1.1：先预留 + 准备，**claim 只在准备成功之后才消费** ——
         # 准备失败（附件没就绪 / 客户端断开）不能把这条「未执行」记录永久消耗掉。
         prepare_id = _prepare_id(request)
         turn = ctx.turns.reserve(
             record["message"],
             record["topic_id"],
-            intent_id=pending.intent_id if pending else None,
+            intent_id=basis["intent_id"],
             prepare_id=prepare_id,
+            basis=basis,
         )
         #: 同 /api/turns：绑定内部 await 文件 I/O 期间的取消，只有同步判据看得见。
         cancel_evidence: list = []
