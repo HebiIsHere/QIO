@@ -1056,3 +1056,42 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 - 界面实际核对按本轮能力如实记录；外部模型 exactly-once 边界如 §22.6；
 - 本轮未合并 main、未打标签、未发布、未改变生产更新源；详细证据与唯一全量批次/唯一 CI 身份见
   `docs/topic-unify-20261111.md` 与本地台账。
+
+### 22.9 R17 复核补修（2026-11-11 · 补修轮）
+
+补修 `929e8d7c` 复核发现的四项问题并修正双连接测试等待顺序；I01—I14、完整位置状态、两类版本、
+统一入口、命令身份、共享暂存与写入权规则全部沿用，不新增第二套权威。
+
+- **轮次受理依据链（P1-1）**：`TurnManager.submit/reserve` 新增 keyword-only `basis`（受理那一刻的
+  topic/fragment/接续/两类版本），`TurnContext` 冻结 `submit_basis_*` 与 CAS 链
+  `position_basis_version`。轮首补锚、内部片段落位、轮末 `advance_anchor`、边界/容量分段全部以依据链
+  作 `expected_position_version`，不再临时读 `current_position_version()` 洗白旧动作；排队期间用户真实的
+  新导航使旧轮内部写入被 CAS 拒绝（trace 记录、零位置副作用零广播），回答仍按受理归属写回原话题/片段。
+  本回合自己的工具导航/已获批准操作按 `navigation_commands` 中本回合的 applied operation 命令结果做
+  因果更新；正常无干扰轮次的补锚/自动分段/轮末推进行为不变。生产受理入口 `/api/turns` 与
+  `/api/turns/{turn_id}/resend`（未执行消息重发）都必须在受理那一刻冻结同一份依据快照；
+  `interactive_store.submit`、`app.run_turn`、启动恢复等 internal/旧路径保持 basis=None（契约允许）。
+- **取消接续的目标身份（P1-2 后端）**：`/api/anchor/continue/cancel` 必填 `pending_intent_id`（+可选
+  `pending_intent_version`）；`PositionTransition.pending_intent_version` 仅在非 None 时计入
+  `param_digest`（旧库摘要不漂移）；统一入口在事务内、任何位置写入之前校验目标，不存在/版本不一致
+  409 `continuation_cancel_target_mismatch`、已失效 409 `continuation_request_inactive`，均零位置写入零广播。
+  取消 A 的请求不会隐式取消当时刚好存在的 B。
+- **前端取消响应整份接受（P1-2 前端）**：`cancelPendingContinuation()` 返回
+  `{ok, commandSucceeded, stateAdopted, code, error}`；所有带 position 的取消响应先经
+  `acceptPositionState(position, "command")`，只有整份接受才更新位置/历史/接续提示，拒绝时零部分修改并触发
+  既有权威恢复；删除校验前直接清空 `pendingContinuation` 的写入。正常取消仍清理提示。
+- **一次点击一次导航（P2-3）**：「返回当前开放片段 / 进入话题最新位置」只发一个 `/api/anchor`；前端删除
+  `ManualNavigationInput.cancelPending` 与独立取消步骤，后端同一 apply 事务内校验身份/依据、落位并清理
+  不再适用的 registered 接续，失败整份回滚（原位置+原接续保留），重放零落位零广播。
+- **普通正式回答统一答案身份（P2-4）**：`topic_recovery.save_normal_answer` 与恢复入口共用
+  `answer_key_for(turn_id, user_message_id)`；正式保存事务内先复用既有唯一答案（返回原 answer_id），
+  否则按普通回答原有语义写一条 assistant 消息（片段由轮次绑定解析、content_type/model/raw/原轮次保留，
+  带 answer_key），并同事务收口同 answer_key 的 pending 恢复记录与执行行；保存失败先写共享暂存
+  （run 行 staged_*）再抛原异常，任意同 key 恢复记录之后只补存不调模型。旧库 answer_key 为空的历史答案
+  只在满足同轮/同原用户消息/同片段同话题/该轮恰好一条正式候选/无其它带 key 答案等必要条件时关联并
+  同事务补写，歧义不猜；无需新增迁移。
+- **双连接测试等待顺序**：`test_two_connections_same_answer_key_single_executor` 改用共享「任一执行者
+  进入」事件、try/finally 释放执行者，并分别确定性地控制 A/B 获胜顺序；保留原验收断言。
+- 边界：R16 既有「边界分段被拒时片段封存在 CAS 之前」结构未改（位置写入本身零副作用）；工具导航依据
+  捕获来自本回合命令结果行而非当前位置；外部模型调用不保证严格 exactly-once。详见
+  `docs/topic-unify-r17-contract-20261111.md` 与 `docs/topic-unify-r17-20261111.md`。
