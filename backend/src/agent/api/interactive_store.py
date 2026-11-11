@@ -381,6 +381,24 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
                 exc_info=True,
             )
         if basis is not None:
+            # R19 §2.1（P1）：受理快照里没有 topic（受理这一刻还没有当前位置）时，
+            # 按既有兜底语义（AppContext.current_topic：无 active Anchor 时取默认
+            # 话题、必要时创建默认话题节点）解析一次，并写回**同一份**依据快照。
+            # 这是只读解析：不 enter_topic、不写 Anchor/cursor、不推进任何版本。
+            # 不这样做的话，begin 会退到实时的 app.current_topic() —— 排队/准备期间
+            # 用户导航到 B 后，本轮就被错误归到 B（R19 复现的缺陷）。
+            if not basis.get("topic_id"):
+                try:
+                    default_topic = str(ctx.current_topic() or "").strip()
+                except Exception as exc:  # noqa: BLE001 - 解析失败如实告警，不伪造话题
+                    logger.warning(
+                        "互动提交受理默认话题解析失败（本轮按旧路径降级，不伪造话题）：%s",
+                        exc,
+                        exc_info=True,
+                    )
+                else:
+                    if default_topic:
+                        basis["topic_id"] = default_topic
             # 轮次原话题与 turn.board_topic_id 取**同一份**受理快照，不再单独读
             # ctx.current_topic() 造成两次读、两套事实。
             turn_topic = basis.get("topic_id") or None
