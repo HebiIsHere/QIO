@@ -481,6 +481,15 @@ export const useEventStore = defineStore("events", {
           );
           break;
         }
+        case "RECOVERY_INBOX_CHANGED": {
+          /**
+           * R19-B：普通回答保存失败后，后端已在**已提交事务**里写好 pending 恢复
+           * 记录并发来这条通知。事件不是清单权威 —— 复用既有收件箱读取刷新，
+           * 权威仍是 GET /api/recovery/records；重复 / 重放事件幂等（最多多拉一次）。
+           */
+          session.requestRecoveryInboxRefresh();
+          break;
+        }
         case "CAPABILITY": {
           // 后端协议用 data.adapter 传三态模式（见 backend/tests/test_events.py），mode 作兜底
           const d = event.data as Record<string, unknown>;
