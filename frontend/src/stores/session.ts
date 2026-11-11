@@ -973,9 +973,36 @@ export interface ManualNavigationInput {
   kind: "enter_topic" | "continue_from_history";
   topicId: string;
   fragmentId?: string | null;
-  /** 进入话题最新位置 / 当前开放片段之前，先原子取消旧的未落实接续选择。 */
-  cancelPending?: boolean;
   historic?: boolean;
+}
+
+/**
+ * R17-C（契约 §2.3）：本地「已登记、尚未落实」的接续选择。
+ *
+ * `intentVersion` 是取消命令的目标版本（后端 pending_intent_version）；
+ * 类型上保持可选只是为兼容旧测试里的直接赋值（运行时内部写入点一律显式给出
+ * `number | null`，读取方用 `?? null` 归一）。
+ */
+export interface PendingContinuation {
+  intentId: string;
+  sourceTitle: string | null;
+  intentVersion?: number | null;
+}
+
+/**
+ * R17-C（契约 §2.3）：取消接续命令的冻结结果。
+ *
+ * * `ok` = `commandSucceeded && stateAdopted`（兼容旧调用方的布尔语义）；
+ * * `commandSucceeded` = 服务端命令是否成功（含重放）；
+ * * `stateAdopted` = 响应所带 position 是否被 acceptPositionState 整份接受；
+ * * `code` / `error` = 结构化拒绝码 / 可读原因（成功为 null）。
+ */
+export interface CancelContinuationResult {
+  ok: boolean;
+  commandSucceeded: boolean;
+  stateAdopted: boolean;
+  code: string | null;
+  error: string | null;
 }
 
 /** R16：手动导航的冻结结果（不伪造成功；失败带结构化 code 与可读原因）。 */
@@ -1234,6 +1261,19 @@ function newNavigationRequestId(): string {
   const cryptoApi = globalThis.crypto as { randomUUID?: () => string } | undefined;
   if (cryptoApi && typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
   return `nav-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * R17-C（契约 §2.3）：从取消命令的响应/失败体里取整份 position wire。
+ *
+ * 只有响应真的带了 position 才进入唯一接受入口；没有 position 只允许旧后端
+ * （兼容路径见 session.cancelPendingContinuation 内注释）。
+ */
+function cancelResponsePosition(source: unknown): Record<string, unknown> | null {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const raw = (source as Record<string, unknown>).position;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
 }
 
 /**
@@ -2339,7 +2379,7 @@ const sessionStoreDefinition = defineStore("session", {
      * 已登记、尚未落实的接续选择（后端 continuation_intents 的 registered 态）。
      * 有它时输入区要说明「下一条消息将从这段历史继续」；发出去（或取消）之后消失。
      */
-    pendingContinuation: null as { intentId: string; sourceTitle: string | null } | null,
+    pendingContinuation: null as PendingContinuation | null,
     /**
      * 输入草稿。放在 store 而不是 Composer 局部状态：
      * 打开设置/星球会让对话页组件卸载重建，局部状态会随之丢失。
@@ -2608,10 +2648,15 @@ const sessionStoreDefinition = defineStore("session", {
       requestId: string;
       baseNavVersion: number;
     } | null,
-    /** R16：取消接续选择的网络重试身份（失败后重试复用同一 request_id 与 base）。 */
+    /**
+     * R16/R17：取消接续选择的网络重试身份（失败后重试复用同一 request_id 与 base）。
+     * `targetKey` 记录这次命令的目标意图（id + 版本）：目标在飞行期间被替换时必须换新身份，
+     * 否则重试会把新目标套在旧 request_id 上（同身份不同参数 = 服务端 409 冲突）。
+     */
     _cancelContinuationRetry: null as {
       requestId: string;
       baseNavVersion: number;
+      targetKey: string;
     } | null,
     /**
      * R2：已知被拒绝 / 失效 / 被新导航替代的话题操作 id（有界，幂等登记）。
@@ -3961,7 +4006,13 @@ const sessionStoreDefinition = defineStore("session", {
           facts.navVersion > snapshotVersion,
       );
       this.setPendingContinuation(
-        pendingIntentId ? { intentId: pendingIntentId, sourceTitle: pendingSourceTitle } : null,
+        pendingIntentId
+          ? {
+              intentId: pendingIntentId,
+              sourceTitle: pendingSourceTitle,
+              intentVersion: pendingIntentVersion,
+            }
+          : null,
       );
       if (localNewer && facts) {
         if (instance && facts.instanceId !== instance) {
@@ -4137,7 +4188,13 @@ const sessionStoreDefinition = defineStore("session", {
         source: "anchor",
       };
       this.setPendingContinuation(
-        pendingIntentId ? { intentId: pendingIntentId, sourceTitle: pendingSourceTitle } : null,
+        pendingIntentId
+          ? {
+              intentId: pendingIntentId,
+              sourceTitle: pendingSourceTitle,
+              intentVersion: pendingIntentVersion,
+            }
+          : null,
       );
       const migrated = this.applyAuthoritativeTopicAnchor({
         origin: record.origin,
@@ -4374,7 +4431,11 @@ const sessionStoreDefinition = defineStore("session", {
       );
       this.setPendingContinuation(
         state.pendingIntentId
-          ? { intentId: state.pendingIntentId, sourceTitle: state.pendingSourceTitle }
+          ? {
+              intentId: state.pendingIntentId,
+              sourceTitle: state.pendingSourceTitle,
+              intentVersion: state.pendingIntentVersion,
+            }
           : null,
       );
       this._consumeDraftFollowForPositionState(state, source);
@@ -4522,6 +4583,10 @@ const sessionStoreDefinition = defineStore("session", {
      * * 每次真实用户动作生成新 request_id；网络失败重试同一动作复用同一 id + base；
      * * 成功响应里的 `position` 走 acceptPositionState（业务代码不再自己 setAnchor）；
      * * 400/409 结构化失败如实返回（不伪造成功），409 触发权威恢复。
+     *
+     * R17-C（契约 §2.4）：一次点击只发**一个** /api/anchor。「进入话题最新位置 /
+     * 返回当前开放片段」不再先发独立的取消命令 —— 清理不再适用的 registered 接续
+     * 由后端在同一个事务里完成；失败整份回滚，原位置与原接续一起保留。
      */
     manualNavigation(input: ManualNavigationInput): Promise<ManualNavigationResult> {
       return this._enqueueManualNavigation(() => this._runManualNavigation(input));
@@ -4557,17 +4622,8 @@ const sessionStoreDefinition = defineStore("session", {
       if (kind === "continue_from_history" && !fragmentId) {
         return { ok: false, accepted: false, code: "invalid_fragment", error: "续接历史需要指定片段" };
       }
-      if (input.cancelPending) {
-        const cancelled = await this.cancelPendingContinuation();
-        if (!cancelled) {
-          return {
-            ok: false,
-            accepted: false,
-            code: "cancel_failed",
-            error: this.lastError ?? "旧的接续选择没能取消，未改变起点",
-          };
-        }
-      }
+      // R17-C（契约 §2.4）：不再有「先取消旧接续」的独立步骤 —— 一次点击一个导航命令，
+      // 后端在同一事务内清理不兼容的 registered 接续；失败整份回滚（见本函数末尾处理）。
       const actionKey = `${kind}:${topicId}:${fragmentId ?? ""}`;
       if (this._manualNavRetry && this._manualNavRetry.key !== actionKey) {
         this._manualNavRetry = null;
@@ -4965,68 +5021,157 @@ const sessionStoreDefinition = defineStore("session", {
      * - anchorHistoric 表示「当前位置就在一段历史上」；
      * - pendingContinuation 表示「你选了从这段历史继续，下一条消息才会落实」。
      * 界面必须说清是哪一种：选了但还没发送时，不能显示成「已经创建了新片段」。
+     *
+     * R17-C（契约 §2.3）：本地载荷同时保存后端意图版本（取消命令的目标身份）；
+     * 该字段与位置状态同源 —— 所有位置写入点（整份接受 / 旧后端兼容）都会显式带上。
      */
-    setPendingContinuation(
-      payload: { intentId: string; sourceTitle: string | null } | null,
-    ) {
-      this.pendingContinuation = payload;
+    setPendingContinuation(payload: PendingContinuation | null) {
+      this.pendingContinuation = payload
+        ? {
+            intentId: payload.intentId,
+            sourceTitle: payload.sourceTitle ?? null,
+            intentVersion: payload.intentVersion ?? null,
+          }
+        : null;
     },
 
     /**
-     * M01：取消「下一条消息从这段历史继续」的登记（复用既有 cancelContinuation 接口）。
+     * M01/R17-C：取消「下一条消息从这段历史继续」的登记（契约 §2.2 / §2.3）。
      *
-     * 用在**明确改变起点**的动作之前：进入某话题的最新位置、选中当前开放片段、
-     * 确认话题切换。语义：
-     * * 没有登记时是 no-op（不产生任何请求）；
-     * * 成功 → 本地立刻清掉 pendingContinuation，保证紧接着的发送不会带上旧意图
-     *   （后台也会广播新的 ANCHOR，两边最终一致）；
-     * * 失败 → **不改本地状态**（提示保留），返回 false 并给出可读原因，调用方
-     *   必须放弃这次起点改变 —— 宁可不动，也不把消息送到错误的起点；
-     * * 只是浏览星球 / 查看历史**不会**调到这里，所以浏览不取消选择。
+     * 只在**用户单独点击取消接续**时调用；明确改变起点（进入话题最新位置 /
+     * 返回当前开放片段 / 选择历史片段）已经是一个原子导航命令，不再先调这里。
+     *
+     * 语义（冻结）：
+     * * 没有登记时是 no-op（不发请求、不产生任何状态变化）；
+     * * 请求携带目标意图身份（pending_intent_id / pending_intent_version），
+     *   服务端因此不会把「取消 A 的请求」用在后来的 B 上；
+     * * **所有**带 position 的响应（成功 / 重放 / 冲突）先经过唯一接受入口
+     *   acceptPositionState("command")：只有整份接受后才更新位置 / 历史标记 /
+     *   接续提示（由接受入口统一写，绝不在校验前清空 pendingContinuation）；
+     * * 接受被拒（stale / identity / 同版本冲突）→ 零部分修改 + 触发一次权威恢复，
+     *   返回 commandSucceeded=true / stateAdopted=false / ok=false，本地提示保留；
+     * * 4xx 命令失败 → commandSucceeded=false；网络 / 5xx 保留同一 request 身份可重试；
+     * * 旧后端没有 position 的兼容路径：只允许旧后端，按命令结果撤下**同一目标**的
+     *   本地提示（见下方分支注释）。
      */
-    async cancelPendingContinuation(): Promise<boolean> {
-      if (!this.pendingContinuation) return true;
-      if (this._cancelContinuationBusy) return false;
+    async cancelPendingContinuation(): Promise<CancelContinuationResult> {
+      const target = this.pendingContinuation;
+      if (!target) {
+        return { ok: true, commandSucceeded: true, stateAdopted: true, code: null, error: null };
+      }
+      if (this._cancelContinuationBusy) {
+        // 已有一次取消在飞：不并发、不新建命令身份（界面按钮也会禁用）。
+        return {
+          ok: false,
+          commandSucceeded: false,
+          stateAdopted: false,
+          code: "cancel_in_progress",
+          error: "上一次取消还没有结束；等它返回后再试",
+        };
+      }
       this._cancelContinuationBusy = true;
       try {
-        /**
-         * R16（契约 §14.2）：取消也是手动导航命令，必须带显式 request_id 与
-         * base_nav_version（客户端最近已接受的 nav_version）；网络失败重试同一动作
-         * 复用同一身份，直到成功或被明确的 4xx 拒绝。
-         */
+        const targetKey = `${target.intentId}:${target.intentVersion ?? ""}`;
+        if (this._cancelContinuationRetry && this._cancelContinuationRetry.targetKey !== targetKey) {
+          // 目标在飞行期间被替换：新动作必须用新的命令身份（旧 request_id 不能套新参数）。
+          this._cancelContinuationRetry = null;
+        }
         const request = this._cancelContinuationRetry ?? {
           requestId: newNavigationRequestId(),
           baseNavVersion: this._positionFacts?.navVersion ?? 0,
+          targetKey,
         };
-        let res: Awaited<ReturnType<typeof api.cancelContinuation>>;
+        let res: Awaited<ReturnType<typeof api.cancelContinuation>> | null = null;
+        let failure: { status?: unknown; body?: unknown; message?: unknown } | null = null;
         try {
           res = await api.cancelContinuation({
             requestId: request.requestId,
             baseNavVersion: request.baseNavVersion,
+            pendingIntentId: target.intentId,
+            pendingIntentVersion: target.intentVersion ?? null,
           });
         } catch (error) {
-          const status = (error as { status?: unknown }).status;
+          failure = error as { status?: unknown; body?: unknown; message?: unknown };
+          const status = failure.status;
+          // 网络 / 5xx：命令可能没有被处理，保留同一身份与依据供重试；4xx 是明确拒绝。
           if (typeof status !== "number" || status >= 500) this._cancelContinuationRetry = request;
-          throw error;
+          else this._cancelContinuationRetry = null;
         }
-        if (res && res.ok === false) {
-          this._cancelContinuationRetry = null;
-          this.lastError = "后端没有确认取消「从所选历史继续」，起点未改变（可以重试）";
-          return false;
+        const failureBody =
+          failure && failure.body && typeof failure.body === "object" && !Array.isArray(failure.body)
+            ? (failure.body as Record<string, unknown>)
+            : null;
+        // 契约 §2.3：取消响应（含冲突响应体）里的 position 一律先走唯一接受入口。
+        const rawPosition = cancelResponsePosition(res) ?? cancelResponsePosition(failureBody);
+        const acceptance = rawPosition ? this.acceptPositionState(rawPosition, "command") : null;
+        if (acceptance && !acceptance.accepted) this._requestPositionStateRestore();
+        const status = typeof failure?.status === "number" ? (failure.status as number) : null;
+        const commandSucceeded = !failure && res?.ok !== false;
+        if (!commandSucceeded) {
+          const structuredCode = String(failureBody?.code ?? failureBody?.error ?? "").trim();
+          const retryable = status === null || status >= 500;
+          const code =
+            structuredCode ||
+            (retryable
+              ? "network"
+              : status === 409
+                ? "continuation_cancel_target_mismatch"
+                : "continuation_cancel_rejected");
+          if (status === 409) this._requestPositionStateRestore();
+          const detail = String(
+            (failure?.message as string | undefined) ??
+              (res ? "服务器没有确认取消" : "网络请求失败"),
+          );
+          const reason = retryable
+            ? `${detail}（可以重试）`
+            : status === 409
+              ? "服务端拒绝了这次取消（起点未改变，已按最新状态恢复）"
+              : "服务器拒绝了这次取消（起点未改变）";
+          const message = `没能取消「从所选历史继续」：${reason}`;
+          this.lastError = message;
+          return {
+            ok: false,
+            commandSucceeded: false,
+            stateAdopted: Boolean(acceptance?.accepted),
+            code,
+            error: message,
+          };
         }
         this._cancelContinuationRetry = null;
-        // 服务端已确认取消 → 本地同步撤下提示，避免「本地还留着旧选择」。
-        // （服务端随后广播的 ANCHOR 也会是 pending=null，两边一致。）
-        this.pendingContinuation = null;
-        // R16：取消命令响应携带的 position 同样走唯一接受入口。
-        const rawPosition = (res as { position?: unknown } | null)?.position;
-        if (rawPosition && typeof rawPosition === "object" && !Array.isArray(rawPosition)) {
-          this.acceptPositionState(rawPosition as Record<string, unknown>, "command");
+        if (!acceptance) {
+          /**
+           * 旧后端兼容分支（只允许旧后端）：旧后端没有整份 position，无法走接受入口。
+           * 此时以命令结果为准撤下本地提示 —— 但仅当本地待取消目标没有被飞行期间
+           * 新登记的接续选择替换（否则会误清较新的选择）。
+           */
+          if (this.pendingContinuation && this.pendingContinuation.intentId !== target.intentId) {
+            const message =
+              "没能取消「从所选历史继续」：期间已登记了更新的接续选择，旧提示保留最新的那条";
+            this.lastError = message;
+            return {
+              ok: false,
+              commandSucceeded: true,
+              stateAdopted: false,
+              code: "continuation_target_superseded",
+              error: message,
+            };
+          }
+          this.pendingContinuation = null;
+          return { ok: true, commandSucceeded: true, stateAdopted: true, code: null, error: null };
         }
-        return true;
-      } catch (e) {
-        this.lastError = `没能取消「从所选历史继续」：${(e as Error).message}（起点未改变）`;
-        return false;
+        if (!acceptance.accepted) {
+          const message = `没能取消「从所选历史继续」：服务器返回的位置状态没有被接受（${acceptance.reason}；起点未改变，已请求权威恢复）`;
+          this.lastError = message;
+          return {
+            ok: false,
+            commandSucceeded: true,
+            stateAdopted: false,
+            code: acceptance.reason,
+            error: message,
+          };
+        }
+        // 整份接受：位置 / 历史标记 / pending 已由接受入口统一写，不在这里再清空。
+        return { ok: true, commandSucceeded: true, stateAdopted: true, code: null, error: null };
       } finally {
         this._cancelContinuationBusy = false;
       }

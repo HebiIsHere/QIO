@@ -1,11 +1,11 @@
 /**
  * E 组 · M01 受控验收（视图层）：星球页的「从这里继续 / 进入话题」动作边界。
  *
- * 契约要求的动作边界（断言意图与改造前完全一致）：
- * * 明确进入「某话题的最新位置」或选择「**当前开放片段**」→ **先原子取消**旧的未落实接续选择
- *   （复用既有 cancelContinuation 接口），再改起点；
- * * 选择一段**历史片段** → 由后端在登记时替换旧意图（不需要前端先取消）；
- * * 只是浏览星球（点话题、展开片段）→ 不取消、也不改起点。
+ * R17-C 契约 §2.4 的动作边界：
+ * * 「进入某话题的最新位置 / 返回当前开放片段 / 选择历史片段」都是**一个**原子导航命令
+ *   （POST /api/anchor）；前端不再先发独立的取消命令；
+ * * 清理不再适用的旧 registered 接续由后端在同一个事务里完成，失败整份回滚；
+ * * 只是浏览星球（点话题、展开片段）→ 不发任何导航命令、也不取消选择。
  *
  * 2026-10-27 改版后，入口从星球页的旧侧栏移到**管理区记忆标签页**：
  * 点「管理」→ 记忆页话题列表 → 话题概览（底部「继续讨论 / 回到对话继续」）→
@@ -231,8 +231,8 @@ beforeEach(() => {
   mocks.apiMock.cancelContinuation.mockResolvedValue({ ok: true, cancelled: true });
 });
 
-describe("明确改变起点时原子取消旧的接续选择", () => {
-  it("进入话题最新位置：先取消（一次）再 setAnchor，界面提示随即撤下", async () => {
+describe("明确改变起点时只发一个原子导航命令", () => {
+  it("进入话题最新位置：只发一次 setAnchor，取消命令 0 次，界面提示随即撤下", async () => {
     const pinia = newPinia();
     const session = useSessionStore();
     session.currentTopicId = "t1";
@@ -246,18 +246,16 @@ describe("明确改变起点时原子取消旧的接续选择", () => {
     // 概览底部的动作：话题最新位置（不是历史片段）
     await clickOverviewContinue(w);
 
-    expect(mocks.apiMock.cancelContinuation).toHaveBeenCalledTimes(1);
+    // R17-C：一次点击 = 一个 /api/anchor；旧的 registered 接续由后端同事务清理。
+    expect(mocks.apiMock.cancelContinuation).not.toHaveBeenCalled();
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledTimes(1);
     // R16：手动导航必须带显式身份（request_id）与依据（base_nav_version）。
     expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t1", null, expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
-    // 顺序：取消必须发生在改起点之前
-    const cancelOrder = mocks.apiMock.cancelContinuation.mock.invocationCallOrder[0];
-    const anchorOrder = mocks.apiMock.setAnchor.mock.invocationCallOrder[0];
-    expect(cancelOrder).toBeLessThan(anchorOrder);
     expect(session.pendingContinuation).toBeNull();
     w.unmount();
   });
 
-  it("选中「当前开放片段」：同样先取消，且仍走 continueFromHistory（后端不新建片段）", async () => {
+  it("返回「当前开放片段」：只发一个 continueFromHistory，取消命令 0 次（后端不新建片段）", async () => {
     mocks.apiMock.getTopicDetail.mockResolvedValue(detailWith([OPEN_FRAGMENT]));
     mocks.apiMock.continueFromHistory.mockResolvedValue({
       ok: true,
@@ -280,7 +278,8 @@ describe("明确改变起点时原子取消旧的接续选择", () => {
     // 完整讨论记录会默认选中最新片段（这里是当前开放片段 f20）
     await clickRecordContinue(w);
 
-    expect(mocks.apiMock.cancelContinuation).toHaveBeenCalledTimes(1);
+    expect(mocks.apiMock.cancelContinuation).not.toHaveBeenCalled();
+    expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledTimes(1);
     expect(mocks.apiMock.continueFromHistory).toHaveBeenCalledWith("t1", "f20", expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
     expect(session.anchorHistoric).toBe(false);
     w.unmount();
@@ -304,8 +303,8 @@ describe("明确改变起点时原子取消旧的接续选择", () => {
     w.unmount();
   });
 
-  it("取消失败：不改起点、选择保留、错误可见", async () => {
-    mocks.apiMock.cancelContinuation.mockRejectedValueOnce(new Error("POST /api/anchor/continue/cancel -> 500"));
+  it("导航失败（5xx）：不改起点、选择保留、错误可见", async () => {
+    mocks.apiMock.setAnchor.mockRejectedValueOnce(new Error("POST /api/anchor -> 500"));
     const pinia = newPinia();
     const session = useSessionStore();
     session.currentTopicId = "t1";
@@ -317,13 +316,15 @@ describe("明确改变起点时原子取消旧的接续选择", () => {
     await openOverview(w);
     await clickOverviewContinue(w);
 
-    expect(mocks.apiMock.setAnchor).not.toHaveBeenCalled();
-    expect(session.pendingContinuation).toEqual({ intentId: "intent_A", sourceTitle: "历史片段 A" });
-    expect(session.lastError).toContain("没能取消");
+    // 一次点击只发一个导航命令；失败整份保留原位置与原接续。
+    expect(mocks.apiMock.cancelContinuation).not.toHaveBeenCalled();
+    expect(mocks.apiMock.setAnchor).toHaveBeenCalledTimes(1);
+    expect(session.pendingContinuation).toMatchObject({ intentId: "intent_A", sourceTitle: "历史片段 A" });
+    expect(session.lastError).toContain("没能改变起点");
     // 错误在概览底部可见（不是只在 console / 只在 store 里）
     const error = w.find("[data-memory-overview] .mt-error");
     expect(error.exists()).toBe(true);
-    expect(error.text()).toContain("没能取消");
+    expect(error.text()).toContain("没能改变起点");
     w.unmount();
   });
 });
@@ -344,7 +345,7 @@ describe("只浏览不取消用户的选择", () => {
     expect(mocks.apiMock.cancelContinuation).not.toHaveBeenCalled();
     expect(mocks.apiMock.setAnchor).not.toHaveBeenCalled();
     expect(mocks.apiMock.continueFromHistory).not.toHaveBeenCalled();
-    expect(session.pendingContinuation).toEqual({ intentId: "intent_A", sourceTitle: "历史片段 A" });
+    expect(session.pendingContinuation).toMatchObject({ intentId: "intent_A", sourceTitle: "历史片段 A" });
     w.unmount();
   });
 

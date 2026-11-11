@@ -264,11 +264,13 @@ async function cancelContinuation() {
   continuationNotice.value = "";
   continuationFailed.value = false;
   try {
-    const ok = await session.cancelPendingContinuation();
-    continuationNotice.value = ok
+    // R17-C（契约 §2.3）：取消结果区分「命令成功」与「响应被整份接受」，
+    // 只有两者都成立（ok）才说「已取消」；其余情况起点未改变、提示保留。
+    const result = await session.cancelPendingContinuation();
+    continuationNotice.value = result.ok
       ? "已取消：下一条消息不再从所选历史继续"
       : "没有取消：起点未改变（原因见上方提示）";
-    continuationFailed.value = !ok;
+    continuationFailed.value = !result.ok;
   } finally {
     continuationBusy.value = false;
   }
