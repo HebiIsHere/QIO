@@ -365,12 +365,33 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
         message = str(kwargs.get("message") or "").strip()
         if not message:
             return {"ok": False, "reason": "受理消息为空，无法创建主循环 turn"}
+        # R18 §2.1（P1）：受理这一刻一次性读取与 /api/turns 完全相同的依据快照并冻结给
+        # TurnManager。旧行为只传 ctx.current_topic() 且没有 basis：排队/执行期间用户
+        # 手动导航到别的话题后，互动轮 begin 会临时读实时 position_version 做 CAS，
+        # 把位置从新话题改回受理话题并广播 ANCHOR（旧轮次覆盖新位置）。
+        from agent.services.turn_basis import submission_basis
+
+        basis: dict | None = None
         try:
-            turn_topic = ctx.current_topic() or None
-        except Exception:  # noqa: BLE001 - 没有活动话题时按新话题处理
-            turn_topic = None
+            basis = submission_basis(ctx)
+        except Exception as exc:  # noqa: BLE001 - 读不到依据时如实降级，但不假装已冻结
+            logger.warning(
+                "互动提交受理依据读取失败（本轮按旧路径受理，不冻结依据快照）：%s",
+                exc,
+                exc_info=True,
+            )
+        if basis is not None:
+            # 轮次原话题与 turn.board_topic_id 取**同一份**受理快照，不再单独读
+            # ctx.current_topic() 造成两次读、两套事实。
+            turn_topic = basis.get("topic_id") or None
+        else:
+            try:
+                turn_topic = ctx.current_topic() or None
+            except Exception:  # noqa: BLE001 - 没有活动话题时按新话题处理
+                turn_topic = None
         try:
-            turn = ctx.turns.submit(message, turn_topic)
+            # 互动板提交不是「落实接续」：intent_id 仍按现行为不传（不得消耗待接续选择）。
+            turn = ctx.turns.submit(message, turn_topic, basis=basis)
         except Exception as exc:  # noqa: BLE001 - TurnAcceptError / 已关闭：如实拒绝
             logger.warning("互动提交受理失败（没有创建主循环 turn）：%s", exc)
             return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
