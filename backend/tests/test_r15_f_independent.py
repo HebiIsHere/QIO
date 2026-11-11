@@ -460,14 +460,16 @@ def _seed_closed(ctx: AppContext, topic_id: str, fragment_id: str, text: str) ->
     return fragment_id
 
 
-def _post_continue(client: TestClient, topic_id: str, fragment_id: str, request_id=None):
+def _post_continue(client: TestClient, topic_id: str, fragment_id: str, request_id):
+    """R16 §14.2：手动导航必须带 request_id + 客户端最近已接受的 base_nav_version。"""
+    ctx = _r3_ctx(client)
     body = {
         "topic_id": topic_id,
         "fragment_id": fragment_id,
         "continue_from_history": True,
+        "request_id": str(request_id),
+        "base_nav_version": int(nav_current(ctx.conn)),
     }
-    if request_id is not None:
-        body["request_id"] = request_id
     return client.post("/api/anchor", json=body)
 
 
@@ -535,7 +537,9 @@ def test_r3_a_then_b_then_replay_a_is_rejected_inactive(api_client):
     assert replay.status_code == 409, replay.text
     payload = _r3_error_payload(replay)
     assert payload.get("ok") is False
-    assert payload.get("conflict") is True
+    # §5 冻结字段语义：旧选择失效 = inactive（conflict 专指同身份不同参数的 I05 冲突）。
+    assert payload.get("inactive") is True
+    assert payload.get("conflict") is False
     assert payload.get("code") == "continuation_request_inactive"
     assert _r3_facts(ctx) == facts_b, "失效旧请求重放必须零写入（位置/接续/版本/片段数）"
     assert _intent_state(ctx, "r3-req-a") == "replaced"
@@ -549,8 +553,15 @@ def test_r3_replay_after_cancel_is_rejected(api_client):
     frag_a = _seed_closed(ctx, topic_a, "r3f_a1", "历史 A1")
 
     assert _post_continue(api_client, topic_a, frag_a, "r3-req-cancel").status_code == 200
-    cancelled = api_client.post("/api/anchor/continue/cancel")
-    assert cancelled.status_code == 200
+    # R16 §14.2：取消也是一条手动导航命令，必须带身份与依据。
+    cancelled = api_client.post(
+        "/api/anchor/continue/cancel",
+        json={
+            "request_id": "r3-cancel-command",
+            "base_nav_version": int(nav_current(ctx.conn)),
+        },
+    )
+    assert cancelled.status_code == 200, cancelled.text
     facts_cancelled = _r3_facts(ctx)
 
     replay = _post_continue(api_client, topic_a, frag_a, "r3-req-cancel")
@@ -618,7 +629,8 @@ def test_r3_request_id_reused_with_different_params_is_conflict(api_client):
     conflict = _post_continue(api_client, topic_b, frag_b, "r3-req-shared")
     assert conflict.status_code == 409, conflict.text
     payload = _r3_error_payload(conflict)
-    assert payload.get("code") == "continuation_request_conflict"
+    # 契约 §5/§14.2：统一命令身份后，同身份不同参数由统一入口判为命令冲突。
+    assert payload.get("code") == "navigation_command_conflict"
     assert _r3_facts(ctx) == facts_a, "参数冲突必须零写入"
     intent = ctx.bindings.intent_by_request("r3-req-shared")
     assert intent is not None and intent.topic_id == topic_a
@@ -630,7 +642,14 @@ def test_r3_plain_anchor_does_not_create_continuation(api_client):
     topic_a = _topic(ctx, "甲话题")
     _open_fragment(ctx, topic_a)
     before = _r3_facts(ctx)
-    resp = api_client.post("/api/anchor", json={"topic_id": topic_a})
+    resp = api_client.post(
+        "/api/anchor",
+        json={
+            "topic_id": topic_a,
+            "request_id": "r3-plain-enter",
+            "base_nav_version": int(before["nav_version"]),
+        },
+    )
     assert resp.status_code == 200, resp.text
     facts = _r3_facts(ctx)
     assert facts["anchor_topic"] == topic_a
@@ -788,7 +807,8 @@ def _run_row(conn: sqlite3.Connection, answer_key: str):
     if not _runs_table_exists(conn):
         return None
     return conn.execute(
-        "SELECT answer_key, status, generation, owner, claim_until FROM topic_answer_runs "
+        "SELECT answer_key, status, generation, owner, claim_until, phase, "
+        "staged_answer, staged_at, staged_model FROM topic_answer_runs "
         "WHERE answer_key = ?",
         (answer_key,),
     ).fetchone()
@@ -1131,7 +1151,12 @@ async def test_r4_save_failure_stashes_and_retry_only_persists(tmp_path):
     assert adapter.calls == 1
     record_after_fail = topic_recovery.get_record(app, record_id)
     assert record_after_fail["status"] == "pending"
-    assert record_after_fail["answer_text"] == "已生成但保存失败的正文"
+    # R16 契约 §6/§14.6：暂存正文唯一权威是 run 行（按 answer_key），记录不再复制正文。
+    run_after_fail = _run_row(app.conn, record["answer_key"])
+    assert run_after_fail is not None, "保存失败后执行权/暂存行必须存在"
+    assert run_after_fail["phase"] == "staged", run_after_fail
+    assert run_after_fail["staged_answer"] == "已生成但保存失败的正文"
+    assert not record_after_fail.get("answer_text"), "记录行不再作为新暂存权威"
     assert _answer_rows(app.conn) == []
 
     app.conn.execute("DROP TRIGGER r15f_block_answer")
@@ -1143,6 +1168,10 @@ async def test_r4_save_failure_stashes_and_retry_only_persists(tmp_path):
     assert len(rows) == 1
     assert rows[0]["content"] == "已生成但保存失败的正文"
     assert topic_recovery.get_record(app, record_id)["status"] == "answered"
+    run_done = _run_row(app.conn, record["answer_key"])
+    assert run_done is not None
+    assert run_done["phase"] == "answered"
+    assert not run_done["staged_answer"], "补存成功后必须清空共享暂存"
 
 
 async def test_r4_takeover_racing_old_save_writes_exactly_one_answer(tmp_path, monkeypatch):
