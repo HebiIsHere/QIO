@@ -2535,6 +2535,14 @@ const sessionStoreDefinition = defineStore("session", {
     _recoverySeq: 0,
     _recoveryLoadingInstance: null as string | null,
     /**
+     * 保存失败通知（RECOVERY_INBOX_CHANGED）登记的一次「完成后补拉」（R19-B）。
+     *
+     * 事件到达时若同实例已有清单请求在途，**不并发第二个快照请求**：只置这个标记，
+     * 由那次请求的 finally 在成功取得结果并解锁后再补拉一轮。补拉只由通知入口
+     * 登记 —— 普通并发 loadRecoveryInbox() 的既有单飞语义不受影响。
+     */
+    _recoveryRefreshQueued: false,
+    /**
      * 收件箱的最近一次结果说明。
      *
      * 失败时**保留清单**（可重试），成功时也写一句 —— 「点了没反应」和
@@ -5810,6 +5818,23 @@ const sessionStoreDefinition = defineStore("session", {
       if (this._recoveredResolvedIds.length > 200) this._recoveredResolvedIds.shift();
     },
     /**
+     * R19-B：收到「恢复清单可能变了」通知时请求刷新（在途合并，不并发第二个快照请求）。
+     *
+     * * 空闲：直接复用既有 loadRecoveryInbox()；
+     * * 同实例已有清单请求在途：只登记「完成后补拉一轮」，由那次请求的 finally 兑现；
+     * * 在途请求属于旧实例（实例已切换）：新实例必须能立刻读，不受旧单飞锁阻挡。
+     * 普通并发 loadRecoveryInbox() 的既有单飞语义不受影响（补拉只由本入口登记）。
+     */
+    requestRecoveryInboxRefresh(): void {
+      const inFlightSameInstance =
+        this.recoveryLoading && this._recoveryLoadingInstance === this.instanceId;
+      if (inFlightSameInstance) {
+        this._recoveryRefreshQueued = true;
+        return;
+      }
+      void this.loadRecoveryInbox();
+    },
+    /**
      * 拉一次收件箱（**单飞**）。
      *
      * 单飞的理由与发布闸门一样：恢复入口（连接建立 / 重连 / RESYNC / 实例变化）
@@ -5849,11 +5874,21 @@ const sessionStoreDefinition = defineStore("session", {
       } finally {
         // 只有仍属于当前实例、且自己还是最新一次请求的那次加载才允许合并与解锁 ——
         // 旧请求不得把新请求的 loading 提前关掉。
-        if (this._recoveryResultBelongs(seq, instanceAtStart)) {
+        const ownsLoading = this._recoveryResultBelongs(seq, instanceAtStart);
+        if (ownsLoading) {
           // 合并放在 finally：无论成功失败，快照里的孤儿都必须在这一份清单里看得见
           this.mergeRecoveryInbox();
           this._recoveryLoadingInstance = null;
           this.recoveryLoading = false;
+        }
+        /**
+         * R19-B：事件在飞期间登记的「完成后补拉一轮」。只在本次请求成功取得结果并
+         * 解锁时兑现（ownsLoading），并先清标记 —— 同一批通知只补拉一次；补拉本身
+         * 再到达通知时可以登记下一轮。旧实例 / 已被更新请求取代的加载不代为补拉。
+         */
+        if (ownsLoading && this._recoveryRefreshQueued) {
+          this._recoveryRefreshQueued = false;
+          await this.loadRecoveryInbox();
         }
       }
     },

@@ -34,6 +34,11 @@ class EventType(str, Enum):
     TURN_START = "TURN_START"
     TURN_END = "TURN_END"
     TURN_QUEUE = "TURN_QUEUE"
+    # R19-B：普通回答保存失败后，pending 恢复记录已在**已提交事务**里写好 ——
+    # 通知前端复用既有收件箱读取刷新。事件只表示「清单可能变了」，权威仍是
+    # GET /api/recovery/records。载荷：{record_id, turn_id, topic_id, kind,
+    # failed_stage, action}（前两者冻结必填）。
+    RECOVERY_INBOX_CHANGED = "RECOVERY_INBOX_CHANGED"
     TOOL_START = "TOOL_START"
     TOOL_END = "TOOL_END"
     # 模型自主决定的过程说明（announce / progress / warning / result）。

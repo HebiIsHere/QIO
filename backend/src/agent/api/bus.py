@@ -85,6 +85,10 @@ CRITICAL_EVENTS: frozenset[EventType] = frozenset(
         EventType.ANCHOR,
         # TOPIC_SWITCH_SUGGESTED 已退役（本轮统一判断：换题由模型调用原工具、程序建申请），
         # 不再作为关键事件重放；旧客户端收到历史数据也不会据此执行任何操作。
+        # R19-B：恢复清单变化通知是一次性的幂等「清单可能变了」，背压时静默丢掉会让
+        # 页面一直看不到「重试回答」入口；即使溢出触发 RESYNC，前端也会走
+        # restore → loadRecoveryInbox，同样保证最终可见。
+        EventType.RECOVERY_INBOX_CHANGED,
         EventType.CAPABILITY,
         EventType.FALLBACK,
         EventType.WARNING,

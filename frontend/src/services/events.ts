@@ -31,6 +31,9 @@ export const EVENT_TYPES = [
   "TURN_START",
   "TURN_END",
   "TURN_QUEUE",
+  // 恢复清单可能变了（R19-B）：普通回答保存失败已提交 pending 记录，前端据此
+  // 复用既有 loadRecoveryInbox 刷新；事件不是清单权威。
+  "RECOVERY_INBOX_CHANGED",
   "TOOL_START",
   "TOOL_END",
   // 模型自主决定的过程说明（announce / progress / warning / result）
