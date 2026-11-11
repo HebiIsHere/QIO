@@ -493,20 +493,14 @@ async def _run_manual_navigation(ctx, transition) -> JSONResponse:
 def _submission_basis(ctx) -> dict:
     """R17 §2.1 轮次受理依据快照（只读、受理这一刻一次性读取）。
 
-    「/api/turns」用它把提交瞬间的话题/片段/接续/两类版本交给 TurnManager：之后
-    排队与执行期间用户再导航，旧轮次不得用事后重读的「当前最新位置」回填依据
-    （I01/I08；basis 键集由 R17 契约冻结，缺省/None 表示旧调用方）。
+    R18 §2.1 起实现提取到共享的 `agent.services.turn_basis.submission_basis`：
+    普通发送、重发与互动板提交共用同一份读取逻辑，避免复制两份快照事实。
+    这里保留既有函数名/行为，作为 `/api/turns`、`/api/turns/{turn_id}/resend` 与
+    既有测试的调用入口（返回值与键集完全不变）。
     """
-    position = _position_snapshot(ctx)
-    pending = ctx.bindings.peek_intent()
-    return {
-        "topic_id": position.get("topic_id"),
-        "fragment_id": position.get("fragment_id"),
-        "intent_id": pending.intent_id if pending is not None else None,
-        "intent_version": pending.version if pending is not None else None,
-        "nav_version": int(position.get("nav_version") or 0),
-        "position_version": int(position.get("position_version") or 0),
-    }
+    from agent.services.turn_basis import submission_basis
+
+    return submission_basis(ctx)
 
 
 def create_app(
