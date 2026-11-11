@@ -40,11 +40,14 @@ from agent.storage.db import connect, transaction
 from agent.storage.migrate import apply_migrations
 from agent.storage.schema import COMPENSATION_VERSION, MIGRATIONS, SCHEMA_VERSION
 
-ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "src" / "agent"
-REPO_ROOT = ROOT.parent
+#: 生产源码根以**实际导入的 agent 包**为准（避免测试文件被复制到别处时扫错树）。
+import agent as _agent_package
+
+SRC = Path(_agent_package.__file__).resolve().parent
 
 ANSWER = "[[QIO:ANSWER]]"
+#: 生产生成路径会剥离协议声明标记；正式正文/共享暂存断言只比较清理后的正文。
+ANSWER_TEXT = "独立验收回答"
 
 
 # ── 延迟导入 R16 新模块（基线没有；让每个用例独立红，而不是整文件 collection error）──
@@ -1062,7 +1065,7 @@ class CountingAdapter:
     model = "fake-r16-f"
     supports_stream = False
 
-    def __init__(self, text: str = ANSWER + "\n独立验收回答", gates: int = 0) -> None:
+    def __init__(self, text: str = ANSWER + "\n" + ANSWER_TEXT, gates: int = 0) -> None:
         self.text = text
         self.calls = 0
         self.started = [asyncio.Event() for _ in range(gates)]
@@ -1203,7 +1206,9 @@ def test_i10_staged_answer_shared_across_records_same_answer_key(answer_app):
     assert retried.get("answered") is True, retried
     rows = _answer_rows(app)
     assert len(rows) == 1, "I12：同一逻辑答案只能有一份正式持久化结果"
-    assert rows[0]["content"] == adapter.text
+    assert rows[0]["content"] == ANSWER_TEXT, (
+        "正式答案正文 = 剥离协议标记后的生成正文；实际=%r" % (rows[0]["content"],)
+    )
     for record in (first, second):
         stored = topic_recovery.get_record(app, record["record_id"])
         assert stored["status"] == "answered"
@@ -1226,8 +1231,8 @@ def test_i10_run_phase_and_shared_staged_columns(answer_app):
     assert run is not None
     assert str(_col(run, "status", "run 行")) == "pending"
     assert str(_col(run, "phase", "run 行")) == "staged", "保存失败后 run.phase 必须是 staged"
-    assert str(_col(run, "staged_answer", "run 行") or "") == adapter.text, (
-        "I10：共享暂存正文唯一权威是 run.staged_answer"
+    assert str(_col(run, "staged_answer", "run 行") or "") == ANSWER_TEXT, (
+        "I10：共享暂存正文唯一权威是 run.staged_answer（剥离协议标记后的正文）"
     )
     assert _col(run, "staged_at", "run 行"), "staged 正文必须记录 staged_at"
 

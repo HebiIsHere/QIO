@@ -295,7 +295,7 @@ describe("R16 · 完整位置状态整份接受（I02/I06）", () => {
     expect(session.anchorHistoric, "封存后前端必须看到历史位置").toBe(true);
     const facts = factsOf(session);
     expect(facts?.positionVersion).toBe(4);
-    expect(facts?.navVersion).toBe(7, "nav_version 不因内部推进而变");
+    expect(facts?.navVersion, "nav_version 不因内部推进而变").toBe(7);
   });
 
   it("自动分段事件的完整位置状态可被前端接受并推进片段展示（§10.2 A 前端半段）", () => {

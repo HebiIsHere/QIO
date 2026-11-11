@@ -538,6 +538,8 @@ def test_f08_anchor_api_continue_history_version_semantics(tmp_path):
                 "fragment_id": historic,
                 "continue_from_history": True,
                 "request_id": "req-http-1",
+                # R16 §14.2：手动导航必须携带客户端最近已接受的 nav_version 作为依据。
+                "base_nav_version": int(v0),
             },
         )
         assert first.status_code == 200, first.text
@@ -556,6 +558,7 @@ def test_f08_anchor_api_continue_history_version_semantics(tmp_path):
                 "fragment_id": historic,
                 "continue_from_history": True,
                 "request_id": "req-http-1",
+                "base_nav_version": int(v1),
             },
         )
         assert replay.status_code == 200, replay.text
@@ -564,10 +567,17 @@ def test_f08_anchor_api_continue_history_version_semantics(tmp_path):
         assert replay_body.get("intent_id") == body.get("intent_id"), replay_body
         assert replay_body.get("pending") is True, replay_body
 
-        # 重复点同一来源（没有 request_id）：仍不推进版本、返回同一选择。
+        # 重复点同一来源（新的真实用户动作 = 新 request_id，依据仍是当前版本）：
+        # 仍不推进版本、返回同一选择。
         repeat = client.post(
             "/api/anchor",
-            json={"topic_id": topic, "fragment_id": historic, "continue_from_history": True},
+            json={
+                "topic_id": topic,
+                "fragment_id": historic,
+                "continue_from_history": True,
+                "request_id": "req-http-repeat",
+                "base_nav_version": int(v1),
+            },
         )
         assert repeat.status_code == 200, repeat.text
         repeat_body = repeat.json()
@@ -577,6 +587,13 @@ def test_f08_anchor_api_continue_history_version_semantics(tmp_path):
         # 普通进入话题（非 continue）：仍按原规则推进一次。
         other = ctx.topics.nodes.create_topic("话题B").id
         v_before = current_nav_version(conn)
-        normal = client.post("/api/anchor", json={"topic_id": other})
+        normal = client.post(
+            "/api/anchor",
+            json={
+                "topic_id": other,
+                "request_id": "req-http-normal",
+                "base_nav_version": int(v_before),
+            },
+        )
         assert normal.status_code == 200, normal.text
         assert current_nav_version(conn) == v_before + 1, "普通进入话题推进一次"
