@@ -23,8 +23,17 @@ R14-B 的幂等边界（F03/F04/F13）
    （没有 user_message_id 时退化为 turn_id+operation_id）。`messages.answer_key`
    上的部分唯一索引保证多个恢复记录/并发请求最终只产生**一份**正式答案。
 4. **事务收口**：答案行写入与记录置 `answered`（含 answer_id）在**同一事务**提交。
-   生成成功但保存失败：正文暂存进记录的 `answer_text`，后续重试只补存、不重复生成。
-   崩溃发生在外部模型调用与暂存之间时，**可能再次调用模型**——不声称外部调用 exactly-once。
+   R16-D（契约 §6 / §14.6）：暂存正文的**唯一权威**是 `topic_answer_runs` 的
+   `staged_answer/staged_at/staged_model`（按 answer_key 共享）；生成成功但保存失败后，
+   **任意**同 answer_key 的恢复记录（哪怕另一条记录）都能取得共享暂存结果补存，不再调用模型。
+   记录列 `answer_text` 不再是新暂存的权威：新代码只写 run 行；旧版本残留只作**只读兜底**
+   （读到即同事务转写 run 行并清记录，保证只有一份权威）。崩溃发生在外部模型调用与
+   暂存之间时，**可能再次调用模型**——不声称外部调用 exactly-once。
+4a. **phase 状态机（迁移 83 列）**：waiting（等待处理）→ preparing（归属/上下文装配）
+   → generating（模型生成中）→ staged（已生成、保存失败待补存）→ answered（正式保存）；
+   失败走 failed（可恢复失败，记录保持 pending 可重试）。phase 与 status 同步写入
+   （waiting/staged/failed→pending、preparing/generating→running、answered→answered）。
+   暂存 / 补存 / 保存 / 成功收口 / 失败更新 / 释放全部校验执行权；迟到写一律拒绝（I11）。
 4b. **逻辑答案执行权（R15-D / R4，契约 §6）**：租约不再只按 recovery record 领取，
    而是按 `answer_key` 收口到持久表 `topic_answer_runs`（迁移 81）。同一逻辑答案的
    多条恢复记录共享一个执行权：第二个请求要么 202 `recovery_in_progress`（不调模型），
@@ -65,6 +74,14 @@ __all__ = [
     "ANSWER_RUN_TABLE",
     "EXECUTION_SUPERSEDED_CODE",
     "LEASE_SECONDS",
+    "PHASE_WAITING",
+    "PHASE_PREPARING",
+    "PHASE_GENERATING",
+    "PHASE_STAGED",
+    "PHASE_ANSWERED",
+    "PHASE_FAILED",
+    "ALLOWED_PHASES",
+    "PHASE_STATUS",
     "STATE_ANSWER_PENDING",
     "STATE_ANSWER_IN_PROGRESS",
     "ACTION_RETRY_ANSWER",
@@ -134,6 +151,33 @@ TOPIC_RECOVERY_ATTR = "topic_recovery_records"
 #: 单次领取的租约时长（秒）。模型调用期间不持写事务，靠租约防重复生成；
 #: 进程崩溃留下的租约到期后可被重新领取。故意给足（生成可能较慢）。
 LEASE_SECONDS = 600.0
+
+#: 逻辑答案阶段（迁移 83 列；契约 §6 / §14.6）。phase 与 status 同步写入：
+#: waiting→pending / preparing→running / generating→running / staged→pending /
+#: answered→answered / failed→pending（可恢复失败，记录保持 pending 可重试）。
+PHASE_WAITING = "waiting"
+PHASE_PREPARING = "preparing"
+PHASE_GENERATING = "generating"
+PHASE_STAGED = "staged"
+PHASE_ANSWERED = "answered"
+PHASE_FAILED = "failed"
+ALLOWED_PHASES = (
+    PHASE_WAITING,
+    PHASE_PREPARING,
+    PHASE_GENERATING,
+    PHASE_STAGED,
+    PHASE_ANSWERED,
+    PHASE_FAILED,
+)
+#: phase → 既有 status 语义（同步写入的唯一口径）。
+PHASE_STATUS = {
+    PHASE_WAITING: "pending",
+    PHASE_PREPARING: "running",
+    PHASE_GENERATING: "running",
+    PHASE_STAGED: "pending",
+    PHASE_ANSWERED: "answered",
+    PHASE_FAILED: "pending",
+}
 
 #: 清单里这类恢复事项的状态分类（前端按它决定能不能点「重试回答」）。
 STATE_ANSWER_PENDING = "answer_pending"
@@ -797,13 +841,19 @@ def _run_table_available(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+#: 执行权行读取列（迁移 83 追加 phase / staged_*；暂存权威就在这一行，按 answer_key）。
+_EXECUTION_COLUMNS = (
+    "answer_key, status, generation, owner, owner_instance, claim_until, "
+    "record_id, answer_id, created_at, updated_at, "
+    "phase, staged_answer, staged_at, staged_model"
+)
+
+
 def _execution_row(
     conn: sqlite3.Connection, answer_key: str
 ) -> sqlite3.Row | None:
     return conn.execute(
-        f"SELECT answer_key, status, generation, owner, owner_instance, claim_until, "
-        f"record_id, answer_id, created_at, updated_at FROM {ANSWER_RUN_TABLE} "
-        "WHERE answer_key = ?",
+        f"SELECT {_EXECUTION_COLUMNS} FROM {ANSWER_RUN_TABLE} WHERE answer_key = ?",
         (str(answer_key),),
     ).fetchone()
 
@@ -818,6 +868,11 @@ def _row_to_execution(row: sqlite3.Row) -> dict:
         "claim_until": row["claim_until"],
         "record_id": row["record_id"],
         "answer_id": row["answer_id"],
+        # 迁移 83：phase 与共享暂存（唯一权威）。旧库行由迁移回填 phase。
+        "phase": str(_row_value(row, "phase") or PHASE_WAITING),
+        "staged_answer": str(_row_value(row, "staged_answer") or ""),
+        "staged_at": _row_value(row, "staged_at"),
+        "staged_model": _row_value(row, "staged_model"),
     }
 
 
@@ -833,9 +888,9 @@ def _ensure_execution_row(
     conn.execute(
         f"INSERT OR IGNORE INTO {ANSWER_RUN_TABLE} "
         "(answer_key, status, generation, owner, owner_instance, claim_until, "
-        "record_id, answer_id, created_at, updated_at) "
-        "VALUES (?, 'pending', 0, NULL, NULL, NULL, NULL, NULL, ?, ?)",
-        (str(answer_key), now, now),
+        "record_id, answer_id, created_at, updated_at, phase) "
+        "VALUES (?, 'pending', 0, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)",
+        (str(answer_key), now, now, PHASE_WAITING),
     )
     return _execution_row(conn, answer_key)
 
@@ -906,11 +961,12 @@ def _acquire_execution(
             generation = int(current["generation"] or 0) + 1
             until = (now + timedelta(seconds=float(lease_seconds))).isoformat()
             cursor = conn.execute(
-                f"UPDATE {ANSWER_RUN_TABLE} SET status = 'running', generation = ?, "
-                "owner = ?, owner_instance = ?, claim_until = ?, record_id = NULL, "
-                "updated_at = ? WHERE answer_key = ? AND generation = ? "
+                f"UPDATE {ANSWER_RUN_TABLE} SET status = 'running', phase = ?, "
+                "generation = ?, owner = ?, owner_instance = ?, claim_until = ?, "
+                "record_id = NULL, updated_at = ? WHERE answer_key = ? AND generation = ? "
                 "AND status != 'answered'",
                 (
+                    PHASE_PREPARING,
                     generation,
                     str(owner),
                     _owner_instance(owner),
@@ -1036,6 +1092,7 @@ def _release_execution(
     last_error: str | None = None,
     failed_stage: str | None = None,
     stages: dict | None = None,
+    phase: str = PHASE_FAILED,
 ) -> bool:
     """释放执行权（CAS：只释放自己的；已接管时不动新执行者的租约）。
 
@@ -1061,13 +1118,17 @@ def _release_execution(
         assignments.append("stages_json = ?")
         params.append(json.dumps(stages, ensure_ascii=False))
     params.extend([record_id, execution["owner"], execution["generation"]])
+    release_phase = str(phase or PHASE_FAILED)
+    if release_phase not in (PHASE_FAILED, PHASE_STAGED):
+        raise ValueError(f"释放阶段只能是 failed / staged：{phase!r}")
     with transaction(conn):
         run_cursor = conn.execute(
-            f"UPDATE {ANSWER_RUN_TABLE} SET status = 'pending', owner = NULL, "
+            f"UPDATE {ANSWER_RUN_TABLE} SET status = 'pending', phase = ?, owner = NULL, "
             "owner_instance = NULL, claim_until = NULL, updated_at = ? "
             "WHERE answer_key = ? AND generation = ? AND owner = ? "
             "AND status = 'running'",
             (
+                release_phase,
                 now,
                 execution["answer_key"],
                 execution["generation"],
@@ -1092,6 +1153,7 @@ def _release_execution_safely(
     last_error: str | None = None,
     failed_stage: str | None = None,
     stages: dict | None = None,
+    phase: str = PHASE_FAILED,
 ) -> bool:
     try:
         return _release_execution(
@@ -1100,6 +1162,7 @@ def _release_execution_safely(
             last_error=last_error,
             failed_stage=failed_stage,
             stages=stages,
+            phase=phase,
         )
     except sqlite3.Error as exc:  # noqa: BLE001 - 释放失败由租约过期兜底，不能吞主流程
         logger.warning(
@@ -1139,6 +1202,84 @@ def _execution_still_owned(conn: sqlite3.Connection, execution: dict) -> bool:
     return True
 
 
+def _run_staged_answer(conn: sqlite3.Connection, answer_key: str) -> str:
+    """共享暂存正文（run 行 = 唯一权威；没有返回空串）。"""
+    row = _execution_row(conn, answer_key)
+    if row is None:
+        return ""
+    return str(_row_value(row, "staged_answer") or "")
+
+
+def _record_legacy_answer_text(conn: sqlite3.Connection, record_id: str) -> str:
+    """旧版本残留的暂存正文（只读兜底；不是新暂存的权威）。"""
+    row = conn.execute(
+        f"SELECT answer_text FROM {TOPIC_RECOVERY_TABLE} WHERE record_id = ?",
+        (str(record_id or ""),),
+    ).fetchone()
+    return str(row["answer_text"] or "") if row is not None else ""
+
+
+def _migrate_legacy_stash(
+    conn: sqlite3.Connection, execution: dict, record_id: str, answer: str
+) -> None:
+    """旧 record.answer_text -> run.staged_answer 的**同事务**转写，并清记录列。
+
+    保证迁移期暂存只有一份权威；执行权已丢 -> _ExecutionLost（零行改动，I11）。
+    """
+    now = _now_iso()
+    with transaction(conn):
+        if not _execution_still_owned(conn, execution):
+            raise _ExecutionLost(str(record_id))
+        run_cursor = conn.execute(
+            f"UPDATE {ANSWER_RUN_TABLE} SET staged_answer = ?, staged_at = ?, "
+            "staged_model = NULL, updated_at = ? "
+            "WHERE answer_key = ? AND generation = ? AND owner = ? AND status = 'running'",
+            (
+                str(answer or ""),
+                now,
+                now,
+                execution["answer_key"],
+                execution["generation"],
+                execution["owner"],
+            ),
+        )
+        if run_cursor.rowcount != 1:
+            raise _ExecutionLost(str(record_id))
+        record_cursor = conn.execute(
+            f"UPDATE {TOPIC_RECOVERY_TABLE} SET answer_text = '', updated_at = ? "
+            "WHERE record_id = ? AND status = 'pending' AND execution_owner = ? "
+            "AND execution_generation = ?",
+            (now, str(record_id), execution["owner"], execution["generation"]),
+        )
+        if record_cursor.rowcount != 1:
+            raise _ExecutionLost(str(record_id))
+
+
+def _set_active_phase(
+    conn: sqlite3.Connection, execution: dict, phase: str
+) -> bool:
+    """执行中阶段推进（preparing / generating）：CAS 执行权，失败 False（I11）。
+
+    只用于 status=running 的执行中阶段；终态（staged/answered/failed）由
+    暂存 / 收口 / 释放路径与 status 一起原子写入（见 PHASE_STATUS）。
+    """
+    if str(phase) not in (PHASE_PREPARING, PHASE_GENERATING):
+        raise ValueError(f"不是执行中阶段：{phase!r}")
+    with transaction(conn):
+        cursor = conn.execute(
+            f"UPDATE {ANSWER_RUN_TABLE} SET phase = ?, updated_at = ? "
+            "WHERE answer_key = ? AND generation = ? AND owner = ? AND status = 'running'",
+            (
+                str(phase),
+                _now_iso(),
+                execution["answer_key"],
+                execution["generation"],
+                execution["owner"],
+            ),
+        )
+    return cursor.rowcount == 1
+
+
 def _finalize_answer_locked(
     conn: sqlite3.Connection, execution: dict, answer_id: str
 ) -> None:
@@ -1157,11 +1298,13 @@ def _finalize_answer_locked(
         _mark_answered_row(conn, str(row["record_id"]), str(answer_id))
     now = _now_iso()
     cursor = conn.execute(
-        f"UPDATE {ANSWER_RUN_TABLE} SET status = 'answered', answer_id = ?, "
+        f"UPDATE {ANSWER_RUN_TABLE} SET status = 'answered', phase = ?, answer_id = ?, "
+        "staged_answer = '', staged_at = NULL, staged_model = NULL, "
         "owner = NULL, owner_instance = NULL, claim_until = NULL, updated_at = ? "
         "WHERE answer_key = ? AND generation = ? AND owner = ? "
         "AND status = 'running'",
         (
+            PHASE_ANSWERED,
             str(answer_id),
             now,
             answer_key,
@@ -1370,6 +1513,52 @@ def _insert_answer_message(
     )
 
 
+def _answer_attribution_problem(
+    conn: sqlite3.Connection, record: dict
+) -> tuple[str, str] | None:
+    """I14 归属前提复核：固定片段 / 话题 / 原用户消息 / 原轮次必须一致。
+
+    返回 (code, detail) 或 None；code 冻结为 answer_attribution_mismatch（契约 §14.6）。
+    只读；不猜归属、不搬动原问题。
+    """
+    topic_id = str(record.get("topic_id") or "")
+    fragment_id = record.get("fragment_id") or _lookup_fragment_for_message(
+        conn, record.get("user_message_id")
+    )
+    if not fragment_id:
+        return (
+            "answer_attribution_mismatch",
+            "恢复记录没有固定片段（缺少 fragment_id 且原用户消息不存在）",
+        )
+    fragment = _fragment_row(conn, str(fragment_id))
+    if fragment is None:
+        return ("answer_attribution_mismatch", f"固定片段不存在：{fragment_id}")
+    if str(fragment["topic_id"]) != topic_id:
+        return (
+            "answer_attribution_mismatch",
+            f"固定片段 {fragment_id} 不属于话题 {topic_id}",
+        )
+    user_message_id = record.get("user_message_id")
+    if user_message_id:
+        row = conn.execute(
+            "SELECT fragment_id, turn_id FROM messages WHERE id = ?",
+            (str(user_message_id),),
+        ).fetchone()
+        if row is None:
+            return (
+                "answer_attribution_mismatch",
+                f"原用户消息不存在：{user_message_id}",
+            )
+        message_fragment = row["fragment_id"]
+        if message_fragment and str(message_fragment) != str(fragment_id):
+            return ("answer_attribution_mismatch", "原用户消息不属于固定片段")
+        record_turn = record.get("turn_id")
+        message_turn = row["turn_id"]
+        if message_turn and record_turn and str(message_turn) != str(record_turn):
+            return ("answer_attribution_mismatch", "原用户消息不属于记录轮次")
+    return None
+
+
 def _find_answer_by_key(
     conn: sqlite3.Connection, answer_key: str | None
 ) -> sqlite3.Row | None:
@@ -1442,6 +1631,10 @@ def _save_answer(
             message_id = str(row["id"])
             stored_answer = str(row["content"] or answer)
         else:
+            # I14：写入前再复核一次归属前提（补存路径也走这里）；不成立 -> 结构化拒绝。
+            problem = _answer_attribution_problem(conn, record)
+            if problem is not None:
+                raise RecoveryPersistError(problem[1])
             try:
                 message_id = _insert_answer_message(
                     conn,
@@ -1466,42 +1659,59 @@ def _stash_answer_failure(
     execution: dict,
     answer: str,
     failure: str,
+    *,
+    model: str | None = None,
 ) -> bool:
-    """生成成功但保存失败：暂存正文（后续重试只补存，不重复生成）+ 释放执行权。
+    """生成成功但保存失败：把正文写进**共享暂存唯一权威**（run 行，按 answer_key）并释放执行权。
 
-    返回 False = 已失去执行权：旧执行者的迟到暂存不得覆盖新任务的暂存 / 租约。
+    * 暂存只写 run.staged_answer/staged_at/staged_model + phase=staged；**不再**把正文写进
+      恢复记录列（记录列只清空迁移期残留，保证只有一份权威）；
+    * 返回 False = 已失去执行权：旧执行者的迟到暂存不得覆盖新任务的暂存 / 租约 / 阶段
+      （I11：零行改动）。
     """
     record_id = str(execution.get("record_id") or "")
     now = _now_iso()
-    with transaction(conn):
-        run_cursor = conn.execute(
-            f"UPDATE {ANSWER_RUN_TABLE} SET status = 'pending', owner = NULL, "
-            "owner_instance = NULL, claim_until = NULL, updated_at = ? "
-            "WHERE answer_key = ? AND generation = ? AND owner = ? "
-            "AND status = 'running'",
-            (
-                now,
-                execution["answer_key"],
-                execution["generation"],
-                execution["owner"],
-            ),
-        )
-        if run_cursor.rowcount != 1:
-            return False
-        conn.execute(
-            f"UPDATE {TOPIC_RECOVERY_TABLE} SET answer_text = ?, last_error = ?, "
-            "claim_owner = NULL, claim_until = NULL, execution_owner = NULL, "
-            "updated_at = ? WHERE record_id = ? AND status = 'pending' "
-            "AND execution_owner = ? AND execution_generation = ?",
-            (
-                str(answer or ""),
-                str(failure or ""),
-                now,
-                record_id,
-                execution["owner"],
-                execution["generation"],
-            ),
-        )
+    try:
+        with transaction(conn):
+            if not _execution_still_owned(conn, execution):
+                return False
+            run_cursor = conn.execute(
+                f"UPDATE {ANSWER_RUN_TABLE} SET status = 'pending', phase = ?, "
+                "staged_answer = ?, staged_at = ?, staged_model = ?, owner = NULL, "
+                "owner_instance = NULL, claim_until = NULL, updated_at = ? "
+                "WHERE answer_key = ? AND generation = ? AND owner = ? "
+                "AND status = 'running'",
+                (
+                    PHASE_STAGED,
+                    str(answer or ""),
+                    now,
+                    model,
+                    now,
+                    execution["answer_key"],
+                    execution["generation"],
+                    execution["owner"],
+                ),
+            )
+            if run_cursor.rowcount != 1:
+                return False
+            record_cursor = conn.execute(
+                f"UPDATE {TOPIC_RECOVERY_TABLE} SET answer_text = '', last_error = ?, "
+                "claim_owner = NULL, claim_until = NULL, execution_owner = NULL, "
+                "updated_at = ? WHERE record_id = ? AND status = 'pending' "
+                "AND execution_owner = ? AND execution_generation = ?",
+                (
+                    str(failure or ""),
+                    now,
+                    record_id,
+                    execution["owner"],
+                    execution["generation"],
+                ),
+            )
+            if record_cursor.rowcount != 1:
+                # 记录侧执行令牌不再属于自己：整体回滚，零行改动（I11）。
+                raise _ExecutionLost(record_id)
+    except _ExecutionLost:
+        return False
     return True
 
 
@@ -1863,13 +2073,27 @@ async def _execute_claim(
             ctx, record, saved, failed_stage=failed_stage_at_claim
         )
 
-    # 2) 生成成功但保存失败时暂存的正文：只补存，不重复调用模型。
-    stash = str(record.get("answer_text") or "")
+    # 2) 共享暂存结果（run 行 = 唯一权威，按 answer_key）：A 生成成功但保存失败后，
+    #    B（任意同 answer_key 的恢复记录）只补存、不再生成；记录列 answer_text 只作
+    #    旧版本只读兜底（读到即同事务转写 run 行并清记录，保证只有一份权威）。
+    stash = _run_staged_answer(conn, execution["answer_key"])
+    if not stash:
+        legacy = _record_legacy_answer_text(conn, record_id)
+        if legacy:
+            try:
+                _migrate_legacy_stash(conn, execution, record_id, legacy)
+            except _ExecutionLost:
+                return _superseded_result(record_id)
+            stash = _run_staged_answer(conn, execution["answer_key"]) or legacy
     if stash:
         try:
             saved = _save_answer(conn, record, stash, model=None, execution=execution)
         except _ExecutionLost:
             return _superseded_result(record_id)
+        except RecoveryPersistError as exc:
+            return _attribution_mismatch_result(
+                conn, record_id, execution, record, _error_detail(exc)
+            )
         except Exception as exc:  # noqa: BLE001 - 保存仍失败：保留暂存，可再重试
             failure = _error_detail(exc)
             if not _stash_answer_failure(conn, execution, stash, failure):
@@ -1960,6 +2184,24 @@ async def _execute_claim(
             record = dict(record)
             record["fragment_id"] = repaired_fragment
 
+    # 4b) I14：正式回答必须满足归属与上下文前提（固定片段 / 话题 / 原用户消息 / 原轮次）；
+    #     不成立时如实 503 + 零正式答案行，不调模型、不猜归属。
+    problem = _answer_attribution_problem(conn, record)
+    if problem is not None:
+        code, detail = problem
+        superseded = _released_or_superseded(conn, execution, record_id, last_error=code)
+        if superseded is not None:
+            return superseded
+        return {
+            "ok": False,
+            "code": code,
+            "recoverable": True,
+            "failed_stage": record.get("failed_stage"),
+            "message": "恢复记录的归属前提不成立，不能作为正式回答落库：" + detail,
+            "record_id": record_id,
+            "status_code": 503,
+        }
+
     # 5) 装配上下文（只读；不在模型调用期间持有写事务）。
     prepare = getattr(orchestrator, "prepare_topic_answer_messages", None)
     if not callable(prepare):
@@ -2000,18 +2242,19 @@ async def _execute_claim(
             "status_code": 503,
         }
     if not messages:
+        # I14 冻结码（契约 §14.6）：上下文装配为空 -> answer_context_missing，零正式答案行。
         superseded = _released_or_superseded(
             conn,
             execution,
             record_id,
             failed_stage="context_prepare",
-            last_error="empty_context",
+            last_error="answer_context_missing",
         )
         if superseded is not None:
             return superseded
         return {
             "ok": False,
-            "code": "topic_context_prepare_failed",
+            "code": "answer_context_missing",
             "recoverable": True,
             "failed_stage": "context_prepare",
             "message": "话题已切换，回答准备失败：目标话题上下文为空",
@@ -2052,6 +2295,9 @@ async def _execute_claim(
             "record_id": record_id,
             "status_code": 503,
         }
+    # 模型生成阶段：phase=generating（CAS 执行权；已失去 -> superseded，零写入）。
+    if not _set_active_phase(conn, execution, PHASE_GENERATING):
+        return _superseded_result(record_id)
     try:
         answer = await _generate_answer(adapter, messages)
     except Exception as exc:  # noqa: BLE001 - 回答失败单独记 answer 阶段，单独恢复
@@ -2106,10 +2352,17 @@ async def _execute_claim(
         )
     except _ExecutionLost:
         return _superseded_result(record_id)
+    except RecoveryPersistError as exc:
+        # 归属前提在保存时被证伪（片段被删/换话题等）：I14 冻结码，零正式答案行。
+        return _attribution_mismatch_result(
+            conn, record_id, execution, record, _error_detail(exc)
+        )
     except Exception as exc:  # noqa: BLE001 - 写失败：暂存正文，记录保持 pending 可再重试
         failure = _error_detail(exc)
         try:
-            stashed = _stash_answer_failure(conn, execution, answer, failure)
+            stashed = _stash_answer_failure(
+                conn, execution, answer, failure, model=getattr(adapter, "model", None)
+            )
         except sqlite3.Error:  # noqa: BLE001 - 暂存也失败：如实说明，下次可能再调模型
             logger.warning(
                 "failed to stash recovered answer for %s: %s",
@@ -2134,6 +2387,42 @@ def _persist_failed(record_id: str, failure: str) -> dict:
         "code": "recovery_persist_failed",
         "recoverable": True,
         "message": "回答已生成但持久化失败：" + failure,
+        "record_id": record_id,
+        "status_code": 503,
+    }
+
+
+def _attribution_mismatch_result(
+    conn: sqlite3.Connection,
+    record_id: str,
+    execution: dict,
+    record: dict,
+    detail: str,
+) -> dict:
+    """I14 归属前提不成立：释放执行权、零正式答案行、结构化 503（契约 §14.6）。
+
+    释放本身也校验执行权：旧执行者的迟到保存不会借这里改新任务状态（I11）。
+    若 run 行已有共享暂存正文（保存阶段才发现归属被证伪），释放时保持 phase=staged：
+    正文仍属于该 answer_key，可由另一条归属正确的恢复记录补存（不丢已生成结果）。
+    """
+    release_phase = (
+        PHASE_STAGED if _run_staged_answer(conn, execution["answer_key"]) else PHASE_FAILED
+    )
+    superseded = _released_or_superseded(
+        conn,
+        execution,
+        record_id,
+        last_error="answer_attribution_mismatch",
+        phase=release_phase,
+    )
+    if superseded is not None:
+        return superseded
+    return {
+        "ok": False,
+        "code": "answer_attribution_mismatch",
+        "recoverable": True,
+        "failed_stage": record.get("failed_stage"),
+        "message": "恢复记录的归属前提不成立，不能作为正式回答落库：" + str(detail or ""),
         "record_id": record_id,
         "status_code": 503,
     }

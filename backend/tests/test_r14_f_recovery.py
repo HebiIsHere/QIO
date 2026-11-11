@@ -23,11 +23,31 @@ from agent.storage.migrate import apply_migrations
 
 ANSWER = "[[QIO:ANSWER]]"
 
+#: 迁移 83（R16-A 建）给 topic_answer_runs 追加的列；未合并前测试库幂等补列。
+#: 集成后真实迁移已建列，本 helper 无操作（最终以真实迁移为准）。
+_R16_RUN_COLUMN_DDL = (
+    ("phase", "ALTER TABLE topic_answer_runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'waiting'"),
+    (
+        "staged_answer",
+        "ALTER TABLE topic_answer_runs ADD COLUMN staged_answer TEXT NOT NULL DEFAULT ''",
+    ),
+    ("staged_at", "ALTER TABLE topic_answer_runs ADD COLUMN staged_at TEXT"),
+    ("staged_model", "ALTER TABLE topic_answer_runs ADD COLUMN staged_model TEXT"),
+)
+
+
+def _ensure_r16_run_columns(conn) -> None:
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(topic_answer_runs)")}
+    for name, ddl in _R16_RUN_COLUMN_DDL:
+        if name not in existing:
+            conn.execute(ddl)
+
 
 @pytest.fixture()
 def app(tmp_path) -> AppContext:
     conn = connect(tmp_path / "r14_f_recovery.db")
     apply_migrations(conn)
+    _ensure_r16_run_columns(conn)
     ctx = AppContext(Settings(data_dir=tmp_path), conn, EventBus())
     ctx.credentials._kr = MemoryKeyring()
     return ctx
@@ -231,7 +251,15 @@ async def test_f03_generated_answer_is_stashed_and_persist_retry_does_not_regene
     assert _assistant_rows(app, turn_id="turn_r") == []
     stashed = topic_recovery.get_record(app, record["record_id"])
     assert stashed is not None and stashed.get("status") == "pending", stashed
-    assert stashed.get("answer_text"), "保存失败后必须暂存已生成正文（不得丢失）"
+    # R16-D：暂存正文权威迁移到 topic_answer_runs.staged_answer（按 answer_key 共享）；
+    # 记录列 answer_text 不再写正文（保持空）。断言语义不变：已生成正文必须暂存、不得丢失。
+    run = app.conn.execute(
+        "SELECT phase, staged_answer FROM topic_answer_runs WHERE answer_key = ?",
+        (stashed["answer_key"],),
+    ).fetchone()
+    assert run is not None and run["phase"] == "staged", dict(run) if run else None
+    assert run["staged_answer"], "保存失败后必须暂存已生成正文（不得丢失）"
+    assert stashed.get("answer_text") in (None, "")
 
     # 生成成功但保存失败：再次重试只补存，不重复生成。
     second = await topic_recovery.retry_topic_answer(app, record["record_id"])

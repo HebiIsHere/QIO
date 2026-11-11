@@ -40,6 +40,25 @@ from agent.storage.migrate import apply_migrations
 ANSWER_MARKER = "[[QIO:ANSWER]]"
 TABLE = "topic_recovery_records"
 
+#: 迁移 83（R16-A 建）给 topic_answer_runs 追加的列；未合并前测试库幂等补列。
+#: 集成后真实迁移已建列，本 helper 无操作（最终以真实迁移为准）。
+_R16_RUN_COLUMN_DDL = (
+    ("phase", "ALTER TABLE topic_answer_runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'waiting'"),
+    (
+        "staged_answer",
+        "ALTER TABLE topic_answer_runs ADD COLUMN staged_answer TEXT NOT NULL DEFAULT ''",
+    ),
+    ("staged_at", "ALTER TABLE topic_answer_runs ADD COLUMN staged_at TEXT"),
+    ("staged_model", "ALTER TABLE topic_answer_runs ADD COLUMN staged_model TEXT"),
+)
+
+
+def _ensure_r16_run_columns(conn) -> None:
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(topic_answer_runs)")}
+    for name, ddl in _R16_RUN_COLUMN_DDL:
+        if name not in existing:
+            conn.execute(ddl)
+
 
 @pytest.fixture()
 def db_path(tmp_path):
@@ -49,6 +68,7 @@ def db_path(tmp_path):
 def _new_app(db_path, tmp_path) -> AppContext:
     conn = connect(db_path)
     apply_migrations(conn)
+    _ensure_r16_run_columns(conn)
     ctx = AppContext(Settings(data_dir=tmp_path), conn, EventBus())
     ctx.credentials._kr = MemoryKeyring()
     return ctx
@@ -416,8 +436,16 @@ async def test_answer_row_and_answered_status_commit_in_one_transaction(app, mon
     assert _assistant_rows(app) == []
     stored = _row(app, record["record_id"])
     assert stored["status"] == "pending"
-    # 生成的正文已暂存，后续只补存、不重复生成
-    assert stored["answer_text"] == "恢复后的回答"
+    # 生成的正文已暂存，后续只补存、不重复生成。
+    # R16-D：暂存正文权威迁移到 topic_answer_runs.staged_answer（按 answer_key 共享），
+    # 记录列 answer_text 不再写正文；断言语义不变（正文必须暂存、不得丢失）。
+    run = app.conn.execute(
+        "SELECT phase, staged_answer FROM topic_answer_runs WHERE answer_key = ?",
+        (stored["answer_key"],),
+    ).fetchone()
+    assert run is not None and run["phase"] == "staged", dict(run) if run else None
+    assert run["staged_answer"] == "恢复后的回答"
+    assert stored["answer_text"] in (None, "")
     assert stored["attempt_count"] == 1
     assert stored["claim_owner"] is None and stored["claim_until"] is None
     assert "simulated failure" in stored["last_error"]

@@ -47,6 +47,26 @@ NEW_RECORD_COLUMNS = (
     "last_heartbeat_at",
 )
 NEW_RUN_INDEXES = ("idx_topic_answer_runs_status", "idx_topic_answer_runs_owner")
+#: 迁移 83（R16-A 建）给 topic_answer_runs 追加的列；未合并前测试库幂等补列。
+#: 集成后真实迁移已建列，本 helper 无操作（最终以真实迁移为准）。
+_R16_RUN_COLUMN_DDL = (
+    ("phase", "ALTER TABLE topic_answer_runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'waiting'"),
+    (
+        "staged_answer",
+        "ALTER TABLE topic_answer_runs ADD COLUMN staged_answer TEXT NOT NULL DEFAULT ''",
+    ),
+    ("staged_at", "ALTER TABLE topic_answer_runs ADD COLUMN staged_at TEXT"),
+    ("staged_model", "ALTER TABLE topic_answer_runs ADD COLUMN staged_model TEXT"),
+)
+
+
+def _ensure_r16_run_columns(conn) -> None:
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(topic_answer_runs)")}
+    for name, ddl in _R16_RUN_COLUMN_DDL:
+        if name not in existing:
+            conn.execute(ddl)
+
+
 T0 = datetime(2026, 11, 11, 0, 0, 0, tzinfo=timezone.utc)
 LEASE = 600.0
 
@@ -165,6 +185,7 @@ def _wire(app: AppContext, orchestrator, adapter) -> None:
 def app(tmp_path) -> AppContext:
     conn = connect(tmp_path / "r15_d_r4.db")
     apply_migrations(conn)
+    _ensure_r16_run_columns(conn)
     ctx = AppContext(Settings(data_dir=tmp_path), conn, EventBus())
     ctx.credentials._kr = MemoryKeyring()
     return ctx
@@ -564,8 +585,13 @@ async def test_s7_persist_failure_retry_only_stashes(app, monkeypatch):
     assert _assistant_rows(app) == []
     stashed = topic_recovery.get_record(app, record["record_id"])
     assert stashed["status"] == "pending"
-    assert stashed.get("answer_text"), "保存失败必须暂存已生成正文（不得丢失）"
+    # R16-D：暂存正文权威迁移到 topic_answer_runs.staged_answer（按 answer_key 共享）；
+    # 记录列 answer_text 不再写正文（保持空）。断言语义不变：已生成正文必须暂存、不得丢失。
     run = _run_row(app, record["answer_key"])
+    assert run["phase"] == "staged" and run["staged_answer"], (
+        "保存失败必须暂存已生成正文（不得丢失）"
+    )
+    assert stashed.get("answer_text") in (None, "")
     assert run["status"] == "pending", "保存失败后释放执行权，可再重试"
 
     second = await topic_recovery.retry_topic_answer(app, record["record_id"])
@@ -682,8 +708,10 @@ async def test_s9_alive_or_unknown_owner_is_never_taken_over(
 def test_s10_migration_81_and_compensation_82_objects(tmp_path):
     targets = [target for target, _ in MIGRATIONS]
     assert targets == sorted(set(targets)), "迁移号必须唯一且递增"
-    assert targets[-2:] == [81, 82], targets[-4:]
-    assert SCHEMA_VERSION == COMPENSATION_VERSION == 82 == max(targets)
+    # 口径：最后两条 = 本轮迁移 + 补偿入口；SCHEMA_VERSION == COMPENSATION_VERSION == 最大号。
+    # 具体号随轮次推进（R15-D=81/82，R16=83/84），断言语义不放宽。
+    assert targets[-2:] == [SCHEMA_VERSION - 1, SCHEMA_VERSION], targets[-4:]
+    assert SCHEMA_VERSION == COMPENSATION_VERSION == max(targets) >= 82
 
     statements = [
         str(statement)
@@ -706,7 +734,7 @@ def test_s10_migration_81_and_compensation_82_objects(tmp_path):
     conn = connect(tmp_path / "r15_d_migration.db")
     try:
         assert apply_migrations(conn) == SCHEMA_VERSION
-        assert current_version(conn) == 82
+        assert current_version(conn) == SCHEMA_VERSION
         tables = {
             str(row[0])
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
