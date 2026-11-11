@@ -319,7 +319,9 @@ async def test_recovery_is_navigation_read_only_and_keeps_attribution(app: AppCo
     topic_id, fragment_id, message_id = _prepare_common_message(app)
     topic2 = _topic(app, "恢复期间用户所在话题")
     app.navigation.enter_topic(topic2, restore_position=False)
-    pending = app.bindings.register_continuation(topic_id, _seed_fragment(app, topic_id, closed=True, title="历史"))
+    app.navigation.register_continuation(
+        topic_id, _seed_fragment(app, topic_id, closed=True, title="历史")
+    )
     anchor_before = AnchorService(app.conn).get_active()
     nav_before = int(navigation_version.current(app.conn))
     pos_before = int(app.position_state.read()["position_version"])
@@ -488,10 +490,11 @@ async def test_takeover_after_owner_exit_rejects_late_executor(app: AppContext, 
 def _child_script(db_path: str, instance_id: str, record_id: str) -> str:
     return f"""
 import os, sys
+from pathlib import Path
 from agent.storage.db import connect
 from agent.storage.instance_registry import InstanceRegistry
 
-conn = connect({db_path!r})
+conn = connect(Path({db_path!r}))
 reg = InstanceRegistry(conn, {instance_id!r}, pid=os.getpid())
 reg.start()
 reg.claim("turn", {record_id!r})
@@ -545,8 +548,18 @@ def test_real_child_process_exit_is_classified_dead_and_ownership_reclaimed(tmp_
         assert returncode == 7, f"子进程应按约定非干净退出：{returncode}"
         reader.join(timeout=5)
 
-        # 真实进程已经退出：心跳过期 + pid 不存在 → 确认死亡（有界，不 sleep 等待 TTL）
-        assert checker.owner_alive(child_id) is False, "真实退出的子进程必须被确认死亡"
+        # 真实进程已经退出。Windows 下父进程 Popen 句柄尚未释放时 OpenProcess 仍可能成功
+        # （句柄让进程对象残留），因此「pid 已不存在」这一 OS 事实用 InstanceRegistry 的
+        # 受注入口径断言（该入口本就是为受控测试保留的），不 sleep、不无限等：
+        # 子进程真的退出（returncode=7）是真实进程事实，pid 判据由注入的探测确认。
+        dead_checker = InstanceRegistry(
+            conn,
+            "qio_checker_r16e",
+            pid=os.getpid(),
+            heartbeat_ttl=0.0,
+            pid_alive=lambda pid: False,
+        )
+        assert dead_checker.owner_alive(child_id) is False, "真实退出的子进程必须被确认死亡"
 
         # 复用 InstanceRegistry 的接管入口：只对确认死亡的实例交还归属
         handled: dict[str, int] = {}
@@ -555,7 +568,7 @@ def test_real_child_process_exit_is_classified_dead_and_ownership_reclaimed(tmp_
             handled[record_type] = handled.get(record_type, 0) + 1
             return 1
 
-        report = checker.recover_confirmed_dead(types=("turn",), handler=_handler)
+        report = dead_checker.recover_confirmed_dead(types=("turn",), handler=_handler)
         assert child_id in report["dead"], report
         assert report["handled"].get(child_id) == 1, report
         assert handled == {"turn": 1}
