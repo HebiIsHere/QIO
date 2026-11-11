@@ -370,8 +370,10 @@ def test_two_connections_same_answer_key_single_executor(two: _TwoBackends):
     assert run["phase"] == "answered" and run["status"] == "answered", dict(run)
     assert not run["staged_answer"], "保存成功后必须清空共享暂存"
 
+    recovery_table = topic_recovery.TOPIC_RECOVERY_TABLE
     record_rows = two.conn1.execute(
-        "SELECT record_id, status, answer_id FROM topic_recovery WHERE record_id IN (?, ?)",
+        f"SELECT record_id, status, answer_id FROM {recovery_table} "
+        "WHERE record_id IN (?, ?)",
         (record_a, record_b),
     ).fetchall()
     assert len(record_rows) == 2, [dict(r) for r in record_rows]

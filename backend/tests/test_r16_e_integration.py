@@ -355,7 +355,9 @@ async def test_recovery_is_navigation_read_only_and_keeps_attribution(app: AppCo
     assert rows[0]["answer_key"], "正式答案必须带 answer_key"
     stored = topic_recovery.get_record(app, record_id)
     assert stored is not None and stored["answer_id"] == rows[0]["id"]
-    assert pending is not None
+    assert pending_before is not None and pending_after is not None, (
+        "恢复前后都必须保留已登记的接续选择（I13）"
+    )
 
 
 # ---------------------------------------------------------------------------

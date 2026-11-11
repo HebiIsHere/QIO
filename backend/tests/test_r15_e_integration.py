@@ -538,15 +538,18 @@ async def test_http_a_to_b_replay_a_keeps_backend_position(tmp_path):
             },
         )
 
-    # R16 I04/C3：同 request_id + 同实际参数的重放返回既有结果（replay=true），
-    # 零位置写入 / 零版本推进 / 不重新获得位置控制权（断言强度不降：位置与选择必须仍是 B）。
-    assert replay.status_code == 200, (
-        "已失效旧选择的请求重放必须返回既有结果，实际 %s: %s"
+    # 冻结契约 §5/§14.2：已失效旧选择（intent 已被 replaced/cancelled）的重放必须
+    # 409 continuation_request_inactive（replay 既有拒绝事实、inactive=true），
+    # 零位置写入 / 零版本推进 / 不重新获得位置控制权（位置与选择必须仍是 B）。
+    assert replay.status_code == 409, (
+        "已失效旧选择的请求重放必须 409 continuation_request_inactive，实际 %s: %s"
         % (replay.status_code, replay.text)
     )
     payload = replay.json()
-    assert payload.get("ok") is True and payload.get("replay") is True, payload
+    assert payload.get("ok") is False and payload.get("inactive") is True, payload
+    assert payload.get("replay") is True, payload
     assert payload.get("changed") is False, payload
+    assert payload.get("code") == "continuation_request_inactive", payload
     assert payload.get("command_id") == "request:req-a", payload
 
     anchor_after = _anchor(ctx)
@@ -828,12 +831,14 @@ async def test_runtime_state_anchor_matches_navigation_authority(tmp_path):
             },
         )
         state_after = await client.get("/api/runtime/state")
-    assert stale.status_code == 200, (
-        "已失效旧 request_id 的重放必须返回既有结果，实际 %s: %s"
+    assert stale.status_code == 409, (
+        "已失效旧 request_id 的重放必须 409 continuation_request_inactive，实际 %s: %s"
         % (stale.status_code, stale.text)
     )
     stale_body = stale.json()
+    assert stale_body.get("ok") is False and stale_body.get("inactive") is True, stale_body
     assert stale_body.get("replay") is True and stale_body.get("changed") is False, stale_body
+    assert stale_body.get("code") == "continuation_request_inactive", stale_body
     assert stale_body.get("command_id") == "request:req-authority-a", stale_body
     body_after = state_after.json()
     assert body_after["anchor"].get("topic_id") == b, (

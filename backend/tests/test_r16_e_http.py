@@ -624,16 +624,26 @@ def test_auto_segment_advances_position_only_and_does_not_invalidate_manual_basi
     nav1 = entered.json()["nav_version"]
     pos1 = entered.json()["position_version"]
 
+    # 生产真实序列（A2 接线）：封存本身不写位置；orchestrator 在 post_turn/boundary
+    # 封存完成后调用 navigation.apply_auto_segment 走统一入口推进 position_version。
     sealed = ctx.memory_lifecycle.seal_fragment(
         topic_a, reason="capacity", continue_same_stage=True
     )
     assert sealed is not None, "开放片段应可被容量分段封存（前置条件）"
+    auto = ctx.navigation.apply_auto_segment(
+        topic_a,
+        sealed.id,
+        turn_id="turn-e-auto-segment",
+        expected_position_version=pos1,
+    )
+    assert auto.status == "applied" and auto.changed is True, auto
 
     anchor_now = _anchor(client)
     assert anchor_now["nav_version"] == nav1, "容量分段不是导航决定：nav_version 不推进"
     assert anchor_now["position_version"] == pos1 + 1, (
         "T1：当前话题 open_fragment_id 属于完整状态内部事实，auto_segment 一律 position +1"
     )
+    assert auto.position == anchor_now, "统一入口返回的 position 必须与权威快照同源"
 
     # 手动命令依据仍是 nav1 → 必须仍然有效（两个版本域不交叉比较）
     applied = _navigate(
