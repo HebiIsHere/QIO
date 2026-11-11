@@ -137,7 +137,7 @@
 | 10 | F 独立前端 spec（经批准临时复制到集成工作树运行后清理；SHA 6fac3197） | 7 passed（基线红 5 failed/2 passed） | `r17-evidence\f\integration-green\frontend-f-integration-6fac3197.txt` |
 | 11 | F 对 E 双连接用例的独立复跑（集成 SHA d31cd27b；该文件此后未再改动） | 2 轮均 4 passed、exit 0 | `r17-evidence\f\integration-green\e-concurrency-f-verify.txt` |
 
-- 本轮**Lead 最终定向汇总：后端 364 passed / 38 文件（三段）+ 前端 171 passed / 16 文件，全部 exit 0**；
+- 本轮**Lead 最终定向汇总：后端 364 passed / 38 文件（三段）+ resend 修复定向 31 passed / 5 文件（含与前述批次重叠的文件）+ 前端 171 passed / 16 文件，全部 exit 0**；
   F 独立验证在同一受测 SHA 上：后端 14 passed（含 F 自己新增的 resend 独立回归；基线红 8 failed / 5 passed，
   resend 场景基线红 1 failed）、前端 7 passed（基线红 5 failed / 2 passed）、E 双连接用例独立复跑 2 轮均 4 passed（见 §5 表）。
   F 四项边界评审结论：边界 1（旧轮次写入，含 resend 入口）在 6fac3197 上**封闭**；边界 2/3/4 封闭；
