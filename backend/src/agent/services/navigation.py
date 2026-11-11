@@ -835,8 +835,15 @@ class TopicNavigationService:
         identity: NavCommandIdentity | None = None,
         turn_id: str | None = None,
         pending_intent_id: str | None = None,
+        pending_intent_version: int | None = None,
     ) -> dict:
-        """取消未落实接续（§14.9：nav_version 不推进；pending 真实变化时 position +1）。"""
+        """取消未落实接续（§14.9：nav_version 不推进；pending 真实变化时 position +1）。
+
+        R17 §2.2：生产入口（HTTP）必须携带取消目标 pending_intent_id（+可选版本），
+        统一入口在事务内先校验目标再取消；pending_intent_id=None 的旧调用方保持
+        「取消当前 registered」行为。拒绝（目标不存在/失效/版本不一致）时本包装
+        只返回结果事实，由调用方按既有形状映射（HTTP 层给 409）。
+        """
         pending = self.bindings.peek_intent()
         intent_id = (
             pending_intent_id or (pending.intent_id if pending is not None else None)
@@ -846,6 +853,8 @@ class TopicNavigationService:
             return {
                 "ok": True,
                 "cancelled": False,
+                "cancelled_intent_id": None,
+                "intent_version": None,
                 "changed": False,
                 "replay": False,
                 "nav_version": int(position.get("nav_version") or 0),
@@ -864,6 +873,7 @@ class TopicNavigationService:
                 initiator=self._initiator_for(resolved_identity, default="user"),
                 pending="cancel",
                 pending_intent_id=intent_id,
+                pending_intent_version=pending_intent_version,
                 turn_id=turn_id,
             )
         )
@@ -872,6 +882,8 @@ class TopicNavigationService:
         return {
             "ok": result.status in ("applied", "replay"),
             "cancelled": bool(result.result.get("cancelled")),
+            "cancelled_intent_id": result.result.get("cancelled_intent_id"),
+            "intent_version": result.result.get("intent_version"),
             "changed": bool(result.changed),
             "replay": bool(result.replay),
             "inactive": bool(result.inactive),

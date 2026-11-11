@@ -553,12 +553,16 @@ def test_r3_replay_after_cancel_is_rejected(api_client):
     frag_a = _seed_closed(ctx, topic_a, "r3f_a1", "历史 A1")
 
     assert _post_continue(api_client, topic_a, frag_a, "r3-req-cancel").status_code == 200
-    # R16 §14.2：取消也是一条手动导航命令，必须带身份与依据。
+    # R16 §14.2 + R17 §2.2：取消也是一条手动导航命令，必须带身份、依据与**目标选择**。
+    cancel_target = ctx.bindings.intent_by_request("r3-req-cancel")
+    assert cancel_target is not None
     cancelled = api_client.post(
         "/api/anchor/continue/cancel",
         json={
             "request_id": "r3-cancel-command",
             "base_nav_version": int(nav_current(ctx.conn)),
+            "pending_intent_id": cancel_target.intent_id,
+            "pending_intent_version": cancel_target.version,
         },
     )
     assert cancelled.status_code == 200, cancelled.text

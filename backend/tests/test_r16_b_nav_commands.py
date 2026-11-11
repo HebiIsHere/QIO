@@ -281,12 +281,19 @@ def _cancel(
     *,
     request_id: str | None = None,
     base_nav_version: int | None = None,
+    pending_intent_id: str | None = None,
+    pending_intent_version: int | None = None,
 ):
     body = {}
     if request_id is not None:
         body["request_id"] = request_id
     if base_nav_version is not None:
         body["base_nav_version"] = base_nav_version
+    # R17 §2.2：取消命令必须明确关联目标（id 必填、版本可选）。
+    if pending_intent_id is not None:
+        body["pending_intent_id"] = pending_intent_id
+    if pending_intent_version is not None:
+        body["pending_intent_version"] = pending_intent_version
     return client.post("/api/anchor/continue/cancel", json=body)
 
 
@@ -563,7 +570,12 @@ def test_cancel_then_replay_is_inactive_and_replay_of_cancel_is_idempotent(
 
     before_cancel = _position_facts(ctx)
     cancelled = _cancel(
-        client, ctx, request_id="req-cancel", base_nav_version=_base(ctx)
+        client,
+        ctx,
+        request_id="req-cancel",
+        base_nav_version=_base(ctx),
+        pending_intent_id=intent.intent_id,
+        pending_intent_version=intent.version,
     )
     assert cancelled.status_code == 200, cancelled.text
     body = cancelled.json()
@@ -601,7 +613,12 @@ def test_cancel_then_replay_is_inactive_and_replay_of_cancel_is_idempotent(
     _assert_zero_write(ctx, before)
 
     replay_cancel = _cancel(
-        client, ctx, request_id="req-cancel", base_nav_version=_base(ctx)
+        client,
+        ctx,
+        request_id="req-cancel",
+        base_nav_version=_base(ctx),
+        pending_intent_id=intent.intent_id,
+        pending_intent_version=intent.version,
     )
     assert replay_cancel.status_code == 200, replay_cancel.text
     replay_body = replay_cancel.json()
@@ -611,11 +628,21 @@ def test_cancel_then_replay_is_inactive_and_replay_of_cancel_is_idempotent(
     assert replay_body["position"] == _pos(ctx)
     _assert_zero_write(ctx, before)
 
-    # 新的取消请求：没有可取消的 registered → 真实新命令但零变化，留行、零版本、零广播。
-    noop = _cancel(client, ctx, request_id="req-cancel-2", base_nav_version=_base(ctx))
-    assert noop.status_code == 200, noop.text
+    # 新的取消请求携带已失效的目标：R17 §2.2 冻结为 409 inactive（不再存在无目标
+    # no-op 200 的旧路径），零变化、留一行拒绝事实、零广播。
+    noop = _cancel(
+        client,
+        ctx,
+        request_id="req-cancel-2",
+        base_nav_version=_base(ctx),
+        pending_intent_id=intent.intent_id,
+        pending_intent_version=intent.version,
+    )
+    assert noop.status_code == 409, noop.text
     noop_body = noop.json()
-    assert noop_body["cancelled"] is False
+    assert noop_body["ok"] is False
+    assert noop_body["inactive"] is True
+    assert noop_body["code"] == "continuation_request_inactive"
     assert noop_body["changed"] is False
     assert noop_body["replay"] is False
     after = _position_facts(ctx)
