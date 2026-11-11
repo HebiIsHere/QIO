@@ -27,7 +27,7 @@ from agent.services.navigation import (
     take_tool_navigation,
 )
 from agent.services.predict import TopicPrediction
-from agent.services.topic_recovery import TopicContextPrepareError
+from agent.services.topic_recovery import TopicContextPrepareError, save_normal_answer
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
     from agent.adapters.base import ChatMessage
@@ -39,6 +39,110 @@ if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
 BOUNDARY_MODE_KEY = "fragment.boundary_mode"
 DEFAULT_BOUNDARY_MODE = "shadow"
 
+
+# ---------------------------------------------------------------------------
+# R17-A：轮次受理依据链（契约 §2.1）
+# ---------------------------------------------------------------------------
+# 规则：轮次开始/结束的任何内部位置写入都必须以**本回合自己的依据版本**做 CAS
+# （position_basis_version = 受理时冻结的 submit_basis_position_version），绝不
+# 临时读 current_position_version() —— 后者会把用户后来的真实导航「洗白」成旧轮次
+# 的合法前提，旧排队轮次于是覆盖用户的新导航（P1-1）。
+#
+# 链的推进只认**本回合自己命令结果自带的版本**（CommandResult / NavigationResult）：
+# 成功才推进、重放不推进、被 rejected/superseded 时只记事实（position_basis_superseded
+# + trace）。basis=None 的旧调用方保持旧行为（链为 None → 每次都读当前版本）。
+
+
+def _basis_chain(ctx) -> int | None:
+    """本轮内部位置写的 CAS 依据版本；None = 旧调用方（basis=None，保持旧行为）。"""
+    value = getattr(ctx, "position_basis_version", None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _current_position_version(app) -> int:
+    """旧调用方（无受理依据）的旧行为入口：当场读取权威版本。"""
+    return int(app.position_state.current_position_version())
+
+
+def _trace_event(ctx, key: str, detail: str) -> None:
+    """Trace 是旁路：写不进去不能影响轮次。"""
+    tracer = getattr(ctx, "trace", None)
+    if tracer is None:
+        return
+    try:
+        tracer.write(key, detail)
+    except Exception:  # noqa: BLE001 - trace 失败不得改变业务事实
+        return
+
+
+def _set_basis_chain(ctx, result) -> None:
+    """本回合自己的命令成功后，只依据**该命令结果自带**的版本推进依据链。"""
+    try:
+        position_version = int(result.position_version)
+    except (AttributeError, TypeError, ValueError):
+        return
+    ctx.position_basis_version = position_version
+    try:
+        nav_version = int(result.nav_version)
+    except (AttributeError, TypeError, ValueError):
+        nav_version = None
+    if nav_version is not None:
+        ctx.position_basis_nav_version = nav_version
+
+
+def _accept_basis_command(ctx, action: str, result) -> bool:
+    """登记一次位置命令结果；返回命令是否被接受（被拒/冲突 → False）。
+
+    * 成功（applied / 非重放的导航结果）：用命令结果自带版本推进链；
+    * 重放：没有新的因果变化，链不动（保守：后续仍走 CAS）；
+    * rejected/superseded/conflict：只置 position_basis_superseded 并 trace，
+      绝不改读当前位置重试。
+    """
+    status = str(getattr(result, "status", "") or "")
+    if status in ("rejected", "superseded", "conflict"):
+        ctx.position_basis_superseded = True
+        _trace_event(
+            ctx,
+            f"{action}_superseded",
+            "status=%s code=%s" % (status, getattr(result, "code", None)),
+        )
+        return False
+    if bool(getattr(result, "replay", False)):
+        _trace_event(
+            ctx,
+            f"{action}_replay",
+            "command_id=%s" % (getattr(result, "command_id", None),),
+        )
+        return True
+    _set_basis_chain(ctx, result)
+    return True
+
+
+def _note_basis_divergence(ctx, app) -> bool:
+    """只读比较依据链与权威位置；不一致时记录「旧轮依据已失效」事实。
+
+    只用于**已经决定跳过**的分支（例如当前位置话题已经不同 / 有待接续选择）：
+    记录事实便于审计与后续断言，绝不据此回填依据或重试写入。
+    """
+    chain = _basis_chain(ctx)
+    if chain is None:
+        return False
+    try:
+        current = _current_position_version(app)
+    except Exception:  # noqa: BLE001 - 读不到就不猜
+        return False
+    if int(current) == int(chain):
+        return False
+    ctx.position_basis_superseded = True
+    _trace_event(
+        ctx, "position_basis_superseded", "chain=%s current=%s" % (chain, current)
+    )
+    return True
 
 
 def media_facts_note(entries: list[dict]) -> str:
@@ -444,6 +548,7 @@ class TurnOrchestrator:
     async def begin(self, ctx):
         from agent.memory.fragment import resolve_max_tokens, resolve_max_turns
         from agent.services.app import make_warning
+        from agent.services.navigation import PositionCommandRejected
         from agent.trace.recorder import TurnTracer
 
         app = self.app
@@ -484,7 +589,13 @@ class TurnOrchestrator:
             app.fragments.max_turns = resolve_max_turns(app.settings_store)
             # 阶段 4：内容长度也参与兜底（长度到点分块，但不代表任务完成）
             app.fragments.max_tokens = resolve_max_tokens(app.settings_store)
-            topic = ctx.initial_topic or app.current_topic()
+            # R17-A：没有显式话题时，受理依据里的 topic 是**提交那一刻**的真实值，
+            # 优先于 now 的当前位置（排队期间用户导航走了也不能改变本轮归属）。
+            topic = (
+                ctx.initial_topic
+                or getattr(ctx, "submit_basis_topic_id", None)
+                or app.current_topic()
+            )
 
             # ── 轮前：固定本轮归属（Topic / Fragment）──────────────────────
             # P1-01：这里**不做任何自然语言语义识别**——进入主循环之前不判断
@@ -502,20 +613,27 @@ class TurnOrchestrator:
                 if intent is not None and intent.state in ("registered", "resolved"):
                     # R16：落实接续经统一入口（apply_continuation 转换，nav 不推进）。
                     # 内部前提被并发真实导航替代时 superseded：如实跳过，不覆盖用户选择。
-                    from agent.services.navigation import PositionCommandRejected
-
+                    # R17-A：落实接续是本回合自己的内部位置写 —— 有受理依据时必须
+                    # 用依据链做 CAS（排队期间用户改选/导航会使旧依据失效 → 被拒后
+                    # 只 trace 跳过，不落实旧选择、也不覆盖用户的新选择）。
+                    basis_chain = _basis_chain(ctx)
                     try:
                         applied = app.navigation.apply_continuation(
                             intent.topic_id,
                             ctx.intent_id,
                             turn_id=ctx.turn_id,
+                            expected_position_version=basis_chain,
                         )
                     except PositionCommandRejected as exc:
                         ctx.trace.write(
                             "apply_continuation_skipped",
                             str(getattr(exc.result, "code", None) or exc),
                         )
+                        if basis_chain is not None:
+                            ctx.position_basis_superseded = True
                     else:
+                        if basis_chain is not None:
+                            _accept_basis_command(ctx, "apply_continuation", applied)
                         topic = applied.topic_id
                         fragment_id = applied.fragment_id
                         intent_version = intent.version
@@ -556,20 +674,44 @@ class TurnOrchestrator:
             if active_anchor is None or active_anchor.topic_id != topic:
                 # 例行补锚点：不是用户/工具的导航决策，不推进导航版本（P1-04）。
                 # R16：internal_refine 转换（确定性 scope 带 phase，expected_position_version 对前提做 CAS）。
-                refined = app.navigation.enter_topic(
-                    topic,
-                    advance_nav_version=False,
-                    turn_id=ctx.turn_id,
-                    expected_position_version=int(
-                        app.position_state.current_position_version()
-                    ),
-                    internal_scope=f"{ctx.turn_id}:begin:{topic}",
-                    phase="begin",
+                # R17-A（P1-1）：有受理依据时用**依据链**做 CAS —— 本轮排队期间用户
+                # 已经导航走了的话，这次补锚必须被拒（trace 记录 + 跳过），绝不把
+                # 当前位置改回轮次话题；无依据旧调用方保持旧行为（临时读当前版本）。
+                basis_chain = _basis_chain(ctx)
+                expected_position = (
+                    basis_chain
+                    if basis_chain is not None
+                    else _current_position_version(app)
                 )
-                if refined.changed:
-                    await app._publish_anchor_event(
-                        position=refined.position, command_id=refined.command_id
+                try:
+                    refined = app.navigation.enter_topic(
+                        topic,
+                        advance_nav_version=False,
+                        turn_id=ctx.turn_id,
+                        expected_position_version=expected_position,
+                        internal_scope=f"{ctx.turn_id}:begin:{topic}",
+                        phase="begin",
                     )
+                except PositionCommandRejected as exc:
+                    if basis_chain is None:
+                        raise
+                    ctx.position_basis_superseded = True
+                    _trace_event(
+                        ctx,
+                        "begin_anchor_superseded",
+                        "expected_position=%s actual_or_code=%s"
+                        % (
+                            expected_position,
+                            getattr(exc.result, "code", None),
+                        ),
+                    )
+                else:
+                    if basis_chain is not None:
+                        _accept_basis_command(ctx, "begin_anchor", refined)
+                    if refined.changed:
+                        await app._publish_anchor_event(
+                            position=refined.position, command_id=refined.command_id
+                        )
         return adapter
 
     def _snapshot_decision_context(self, ctx) -> None:
@@ -709,6 +851,10 @@ class TurnOrchestrator:
                         anchor_topic,
                     ),
                 )
+        # R17-A（P1-1）：受理依据链的只读复核。链与当前权威位置不一致 = 本轮内部
+        # 位置写的依据已被用户（装配期间）的新导航替代：只记录事实，不更新链、
+        # 也不用当前位置回填；真正写入保护仍由每条内部命令的 CAS 兜底。
+        _note_basis_divergence(ctx, app)
         return state
 
     async def build_context(self, ctx, adapter) -> _Plan:
@@ -1886,15 +2032,20 @@ class TurnOrchestrator:
                 "interactive_no_reply" if interactive_no_reply else "no_formal_answer",
             )
             return final_topic
-        assistant_msg_id, _ = app.memory.append_message(
+        # R17-A（契约 §2.5）：普通正式回答改走冻结的统一保存入口（answer_key 身份、
+        # 唯一性、共享暂存收口都在它内部完成；签名冻结，D 负责真实实现）。这里只
+        # 消费返回的 answer_id，原有 formal_answer / 互动无回复前提与 trace 语义不变。
+        saved = save_normal_answer(
+            app,
             topic_id=final_topic,
-            role="assistant",
+            turn_id=ctx.turn_id,
+            user_message_id=getattr(ctx, "user_message_id", None),
             content=result.final_content or "",
             content_type="text",
             model=adapter.model,
             raw=verification_raw(result),
-            turn_id=ctx.turn_id,
         )
+        assistant_msg_id = saved["answer_id"]
         ctx.final_verification = getattr(result, "verification", None)
         ctx.trace.write("messages", assistant_msg_id)
         app.bindings.mark_write_closed(ctx.turn_id)
@@ -2143,6 +2294,11 @@ class TurnOrchestrator:
         ):
             ctx.trace.write("tool_nav_rebind_skipped", topic_id)
             return False
+        # R17-A（契约 §2.1）：本回合自己的工具导航/已获批准操作是**真实因果**，
+        # 必须把权威命令结果并进依据链，否则轮末 advance_anchor 会把自己的工具
+        # 导航误判成 stale。捕获放在前提全成立之后：用户若在本轮之后又导航走了
+        # （binding 收尾 / Anchor 已不在工具目标话题），这里绝不更新链。
+        self._capture_tool_nav_basis(ctx)
         previous_topic = binding.topic_id
         if previous_topic == topic_id:
             return False
@@ -2162,6 +2318,55 @@ class TurnOrchestrator:
         ctx.bound_topic = topic_id
         ctx.bound_fragment_id = target.id
         ctx.trace.write("tool_nav_rebind", f"{previous_topic} -> {topic_id}/{target.id}")
+        return True
+
+    def _capture_tool_nav_basis(self, ctx) -> bool:
+        """本回合自己的工具导航命令结果 → 依据链的因果更新（R17-A 契约 §2.1）。
+
+        为什么只能在文件内最小捕获：现有工具导航钩子
+        services/navigation.py::note_tool_navigation 只暴露 topic_id，不透出
+        position_version（该文件不归 A 改）。这里**不读当前权威位置**（那会把用户
+        后来的导航误当成本回合因果），只读统一入口按 turn_id 落下的**本回合自己
+        的命令结果行**（identity_kind=operation = 工具/审批的真实执行身份）；没有
+        本回合命令行就不更新链。调用点保证：本回合绑定仍未收尾、Anchor 仍停在工具
+        目标话题 —— 任一不成立（用户后来导航走了）都不会走到这里。
+        """
+        current = _basis_chain(ctx)
+        if current is None:
+            return False
+        turn_id = str(getattr(ctx, "turn_id", "") or "")
+        if not turn_id:
+            return False
+        try:
+            row = self.app.conn.execute(
+                "SELECT position_version, nav_version FROM navigation_commands "
+                "WHERE turn_id = ? AND status = 'applied' AND identity_kind = 'operation' "
+                "ORDER BY rowid DESC LIMIT 1",
+                (turn_id,),
+            ).fetchone()
+        except Exception:  # noqa: BLE001 - 台账只读辅助，读不到就不更新链
+            return False
+        if row is None:
+            return False
+        try:
+            position_version = int(row["position_version"])
+        except (TypeError, ValueError):
+            return False
+        if position_version < current:
+            # 单调：更旧的命令行不得把依据链回退。
+            return False
+        ctx.position_basis_version = position_version
+        try:
+            nav_version = int(row["nav_version"])
+        except (TypeError, ValueError):
+            nav_version = None
+        if nav_version is not None:
+            ctx.position_basis_nav_version = nav_version
+        _trace_event(
+            ctx,
+            "tool_nav_basis_captured",
+            "position=%s nav=%s" % (position_version, nav_version),
+        )
         return True
 
     async def post_turn(self, ctx, adapter, plan: _Plan, final_topic: str) -> None:
@@ -2184,14 +2389,22 @@ class TurnOrchestrator:
                 # R16（§3.3/§14.5）：封存完成后由 orchestrator 调 auto_segment 转换
                 #（position_version 一律 +1，nav_version 不推进，pending 不动），
                 # 再广播一次同源完整位置事件 —— 内部推进也让前端能接受。
+                # R17-A（契约 §2.1）：轮末容量分段同样是本回合自己的内部位置写：
+                # 有受理依据时以依据链做 CAS（排队期间用户导航走了 → 被拒后只
+                # trace，不强行把位置/版本推进到旧轮次的片段上）。
+                basis_chain = _basis_chain(ctx)
                 segment = app.navigation.apply_auto_segment(
                     final_topic,
                     sealed.id,
                     turn_id=getattr(ctx, "turn_id", None),
-                    expected_position_version=int(
-                        app.position_state.current_position_version()
+                    expected_position_version=(
+                        basis_chain
+                        if basis_chain is not None
+                        else _current_position_version(app)
                     ),
                 )
+                if basis_chain is not None:
+                    _accept_basis_command(ctx, "auto_segment", segment)
                 if segment.status == "applied":
                     await app._publish_anchor_event(
                         position=segment.position, command_id=segment.command_id
@@ -2326,7 +2539,13 @@ class TurnOrchestrator:
 
         if mode != "enabled" or not decision.is_split or decision.reason != REASON_PHASE_CHANGE:
             return
-        before_position = int(app.position_state.current_position_version())
+        # R17-A（契约 §2.1）：边界分段是本回合自己的内部位置写，有受理依据时以
+        # 依据链做 CAS；被拒只 trace，不强行推进（不能把旧轮次的分段落到用户
+        # 后来导航到的位置上）。
+        basis_chain = _basis_chain(ctx)
+        before_position = (
+            basis_chain if basis_chain is not None else _current_position_version(app)
+        )
         sealed = app.memory_lifecycle.seal_fragment(
             topic, reason="stage_change", tracer=ctx.trace
         )
@@ -2341,6 +2560,8 @@ class TurnOrchestrator:
             expected_position_version=before_position,
             source="turn.boundary_segment",
         )
+        if basis_chain is not None:
+            _accept_basis_command(ctx, "boundary_segment", segment)
         if segment.status not in ("applied", "replay"):
             if ctx.trace is not None:
                 ctx.trace.write("boundary_segment_skipped", str(segment.code or segment.status))
@@ -2353,16 +2574,27 @@ class TurnOrchestrator:
             same_stage=False,
         )
         ctx.bound_fragment_id = child
+        refine_expected = (
+            _basis_chain(ctx)
+            if basis_chain is not None
+            else int(segment.position_version)
+        )
+        if refine_expected is None:
+            if ctx.trace is not None:
+                ctx.trace.write("boundary_refine_skipped", "position_basis_missing")
+            return
         refined = app.navigation.apply_internal_refine(
             topic,
             child,
             turn_id=getattr(ctx, "turn_id", None),
             phase="boundary",
-            expected_position_version=int(segment.position_version),
+            expected_position_version=refine_expected,
             source="turn.boundary_split",
             internal_scope=f"{getattr(ctx, 'turn_id', None)}:boundary:{child}",
             causal={"sealed_fragment_id": sealed.id},
         )
+        if basis_chain is not None:
+            _accept_basis_command(ctx, "boundary_refine", refined)
         if refined.status not in ("applied", "replay") and ctx.trace is not None:
             ctx.trace.write("boundary_refine_skipped", str(refined.code or refined.status))
         if ctx.trace is not None:
@@ -2390,6 +2622,7 @@ class TurnOrchestrator:
             ctx.trace.write(
                 "anchor_skipped", "%s pending_intent=%s" % (fragment_id, pending.intent_id)
             )
+            _note_basis_divergence(ctx, app)
             return
         anchors = app.navigation.anchors
         active = anchors.get_active()
@@ -2397,6 +2630,7 @@ class TurnOrchestrator:
         # 本轮只把自己的片段推进限制在**仍然停在同一个话题**时。
         if active is not None and active.topic_id and active.topic_id != final_topic:
             ctx.trace.write("anchor_kept", f"{active.topic_id} (turn_fragment={fragment_id})")
+            _note_basis_divergence(ctx, app)
             return
         # R16：轮末推进到本轮真实片段 + 成功收尾消费接续意图 = 同一个 internal_refine
         # 转换（nav_version 不推进，position_version 在真实变化时 +1；无变化不广播）。
@@ -2406,6 +2640,10 @@ class TurnOrchestrator:
             PositionTransition,
         )
 
+        # R17-A（P1-1）：轮末推进必须用**受理依据链**做 CAS。用户在排队期间/轮次
+        # 期间做过新的导航 → 链与权威位置不一致 → 这里被拒（trace + skipped），
+        # 绝不临时读 current_position_version() 洗白旧动作、覆盖用户的新位置。
+        basis_chain = _basis_chain(ctx)
         result = app.position_state.apply(
             PositionTransition(
                 kind=KIND_INTERNAL_REFINE,
@@ -2417,8 +2655,10 @@ class TurnOrchestrator:
                 initiator="internal",
                 target_topic_id=final_topic,
                 target_fragment_id=fragment_id,
-                expected_position_version=int(
-                    app.position_state.current_position_version()
+                expected_position_version=(
+                    basis_chain
+                    if basis_chain is not None
+                    else _current_position_version(app)
                 ),
                 pending="consume" if ctx.intent_id else "keep",
                 pending_intent_id=ctx.intent_id if ctx.intent_id else None,
@@ -2427,7 +2667,11 @@ class TurnOrchestrator:
         )
         if result.status not in ("applied", "replay"):
             ctx.trace.write("anchor_skipped", str(result.code or result.status))
+            if basis_chain is not None:
+                _accept_basis_command(ctx, "advance_anchor", result)
             return
+        if basis_chain is not None:
+            _accept_basis_command(ctx, "advance_anchor", result)
         if result.replay or not result.changed:
             return
         await app._publish_anchor_event(

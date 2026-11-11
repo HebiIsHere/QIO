@@ -186,6 +186,24 @@ def _terminal(ctx: "TurnContext") -> bool:
     return ctx.status in TERMINAL_STATUSES
 
 
+def _basis_text(value: Any) -> str | None:
+    """受理依据里的字符串字段：None/空白如实为 None（不猜、不补）。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _basis_int(value: Any) -> int | None:
+    """受理依据里的版本字段：None/非法如实为 None（绝不事后重读当前位置补齐）。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class TurnContext:
     """All state that belongs to exactly one turn."""
@@ -259,6 +277,23 @@ class TurnContext:
     # 装配后复核状态：fresh / superseded / unknown（由 _verify_decision_basis 写）；
     # causal = 同轮工具真实导航成功后的因果更新。None = 旧路径还没复核。
     decision_basis_state: str | None = None
+    # R17-A（契约 §2.1）：**受理依据**。提交那一刻的位置事实冻结在这里；轮内
+    # 任何内部位置写入都以 position_basis_version 做 CAS，绝不临时读
+    # current_position_version() 把「用户后来的新导航」洗白成旧轮次的合法前提。
+    # basis=None 的旧调用方全部保持默认值（行为不变）；旧测试替身用 getattr 兼容。
+    submit_basis_topic_id: str | None = None
+    submit_basis_fragment_id: str | None = None
+    submit_basis_intent_id: str | None = None
+    submit_basis_intent_version: int | None = None
+    submit_basis_nav_version: int | None = None
+    submit_basis_position_version: int | None = None
+    # 本回合自己写位置后的 CAS 链：初始值 = submit_basis_position_version；之后
+    # **只用本回合自己命令结果自带的版本**推进（成功才推进，重放不推进）。
+    position_basis_version: int | None = None
+    position_basis_nav_version: int | None = None
+    # 依据链与权威位置不一致（被 superseded/rejected）时置 True：只记录事实，
+    # 后续写入仍由各自的 CAS 拒绝，绝不改读当前位置重试。
+    position_basis_superseded: bool = False
 
     def __post_init__(self) -> None:
         # F05 事实：受理那一刻就已经在排队（前面还有主 turn / 队列非空）。
@@ -293,6 +328,26 @@ class TurnContext:
     board_attempt: int = 1
     # 本轮由 board_wait_for_input 交付、由程序在轮末呈现一次的问题（Lead 接线写入）。
     board_delivered_questions: list[dict] = field(default_factory=list)
+
+    def bind_submit_basis(self, basis: dict | None) -> None:
+        """把**提交那一刻**的受理依据复制进本轮（R17-A 契约 §2.1）。
+
+        basis=None 表示旧调用方：所有字段保持默认值，行为完全不变。
+        版本字段按真实值复制；读不出来的版本保持 None —— 绝不事后重读当前位置
+        补齐（补出来的值只会让旧动作通过 CAS 覆盖用户后来的导航）。
+        """
+        if basis is None:
+            return
+        self.submit_basis_topic_id = _basis_text(basis.get("topic_id"))
+        self.submit_basis_fragment_id = _basis_text(basis.get("fragment_id"))
+        self.submit_basis_intent_id = _basis_text(basis.get("intent_id"))
+        self.submit_basis_intent_version = _basis_int(basis.get("intent_version"))
+        self.submit_basis_nav_version = _basis_int(basis.get("nav_version"))
+        self.submit_basis_position_version = _basis_int(basis.get("position_version"))
+        # CAS 链从受理那一刻的位置版本起链；之后只由本回合自己的命令结果推进。
+        self.position_basis_version = self.submit_basis_position_version
+        self.position_basis_nav_version = self.submit_basis_nav_version
+        self.position_basis_superseded = False
 
 
 class TurnManager:
@@ -475,6 +530,7 @@ class TurnManager:
         intent_id: str | None = None,
         prepare_id: str | None = None,
         request_id: str | None = None,
+        basis: dict | None = None,
     ) -> TurnContext:
         """预留一轮：分配 turn_id、落台账行 —— **不入队、不发 TURN_START**。
 
@@ -495,6 +551,9 @@ class TurnManager:
             # 它不会出现在队列快照里，前端沿用请求进行中的「发送中」。
             status="preparing",
         )
+        # 0) 受理依据（R17-A 契约 §2.1）：与 turn 一起冻结，轮内内部位置写全部
+        #    以它为依据做 CAS。basis=None 的旧调用方行为完全不变。
+        ctx.bind_submit_basis(basis)
         # 1) persist：受理的唯一持久化入口（契约 C2）—— 写不进去 = 没有被接受，
         # 绝不留下「API 回了 accepted、库里没有痕迹」的预留。
         # 预留同样算已经受理：准备期间进程退出不能让这条消息静默消失。
@@ -764,6 +823,7 @@ class TurnManager:
         intent_id: str | None = None,
         turn_id: str | None = None,
         request_id: str | None = None,
+        basis: dict | None = None,
     ) -> TurnContext:
         """受理一条 turn：**先持久化，成功之后才入队并返回**（契约 C2）。
 
@@ -795,6 +855,9 @@ class TurnManager:
             # 就是「已放行」（F04 的受理事实据此区分准备期放弃）。
             activated=True,
         )
+        # 0) 受理依据（R17-A 契约 §2.1）：提交那一刻的位置事实连同 turn 一起冻结。
+        #    basis=None 的旧调用方行为完全不变（轮内仍按旧路径临时读当前位置）。
+        ctx.bind_submit_basis(basis)
         # 1) persist：台账写失败 → 这条消息没有被接受，绝不入队（契约 C2）。
         self._persist_accept(ctx, status=ctx.status)
         # 2) dispatch：到这里台账已经有了这一行，入队才是安全的。
