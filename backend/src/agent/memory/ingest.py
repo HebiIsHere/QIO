@@ -87,6 +87,7 @@ class MemoryWriter:
         raw: dict | None = None,
         fragment_id: str | None = None,
         turn_id: str | None = None,
+        answer_key: str | None = None,
     ) -> tuple[str, Fragment | None]:
         """Append one message; returns (message_id, closed_fragment).
 
@@ -94,6 +95,10 @@ class MemoryWriter:
         threshold and the fragment was closed. Closing itself does not
         summarize — the caller invokes the summarizer via
         close_open_fragment().
+
+        answer_key（R17-D，可选）：统一逻辑答案身份（messages.answer_key 部分唯一索引）。
+        普通正式回答与恢复回答共用同一身份；旧的系统通知 / 用户消息 / 工具消息不传
+        （保持 NULL，不参与唯一约束）。
         """
         fragment = self._resolve_fragment(
             topic_id=topic_id, fragment_id=fragment_id, turn_id=turn_id
@@ -102,8 +107,8 @@ class MemoryWriter:
         now = self._now()
         self.conn.execute(
             "INSERT INTO messages (id, fragment_id, role, content, content_type, "
-            "model, raw, created_at, storage_tier, turn_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hot', ?)",
+            "model, raw, created_at, storage_tier, turn_id, answer_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hot', ?, ?)",
             (
                 message_id,
                 fragment.id,
@@ -114,6 +119,7 @@ class MemoryWriter:
                 json.dumps(raw or {}, ensure_ascii=False),
                 now,
                 turn_id,
+                answer_key,
             ),
         )
         if fragment.start_message_id is None:
