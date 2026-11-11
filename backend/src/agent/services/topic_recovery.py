@@ -47,6 +47,14 @@ R14-B 的幂等边界（F03/F04/F13）
    导出 / 删除清理天然统一，长期只保留一份正文。
 6. 恢复前复核导航版本（`recovery_nav_version`）：用户后来的手动选择不会被覆盖；
    恢复本身不推进导航版本。日志/错误文本一律过 `agent/trace/redact.py`。
+7. **普通正式回答接入统一答案身份（R17-D / 契约 §2.5）**：:func:`save_normal_answer` 与恢复
+   回答共用 :func:`answer_key_for`；正式保存事务内先查既有正式答案（含旧库 answer_key 为空的
+   **可靠归属**：同 turn / 同原用户消息 / 该轮恰好一条正式 assistant 候选 / 同片段同话题，
+   不满足当作不存在、不猜），已存在则复用原 answer_id、不新增第二条；保存成功与同 answer_key
+   的 pending 恢复记录、执行行（answered / answer_id / 清暂存）**同一事务**提交；保存失败先
+   写共享暂存（run 行 staged_*，phase=staged）再抛**原异常**，任意同 answer_key 的恢复记录之后
+   只补存、不再调用模型；旧库可靠命中时同事务补写 answer_key（默认不新增迁移：SQLite 无
+   sha256，运行时懒关联比批量迁移更可靠）。
 
 阶段/失败语义的唯一来源仍是 `services/topic_operation.py`（不在这里另造一套）。
 """
@@ -1560,14 +1568,146 @@ def _answer_attribution_problem(
     return None
 
 
+#: 既有正式答案读取列（R17-D：统一答案身份需要轮次归属做一致性复核）。
+_ANSWER_ROW_COLUMNS = "id, content, turn_id, answer_key"
+
+
 def _find_answer_by_key(
     conn: sqlite3.Connection, answer_key: str | None
 ) -> sqlite3.Row | None:
     if not answer_key:
         return None
     return conn.execute(
-        "SELECT id, content FROM messages WHERE answer_key = ? LIMIT 1",
+        f"SELECT {_ANSWER_ROW_COLUMNS} FROM messages WHERE answer_key = ? LIMIT 1",
         (str(answer_key),),
+    ).fetchone()
+
+
+def _messages_answer_key_available(conn: sqlite3.Connection) -> bool:
+    """messages.answer_key（迁移 79）是否可用。
+
+    R17 契约 §14.11：迁移列缺失时**不得静默降级**（不能假装有统一答案身份），
+    这里只给调用方一个明确的 False，由调用方抛可恢复错误。
+    """
+    try:
+        rows = conn.execute("PRAGMA table_info(messages)").fetchall()
+    except sqlite3.Error:  # noqa: BLE001 - 读不动同样按「不可用」处理
+        return False
+    return any(str(row[1]) == "answer_key" for row in rows)
+
+
+def _reliable_legacy_answer(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: str,
+    turn_id: str,
+    user_message_id: str | None,
+    fragment_id: str | None = None,
+) -> sqlite3.Row | None:
+    """旧库 answer_key 为空的历史正式回答：只有**可靠归属**才返回候选行，否则 None。
+
+    R17 契约 §2.5 D4 的必要条件（全部满足才关联，不猜）：
+    * 原用户消息存在、属于同一轮次、属于目标话题的同一片段；
+    * 显式 fragment_id 必须与原用户消息所在片段一致；
+    * 该轮**恰好一条**正式 assistant 候选（answer_key 为空、且不是迟到答案补写行）；
+    * 该轮没有任何带 answer_key 的答案（已有其它逻辑答案 -> 不关联，避免双份正文）。
+    """
+    user_message = str(user_message_id or "")
+    turn = str(turn_id or "")
+    if not user_message or not turn:
+        return None
+    user_row = conn.execute(
+        "SELECT fragment_id, turn_id FROM messages WHERE id = ? AND role = 'user'",
+        (user_message,),
+    ).fetchone()
+    if user_row is None:
+        return None
+    if str(user_row["turn_id"] or "") != turn:
+        return None
+    user_fragment = str(user_row["fragment_id"] or "")
+    expected_fragment = str(fragment_id or "") or user_fragment
+    if not expected_fragment or expected_fragment != user_fragment:
+        return None
+    fragment = _fragment_row(conn, expected_fragment)
+    if fragment is None or str(fragment["topic_id"]) != str(topic_id or ""):
+        return None
+    keyed = conn.execute(
+        "SELECT 1 FROM messages WHERE turn_id = ? AND answer_key IS NOT NULL LIMIT 1",
+        (turn,),
+    ).fetchone()
+    if keyed is not None:
+        return None
+    candidates = conn.execute(
+        "SELECT id, content FROM messages WHERE role = 'assistant' AND turn_id = ? "
+        "AND answer_key IS NULL AND late_answer_of_message_id IS NULL",
+        (turn,),
+    ).fetchall()
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
+def _backfill_legacy_answer_key(
+    conn: sqlite3.Connection, answer_key: str, message_id: str
+) -> str:
+    """旧库可靠命中：在**调用方事务内**只补 messages.answer_key 一列（不动正文/归属）。
+
+    并发唯一性仍由 messages.answer_key 部分唯一索引兜底：撞唯一约束时回查既有一份。
+    """
+    try:
+        cursor = conn.execute(
+            "UPDATE messages SET answer_key = ? WHERE id = ? AND answer_key IS NULL",
+            (str(answer_key), str(message_id)),
+        )
+    except sqlite3.IntegrityError:
+        existing = _find_answer_by_key(conn, answer_key)
+        if existing is None:
+            raise
+        return str(existing["id"])
+    if cursor.rowcount != 1:
+        existing = _find_answer_by_key(conn, answer_key)
+        if existing is None:
+            raise RecoveryPersistError(
+                "旧库正式答案补写 answer_key 失败（行已被并发改动，不猜）"
+            )
+        return str(existing["id"])
+    return str(message_id)
+
+
+def _resolve_existing_answer(
+    conn: sqlite3.Connection,
+    answer_key: str,
+    *,
+    topic_id: str,
+    turn_id: str,
+    user_message_id: str | None,
+    fragment_id: str | None = None,
+    backfill: bool = True,
+) -> sqlite3.Row | None:
+    """既有正式答案的统一查找（普通保存与恢复路径共用，R17 契约 §2.5 / I12）。
+
+    * 先按 answer_key 查（新代码路径）；
+    * 再按旧库可靠归属规则查（answer_key 为空的历史答案）；backfill=True 时
+      在**调用方事务内**补写 answer_key；
+    * 两条都不成立 -> None（不猜）。
+    """
+    row = _find_answer_by_key(conn, answer_key)
+    if row is not None:
+        return row
+    legacy = _reliable_legacy_answer(
+        conn,
+        topic_id=topic_id,
+        turn_id=turn_id,
+        user_message_id=user_message_id,
+        fragment_id=fragment_id,
+    )
+    if legacy is None:
+        return None
+    if not backfill:
+        return legacy
+    message_id = _backfill_legacy_answer_key(conn, answer_key, str(legacy["id"]))
+    return _find_answer_by_key(conn, answer_key) or conn.execute(
+        f"SELECT {_ANSWER_ROW_COLUMNS} FROM messages WHERE id = ?", (str(message_id),)
     ).fetchone()
 
 
@@ -1627,7 +1767,16 @@ def _save_answer(
     with transaction(conn):
         if not _execution_still_owned(conn, execution):
             raise _ExecutionLost(answer_key)
-        row = _find_answer_by_key(conn, answer_key)
+        # R17-D：既有答案查找与普通正式保存共用同一套可靠规则（含旧库空 answer_key 的
+        # 可靠归属 + 同事务补写）；共享暂存 / 写入权校验语义不变（I10 / I11 / I12）。
+        row = _resolve_existing_answer(
+            conn,
+            answer_key,
+            topic_id=str(record.get("topic_id") or ""),
+            turn_id=str(record.get("turn_id") or ""),
+            user_message_id=record.get("user_message_id"),
+            fragment_id=record.get("fragment_id"),
+        )
         if row is not None:
             message_id = str(row["id"])
             stored_answer = str(row["content"] or answer)
@@ -1655,6 +1804,238 @@ def _save_answer(
     return {"answer_id": message_id, "answer": stored_answer}
 
 
+# ── 普通正式回答：统一答案身份保存入口（R17-D / P2-4，契约 §2.5）────────
+
+
+def _validate_normal_answer_attribution(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: str,
+    turn_id: str,
+    user_message_id: str | None,
+    fragment_id: str | None,
+) -> None:
+    """I14：普通正式回答落库前的归属前提（原轮次 / 原用户消息 / 片段 / 话题一致）。
+
+    不成立时**不得**伪装成正式回答落库：抛 RecoveryPersistError（可恢复，正文由调用方
+    写入共享暂存，之后任意恢复记录只补存）。不猜归属、不搬原问题。
+    """
+    user_message = str(user_message_id or "")
+    if not user_message:
+        return
+    row = conn.execute(
+        "SELECT role, fragment_id, turn_id FROM messages WHERE id = ?",
+        (user_message,),
+    ).fetchone()
+    if row is None:
+        raise RecoveryPersistError("普通回答的原用户消息不存在（不猜归属）")
+    if str(row["role"]) != "user":
+        raise RecoveryPersistError("普通回答的原用户消息不是 user 角色（不猜归属）")
+    message_turn = str(row["turn_id"] or "")
+    if message_turn and str(turn_id or "") and message_turn != str(turn_id):
+        raise RecoveryPersistError("普通回答的原用户消息不属于该轮次（不猜归属）")
+    message_fragment = str(row["fragment_id"] or "")
+    if fragment_id and message_fragment and str(fragment_id) != message_fragment:
+        raise RecoveryPersistError("普通回答显式片段与原用户消息所在片段不一致（不猜归属）")
+    if not message_fragment:
+        raise RecoveryPersistError("普通回答的原用户消息没有片段归属（不猜归属）")
+    fragment = _fragment_row(conn, message_fragment)
+    if fragment is None:
+        raise RecoveryPersistError("普通回答的原用户消息片段不存在（不猜归属）")
+    if topic_id and str(fragment["topic_id"]) != str(topic_id):
+        raise RecoveryPersistError("普通回答的原用户消息不属于目标话题（不猜归属）")
+
+
+def _insert_normal_answer_message(
+    conn: sqlite3.Connection,
+    *,
+    memory: Any,
+    topic_id: str,
+    turn_id: str,
+    content: str,
+    content_type: str,
+    model: str | None,
+    raw: dict | None,
+    fragment_id: str | None,
+    answer_key: str,
+) -> str:
+    """按普通回答原有语义写一条 assistant 消息：片段由轮次绑定解析 + 统一 answer_key。
+
+    仍走 MemoryWriter（归属 / 绑定 / 片段边界与旧行为一致），只额外携带 answer_key。
+    """
+    memory_conn = getattr(memory, "conn", None)
+    if memory_conn is not None and memory_conn is not conn:
+        raise RecoveryPersistError("memory 写入通道与当前数据库连接不一致（拒绝写入）")
+    message_id, _closed = memory.append_message(
+        topic_id=str(topic_id),
+        role="assistant",
+        content=str(content or ""),
+        content_type=str(content_type or "text"),
+        model=model,
+        raw=raw,
+        fragment_id=fragment_id,
+        turn_id=str(turn_id or "") or None,
+        answer_key=str(answer_key),
+    )
+    return str(message_id)
+
+
+def _finalize_normal_answer_locked(
+    conn: sqlite3.Connection, answer_key: str, answer_id: str
+) -> list[str]:
+    """在**调用方事务内**收口：同 answer_key 的 pending 恢复记录 + 执行行置 answered。
+
+    普通正式回答也接入同一答案身份（I12）：成功后不得留下同 answer_key 的 pending
+    恢复记录或 running 执行行；旧执行者随后迟到的写入由写入权 CAS 拒绝（I11）。
+    """
+    closed_record_ids: list[str] = []
+    if _table_available(conn):
+        pending = conn.execute(
+            f"SELECT record_id FROM {TOPIC_RECOVERY_TABLE} "
+            "WHERE status = 'pending' AND answer_key = ? ORDER BY record_id",
+            (str(answer_key),),
+        ).fetchall()
+        for row in pending:
+            record_id = str(row["record_id"])
+            _mark_answered_row(conn, record_id, str(answer_id))
+            closed_record_ids.append(record_id)
+    if _run_table_available(conn):
+        # 执行行以 answer_key 为主键：普通回答也留下「这份逻辑答案已收口」的持久事实，
+        # 之后的任意恢复入口直接拿到 answered / answer_id，不再尝试生成或补存。
+        _ensure_execution_row(conn, answer_key)
+        conn.execute(
+            f"UPDATE {ANSWER_RUN_TABLE} SET status = 'answered', phase = ?, answer_id = ?, "
+            "staged_answer = '', staged_at = NULL, staged_model = NULL, owner = NULL, "
+            "owner_instance = NULL, claim_until = NULL, updated_at = ? "
+            "WHERE answer_key = ?",
+            (PHASE_ANSWERED, str(answer_id), _now_iso(), str(answer_key)),
+        )
+    return closed_record_ids
+
+
+def _save_normal_answer_locked(
+    conn: sqlite3.Connection,
+    memory: Any,
+    *,
+    answer_key: str,
+    topic_id: str,
+    turn_id: str,
+    user_message_id: str | None,
+    content: str,
+    content_type: str,
+    model: str | None,
+    raw: dict | None,
+    fragment_id: str | None,
+) -> dict:
+    """正式保存事务：唯一答案写入 / 复用 + 记录与执行行收口，全部原子提交。"""
+    created = False
+    with transaction(conn):
+        row = _resolve_existing_answer(
+            conn,
+            answer_key,
+            topic_id=str(topic_id),
+            turn_id=str(turn_id or ""),
+            user_message_id=user_message_id,
+            fragment_id=fragment_id,
+        )
+        if row is not None:
+            stored_turn = str(row["turn_id"] or "")
+            if stored_turn and str(turn_id or "") and stored_turn != str(turn_id):
+                raise RecoveryPersistError(
+                    "既有逻辑答案的轮次归属与本次保存不一致（拒绝复用，避免错挂）"
+                )
+            message_id = str(row["id"])
+        else:
+            _validate_normal_answer_attribution(
+                conn,
+                topic_id=str(topic_id),
+                turn_id=str(turn_id or ""),
+                user_message_id=user_message_id,
+                fragment_id=fragment_id,
+            )
+            try:
+                message_id = _insert_normal_answer_message(
+                    conn,
+                    memory=memory,
+                    topic_id=topic_id,
+                    turn_id=str(turn_id or ""),
+                    content=content,
+                    content_type=content_type,
+                    model=model,
+                    raw=raw,
+                    fragment_id=fragment_id,
+                    answer_key=answer_key,
+                )
+                created = True
+            except sqlite3.IntegrityError:
+                # 并发下另一执行者先写入同一逻辑答案：部分唯一索引保证只有一份正文，
+                # 回查既有行复用（不新增第二条）。
+                row = _find_answer_by_key(conn, answer_key)
+                if row is None:
+                    raise
+                message_id = str(row["id"])
+        closed_record_ids = _finalize_normal_answer_locked(
+            conn, answer_key, message_id
+        )
+    return {
+        "answer_id": str(message_id),
+        "created": created,
+        "existing": not created,
+        "closed_record_ids": closed_record_ids,
+        "answer_key": str(answer_key),
+        "user_message_id": user_message_id,
+    }
+
+
+def _stash_normal_answer_failure(
+    conn: sqlite3.Connection,
+    *,
+    answer_key: str,
+    answer: str,
+    failure: str,
+    model: str | None,
+) -> bool:
+    """普通保存失败：把正文写进**共享暂存唯一权威**（run 行）后由调用方抛出原异常。
+
+    返回 False = 没有安全写入（执行行已 answered / 另一个活跃执行者持有写入权 /
+    执行权表不可用）：这时**不覆盖**别人的暂存与租约（I11），调用方仍抛原异常。
+    """
+    if not _run_table_available(conn):
+        return False
+    now = _now_iso()
+    with transaction(conn):
+        row = _ensure_execution_row(conn, answer_key)
+        if row is None:
+            return False
+        current = _row_to_execution(row)
+        if current["status"] == "answered":
+            return False
+        if current["status"] == "running" and current["owner"]:
+            logger.warning(
+                "save_normal_answer: 跳过暂存（answer_key=%s 有活跃执行者持有写入权）：%s",
+                str(answer_key)[:12],
+                str(failure or "")[:200],
+            )
+            return False
+        cursor = conn.execute(
+            f"UPDATE {ANSWER_RUN_TABLE} SET status = 'pending', phase = ?, "
+            "staged_answer = ?, staged_at = ?, staged_model = ?, owner = NULL, "
+            "owner_instance = NULL, claim_until = NULL, updated_at = ? "
+            "WHERE answer_key = ? AND status != 'answered'",
+            (PHASE_STAGED, str(answer or ""), now, model, now, str(answer_key)),
+        )
+        if cursor.rowcount != 1:
+            return False
+        if _table_available(conn):
+            # 记录列 answer_text 不再是新暂存的权威：清掉迁移期残留，保证只有一份权威。
+            conn.execute(
+                f"UPDATE {TOPIC_RECOVERY_TABLE} SET answer_text = '', updated_at = ? "
+                "WHERE status = 'pending' AND answer_key = ? AND answer_text IS NOT NULL",
+                (now, str(answer_key)),
+            )
+    return True
+
+
 def save_normal_answer(
     scope: Any,
     *,
@@ -1667,44 +2048,77 @@ def save_normal_answer(
     raw: dict | None = None,
     fragment_id: str | None = None,
 ) -> dict:
-    """R17 冻结接口：普通正式回答的统一保存入口（脚手架占位，由 r17/D 实现）。
+    """R17 冻结接口：普通正式回答的统一保存入口（契约 §2.5 / P2-4）。
 
-    契约见 docs/topic-unify-r17-contract-20261111.md §2.5：
-    * 与恢复回答复用 :func:`answer_key_for`：按原轮次 + 原用户消息确定唯一逻辑答案身份；
-    * 正式保存时应用既有唯一性规则（messages.answer_key 部分唯一索引）：同一逻辑答案已存在
-      → 返回原 answer_id，不新增第二条正式消息；
-    * 同 answer_key 的 pending 恢复记录与执行行与答案写入**同一事务**收口；
-    * 保存失败时先把正文写入共享暂存（run 行 staged_*）再抛出，任意同 answer_key 的恢复
-      记录之后只补存、不再调用模型；
-    * 保留内容类型 / 模型信息 / 验证元数据 / 原轮次与片段归属。
+    与恢复回答复用 answer_key_for：answer_key = answer_key_for(turn_id,
+    user_message_id=user_message_id)（与恢复入口同一函数；普通轮必须有原用户消息，
+    缺失时按既有 operation_id 退化规则并记录，不静默造假）。
 
-    返回：`{"answer_id": str, "created": bool, "existing": bool,
-    "closed_record_ids": list[str], "answer_key": str}`。
+    * 正式保存事务内先按 answer_key 查既有正式答案（含旧库可靠归属规则）→ 已存在则
+      复用原 answer_id（不新增第二条），并把同 answer_key 的 pending 恢复记录与执行行
+      **同一事务**收口；不存在则按普通回答原有语义写入一条 assistant 消息（片段由轮次
+      绑定解析、content_type / model / raw / 原轮次全部保留，且带 answer_key）。
+    * 并发唯一性靠既有 messages.answer_key 部分唯一索引，冲突时回查既有一份。
+    * 保存失败时先把正文写入共享暂存唯一权威（run 行 staged_*，phase=staged）再抛出
+      **原异常**；暂存本身失败不掩盖原异常；另一个活跃执行者的暂存 / 租约不覆盖（I11）。
 
-    当前是脚手架占位实现（行为 = 旧 append_message，不写 answer_key）：由 r17/D 替换。
+    返回：{"answer_id": str, "created": bool, "existing": bool,
+    "closed_record_ids": list[str], "answer_key": str}。
     """
+    conn = _conn_of(scope)
+    if conn is None:
+        raise RecoveryPersistError("没有可用的数据库连接，普通正式回答无法保存")
     app = scope if hasattr(scope, "memory") else getattr(scope, "app", scope)
     memory = getattr(app, "memory", None)
-    if memory is None:
-        raise RecoveryPersistError("没有可用的 memory 写入通道，普通正式回答无法保存")
-    message_id, _ = memory.append_message(
-        topic_id=str(topic_id),
-        role="assistant",
-        content=str(content or ""),
-        content_type=str(content_type or "text"),
-        model=model,
-        raw=raw,
-        fragment_id=fragment_id,
-        turn_id=str(turn_id or "") or None,
-    )
-    return {
-        "answer_id": str(message_id),
-        "created": True,
-        "existing": False,
-        "closed_record_ids": [],
-        "answer_key": "",
-        "user_message_id": user_message_id,
-    }
+    turn = str(turn_id or "")
+    user_message = str(user_message_id or "") or None
+    if user_message:
+        answer_key = answer_key_for(turn, user_message_id=user_message)
+    else:
+        # 契约 §2.5：普通轮必须有原用户消息；缺失时按既有 operation_id 退化规则，
+        # 并留下可观察记录（不静默造假）。
+        logger.warning(
+            "save_normal_answer: 缺少原用户消息（turn_id=%s），按退化规则生成 answer_key",
+            turn,
+        )
+        answer_key = answer_key_for(turn, user_message_id=None)
+    try:
+        if memory is None:
+            raise RecoveryPersistError(
+                "没有可用的 memory 写入通道，普通正式回答无法保存"
+            )
+        if not _messages_answer_key_available(conn):
+            raise RecoveryPersistError(
+                "messages.answer_key 列不可用（迁移 79 未应用），"
+                "普通正式回答无法统一答案身份"
+            )
+        return _save_normal_answer_locked(
+            conn,
+            memory,
+            answer_key=answer_key,
+            topic_id=str(topic_id),
+            turn_id=turn,
+            user_message_id=user_message,
+            content=str(content or ""),
+            content_type=str(content_type or "text"),
+            model=model,
+            raw=raw,
+            fragment_id=fragment_id,
+        )
+    except Exception as original:  # noqa: BLE001 - 失败路径：先暂存正文，再抛原异常
+        try:
+            _stash_normal_answer_failure(
+                conn,
+                answer_key=answer_key,
+                answer=str(content or ""),
+                failure=_error_detail(original),
+                model=model,
+            )
+        except Exception:  # noqa: BLE001 - 暂存异常不得掩盖原异常
+            logger.warning(
+                "save_normal_answer: 失败暂存也失败（原异常优先抛出）", exc_info=True
+            )
+        raise
 
 
 def _stash_answer_failure(
@@ -2105,7 +2519,17 @@ async def _execute_claim(
     record["answer_key"] = execution["answer_key"]
 
     # 1) 唯一逻辑答案已经存在（并发 / 重复恢复记录）：只收口，不重复生成。
-    existing = _find_answer_by_key(conn, execution["answer_key"])
+    #    R17-D：与普通正式保存共用同一套可靠查找（含旧库空 answer_key 的可靠归属）；
+    #    这里只读判断，answer_key 的补写在 _save_answer 的事务内完成。
+    existing = _resolve_existing_answer(
+        conn,
+        execution["answer_key"],
+        topic_id=str(record.get("topic_id") or ""),
+        turn_id=str(record.get("turn_id") or ""),
+        user_message_id=record.get("user_message_id"),
+        fragment_id=record.get("fragment_id"),
+        backfill=False,
+    )
     if existing is not None:
         content = _message_content(conn, str(existing["id"])) or str(
             existing["content"] or ""
