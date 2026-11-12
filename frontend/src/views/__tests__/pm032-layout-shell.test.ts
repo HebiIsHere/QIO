@@ -270,6 +270,21 @@ describe("#76 工具区连续、轻量的承载面（文字/连线不从按钮�
   });
 });
 
+describe("#41 提交详情三态：有效空态 / 读取失败 / 上次结果（数据由 i-state 提供）", () => {
+  it("读取失败三态 + 重试入口；只有成功读取为空才允许空态文案", () => {
+    expect(submit).toContain("understandingLoadState");
+    expect(submit).toContain("understandingLoadedOnce");
+    expect(submit).toContain('data-im="submit-last-read-error"');
+    expect(submit).toContain('data-im="submit-last-read-retry"');
+    expect(submit).toContain('data-im="submit-last-result-empty"');
+    expect(submit).toContain("store.refreshUnderstanding()");
+    // 本次改动列表只在读取成功后渲染；失败处给「重试读取」而不是「本次没有改动」
+    expect(submit).toContain('v-if="!pendingError"');
+    expect(submit).toContain('data-im="submit-details-retry"');
+    expect(submit).toContain("本次没有改动");
+  });
+});
+
 describe("文案 1/2/3：回执/改动/详情", () => {
   it("文案 1：待确认只写「提交结果待确认，改动已保留」；查证无记录用「暂未查到这次提交」", () => {
     expect(submit).toContain("提交结果待确认，改动已保留");

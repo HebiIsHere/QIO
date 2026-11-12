@@ -132,6 +132,7 @@ describe("F06 意图读取失败：保留旧内容 + 明确提示 + 重试", () 
     // 成功返回空集合才是真的空：任务面板据此显示空态（#18 文案「暂无任务」）
     await byIm(wrapper, "tasks-entry")[0].trigger("click");
     await flushPromises();
+    // 空态措辞由 i-tasks 按 BRIEF #18 统一为「暂无任务」：精确锁死，避免回退成「没有」
     expect(textOf(wrapper, "task-empty")).toBe("暂无任务");
     wrapper.unmount();
   });
