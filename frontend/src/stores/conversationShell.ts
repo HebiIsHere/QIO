@@ -74,9 +74,9 @@ export const useConversationShellStore = defineStore("conversationShell", {
     rightVisible(state): boolean {
       return state.prefs.rightOpen && state.prefs.previewTabs.length > 0;
     },
-    /** 分栏形式占位的右栏（全窗口时为 false）。 */
+    /** 分栏形式占位的右栏（全窗口时为 false，避免同一份预览同时渲染两套）。 */
     splitRightVisible(): boolean {
-      return this.layout.rightVisible;
+      return this.layout.rightVisible && !this.effectivePreviewFull;
     },
     /** 临时全窗口：三栏放不下时推导出来，不改写 prefs.previewFull。 */
     effectivePreviewFull(state): boolean {

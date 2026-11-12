@@ -115,9 +115,10 @@ afterEach(() => {
 });
 
 describe("三栏与窄窗口规则", () => {
-  it("窄窗口先临时收起左栏，变宽恢复；用户偏好没有被改写", async () => {
+  it("只有中央真的放不下时才临时收起左栏，变宽恢复；用户偏好没有被改写", async () => {
     feedApi.fetchTaskFeed.mockResolvedValue(page({ waitingUser: 2 }));
-    setViewport(1000);
+    // 0.3.2 #83：不再用 1180 固定断点；680px 时中央放不下左栏下限，才临时收起。
+    setViewport(680);
     const wrapper = mountView();
     await flushPromises();
     await wrapper.vm.$nextTick();
@@ -159,6 +160,23 @@ describe("三栏与窄窗口规则", () => {
     wrapper.unmount();
   });
 
+  it("1000px 内容区仍三栏并排：中央按实际可用宽度保住输入下限（#83）", async () => {
+    setViewport(1000);
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    const shell = useConversationShellStore();
+    expect(shell.leftVisible).toBe(true);
+    expect(wrapper.find(".task-rail").exists()).toBe(true);
+    expect(shell.centerWidth).toBeGreaterThanOrEqual(460);
+    // 实际排版用的就是可见内容区宽度，不是硬编码 1440
+    expect(wrapper.find(".conversation-workspace").attributes("data-center-width")).toBe(
+      String(shell.centerWidth),
+    );
+    wrapper.unmount();
+  });
+
   it("双击分隔条恢复默认宽度", async () => {
     const wrapper = mountView();
     await flushPromises();
@@ -175,7 +193,7 @@ describe("三栏与窄窗口规则", () => {
   });
 
   it("窄窗口点收起入口打开任务抽屉；Esc 关闭且不改写偏好", async () => {
-    setViewport(1000);
+    setViewport(680);
     const wrapper = mountView();
     await flushPromises();
     await wrapper.vm.$nextTick();
@@ -231,6 +249,68 @@ describe("预览栏容器", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await wrapper.vm.$nextTick();
     expect(shell.prefs.previewFull).toBe(false);
+    wrapper.unmount();
+  });
+});
+
+describe("#47 布局偏好真实保存/恢复（保存失败不伪造成功）", () => {
+  it("1920 屏保存的 700px 右栏读取后原样保留；窄窗口只在显示时收缩，不改写偏好", async () => {
+    vi.mocked(api.getUISettings).mockResolvedValue({
+      typewriter_cps: 50,
+      conversation_layout: {
+        leftWidth: 292,
+        rightWidth: 700,
+        rightOpen: true,
+        previewTabs: [previewTab()],
+      },
+    } as never);
+    setViewport(1920);
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    const shell = useConversationShellStore();
+    expect(shell.prefs.rightWidth, "不再被硬编码 1440 夹成 664").toBe(700);
+    expect(shell.rightWidth).toBe(700);
+
+    setViewport(1200);
+    await flushPromises();
+    expect(shell.prefs.rightWidth, "显示收缩不写回用户偏好").toBe(700);
+    expect(shell.rightWidth).toBeLessThan(700);
+    expect(shell.centerWidth).toBeGreaterThanOrEqual(460);
+    wrapper.unmount();
+  });
+
+  it("保存失败：内存布局保留、saveError 如实说明并可重试成功", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    const shell = useConversationShellStore();
+
+    vi.mocked(api.saveConversationLayout).mockRejectedValueOnce(new Error("network down"));
+    shell.setLeftWidth(360);
+    await shell.flush();
+
+    expect(shell.saveError).toContain("布局偏好保存失败");
+    expect(shell.saveError).toContain("network down");
+    expect(shell.prefs.leftWidth, "失败不丢当前布局").toBe(360);
+
+    // 用户点「重试保存」：成功后才清除失败提示
+    await shell.flush();
+    expect(shell.saveError).toBe("");
+    expect(vi.mocked(api.saveConversationLayout)).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
+  });
+
+  it("服务端明确拒绝（ok:false）也算保存失败，不显示成已保存", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    const shell = useConversationShellStore();
+
+    vi.mocked(api.saveConversationLayout).mockResolvedValueOnce({ ok: false } as never);
+    shell.setPreviewFull(false);
+    await shell.flush();
+
+    expect(shell.saveError).toContain("布局偏好保存失败");
     wrapper.unmount();
   });
 });
