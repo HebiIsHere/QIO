@@ -507,6 +507,10 @@ const pendingLabel = computed(() =>
 interface SubmitStateExtras {
   canSubmit?: boolean;
   submitBlockedReason?: string | null;
+  /** #41：上次结果（understanding）的读取状态；三个来源各自独立，失败保留旧数据。 */
+  understandingLoadState?: "idle" | "loading" | "ok" | "error";
+  understandingLoadError?: string | null;
+  understandingLoadedOnce?: boolean;
   roundStatus?: "idle" | "submitting" | "unknown" | "queued" | "processing" | "replied" | "awaiting_confirm" | "failed" | "settled";
   roundStatusLabel?: string;
   roundStatusDetail?: string | null;
@@ -534,6 +538,37 @@ const primaryStatusLabel = computed(() => {
   return stateLabel.value;
 });
 const roundStatusDetail = computed(() => submitState.value.roundStatusDetail || "");
+
+/*
+ * #41：提交详情里的「上次结果」读取三态（i-state 字段；基线回退为 ok，不影响既有展示）：
+ * - error + LoadedOnce=false → 读取失败（可重试，不代表没有上次结果）
+ * - error + LoadedOnce=true  → 上次结果（旧内容原样保留，只标更新失败）
+ * - ok + 服务端记录为空     → 成功读取为空，才允许显示「还没有上次记录」
+ * 数据来源不同：这里的空 ≠ 本次没有改动（本次改动由 pendingExpressions 的成功读取决定）。
+ */
+type LastResultReadState = "idle" | "loading" | "error-first" | "error-stale" | "ok-empty" | "ok";
+const lastResultReadState = computed<LastResultReadState>(() => {
+  const state = submitState.value.understandingLoadState;
+  if (!state || state === "idle" || state === "loading") return state ?? "idle";
+  if (state === "error") {
+    return submitState.value.understandingLoadedOnce === true ? "error-stale" : "error-first";
+  }
+  const hasRecord = Boolean(store.understanding) || Boolean(store.lastSubmission);
+  return hasRecord ? "ok" : "ok-empty";
+});
+const lastResultReadError = computed(
+  () => submitState.value.understandingLoadError || "原因未知",
+);
+const lastResultRetrying = ref(false);
+async function retryLastResultRead(): Promise<void> {
+  if (lastResultRetrying.value) return;
+  lastResultRetrying.value = true;
+  try {
+    await store.refreshUnderstanding();
+  } finally {
+    lastResultRetrying.value = false;
+  }
+}
 /**
  * 失败说明（契约 §11.6）：原因、保留情况、下一步全部取**本次请求**的事实。
  *
@@ -1141,6 +1176,34 @@ defineExpose({
           <p class="sc-panel-head" data-im="submit-details-head">本次提交范围与改动</p>
           <p class="sc-panel-text" data-im="submit-details-range">{{ rangeText }}</p>
           <p v-if="roundStatusDetail" class="sc-panel-text" data-im="submit-round-detail">{{ roundStatusDetail }}</p>
+          <!-- #41：上次结果的读取失败 / 上次结果 / 成功读取为空分开说；失败处可重试。 -->
+          <p
+            v-if="lastResultReadState === 'error-first'"
+            class="sc-panel-text"
+            role="alert"
+            data-im="submit-last-read-error"
+          >
+            上次结果读取失败：{{ lastResultReadError }}（这不代表没有上次结果）
+            <button class="details" type="button" data-im="submit-last-read-retry" :disabled="lastResultRetrying" @click="retryLastResultRead">
+              {{ lastResultRetrying ? "读取中…" : "重试读取" }}
+            </button>
+          </p>
+          <p
+            v-else-if="lastResultReadState === 'error-stale'"
+            class="sc-panel-text"
+            role="status"
+            data-im="submit-last-read-error"
+          >
+            上次结果更新失败，当前显示上次读取的内容（{{ lastResultReadError }}）
+            <button class="details" type="button" data-im="submit-last-read-retry" :disabled="lastResultRetrying" @click="retryLastResultRead">
+              {{ lastResultRetrying ? "读取中…" : "重试读取" }}
+            </button>
+          </p>
+          <p
+            v-else-if="lastResultReadState === 'ok-empty'"
+            class="sc-panel-text"
+            data-im="submit-last-result-empty"
+          >服务端还没有上次提交 / 理解记录。</p>
           <!-- #41：本次改动读取失败 / 有效空态 / 上次结果分开说；失败处可重试。 -->
           <p v-if="pendingError" class="sc-panel-text" role="alert" data-im="submit-details-error">
             本次改动读取失败：{{ pendingError }}（这不代表本次没有改动）
