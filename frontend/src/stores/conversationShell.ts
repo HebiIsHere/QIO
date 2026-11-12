@@ -21,9 +21,9 @@ import {
   clampLeftWidth,
   clampRightWidth,
   defaultLayoutPrefs,
+  resolveConversationLayout,
   sanitizeLayoutPrefs,
-  shouldAutoCollapseLeft,
-  shouldUseFullPreview,
+  type ConversationLayout,
 } from "../conversation/layoutPrefs";
 
 const SAVE_DEBOUNCE_MS = 40 * 10;
@@ -35,7 +35,8 @@ function nowIso(): string {
 export const useConversationShellStore = defineStore("conversationShell", {
   state: () => ({
     prefs: defaultLayoutPrefs() as ConversationLayoutPrefs,
-    viewportWidth: 1440,
+    /** 可见内容区实际宽度（contentViewport().width）；挂载后由 installViewportTracking 同步。 */
+    viewportWidth: typeof window === "undefined" ? 0 : contentViewport().width,
     loaded: false,
     saving: false,
     /** 最近一次保存失败的原因（中文、可直接展示）；空串表示没有失败。 */
@@ -45,31 +46,47 @@ export const useConversationShellStore = defineStore("conversationShell", {
     _disposed: false,
   }),
   getters: {
-    /** 窗口过窄导致的临时收起（与用户手动收起分开）。 */
-    autoCollapsedLeft(state): boolean {
-      return !state.prefs.leftCollapsed && shouldAutoCollapseLeft(state.viewportWidth);
+    /**
+     * 一次解析出的真实布局（#83：按中央实际可用宽度算，不用固定断点）。
+     * 所有栏宽 / 可见性 / 中央宽度都从这里取，模板与测试不各算一套。
+     */
+    layout(state): ConversationLayout {
+      return resolveConversationLayout(state.viewportWidth, state.prefs);
     },
-    effectiveLeftCollapsed(state): boolean {
-      return state.prefs.leftCollapsed || shouldAutoCollapseLeft(state.viewportWidth);
+    /** 窗口过窄导致的临时收起（与用户手动收起分开）。 */
+    autoCollapsedLeft(): boolean {
+      return !this.prefs.leftCollapsed && !this.layout.leftVisible;
+    },
+    effectiveLeftCollapsed(): boolean {
+      return !this.layout.leftVisible;
     },
     leftVisible(): boolean {
-      return !this.effectiveLeftCollapsed;
+      return this.layout.leftVisible;
     },
     leftWidth(): number {
-      return this.effectiveLeftCollapsed ? LEFT_RAIL_WIDTH : clampLeftWidth(this.prefs.leftWidth);
+      return this.layout.leftWidth;
     },
-    rightWidth(state): number {
-      return clampRightWidth(state.prefs.rightWidth, state.viewportWidth, this.leftWidth);
+    /** 分栏时右栏实际宽度；全窗口 / 未打开时为 0。 */
+    rightWidth(): number {
+      return this.layout.rightWidth;
     },
-    /** 右栏是否可见：用户打开 + 有标签。 */
+    /** 用户是否打开了右侧预览（与「本次是否以分栏形式呈现」是两件事）。 */
     rightVisible(state): boolean {
       return state.prefs.rightOpen && state.prefs.previewTabs.length > 0;
+    },
+    /** 分栏形式占位的右栏（全窗口时为 false）。 */
+    splitRightVisible(): boolean {
+      return this.layout.rightVisible;
     },
     /** 临时全窗口：三栏放不下时推导出来，不改写 prefs.previewFull。 */
     effectivePreviewFull(state): boolean {
       if (!this.rightVisible) return false;
       if (state.prefs.previewFull) return true;
-      return shouldUseFullPreview(state.viewportWidth, this.effectiveLeftCollapsed, this.rightWidth);
+      return this.layout.previewFull;
+    },
+    /** 中央实际可用宽度；分栏时保证 >= centerMinWidth（模板可据此留最小宽度）。 */
+    centerWidth(): number {
+      return this.layout.centerWidth;
     },
     /** 中央区可读宽度下限：布局实现用它做最后一道保护。 */
     centerMinWidth(): number {
@@ -99,7 +116,10 @@ export const useConversationShellStore = defineStore("conversationShell", {
     installViewportTracking(): () => void {
       if (typeof window === "undefined") return () => undefined;
       const sync = () => {
-        this.viewportWidth = contentViewport().width || 1440;
+        // 只认可见内容区的实际宽度（透明留白不算）；读不到时保持上一次的值，
+        // 不用硬编码 1440 冒充窗口宽度。
+        const width = contentViewport().width;
+        if (width > 0) this.viewportWidth = width;
       };
       sync();
       window.addEventListener("resize", sync, { passive: true });
@@ -132,6 +152,10 @@ export const useConversationShellStore = defineStore("conversationShell", {
         const payload: ConversationLayoutPrefs = { ...this.prefs, updatedAt: nowIso() };
         const res = await api.saveConversationLayout(payload);
         // 服务端可能夹取/规范化过：用它返回的版本，避免本地与服务端长期不一致。
+        if (res && res.ok === false) {
+          // 明确被拒（不是网络异常）时同样不能当成保存成功。
+          throw new Error("服务端没有接受这次布局偏好");
+        }
         if (res?.conversation_layout) this.prefs = sanitizeLayoutPrefs(res.conversation_layout);
         this.saveError = "";
       } catch (err) {
@@ -150,7 +174,8 @@ export const useConversationShellStore = defineStore("conversationShell", {
       this.scheduleSave();
     },
     setRightWidth(width: number) {
-      this.prefs.rightWidth = clampRightWidth(width, this.viewportWidth, this.leftWidth);
+      // 只存用户实际想要的宽度；窄窗口显示时再按实际视口收缩（不改写保存值，#47）。
+      this.prefs.rightWidth = clampRightWidth(width);
       this.scheduleSave();
     },
     setRightOpen(open: boolean) {
