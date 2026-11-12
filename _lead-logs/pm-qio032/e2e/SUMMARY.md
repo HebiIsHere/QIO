@@ -5,7 +5,7 @@
 （正常界面入口：对话页模式切换进入互动板面；后端 uvicorn + vite + 本机假厂商 SSE 端点
 `scripts/verify_stream_provider.py`；浏览器=系统 Edge + CDP；provider 只扮演厂商，不证明真实厂商行为。）
 
-原始输出：`lead-final-run.log`、`console.log`、`provider-log.json`、`shots/*.png`、`backend.log`、`vite.log`。
+原始输出：`lead-final-run.log`（① 与整轮）、`console.log` + `summary-s4.json`（④ 场景 8/8 PASS 的完整台账）、`provider-log.json`、`shots/*.png`、`backend.log`、`vite.log`。
 
 ## 本轮结果（PASS 8 / FAIL 6；失败均为脚本未跑通/断言未捕获，不是产品代码编译错误）
 | 场景 | 结果 | 证据 |
@@ -21,7 +21,10 @@
 | ③ 重复提交/幂等 | 未跑完 | s1 中断后页面状态未回正，s3 进入互动板面等待超时（脚本恢复问题） |
 | ④-0 800×600 窄窗按实际可用宽度切换 | PASS | innerWidth=800、rootWidth=744、space=switch |
 | ④-1 800×600 单开提交详情：完整、中心命中、不遮提交按钮 | PASS | details{bounds} 命中自身；submit 可命中、无重叠 |
-| ④ 任务+提交组合开 | 未跑完 | 打开任务面板等待超时（待确认是脚本还是 #05 面板切换问题） |
+| ④-2/④-4 800×600 组合开：任务与详情明确切换、同一时间只留最近打开的一块 | PASS | 任务打开→详情收起；详情打开→任务收起 |
+| ④-3 800×600 任务面板不遮提交按钮、中心命中自己 | PASS | overlapSubmit=false、submitHit=true |
+| ④-5 800×600 Esc 收起最上层非模态面板 | PASS | detailsOpen=false、taskOpen=false |
+| ④-6/④-7 1120/1121 实际边界与两侧中心/命中 | PASS | 1176(inner)=switch、1177(inner)=side-by-side；两块面板/提交按钮互不遮挡、中心命中一致 |
 | ⑤ 六件拖放/首件失败/路由往返 | 未跑完 | 脚本进入互动板面超时 |
 | ⑥ 主题/Tab/Esc/IME | 未跑完 | 主题注入时 localStorage 安全异常（CDP/Edge 文档限制） |
 
