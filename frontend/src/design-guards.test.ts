@@ -50,10 +50,15 @@ describe("设计语言守卫", () => {
     const readers = FILES.filter((f) => f.text.includes("data-planet-entry")).map((f) => f.path);
     // 允许：定义处（planetContinuum.ts）、入口元素本身（PlanetDock.vue）；
     // 任何第三处都意味着有人在别处偷偷量入口位置 —— 那正是「两个对象」的开端。
+    //
+    // ConversationView.vue 是唯一例外，且只把选择器当**焦点归还**的落点：
+    // 星球覆盖层收起后 querySelector("[data-planet-entry]").focus()，不读任何几何。
+    // 它没有、也不允许从入口坐标推导渲染位置（#38 的焦点归还）。
     expect(readers.sort()).toEqual(
       [
         "components/PlanetDock.vue",
         "composables/planetContinuum.ts",
+        "views/ConversationView.vue",
       ].sort(),
     );
   });
