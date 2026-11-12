@@ -130,13 +130,10 @@ const selectedFragment = computed<TopicDetailFragment | null>(() => {
   if (!id) return null;
   return detail.value?.fragments.find((f) => f.fragment_id === id) ?? null;
 });
-const selectedIsHistoric = computed(() => Boolean(selectedFragment.value?.closed_at));
 
 const continueHint = computed(() => {
   if (mode.value === "record") {
-    return selectedFragmentId.value
-      ? "从这里继续不会修改历史片段：会在该位置之后接续新的内容。"
-      : "先选一段讨论记录，再从那个位置继续。";
+    return selectedFragmentId.value ? "" : "先选一段讨论记录，再从那个位置继续。";
   }
   return browsingIsCurrent.value
     ? "这是对话当前的话题；浏览不会改变对话位置。"
@@ -146,7 +143,7 @@ const continueHint = computed(() => {
 const continueLabel = computed(() => {
   if (props.continueBusy) return "切换中…";
   if (mode.value === "record" && selectedFragmentId.value) {
-    return `从这里继续（${selectedIsHistoric.value ? "历史位置" : "当前片段"}）`;
+    return "从这里继续";
   }
   return browsingIsCurrent.value ? "回到对话继续" : "继续讨论（切换到这个话题）";
 });
@@ -424,7 +421,7 @@ onMounted(() => void loadTopics());
               type="button"
               @click="openRecord"
             >
-              查看完整讨论记录
+              查看讨论记录
             </button>
           </section>
 
@@ -464,7 +461,7 @@ onMounted(() => void loadTopics());
         </template>
       </div>
       <div v-if="detail && !detailLoading" class="mt-actions">
-        <p class="mt-action-hint">{{ continueHint }}</p>
+        <p v-if="continueHint" class="mt-action-hint">{{ continueHint }}</p>
         <p v-if="continueError" class="mt-error" role="alert">{{ continueError }}</p>
         <button
           class="qio-btn primary mt-continue"
@@ -478,16 +475,13 @@ onMounted(() => void loadTopics());
       </div>
     </section>
 
-    <!-- 3. 完整讨论记录（只读 + 分页） -->
-    <section v-show="mode === 'record'" class="mt-pane" aria-label="完整讨论记录" data-memory-record>
+    <!-- 3. 讨论记录（只读 + 分页） -->
+    <section v-show="mode === 'record'" class="mt-pane" aria-label="讨论记录" data-memory-record>
       <div class="mt-pane-head">
         <button class="qio-btn quiet mini mt-back" type="button" @click="backToOverview">← 话题概览</button>
       </div>
       <div class="mt-scroll" v-qio-scrollbar data-qio-fit data-scroll="memory-record">
-        <h2 class="serif mt-title mt-record-title">{{ detail?.name || "完整讨论记录" }}</h2>
-        <p class="mt-hint">
-          以下是这个话题里已经发生过的内容，只读。对话没有停在这里，也不会被改写。
-        </p>
+        <h2 class="serif mt-title mt-record-title">讨论记录</h2>
         <div v-if="detail && detail.fragments.length > 1" class="mt-fragments">
           <button
             v-for="f in detail.fragments"
@@ -529,7 +523,7 @@ onMounted(() => void loadTopics());
         </template>
       </div>
       <div v-if="detail" class="mt-actions">
-        <p class="mt-action-hint">{{ continueHint }}</p>
+        <p v-if="continueHint" class="mt-action-hint">{{ continueHint }}</p>
         <p v-if="continueError" class="mt-error" role="alert">{{ continueError }}</p>
         <button
           class="qio-btn primary mt-continue"
