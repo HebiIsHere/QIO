@@ -425,7 +425,9 @@ def submission_materials(
 
     stale_cards: list[tuple[dict, str, str]] = []
     stale_ids: set[str] = set()
-    for card, att_id in _file_attachment_entries(cards):
+    # 没有附件服务时无法核对源文件是否变化：不把「核对不了」说成「已变化」，
+    # 交给 resolve_materials 如实记 unreadable（不能凭文件名推断内容）。
+    for card, att_id in _file_attachment_entries(cards) if service is not None else ():
         att = _resolve_file_attachment(service, att_id)
         reason = material_change_reason(service, att, card)
         if reason:
