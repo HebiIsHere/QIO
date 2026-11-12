@@ -87,6 +87,25 @@ describe("设置搜索索引", () => {
     expect(background?.fold).toBe("models.usage.background");
   });
 
+  it("失效入口的搜索结果已删除；免密钥/单段长度说明用指定文案（文案13/14/15）", () => {
+    const keys = SETTINGS_SEARCH_INDEX.map((entry) => entry.key);
+    for (const key of [
+      "regular.window.planet-hide",
+      "regular.window.settings-hide",
+      "regular.window.reset-layout",
+    ]) {
+      expect(keys, key).not.toContain(key);
+    }
+    // 旧行为被本项否定：曾经能搜到「贴靠后自动隐藏 / 还原默认布局」这类失效设置
+    expect(searchSettings("贴边")).toEqual([]);
+    expect(searchSettings("还原默认布局")).toEqual([]);
+
+    const keyless = SETTINGS_SEARCH_INDEX.find((entry) => entry.key === "models.search.keyless");
+    expect(keyless?.description).toContain("使用免密钥搜索服务");
+    const maxTokens = SETTINGS_SEARCH_INDEX.find((entry) => entry.key === "memory.fragment.max-tokens");
+    expect(maxTokens?.description).toContain("单段长度上限（按估算字符数计）");
+  });
+
   it("搜索按标题优先并支持用途名", () => {
     expect(searchSettings("主题")[0]?.key).toBe("regular.theme");
     expect(searchSettings("记忆整理").some((entry) => entry.key === "models.usage.memory-organize")).toBe(

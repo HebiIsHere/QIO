@@ -759,9 +759,10 @@ onBeforeUnmount(() => {
           aria-describedby="qio-close-ask-desc"
         >
           <p id="qio-close-ask-title" class="close-ask__title">关闭 QIO 主窗口？</p>
+          <!-- 文案 #16：只交代两件事 —— 托盘时继续运行、退出后仍有效的待审批事项去向。 -->
           <p id="qio-close-ask-desc" class="close-ask__desc">
             最小化到托盘：窗口收起，QIO 继续在后台运行。<br />
-            退出 QIO：结束当前运行。
+            退出 QIO：仍有效的待审批事项会保留到下次启动。
           </p>
           <div class="close-ask__actions">
             <button

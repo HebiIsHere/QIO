@@ -45,9 +45,6 @@ const A_OWNED_KEYS = [
   "regular.scrollbar",
   "regular.speed",
   "regular.onboarding",
-  "regular.window.planet-hide",
-  "regular.window.settings-hide",
-  "regular.window.reset-layout",
   "regular.window.close-behavior",
   "regular.advanced.diagnostics",
   "models.search.status",
@@ -85,15 +82,16 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     w.unmount();
   });
 
-  it("常规：主题/动画/滚动指示条/输出速度/引导/两个窗口开关/还原布局/关闭行为/诊断", async () => {
+  it("常规：主题/动画/滚动指示条/输出速度/引导/关闭行为/诊断（失效入口设置已删）", async () => {
     const w = await mountSettings();
     const regular = sectionById(w, "regular");
     expect(regular.findAll(".set-seg__opt").map((option) => option.text())).toEqual(
       expect.arrayContaining(["系统", "暗紫晶", "净白", "跟随系统", "标准", "减少动画"]),
     );
-    expect(regular.findAll('button[role="switch"]').length).toBeGreaterThanOrEqual(3);
+    // 旧行为被本项否定（#39）：两个贴靠隐藏开关已删，常规里只剩「开发者模式」一个开关
+    expect(regular.findAll('button[role="switch"]').length).toBe(1);
     expect(regular.text()).toMatch(/继续设置|重新运行设置助手/);
-    expect(regular.text()).toContain("还原默认布局");
+    expect(regular.text()).not.toContain("还原默认布局");
     for (const label of ["每次询问", "最小化到托盘", "直接退出"]) {
       expect(regular.text()).toContain(label);
     }
@@ -221,23 +219,22 @@ describe("常规分区的即时保存语义", () => {
     w.unmount();
   });
 
-  it("窗口行为：两个贴靠隐藏开关 + 还原默认布局", async () => {
-    const { floatingState, resetFloatPositions: reset } = await import(
-      "../../../composables/floatingState"
-    );
+  it("窗口行为：失效的贴靠隐藏开关与还原默认布局已移除（#39）", async () => {
     const w = await mountSettings();
     const regular = sectionById(w, "regular");
-    const planet = regular.find('button[aria-label="星球入口贴靠后自动隐藏"]');
-    await planet.trigger("click");
-    expect(floatingState["planet-dock"].hideEnabled).toBe(true);
-    await regular.find('button[aria-label="设置入口贴靠后自动隐藏"]').trigger("click");
-    expect(floatingState["settings-float"].hideEnabled).toBe(true);
-
-    const btn = regular.findAll(".qio-btn").find((item) => item.text() === "还原默认布局");
-    await btn!.trigger("click");
-    expect(floatingState["planet-dock"].hideEnabled).toBe(false);
-    expect(floatingState["settings-float"].hideEnabled).toBe(false);
-    reset();
+    // 旧行为被本项否定：入口固定在输入区/全局顶栏后，这两项设置保存的是一个不存在的效果
+    expect(regular.find('button[aria-label="星球入口贴靠后自动隐藏"]').exists()).toBe(false);
+    expect(regular.find('button[aria-label="设置入口贴靠后自动隐藏"]').exists()).toBe(false);
+    expect(regular.text()).not.toContain("还原默认布局");
+    for (const key of [
+      "regular.window.planet-hide",
+      "regular.window.settings-hide",
+      "regular.window.reset-layout",
+    ]) {
+      expect(regular.find(`[data-settings-key="${key}"]`).exists(), key).toBe(false);
+    }
+    // 关闭主窗口行为仍在这里（不受 #39 影响）
+    expect(regular.find('[data-settings-key="regular.window.close-behavior"]').exists()).toBe(true);
     w.unmount();
   });
 
@@ -247,8 +244,12 @@ describe("常规分区的即时保存语义", () => {
     const regular = sectionById(w, "regular");
     const text = regular.text();
     for (const label of ["每次询问", "最小化到托盘", "直接退出"]) expect(text).toContain(label);
+    // 文案 #16：只交代托盘时继续运行、退出后有效待审批事项的去向
     expect(text).toContain("继续运行");
-    expect(text).toContain("有界收尾");
+    expect(text).toContain("待审批");
+    expect(text).toContain("保留到下次启动");
+    expect(text).not.toContain("有界收尾");
+    expect(text).not.toContain("可从系统托盘恢复");
     await chooseSelectLabel(regular, "最小化到托盘");
     await flushFrames();
     expect(api.updateCloseBehavior).toHaveBeenCalledWith("tray");

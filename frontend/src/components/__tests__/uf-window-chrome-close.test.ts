@@ -3,7 +3,7 @@
  *
  * 锁定的行为：
  * - 关闭询问登记 modalArbiter(kind=close-ask) 并 suspendAll("close-ask")，取消后 resumeAll；
- * - 三选项文字保留、只说明「退出会结束当前运行」，不展示任务概况；
+ * - 三选项文字保留、只说明「托盘时继续运行 + 退出后有效待审批事项的去向」（文案 #16），不展示任务概况；
  * - 托盘/退出失败显示在**仍可见**的标题条下方状态条里，可重试、可取消，busy 不锁死；
  * - 后台发现更新只在设置入口留小标记（不弹通知）；
  * - 全局异常入口在全局栏里（B 的组件，无问题时不占位）。
@@ -130,8 +130,12 @@ describe("关闭询问与弹窗仲裁", () => {
     expect(dialog.text()).toContain("最小化到托盘");
     expect(dialog.text()).toContain("退出 QIO");
     expect(dialog.text()).toContain("取消");
-    // 只说明「退出会结束当前运行」，不展示任务概况/名称/数量
-    expect(dialog.text()).toContain("结束当前运行");
+    // 文案 #16：只交代托盘时继续运行、退出后有效待审批事项的去向，不展示任务概况/名称/数量
+    // 旧行为被本项否定：弹窗曾写「退出 QIO：结束当前运行」，没有交代待审批事项去向。
+    expect(dialog.text()).toContain("继续在后台运行");
+    expect(dialog.text()).toContain("待审批");
+    expect(dialog.text()).toContain("保留到下次启动");
+    expect(dialog.text()).not.toContain("结束当前运行");
     // 取消 = 关框 + 恢复业务弹窗
     await dialog.findAll("button").find((b) => b.text() === "取消")!.trigger("click");
     await flushPromises();

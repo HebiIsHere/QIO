@@ -8,6 +8,10 @@
  *
  * 每个条目对应一个 `data-settings-key`（见 _STG-MIGRATION-A.md）：
  * 点击结果时 shell 按 key 定位到控件；`fold` 指向必须自动展开的折叠组 id。
+ *
+ * #39（定稿 A）：星球/设置入口已固定在各自位置，不再是可拖动浮动组件，
+ * 因此「入口贴靠后自动隐藏」「还原默认布局」两类索引条目已删除 ——
+ * 索引里不能再搜到一个已经没有对应控件（或控件已失效）的设置。
  */
 import type { SettingsCategoryId } from "./types";
 
@@ -100,27 +104,6 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ["引导", "onboarding", "向导", "首次设置"],
   },
   {
-    key: "regular.window.planet-hide",
-    title: "星球入口贴靠后自动隐藏",
-    category: "regular",
-    description: "关闭＝入口常显（不是禁用）",
-    keywords: ["浮动", "贴边", "隐藏", "planet"],
-  },
-  {
-    key: "regular.window.settings-hide",
-    title: "设置入口贴靠后自动隐藏",
-    category: "regular",
-    description: "关闭＝入口常显（不是禁用）",
-    keywords: ["浮动", "贴角", "隐藏", "settings"],
-  },
-  {
-    key: "regular.window.reset-layout",
-    title: "还原默认布局",
-    category: "regular",
-    description: "把所有浮动组件还原到默认位置并关闭贴靠隐藏",
-    keywords: ["重置", "布局", "浮动", "reset"],
-  },
-  {
     key: "regular.window.close-behavior",
     title: "关闭主窗口时",
     category: "regular",
@@ -192,7 +175,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     key: "models.search.keyless",
     title: "免密钥联网搜索",
     category: "models",
-    description: "Exa / Parallel 免费搜索服务，失败回退 DuckDuckGo；不是联网搜索总开关",
+    description: "使用免密钥搜索服务（Exa / Parallel，失败回退 DuckDuckGo）；不是联网搜索总开关",
     keywords: ["免密钥", "keyless", "exa", "parallel", "duckduckgo"],
   },
   {
@@ -253,8 +236,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     key: "memory.fragment.max-tokens",
     title: "单段长度目标",
     category: "memory",
-    description: "内容长度兜底上限（2000-200000）；到点分段不代表阶段完成",
-    keywords: ["长度", "token", "分段", "记忆"],
+    description: "单段长度上限（按估算字符数计）；到点分段不代表阶段完成",
+    keywords: ["长度", "上限", "token", "估算字符", "分段", "记忆"],
   },
   {
     key: "memory.maintenance.enabled",
