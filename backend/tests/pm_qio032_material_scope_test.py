@@ -256,10 +256,14 @@ async def test_board_inspect_and_read_cards_only_see_submission_version(db_conn)
     _ensure(db_conn)
     state = _saved_state(db_conn)
     state, a_id = _add_text_card(state, "A 版正文")
+    state, a2_id = _add_text_card(state, "A 版第二张")
+    state = board.add_link(state, a_id, a2_id, False, "A 版关系")
+    link_id = str(state["links"][-1]["id"])
     _save(db_conn, state)
     _record_submission(db_conn, state)
 
     later = board.update_card(state, a_id, {"content": "B 版正文"})
+    later = board.update_link(later, link_id, {"meaning": "B 版关系"})
     later, b_only_id = _add_text_card(later, "B 版新增")
     _save(db_conn, later)
 
@@ -271,6 +275,9 @@ async def test_board_inspect_and_read_cards_only_see_submission_version(db_conn)
         cards = {item["id"]: item for item in inspected.data["cards"]}
         assert cards[a_id]["content_preview"] == "A 版正文"
         assert b_only_id not in cards
+        assert [item["meaning"] for item in inspected.data["links"]] == ["A 版关系"], (
+            "关系也必须是提交当时的版本"
+        )
 
         read = await tools["board_read_cards"].run()  # 默认 latest
         assert read.ok is True, read
@@ -485,3 +492,146 @@ def test_selection_and_submission_projection_do_not_change_participation(db_conn
     assert models.card_participation(
         models.card_by_id(state, b_id)
     ) == models.PARTICIPATION_EXCLUDED
+
+# ---------------------------------------------------------------------------
+# #08/#54：三态入口（界面标签与后端授权同一映射）
+# ---------------------------------------------------------------------------
+
+
+def test_card_access_state_maps_three_states_and_restore_defaults_to_displayed(db_conn):
+    _ensure(db_conn)
+    state = _saved_state(db_conn)
+    state, card_id = _add_text_card(state, "三态用例")
+
+    assert board.card_access_state(models.card_by_id(state, card_id)) == board.ACCESS_INCLUDED
+
+    state = board.set_card_access_state(state, card_id, board.ACCESS_DISPLAYED)
+    card = models.card_by_id(state, card_id)
+    assert board.card_access_state(card) == board.ACCESS_DISPLAYED
+    assert card["hidden"] is False
+    assert models.card_participation(card) == models.PARTICIPATION_EXCLUDED
+
+    state = board.set_card_access_state(state, card_id, board.ACCESS_HIDDEN)
+    card = models.card_by_id(state, card_id)
+    assert board.card_access_state(card) == board.ACCESS_HIDDEN
+    assert card["hidden"] is True
+    assert models.card_participation(card) == models.PARTICIPATION_EXCLUDED
+
+    # 恢复隐藏只回到「显示但不参与」：无论经由哪个入口。
+    restored = board.set_card_access_state(state, card_id, board.ACCESS_DISPLAYED)
+    card = models.card_by_id(restored, card_id)
+    assert board.card_access_state(card) == board.ACCESS_DISPLAYED
+    assert card["hidden"] is False
+    assert models.card_participation(card) == models.PARTICIPATION_EXCLUDED
+
+    legacy_restore = board.set_hidden(state, card_id, False)
+    assert board.card_access_state(
+        models.card_by_id(legacy_restore, card_id)
+    ) == board.ACCESS_DISPLAYED
+
+    back = board.set_card_access_state(restored, card_id, board.ACCESS_INCLUDED)
+    card = models.card_by_id(back, card_id)
+    assert board.card_access_state(card) == board.ACCESS_INCLUDED
+    assert card["hidden"] is False
+
+    # 非法取值不改状态（不猜）。
+    assert board.set_card_access_state(back, card_id, "unknown") == board.normalize_state(back)
+
+
+def test_conflicting_raw_card_is_hidden_never_included():
+    card = {**models.new_card("text", "冲突"), "hidden": True, "participation": "included"}
+    state = board.normalize_state({"cards": [card], "groups": [], "links": [], "selection": []})
+    normalized = state["cards"][0]
+    assert board.card_access_state(normalized) == board.ACCESS_HIDDEN
+    assert models.card_participation(normalized) == models.PARTICIPATION_EXCLUDED
+
+
+# ---------------------------------------------------------------------------
+# #26 事件旁路：intent_service.publish_intents_changed 缺失 / 失败都不影响工具结果
+# ---------------------------------------------------------------------------
+
+
+def _turn_for_events() -> runtime.BoardTurnContext:
+    return runtime.BoardTurnContext(
+        turn_id=TURN,
+        mode=runtime.MODE_INTERACTIVE,
+        board_id=BOARD,
+        submission_id=SUB,
+    )
+
+
+async def test_propose_intents_publishes_changed_event(monkeypatch, db_conn):
+    from types import SimpleNamespace
+
+    from agent.interactive import intent_service
+
+    _ensure(db_conn)
+    calls: list[dict] = []
+
+    async def fake_publish(conn, **kwargs):
+        calls.append(kwargs)
+
+    def fake_propose(conn, **kwargs):
+        return {"ok": True, "intents": [{"intent_id": "i_1", "title": "t"}]}
+
+    monkeypatch.setattr(intent_service, "publish_intents_changed", fake_publish, raising=False)
+    monkeypatch.setattr(intent_service, "propose_intents", fake_propose)
+    tools = _tools(db_conn)
+    args = SimpleNamespace(submission_id=SUB, intents=[{"client_ref": "a"}], resolved_question_ids=[])
+    result = await tools["board_propose_intents"]._run(_turn_for_events(), args)
+    assert result.ok is True, result
+    assert calls == [
+        {
+            "board_id": BOARD,
+            "submission_id": SUB,
+            "intent_ids": ["i_1"],
+            "reason": "proposed",
+        }
+    ], calls
+
+
+async def test_intent_event_failure_never_changes_tool_result(monkeypatch, db_conn):
+    from types import SimpleNamespace
+
+    from agent.interactive import intent_service
+
+    _ensure(db_conn)
+
+    async def broken_publish(conn, **kwargs):
+        raise RuntimeError("bus unavailable")
+
+    def fake_update(conn, **kwargs):
+        return {
+            "ok": True,
+            "requires_confirmation": True,
+            "intent": {"id": kwargs.get("intent_id"), "submission_id": SUB},
+        }
+
+    monkeypatch.setattr(intent_service, "publish_intents_changed", broken_publish, raising=False)
+    monkeypatch.setattr(intent_service, "update_intent", fake_update)
+    tools = _tools(db_conn)
+    args = SimpleNamespace(
+        intent_id="i_1", expected_version=1, changes={"title": "改"}, resolved_question_ids=[]
+    )
+    result = await tools["board_update_intent"]._run(_turn_for_events(), args)
+    assert result.ok is True, result
+    assert result.code == "awaiting_confirmation"
+
+
+async def test_intent_event_hook_tolerates_missing_helper(monkeypatch, db_conn):
+    """helper 没合入时工具照常工作（事件不是工具成功的条件）。"""
+    from types import SimpleNamespace
+
+    from agent.interactive import intent_service
+
+    _ensure(db_conn)
+    monkeypatch.delattr(intent_service, "publish_intents_changed", raising=False)
+
+    def fake_propose(conn, **kwargs):
+        return {"ok": True, "intents": [{"intent_id": "i_1"}]}
+
+    monkeypatch.setattr(intent_service, "propose_intents", fake_propose)
+    tools = _tools(db_conn)
+    args = SimpleNamespace(submission_id=SUB, intents=[{"client_ref": "a"}], resolved_question_ids=[])
+    result = await tools["board_propose_intents"]._run(_turn_for_events(), args)
+    assert result.ok is True, result
