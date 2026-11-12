@@ -133,6 +133,158 @@ export function localVisibleRange(state: BoardState | null | undefined): Visible
   };
 }
 
+// --- #13：空提交的前端同口径判定 -------------------------------------------
+//
+// 只用于「按钮禁用 + 一句下一步提示」，**不是**权限或权威判定：最终 empty / duplicate
+// 由服务端按已保存板上「上次成功提交的快照」求差得出（agent/interactive/submission.py）。
+// 这里保证两件用户可感知的事与后端一致：
+// 1) 空白文字卡本身不构成有效提交（即使它被勾选 / 参与）；
+// 2) 独立的关系 / 分组 / 删除等变化算有效（不是只有「新增有字的卡」才算）。
+
+export interface EffectiveSubmissionChange {
+  kind: ExpressionKind;
+  cardIds: string[];
+  summary: string;
+}
+
+/** 后端 _meta_key 同口径：meta.display 只是图片显示比例，不参与内容语义。 */
+function semanticMetaKey(meta: unknown): string {
+  const source = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
+  const semantic: Record<string, unknown> = {};
+  for (const key of Object.keys(source).sort()) {
+    if (key === "display") continue;
+    semantic[key] = source[key];
+  }
+  return stableStringify(semantic);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
+  const record = value as Record<string, unknown>;
+  return (
+    "{" +
+    Object.keys(record)
+      .sort()
+      .map((key) => JSON.stringify(key) + ":" + stableStringify(record[key]))
+      .join(",") +
+    "}"
+  );
+}
+
+/** 卡片「意思」：与后端 _card_meaning 同一口径（不含位置 / 大小 / 折叠 / 书签）。 */
+function cardMeaning(card: BoardCard): string {
+  return JSON.stringify([card.kind, String(card.content ?? ""), semanticMetaKey(card.meta)]);
+}
+
+/** 空白文字卡：没有正文、也不是由旧 code / url 迁移来的（meta.language / meta.url）。 */
+export function isBlankTextCard(card: BoardCard): boolean {
+  if (card.kind !== "text") return false;
+  if (String(card.content ?? "").trim().length > 0) return false;
+  const meta = card.meta && typeof card.meta === "object" ? card.meta : {};
+  if (typeof (meta as Record<string, unknown>).language === "string") return false;
+  const url = (meta as Record<string, unknown>).url;
+  if (url && typeof url === "object") return false;
+  return true;
+}
+
+/** 一张可见卡片本身是否携带可提交内容（空白文字卡不算；材料 / 有正文的卡算）。 */
+export function cardHasEffectiveContent(card: BoardCard): boolean {
+  if (isBlankTextCard(card)) return false;
+  return true;
+}
+
+function linkKey(link: { src: string; dst: string; direction?: boolean }): string {
+  const src = String(link.src ?? "");
+  const dst = String(link.dst ?? "");
+  return link.direction ? src + "->" + dst : [src, dst].sort().join("<->");
+}
+
+/**
+ * 由前后两份（都投影到可见范围）的板面状态求差，返回**有效改动**类别。
+ * 与后端 diff_states 的粗粒度同口径：位置 / 大小等布局变化不产生改动（layout_only 不算内容）。
+ */
+export function effectiveSubmissionChanges(
+  candidate: BoardState | null | undefined,
+  baseline?: BoardState | null,
+): EffectiveSubmissionChange[] {
+  const after = localVisibleRange(candidate);
+  const before = localVisibleRange(baseline);
+  const changes: EffectiveSubmissionChange[] = [];
+  const beforeCards = new Map(before.cards.map((card) => [card.id, card]));
+  const afterCards = new Map(after.cards.map((card) => [card.id, card]));
+
+  for (const card of after.cards) {
+    if (beforeCards.has(card.id)) continue;
+    if (!cardHasEffectiveContent(card)) continue;
+    changes.push({
+      kind: card.kind === "reply" ? "result_added" : card.kind === "text" ? "note_added" : "material_added",
+      cardIds: [card.id],
+      summary: card.kind === "text" ? "新增注释" : "新增材料",
+    });
+  }
+  for (const card of before.cards) {
+    if (afterCards.has(card.id)) continue;
+    if (!cardHasEffectiveContent(card)) continue;
+    changes.push({
+      kind: card.kind === "reply" ? "result_updated" : card.kind === "text" ? "note_deleted" : "material_removed",
+      cardIds: [card.id],
+      summary: card.kind === "text" ? "撤回注释" : "移除材料",
+    });
+  }
+  for (const card of after.cards) {
+    const old = beforeCards.get(card.id);
+    if (!old) continue;
+    if (cardMeaning(old) === cardMeaning(card)) continue;
+    changes.push({
+      kind: card.kind === "text" ? "note_edited" : "material_added",
+      cardIds: [card.id],
+      summary: "修改内容",
+    });
+  }
+
+  const beforeLinks = new Map(before.links.map((link) => [linkKey(link), link]));
+  const afterLinks = new Map(after.links.map((link) => [linkKey(link), link]));
+  for (const [key, link] of afterLinks) {
+    if (!beforeLinks.has(key)) {
+      changes.push({ kind: "link_added", cardIds: [link.src, link.dst].filter(Boolean), summary: "新增关系" });
+    }
+  }
+  for (const [key, link] of beforeLinks) {
+    if (!afterLinks.has(key)) {
+      changes.push({ kind: "link_removed", cardIds: [link.src, link.dst].filter(Boolean), summary: "移除关系" });
+    }
+  }
+
+  const beforeGroups = new Map(before.groups.map((group) => [group.id, group]));
+  const afterGroups = new Map(after.groups.map((group) => [group.id, group]));
+  for (const [id, group] of afterGroups) {
+    const old = beforeGroups.get(id);
+    if (!old) changes.push({ kind: "group_formed", cardIds: [...group.members], summary: "新建分组" });
+    else if (String(old.name ?? "") !== String(group.name ?? "")) {
+      changes.push({ kind: "group_renamed", cardIds: [...group.members], summary: "重命名分组" });
+    } else if ([...old.members].sort().join("|") !== [...group.members].sort().join("|")) {
+      changes.push({ kind: "group_membership_changed", cardIds: [...group.members], summary: "调整分组" });
+    }
+  }
+  for (const [id, group] of beforeGroups) {
+    if (!afterGroups.has(id)) changes.push({ kind: "group_membership_changed", cardIds: [...group.members], summary: "解散分组" });
+  }
+
+  return changes;
+}
+
+/** 这次提交是否有任何可提交的有效内容（空白卡不算；关系 / 删除算）。 */
+export function hasEffectiveSubmissionContent(
+  candidate: BoardState | null | undefined,
+  baseline?: BoardState | null,
+): boolean {
+  const range = localVisibleRange(candidate);
+  if (range.cards.some(cardHasEffectiveContent)) return true;
+  if (range.groups.length > 0 || range.links.length > 0) return true;
+  return effectiveSubmissionChanges(candidate, baseline).length > 0;
+}
+
 export function visibleRangeCounts(range: VisibleRange | null | undefined): VisibleRangeCounts {
   const cards = range?.cards ?? [];
   return {
@@ -637,7 +789,8 @@ export function acceptanceLookupText(options: {
       "，正在理解。不会重复提交。"
     );
   }
-  const why = String(options.reason ?? "").trim() || "没有查到这条请求身份的记录";
+  // 文案 1：查证无记录时只说「暂未查到这次提交」（不诱导重复提交，也不假装失败）
+  const why = String(options.reason ?? "").trim() || "暂未查到这次提交";
   return (
     "已按同一个请求身份向服务端查证：" +
     why +
