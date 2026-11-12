@@ -87,3 +87,9 @@ InteractiveOldEntriesGone>
   - 解决冲突时两边都保留：入口侧断言用 i-layout 版本，任务面板空态断言用本分支的「暂无任务」。
 - i-layout 已确认 #07 入口标记（data-im="tasks-entry-error" / aria-invalid / title「互动任务（读取失败）」）与 Esc 层（id: interactive-task-center）落地；本分支 TaskCenterPanel 不注册 Esc，不会双层。
 - 本分支其余文件与 i-layout / i-state / i-submit / i-canvas 无重叠。
+
+## 8) 第二轮补文案（Lead 23:20 指派）
+
+- 文案 9（recovery 受阻）：`RecoveryPanel.vue` 的影响确认提示由「保存被影响确认挡住了：…」改为「请先确认改动影响，再重试保存」；同一区块的「板面没有保存 / 重试保存」语义保留。测试：`pm032-tasks-approval-recovery`「文案 9」。
+- 文案 7 后半句（虚线意图拖动预览）：落点在 **IntentLayer.vue 自己的虚拟意图卡**（拖动状态 `dragPoint` 就在本文件，BoardCanvas 未参与）；常态仍显示真实状态（proposed=「待确认」），拖动移动时卡片上按需出现「移动预览」（`data-im="intent-move-preview"`），松手 / 取消即收起。测试：`pm032-tasks-intent`「文案 7」。
+- 验证：两文件 15/15 绿；`npx vue-tsc --noEmit` EXIT=0。

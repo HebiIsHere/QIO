@@ -574,6 +574,12 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
             data-im="virtual-intent-status"
             :data-auth-state="item.auth.state"
           >{{ item.statusText }}</span>
+          <!-- 文案 7：常态显示真实状态（待确认）；拖动预览时按需提示「移动预览」 -->
+          <span
+            v-if="dragPoint[item.view.intent_id]"
+            class="vi-move"
+            data-im="intent-move-preview"
+          >移动预览</span>
           <label v-if="item.selectable" class="vi-check" @pointerdown.stop>
             <input
               type="checkbox"
@@ -837,6 +843,13 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
 .vi-status.active { color: var(--accent); }
 .vi-status.settled { color: var(--success); }
 .vi-status.problem { color: var(--danger); }
+.vi-move {
+  font-size: var(--fs-xs);
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-1);
+}
 .vi-check { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; font-size: var(--fs-xs); color: var(--text-secondary); }
 .vi-block, .warn { margin: 0; color: var(--warning); font-size: var(--fs-xs); line-height: 1.6; }
 .vi-note, .hint { margin: 0; color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.6; }

@@ -322,7 +322,7 @@ defineExpose({ load, count: totalCount, storeCount: storeOnlyCount });
       <p class="rp-text">{{ saveView.text }}</p>
       <p v-if="saveView.detail" class="rp-detail">{{ saveView.detail }}</p>
       <p v-if="saveBlockedByImpact" class="rp-warn" data-im="p3c-recovery-save-impact">
-        保存被影响确认挡住了：先在提交区处理这次影响确认，再重试保存（这里不会替你决定）。
+        请先确认改动影响，再重试保存
       </p>
       <button type="button" class="rp-btn primary" data-im="p3c-recovery-save-retry" :disabled="Boolean(busyAction)" @click="retrySave">
         {{ busyAction === "save" ? "重试中…" : "重试保存" }}

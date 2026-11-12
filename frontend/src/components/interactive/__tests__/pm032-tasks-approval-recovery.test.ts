@@ -8,6 +8,7 @@ import { createPinia, setActivePinia } from "pinia";
 import ApprovalResultsPanel from "../../approval/ApprovalResultsPanel.vue";
 import RecoveryPanel from "../v2/RecoveryPanel.vue";
 import { useApprovalResultsStore } from "../../../stores/approvalResults";
+import { useInteractiveStore } from "../../../stores/interactive";
 import { recoveryEmptyText } from "../v2/recoverySummary";
 
 const mounted: VueWrapper[] = [];
@@ -66,6 +67,35 @@ describe("#56 审批历史计数来自历史查询", () => {
     results.recordLocal({ approvalId: "live-1", phase: "executed", state: "completed", summary: "实时结果" });
     await flushPromises();
     expect(wrapper.get('[data-test="approval-history-count"]').text()).toBe("审批历史 1 条");
+  });
+});
+
+describe("文案 9 恢复受阻：请先确认改动影响，再重试保存", () => {
+  it("影响确认挡住保存时只保留一句准确提示，重试保存仍在", async () => {
+    const store = useInteractiveStore();
+    store.saveStatus = "error";
+    store.saveError = "没有连上本机后端";
+    store.pendingImpact = { id: "impact_1" } as never;
+    const wrapper = track(
+      mount(RecoveryPanel, {
+        props: {
+          boardId: "board_1",
+          deps: {
+            fetchIntentViews: vi.fn(async () => ({ available: true, intents: [] })),
+            fetchRecoveryPreview: vi.fn(),
+            recoverIntent: vi.fn(),
+          },
+          retryApi: {
+            fetchSeries: vi.fn(async () => ({ available: false, reason: "能力未上线", series: [] })),
+            retry: vi.fn(),
+          },
+        },
+        attachTo: document.body,
+      }),
+    );
+    await flushPromises();
+    expect(wrapper.get('[data-im="p3c-recovery-save-impact"]').text()).toBe("请先确认改动影响，再重试保存");
+    expect(wrapper.get('[data-im="p3c-recovery-save-retry"]').text()).toContain("重试保存");
   });
 });
 
