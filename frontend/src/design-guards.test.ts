@@ -224,7 +224,9 @@ describe("无边框窗口契约", () => {
     for (const path of ["views/PlanetView.vue"]) {
       const file = FILES.find((f) => f.path === path);
       expect(file, path).toBeTruthy();
-      expect(file!.text, path).toContain("var(--titlebar-height)");
+      // 0.3.2 + #36/#75：星球页顶边读「透明留白 + 标题条」的组合令牌 --chrome-top；
+      // 旧行为被本项否定：裸 --titlebar-height 从客户区顶算，会让按钮上沿被拖动区吃掉。
+      expect(file!.text, path).toMatch(/var\(--chrome-top\)|var\(--titlebar-height\)/);
     }
     // 顶部提示条（待确认审批 / 没执行的操作 / 开发任务）统一挂在 App 的 .top-notes 里：
     // 默认位置必须让开标题条 —— 有人在这条上写死 12px，它就会重新被压住
