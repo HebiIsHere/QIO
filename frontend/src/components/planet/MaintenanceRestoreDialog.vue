@@ -46,6 +46,13 @@ const props = withDefaults(
     previewError?: string;
     restoring?: boolean;
     restoreError?: string;
+    /**
+     * 只读历史态：已撤回 / 已确认没有可恢复内容时，只展示服务端返回的历史结果，
+     * 不提供再次执行的确认入口（隐藏确认按钮）。
+     */
+    readOnly?: boolean;
+    /** 只读态说明（父组件按真实状态给文案；不给也用中性说明）。 */
+    readOnlyNote?: string;
   }>(),
   {
     targetLabel: "",
@@ -58,6 +65,8 @@ const props = withDefaults(
     previewError: "",
     restoring: false,
     restoreError: "",
+    readOnly: false,
+    readOnlyNote: "",
   },
 );
 
@@ -190,9 +199,11 @@ onBeforeUnmount(() => {
       <div
         ref="rootRef"
         class="qio-confirm restore-dialog qio-floating"
+        :class="{ 'restore-dialog--history': readOnly }"
         role="dialog"
         aria-modal="true"
         aria-labelledby="qio-restore-dialog-title"
+        :data-restore-readonly="readOnly ? 'true' : undefined"
       >
         <!-- 标题栏三列等宽：左槽只占位，中间标题严格居中，右槽关闭按钮不会挤偏标题 -->
         <div class="qio-modal-head restore-dialog__head">
@@ -214,9 +225,12 @@ onBeforeUnmount(() => {
         </div>
         <p v-if="targetLabel" class="restore-dialog__target mono">{{ targetLabel }}</p>
 
-        <!-- 摘要：先给影响面，再给条目 -->
+        <!-- 摘要：先给影响面，再给条目；只读历史态先说明不会执行任何写入 -->
         <section class="restore-dialog__section" aria-label="影响摘要">
-          <p class="restore-dialog__lead">
+          <p v-if="readOnly" class="restore-dialog__lead" data-restore-readonly-note>
+            {{ readOnlyNote || "没有可再次执行恢复的内容；下面是服务端返回的真实结果，不会执行任何写入。" }}
+          </p>
+          <p v-else class="restore-dialog__lead">
             这会把这次维护改动的知识恢复成维护前的内容。恢复会用新的版本记录，不删除历史；
             你后来做过的修改不会被覆盖 —— 受影响的那几项会被拒绝并列出原因。
           </p>
@@ -237,8 +251,8 @@ onBeforeUnmount(() => {
         <!-- 受影响条目：逐项状态 + 原因 + 可展开的修改前后内容 -->
         <section v-else class="restore-dialog__section" aria-label="受影响条目">
           <p class="restore-dialog__label">受影响条目（{{ items.length }}）</p>
-          <p v-if="!items.length" class="restore-dialog__hint">
-            这次预览没有可恢复的操作（服务端未返回操作计划）；不臆造可恢复结论。
+          <p v-if="!items.length" class="restore-dialog__hint" data-restore-empty>
+            没有可撤回的内容。
           </p>
           <ul class="restore-dialog__items">
             <li v-for="item in items" :key="item.key" class="restore-dialog__item">
@@ -288,9 +302,11 @@ onBeforeUnmount(() => {
             :disabled="restoring"
             @click="cancel"
           >
-            {{ restoreError ? "关闭" : "取消" }}
+            {{ readOnly || restoreError ? "关闭" : "取消" }}
           </button>
+          <!-- 只读历史态：没有可再次执行的恢复入口（隐藏确认按钮） -->
           <button
+            v-if="!readOnly"
             class="qio-btn danger-solid restore-dialog__confirm"
             type="button"
             :disabled="restoring || previewLoading || Boolean(previewError)"
