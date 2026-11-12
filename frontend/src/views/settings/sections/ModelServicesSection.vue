@@ -30,8 +30,7 @@ onErrorCaptured((error) => {
       <header class="set-section__head">
         <h2>模型与 Key</h2>
         <p class="set-section__desc">
-          密钥只写不读：保存后不再显示明文，只写进本机的系统凭据库（keyring）。
-          在 QIO 里停用、撤销或删除凭据都不会去厂商那边吊销 API Key。
+          密钥只写不读：保存后不再显示明文，密钥保存在系统凭据库。
         </p>
       </header>
       <div v-if="panelError" class="set-panel-error" role="alert" data-testid="settings-models-error">
