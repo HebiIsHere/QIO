@@ -48,6 +48,7 @@ import {
   removeLink,
   renameGroup,
   selectInRect,
+  setGroupCollapsed,
   setGroupOrdered,
   setSelection,
   updateCard,
@@ -58,6 +59,7 @@ import {
 import {
   placeToolbarRelativeToCard,
   rectsIntersect,
+  toolbarButtonLayout,
   type OverlayRect,
 } from "../../interactive/overlayPlacement";
 import { prefersReducedMotion } from "../../utils/motion";
@@ -350,6 +352,12 @@ const hiddenMemberIds = computed(() => {
 /** 真正画在板面上的卡片：收起的组只留组框概览。 */
 const renderedCards = computed(() => liveCards.value.filter((card) => !hiddenMemberIds.value.has(card.id)));
 
+/** 当前可见（真正画在板面上）的选择：#43 删除快捷键与 #58 删除都只作用于它们。 */
+const visibleSelectedIds = computed(() => {
+  const ids = new Set(renderedCards.value.map((card) => card.id));
+  return selection.value.filter((cardId) => ids.has(cardId));
+});
+
 /** 参与范围（§5.1 participation 是唯一事实源）：给连线层与卡片参与控件。 */
 const includedCardIds = computed(() =>
   liveCards.value.filter((card) => participationOf(card) === "included").map((card) => card.id),
@@ -384,18 +392,52 @@ function groupRect(group: BoardGroup): V2Rect {
   return { x: group.x, y: group.y, w: group.w, h: group.h };
 }
 
-/** 收起 / 展开一个组（纯显示状态；不改成员、顺序、材料范围）。 */
+/**
+ * 收起 / 展开一个组。
+ *
+ * #59：收起偏好按板面保存（group.collapsed 是纯显示状态，成员与提交范围不变），刷新后恢复；
+ * #58：收起后成员卡片不可见，选择里必须同步剔除它们（删除 / 工具栏 / 提交都不再作用于不可见成员）。
+ */
 function onGroupToggleCollapse(groupId: string, collapsed: boolean): void {
   const next = new Set(collapsedGroupSet.value);
   if (collapsed) next.add(groupId);
   else next.delete(groupId);
   collapsedGroupIds.value = [...next];
+  const current = boardState.value;
+  if (current) {
+    const hidden = new Set<string>();
+    if (collapsed) {
+      const group = current.groups.find((item) => item.id === groupId && !item.deleted);
+      for (const cardId of group?.members ?? []) hidden.add(cardId);
+    }
+    const visibleSelection = current.selection.filter((cardId) => !hidden.has(cardId));
+    let committed = setGroupCollapsed(current, groupId, collapsed);
+    if (visibleSelection.length !== current.selection.length) {
+      committed = setSelection(committed, visibleSelection);
+    }
+    commit(committed, collapsed ? "收起组（显示状态）" : "展开组（显示状态）");
+  }
   notice.value = collapsed ? "已收起这个组：只显示组框概览，成员没有变化。" : "已展开这个组。";
 }
 
 function isGroupCollapsed(groupId: string): boolean {
   return collapsedGroupSet.value.has(groupId);
 }
+
+/*
+  #59：刷新 / 撤销重做 / 换板后，以板面状态里的 group.collapsed 为准恢复收起显示
+  （只同步显示态；不写回板面、不触发保存）。
+*/
+watch(boardState, (next) => {
+  if (!next) return;
+  const persisted = next.groups
+    .filter((group) => !group.deleted && Boolean(group.collapsed))
+    .map((group) => group.id);
+  if (persisted.length === collapsedGroupIds.value.length && persisted.every((id) => collapsedGroupSet.value.has(id))) {
+    return;
+  }
+  collapsedGroupIds.value = persisted;
+}, { immediate: true });
 
 /** 传给连线层：收起组的成员的对外连线汇聚到组边缘（真实端点身份不变）。 */
 const foldedGroupIds = computed(() =>
@@ -837,33 +879,33 @@ const renderedCardAnchors = computed<CardAnchor[]>(() => {
   ];
 });
 
-const TOOL_COUNT = 5;
-const TOOL_STEP = 36;
-const TOOL_START = 8;
-const TOOL_MARGIN = 14;
+/** 连接点的视觉半径（px）：工具栏与卡片外框的空隙必须大于它，否则会压住连接点。 */
+const TOOLBAR_PORT_RADIUS = 9;
 
 /**
  * 逐按钮实时位置（相对卡片左上角）。
- * 上边容量用尽后，最左侧按钮移到左边并压住前一个；
- * 左边容量也用尽后自动进入第二列。
+ *
+ * #04（PM-QIO032）：不再无条件贴上边 —— 按**板面可用矩形**换边 / 沿边内收：
+ * - 卡片贴板面上沿（或放大到卡片顶边在可视区上方）→ 换到卡片下方；
+ * - 卡片贴左 / 右边 → 整排沿边滑动，按钮始终完整落在可视区里；
+ * - 卡片比可视区还大（放大查看）→ 按钮「向内调整」到可视区内，编辑按钮仍完整可点；
+ * - 可视区量不到（jsdom / 首帧）时退回既有「按卡片自身尺寸分列」的行为（逐字段不变）。
+ * 卡片外侧的按钮与卡片边缘留 12px（> 连接点半径），不压连接点；按钮不压卡片标题 / 编辑区。
  */
 function toolbarButtonPositions(card: BoardCardModel): Array<{ x: number; y: number }> {
   const rect = displayRect(card);
-  const topCapacity = Math.max(0, Math.min(TOOL_COUNT, Math.floor((rect.w / 2 - TOOL_MARGIN) / TOOL_STEP)));
-  const leftCount = TOOL_COUNT - topCapacity;
-  const leftCapacity = Math.max(1, Math.floor((rect.h / 2 - TOOL_MARGIN) / TOOL_STEP));
-  const out: Array<{ x: number; y: number }> = [];
-  for (let i = 0; i < TOOL_COUNT; i += 1) {
-    if (i < leftCount) {
-      const rank = leftCount - 1 - i;
-      const column = Math.floor(rank / leftCapacity);
-      const row = rank % leftCapacity;
-      out.push({ x: -42 - column * TOOL_STEP, y: TOOL_START + row * TOOL_STEP });
-    } else {
-      out.push({ x: TOOL_START + (i - leftCount) * TOOL_STEP, y: -42 });
-    }
-  }
-  return out;
+  const region = boardRegion.value;
+  const visible =
+    region.size.w > 0 && region.size.h > 0
+      ? { x: region.origin.x, y: region.origin.y, w: region.size.w, h: region.size.h }
+      : null;
+  const ports = [
+    { x: rect.w / 2, y: 0, r: TOOLBAR_PORT_RADIUS },
+    { x: rect.w, y: rect.h / 2, r: TOOLBAR_PORT_RADIUS },
+    { x: rect.w / 2, y: rect.h, r: TOOLBAR_PORT_RADIUS },
+    { x: 0, y: rect.h / 2, r: TOOLBAR_PORT_RADIUS },
+  ];
+  return toolbarButtonLayout({ card: rect, visible, ports }).map((box) => ({ x: box.x, y: box.y }));
 }
 
 function commit(next: BoardState, label: string) {
@@ -2350,8 +2392,10 @@ function onCardJoinGroup(cardId: string, groupId: string) {
 
 function deleteSelected() {
   const current = boardState.value;
-  if (!current || !current.selection.length) return;
-  const removed = [...current.selection];
+  if (!current) return;
+  // #43/#58：只删除当前可见的对象；收起组里的成员不在删除范围内。
+  const removed = [...visibleSelectedIds.value];
+  if (!removed.length) return;
   let next = current;
   for (const cardId of removed) next = removeCard(next, cardId);
   commit(next, "删除所选卡片（撤回材料或注释）");
@@ -3186,6 +3230,48 @@ function onLocatePreview(event: Event) {
 
 // --- 键盘 -----------------------------------------------------------------
 
+/**
+ * #43：Delete / Backspace 的隔离面。
+ * 输入框 / 可编辑区 / 工具栏 / 卡片详情 / 弹窗 / 菜单 / 关系编辑器里的删除键
+ * 是**它们自己的**（删文字、删选项），画布一律不劫持。
+ */
+const DELETE_KEY_ISOLATED_SELECTOR = [
+  "input",
+  "textarea",
+  "select",
+  "[contenteditable='true']",
+  "[data-im='card-toolbar']",
+  "[data-im='board-toolbar']",
+  "[data-im='selection-menu']",
+  "[data-im='more-panel']",
+  "[data-im='link-editor']",
+  "[data-im='impact-dialog']",
+  "[data-im='search']",
+  "[data-im='preview']",
+  "[role='dialog']",
+  "[role='menu']",
+  "[role='menuitem']",
+  "button",
+  "a",
+  "label",
+].join(",");
+
+/**
+ * 画布是否真的拥有这次删除快捷键（#43）：
+ * 焦点在画布外（其它面板 / 聊天 / 浮层）或落在任何交互控件上时一律返回 false。
+ */
+function canvasOwnsDeleteKey(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (element && typeof element.closest === "function" && element.closest(DELETE_KEY_ISOLATED_SELECTOR)) return false;
+  const active = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (active && active !== document.body && active !== document.documentElement && typeof active.closest === "function") {
+    if (active.closest(DELETE_KEY_ISOLATED_SELECTOR)) return false;
+    const root = shell.value;
+    if (root && !root.contains(active)) return false;
+  }
+  return true;
+}
+
 function onKeyDown(event: KeyboardEvent) {
   const typing = isTypingTarget(event.target);
   if (event.key === "Escape") {
@@ -3217,7 +3303,10 @@ function onKeyDown(event: KeyboardEvent) {
     return;
   }
   if (typing) return;
-  if ((event.key === "Delete" || event.key === "Backspace") && selection.value.length) {
+  if (event.key === "Delete" || event.key === "Backspace") {
+    // #43：只有画布拥有焦点、且对象当前可见时才删除；否则把按键留给当前控件。
+    if (!visibleSelectedIds.value.length) return;
+    if (!canvasOwnsDeleteKey(event.target)) return;
     event.preventDefault();
     deleteSelected();
     return;
@@ -3310,9 +3399,9 @@ onBeforeUnmount(() => {
       刻意不设 role="status"：它不是实时状态，而且文案里的缩放百分比会让 aria-live
       在每一次滚轮缩放时把整条提示重复播报一遍。
     -->
+    <!-- 文案 6（PM-QIO032）：首次手势指引只用这一句，手势含义在帮助入口里展开。 -->
     <p v-if="!hintSeen" class="banner view-hint" data-im="board-view-hint">
-      拖动空白处平移查看位置（{{ Math.round(view.scale * 100) }}%）；按住空格拖动空白处框选卡片；滚轮以指针附近为缩放中心。
-      平移与缩放只改变查看方式，不形成改动、不调用 QIO。
+      拖动空白处平移，按住空格拖动框选，滚轮缩放
     </p>
 
     <div class="board-main">
@@ -3555,7 +3644,8 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
-.banner.view-hint { color: var(--text-faint); }
+/* #85（PM-QIO032）：板面操作指引必须可读 —— 用次级文字色，而不是更浅的 faint。 */
+.banner.view-hint { color: var(--text-secondary); }
 .board-main { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
 /*
   工具栏宿主层：只有这一层（外加已打开菜单）接收指针事件，其余区域全部穿透。
