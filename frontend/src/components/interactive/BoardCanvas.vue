@@ -3311,9 +3311,9 @@ onBeforeUnmount(() => {
       刻意不设 role="status"：它不是实时状态，而且文案里的缩放百分比会让 aria-live
       在每一次滚轮缩放时把整条提示重复播报一遍。
     -->
+    <!-- 文案 6（PM-QIO032）：首次手势指引只用这一句，手势含义在帮助入口里展开。 -->
     <p v-if="!hintSeen" class="banner view-hint" data-im="board-view-hint">
-      拖动空白处平移查看位置（{{ Math.round(view.scale * 100) }}%）；按住空格拖动空白处框选卡片；滚轮以指针附近为缩放中心。
-      平移与缩放只改变查看方式，不形成改动、不调用 QIO。
+      拖动空白处平移，按住空格拖动框选，滚轮缩放
     </p>
 
     <div class="board-main">
@@ -3556,7 +3556,8 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
-.banner.view-hint { color: var(--text-faint); }
+/* #85（PM-QIO032）：板面操作指引必须可读 —— 用次级文字色，而不是更浅的 faint。 */
+.banner.view-hint { color: var(--text-secondary); }
 .board-main { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
 /*
   工具栏宿主层：只有这一层（外加已打开菜单）接收指针事件，其余区域全部穿透。
