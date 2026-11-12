@@ -21,7 +21,6 @@ import { patchEffectiveFacts } from "../effectiveFacts";
 import SettingRow from "../shell/SettingRow.vue";
 import AdvGroup from "../shell/AdvGroup.vue";
 import GroupSaveBar from "../shell/GroupSaveBar.vue";
-import SettingsNoticeLine from "../shell/SettingsNoticeLine.vue";
 
 const save = useQioSettingsSave("memory");
 const { notice } = save;
@@ -328,71 +327,12 @@ onMounted(() => {
       variant="layer"
       tone="normal"
       title="立即整理记忆与知识？"
-      detail="会在后台启动一次离线整理：合并记忆分段、提炼知识候选与实体关系。整理过程不阻塞对话，但会占用本机计算；已经开始的任务不能中途撤销。"
+      detail="整理将在后台运行，会占用本机资源。开始后无法取消。"
       confirm-text="开始整理"
       cancel-text="取消"
       title-id="settings-maintenance-title"
       @confirm="runMaintenanceNow"
       @cancel="pendingRun = false"
-    />
-
-    <header class="set-section__head">
-      <h2>记忆分段</h2>
-    </header>
-
-    <SettingRow
-      title="记忆封块分档"
-      settings-key="memory.fragment.tier"
-    >
-      <QSelect
-        :options="tierOptions"
-        :model-value="fragment.values.tier"
-        @update:model-value="(value: string) => (fragment.values.tier = value)"
-      />
-    </SettingRow>
-
-    <SettingRow
-      v-if="fragment.values.tier === 'custom'"
-      title="自定义轮数"
-      desc="单段最多的对话轮数（用户 + 助手算一轮，1-30）"
-      settings-key="memory.fragment.custom-turns"
-    >
-      <QNumber
-        class="set-num"
-        :model-value="fragment.values.customTurns"
-        :min="1"
-        :max="30"
-        mono
-        label="自定义轮数"
-        @update:model-value="(value: number | null) => (fragment.values.customTurns = value ?? 0)"
-      />
-    </SettingRow>
-
-    <SettingRow
-      title="单段长度目标"
-      desc="内容长度的兜底上限（2000-200000，按估算字符数计）"
-      settings-key="memory.fragment.max-tokens"
-    >
-      <QNumber
-        class="set-num"
-        :model-value="fragment.values.maxTokens"
-        :min="2000"
-        :max="200000"
-        :step="1000"
-        mono
-        label="单段长度目标"
-        @update:model-value="(value: number | null) => (fragment.values.maxTokens = value ?? 0)"
-      />
-    </SettingRow>
-
-    <GroupSaveBar
-      group="memory.fragment"
-      :dirty="fragment.dirty.value"
-      :saving="fragment.saving.value"
-      :error="fragment.error.value"
-      saved-hint="记忆分段已保存"
-      @save="onSaveFragment"
-      @cancel="onCancelFragment"
     />
 
     <header class="set-section__head">
@@ -417,7 +357,7 @@ onMounted(() => {
 
     <SettingRow
       title="整理间隔"
-      desc="每次后台整理的间隔（1-720 小时）"
+      desc="两次后台整理之间的间隔"
       settings-key="memory.maintenance.interval"
     >
       <QNumber
@@ -425,6 +365,7 @@ onMounted(() => {
         :model-value="maintenanceInterval"
         :min="1"
         :max="720"
+        required
         mono
         label="整理间隔（小时）"
         unit="小时"
@@ -440,7 +381,70 @@ onMounted(() => {
       <button type="button" class="qio-btn" @click="askRunMaintenance">立即整理</button>
     </SettingRow>
 
-    <AdvGroup id="memory.advanced" label="高级选项" hint="单轮迭代上限与输出 token 预算">
+    <AdvGroup id="memory.advanced" label="高级选项" hint="记忆分段、单轮迭代上限与输出 token 预算">
+      <p class="set-hint" data-memory-advanced-group="fragment">记忆分段</p>
+
+      <SettingRow
+        title="记忆封块分档"
+        settings-key="memory.fragment.tier"
+      >
+        <QSelect
+          :options="tierOptions"
+          :model-value="fragment.values.tier"
+          @update:model-value="(value: string) => (fragment.values.tier = value)"
+        />
+      </SettingRow>
+
+      <SettingRow
+        v-if="fragment.values.tier === 'custom'"
+        title="自定义轮数"
+        desc="单段最多的对话轮数（用户 + 助手算一轮）"
+        settings-key="memory.fragment.custom-turns"
+      >
+        <QNumber
+          class="set-num"
+          :model-value="fragment.values.customTurns"
+          :min="1"
+          :max="30"
+          required
+          mono
+          label="自定义轮数"
+          @update:model-value="(value: number | null) => (fragment.values.customTurns = value ?? 0)"
+        />
+      </SettingRow>
+
+      <SettingRow
+        title="单段长度目标"
+        desc="内容长度的兜底上限（按估算字符数计）"
+        settings-key="memory.fragment.max-tokens"
+      >
+        <QNumber
+          class="set-num"
+          :model-value="fragment.values.maxTokens"
+          :min="2000"
+          :max="200000"
+          :step="1000"
+          required
+          mono
+          label="单段长度目标"
+          @update:model-value="(value: number | null) => (fragment.values.maxTokens = value ?? 0)"
+        />
+      </SettingRow>
+
+      <!-- #16：没有改动时不摆一个「已保存」的常驻操作条；有改动 / 在途 / 失败才出现 -->
+      <GroupSaveBar
+        v-if="fragment.dirty.value || fragment.saving.value || fragment.error.value"
+        group="memory.fragment"
+        :dirty="fragment.dirty.value"
+        :saving="fragment.saving.value"
+        :error="fragment.error.value"
+        saved-hint="记忆分段已保存"
+        @save="onSaveFragment"
+        @cancel="onCancelFragment"
+      />
+
+      <p class="set-hint" data-memory-advanced-group="loop">对话深度（模型用量）</p>
+
       <SettingRow
         title="单轮迭代上限"
         desc="每轮任务最多重新决策的次数（1-1000）"
@@ -451,6 +455,7 @@ onMounted(() => {
           :model-value="loopMaxIterations"
           :min="1"
           :max="1000"
+          required
           mono
           label="迭代上限"
           @update:model-value="onIterationsInput"
@@ -468,6 +473,7 @@ onMounted(() => {
           :model-value="loopTokenBudget"
           :min="0"
           :max="500000"
+          required
           mono
           label="输出预算"
           @update:model-value="onBudgetInput"
@@ -476,6 +482,37 @@ onMounted(() => {
       </SettingRow>
     </AdvGroup>
 
-    <SettingsNoticeLine :notice="notice" label="memory" />
+    <div v-if="notice" :data-settings-notice="'memory'">
+      <p
+        class="set-notice"
+        :class="notice.kind"
+        :role="notice.kind === 'err' ? 'alert' : 'status'"
+      >
+        {{ notice.text }}
+      </p>
+      <div class="set-channel-actions">
+        <button
+          v-if="notice.retry"
+          type="button"
+          class="qio-btn mini"
+          data-settings-action="retry"
+          @click="notice.retry()"
+        >
+          重试
+        </button>
+        <button
+          type="button"
+          class="qio-btn mini quiet"
+          aria-label="关闭这项提示"
+          @click="save.dismissNotice()"
+        >
+          关闭
+        </button>
+      </div>
+      <details v-if="notice.detail">
+        <summary>技术详情</summary>
+        <p class="set-notice info mono">{{ notice.detail }}</p>
+      </details>
+    </div>
   </section>
 </template>
