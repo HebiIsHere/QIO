@@ -81,6 +81,12 @@ windows-sys = { version = "0.61", features = [
   # 窗口外轮廓（§六）：DwmSetWindowAttribute 在 Graphics\Dwm 下。
   # 只加 feature、不新增 crate（windows-sys 本来就在依赖树里，Cargo.lock 不变）。
   "Win32_Graphics_Dwm",
+  # 0.3.2 窗口层：subclass / DPI / 版本探测 / GDI 光标与绘制占位 / 鼠标捕获。
+  "Win32_UI_Shell",
+  "Win32_UI_HiDpi",
+  "Win32_System_LibraryLoader",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [profile.release]

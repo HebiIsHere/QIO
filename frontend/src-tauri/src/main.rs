@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 mod attachment_picker;
 mod backend_lifecycle;
 mod updater_net;
+mod window_frame;
 
 use backend_lifecycle::{
     descendant_pids, process_alive, stop_pids, stop_tree_by_pid, StopFailure, StopReport,
@@ -1900,65 +1901,6 @@ fn close_behavior_override() -> Option<String> {
     None
 }
 
-/// Windows 11 原生窗口外轮廓：系统圆角 + 去掉 DWM 边框（用户提示词 §六）。
-///
-/// 为什么必须在壳侧做：窗口四角是 **DWM 合成器**裁切的。网页层给 .app-shell 加
-/// border-radius 只会得到「方形窗口里再画一个圆角矩形」，四角仍会露出窗口底色 ——
-/// 那不是原生圆角，也不能靠 CSS 伪装。
-///
-/// 两个属性都只在 Windows 11（Build 22000+）生效：
-/// * DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND：请求系统圆角。半径由系统决定
-///   （Windows 不提供任意像素半径，所以不承诺与全局栏的 20px 精确一致），最大化 /
-///   系统贴边时由系统自动取消圆角、还原后自动恢复 —— 壳侧不需要自己监听窗口状态。
-/// * DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE：去掉 DWM 画的窗口边框。Tauri 官方配置
-///   文档写明 decorations:false + shadow:true 在 Windows 上会加一条 1px 白边。
-///
-/// 失败只记日志、不影响启动：Windows 10 及更早没有系统圆角（保持方形就是系统边界），
-/// DWM 合成被禁用时也不会有圆角。这里绝不为了「看起来圆角」去改窗口区域或加网页圆角。
-#[cfg(windows)]
-fn apply_windows_window_outline(window: &tauri::WebviewWindow) {
-    use std::ffi::c_void;
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-    };
-
-    let Ok(raw) = window.hwnd() else {
-        log::debug!("[qio] 窗口外轮廓：拿不到 HWND，跳过原生圆角（不影响启动）");
-        return;
-    };
-    let hwnd = raw.0 as HWND;
-
-    // 系统圆角偏好：半径由 Windows 决定；最大化/贴边/还原全部由系统处理。
-    let corner: i32 = DWMWCP_ROUND;
-    let hr = unsafe {
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
-            &corner as *const i32 as *const c_void,
-            std::mem::size_of::<i32>() as u32,
-        )
-    };
-    if hr < 0 {
-        log::debug!("[qio] 系统圆角偏好不可用（Windows 10 及更早？）：DWM 返回 {hr:#x}");
-    }
-
-    // 去掉 DWM 窗口边框：无边框 + 阴影会留下 1px 白边，与「四角无黑边/白边」冲突。
-    let border: u32 = DWMWA_COLOR_NONE;
-    let hr = unsafe {
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_BORDER_COLOR as u32,
-            &border as *const u32 as *const c_void,
-            std::mem::size_of::<u32>() as u32,
-        )
-    };
-    if hr < 0 {
-        log::debug!("[qio] 窗口边框颜色不可用（需要 Windows 11 22000+）：DWM 返回 {hr:#x}");
-    }
-}
-
 /// 显示主窗口：隐藏到托盘后必须能恢复（show + unminimize + focus 缺一不可）。
 ///
 /// 只隐藏、不重建窗口：后端不会被重新拉起，也不会出现「第二个实例」。
@@ -1976,6 +1918,9 @@ fn show_main_window(app: &tauri::AppHandle) {
     if let Err(err) = window.set_focus() {
         log::warn!("[qio] 从托盘恢复窗口失败（focus）：{err}");
     }
+    if let Some(frame) = app.try_state::<Arc<window_frame::state::WindowFrameState>>() {
+        window_frame::on_window_shown(&frame, "tray-show");
+    }
     log::info!("[qio] 已从托盘恢复主窗口");
 }
 
@@ -1983,9 +1928,12 @@ fn show_main_window(app: &tauri::AppHandle) {
 fn hide_main_window(app: &tauri::AppHandle, reason: &str) {
     match app.get_webview_window("main") {
         Some(window) => match window.hide() {
-            Ok(()) => log::info!(
-                "[qio] 主窗口已隐藏到托盘（{reason}）：后端继续运行，托盘可恢复"
-            ),
+            Ok(()) => {
+                if let Some(frame) = app.try_state::<Arc<window_frame::state::WindowFrameState>>() {
+                    window_frame::on_window_hidden(&frame, "tray-hide");
+                }
+                log::info!("[qio] 主窗口已隐藏到托盘（{reason}）：后端继续运行，托盘可恢复")
+            }
             Err(err) => log::error!("[qio] 隐藏主窗口失败（{reason}）：{err}"),
         },
         None => log::error!("[qio] 隐藏主窗口失败（{reason}）：找不到主窗口"),
@@ -2374,15 +2322,24 @@ fn main() {
             // （见 backend_launch 里的 NO_PROXY=""）。
             install_direct_fallback_guard();
 
-            app.manage(Arc::clone(&runtime_for_setup));
-            // §六：Windows 11 原生窗口外轮廓（系统圆角 + 去掉 DWM 白边）。
-            // 只调系统合成属性、不碰网页布局；失败只记日志，不影响启动。
-            #[cfg(windows)]
-            {
-                if let Some(window) = app.get_webview_window("main") {
-                    apply_windows_window_outline(&window);
+            // 0.3.2 窗口层：程序化建窗（tauri.conf.json 的 app.windows 已清空）。
+            // 必须在托盘/后端之前：关闭行为、托盘恢复、ownership 的 WM_CLOSE 兜底
+            // 都以 main 窗口存在为前提；窗口 label 必须保持 "main"（capabilities 依赖）。
+            let frame_cfg = window_frame::config::FrameConfig::from_env();
+            let evidence_dir = window_frame::evidence_dir_from_env(&data_dir());
+            let (frame_state, main_window) = match window_frame::create_main_window(
+                app.handle(),
+                frame_cfg,
+                evidence_dir,
+            ) {
+                Ok(created) => created,
+                Err(err) => {
+                    log::error!("[qio] window-frame 主窗口创建失败：{err}");
+                    return Err(Box::new(err));
                 }
-            }
+            };
+            window_frame::init(app.handle(), &frame_state, &main_window);
+            app.manage(Arc::clone(&runtime_for_setup));
             // R9 §11：系统托盘。创建失败只降级（关闭行为仍可用），不让应用起不来。
             if let Err(err) = setup_tray(app.handle()) {
                 log::error!(
@@ -2433,12 +2390,22 @@ fn main() {
             attachment_picker::pick_attachment_file_available,
             // 附件：打开 / 在文件夹中显示（可执行 / 脚本类只给后者 —— 不自动执行）
             attachment_picker::open_attachment_path,
-            attachment_picker::reveal_attachment_path
+            attachment_picker::reveal_attachment_path,
+            // 0.3.2 窗口层 IPC（spec §3.3）：命中布局上报 / 首屏 runtime / 窗口动作 /
+            // 穿透诊断；自定义命令不走 capability，capabilities/default.json 不需要改。
+            window_frame::commands::qio_set_hit_regions,
+            window_frame::commands::qio_get_window_frame,
+            window_frame::commands::qio_window_action,
+            window_frame::commands::qio_set_passthrough
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(move |_app, event| match event {
-            RunEvent::Exit | RunEvent::ExitRequested { .. } => shutdown_runtime(&runtime),
+        .run(move |app, event| match event {
+            RunEvent::Exit | RunEvent::ExitRequested { .. } => {
+                // 0.3.2：先停 poll（join 最多一个 8ms 周期）、销毁 overlay，再收尾后端。
+                window_frame::shutdown(app);
+                shutdown_runtime(&runtime);
+            }
             _ => {}
         });
 }
