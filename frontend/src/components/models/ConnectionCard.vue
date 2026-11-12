@@ -198,8 +198,12 @@ watch(tab, (value) => {
           <dt>模型调用验证</dt>
           <dd>
             <span class="qio-state" :class="verifyTone">{{ verifyText }}</span>
-            <span class="hint">
+            <span v-if="c.models.length" class="hint">
               按模型：{{ verifiedModels }} / {{ c.models.length }} 个已验证；可用 {{ usableModels }} 个。
+            </span>
+            <span v-else class="hint">
+              还没有模型记录。这里的「重新验证」只验证这把 Key（用当前默认模型发一次最小请求）；
+              按模型验证要先在「模型」页签获取模型。
             </span>
           </dd>
         </div>
@@ -295,14 +299,19 @@ watch(tab, (value) => {
       <div class="manage-row">
         <div>
           <h4>重新验证这把 Key</h4>
-          <p class="hint">用当前默认模型真的发一次最小请求；不会检查同 Key 下其它模型。</p>
+          <p class="hint">
+            仅验证当前默认模型：真的发一次最小请求，不会检查同 Key 下其它模型。
+          </p>
+          <p class="hint mono">
+            请求将发往：{{ c.endpoint || "（还没有填写服务地址，无法验证）" }}
+          </p>
         </div>
         <button type="button" class="qio-btn mini" :disabled="busy" @click="emit('verifyKey')">重新验证</button>
       </div>
       <div class="manage-row danger">
         <div>
           <h4>撤销</h4>
-          <p class="hint">移除本机保存的密钥并保留记录与审计；不会去厂商后台吊销这把 Key。</p>
+          <p class="hint">移除本机保存的密钥并保留记录与审计。</p>
         </div>
         <button
           v-if="c.status !== 'revoked'"
@@ -330,16 +339,16 @@ watch(tab, (value) => {
         <div class="budget__head">
           <span>累计用量上限</span>
           <span class="mono">
-            {{ hasBudget ? formatTokens(c.budgetUsed) + " / " + formatTokens(budget ?? 0) + " token" : "不限" }}
+            {{ hasBudget ? formatTokens(c.budgetUsed) + " / " + formatTokens(budget ?? 0) : "留空不限" }}
           </span>
         </div>
         <div v-if="hasBudget" class="budget__bar">
           <div class="budget__fill" :class="{ warn: budgetPct >= 80 }" :style="{ width: budgetPct + '%' }"></div>
         </div>
         <p class="hint">
-          累计用量是「进 + 出」的合计；单轮输出 token 预算在「记忆与整理 → 高级选项」里。
+          累计用量是「进 + 出」的合计（单位 token）；单轮输出上限在「记忆与整理 → 高级选项」里。
         </p>
-        <p class="mono">进 {{ formatTokens(usageInput) }} · 出 {{ formatTokens(usageOutput) }} token</p>
+        <p class="mono">进 {{ formatTokens(usageInput) }} · 出 {{ formatTokens(usageOutput) }}</p>
       </div>
       <dl class="states">
         <div class="state-row">

@@ -85,6 +85,46 @@ export const PERMISSION_MODE_DESCRIPTIONS: Record<PermissionMode, string> = {
     "普通操作不再逐项审批，但仍受操作系统账户权限约束（QIO 的受限子进程不是安全沙箱）。直接改写 QIO 内部运行数据仍然需要连续三次确认。",
 };
 
+/**
+ * 三模式用**同一结构**交代（#21）：可读什么 / 可改什么 / 何时需要审批。
+ *
+ * 事实来源：backend/src/agent/security/{modes,engine,internal_data}.py 的注释与判定规则，
+ * 不新增承诺、不弱化审批：提高模式必须由用户确认（PUT 带 user_confirmed=true），
+ * 放宽不会自动批准任何等待中的审批；受限子进程不是安全沙箱。
+ */
+export interface PermissionModeFacts {
+  /** 可读什么 */
+  read: string;
+  /** 可改什么 */
+  write: string;
+  /** 何时需要审批（含「扩大权限」的那一条） */
+  approval: string;
+}
+
+export const PERMISSION_MODE_FACTS: Record<PermissionMode, PermissionModeFacts> = {
+  read_only: {
+    read: "读取默认允许（凭据只写不读，是红线）。",
+    write:
+      "不能修改、创建或删除你的业务文件，也不能执行会改动文件的脚本；QIO 自身的运行数据（日志、审批状态）与你主动导入材料时的落盘不受影响。",
+    approval:
+      "没有「自动提升到写入」的审批：要写入必须由你主动切到更高的模式；等待中的审批不会自动通过。",
+  },
+  restricted: {
+    read: "读取默认允许；工作区之外或未获指令授权的读取仍会按规则审查。",
+    write:
+      "修改或删除你的原有文件需要你逐项审批；QIO 自主生成的工作文件可以直接写。",
+    approval:
+      "首次安装的默认模式。范围外、未获指令授权或判定为高风险的操作逐项请你确认；扩大工具能力同样要重新审批，不沿用旧结论。",
+  },
+  unrestricted: {
+    read: "普通读取不再逐项审批，但仍受操作系统账户权限约束。",
+    write:
+      "普通操作（含修改文件、执行命令）不再逐项审批；直接改写 QIO 内部运行数据仍然需要连续三次确认。",
+    approval:
+      "不再有常规审批环节；但要提高/切换权限仍必须由你确认，模型、工具、脚本与子智能体都没有入口。",
+  },
+};
+
 /** 旧值 → 新模式的映射（与后端 LEGACY_MODE_MAP 逐字一致）。 */
 export const LEGACY_MODE_MAP: Record<string, PermissionMode> = {
   default: "restricted",
@@ -219,6 +259,13 @@ export function permissionModeSwitchNote(from: PermissionMode, to: PermissionMod
   return "收紧到受限模式：" + base + "等待中的审批不会自动批准，仍需你逐项决定。";
 }
 
-/** 设置页的安全边界说明（不能只靠颜色表达）。 */
+/**
+ * 设置页的**唯一**一段系统权限边界说明（不能只靠颜色表达，也不重复说两遍）。
+ *
+ * 诚实口径：受限子进程不是安全沙箱；它靠操作系统账户权限与执行边界降低风险，
+ * 不等同于隔离环境。收紧立即生效；放宽不会自动批准等待中的审批，
+ * 也不会把已拒绝/已过期的审批复活。
+ */
 export const PERMISSION_MODE_SAFETY_NOTE =
-  "只有你能修改权限模式：QIO 的模型、工具、脚本与子智能体都没有修改入口。收紧会立即生效；放宽不会自动批准任何等待中的审批，也不会把已拒绝/已过期的审批复活。";
+  "系统权限边界：QIO 的受限子进程不是安全沙箱，它靠操作系统账户权限与执行边界降低风险，不等同于隔离环境。" +
+  "只有你能修改权限模式（模型、工具、脚本与子智能体都没有入口）；收紧立即生效，放宽不会自动批准等待中的审批，也不会复活已拒绝或已过期的审批。";

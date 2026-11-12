@@ -130,3 +130,80 @@ describe("QNumber commit 语义（问题4）", () => {
     w.unmount();
   });
 });
+describe("QNumber 必填模式（设置页数字项：#63 / #64）", () => {
+  /**
+   * 真实浏览器的「打字」只有 input 事件；VTU 的 setValue 会顺带触发 change
+   * （提交），会把「编辑过程中」和「离开输入框」两步揉成一步。这里显式分开。
+   */
+  async function typeOnly(input: ReturnType<ReturnType<typeof mount>["find"]>, value: string) {
+    (input.element as HTMLInputElement).value = value;
+    await input.trigger("input");
+  }
+
+  it("清空后失焦：不 emit / 不 emit null，提示必填并回显当前值", async () => {
+    const w = mount(QNumber, { props: { modelValue: 90, min: 0, max: 3650, required: true, label: "天数" } });
+    const input = w.find("input");
+    await typeOnly(input, "");
+    expect((input.element as HTMLInputElement).value).toBe("");
+    // 编辑过程中不 emit null（父级因此不会把空值当 0）
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+    await input.trigger("blur");
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+    expect(w.emitted("change")).toBeUndefined();
+    expect((input.element as HTMLInputElement).value).toBe("90");
+    expect(w.find(".q-number-hint").text()).toContain("必填");
+    expect(input.attributes("aria-invalid")).toBe("true");
+    w.unmount();
+  });
+
+  it("非法文本 abc / 1e：不提交、提示可读、回显当前值", async () => {
+    for (const bad of ["abc", "1e"]) {
+      const w = mount(QNumber, { props: { modelValue: 90, min: 0, max: 3650, required: true } });
+      const input = w.find("input");
+      await typeOnly(input, bad);
+      await input.trigger("blur");
+      expect(w.emitted("update:modelValue"), bad).toBeUndefined();
+      expect(w.emitted("change"), bad).toBeUndefined();
+      expect((input.element as HTMLInputElement).value, bad).toBe("90");
+      expect(w.find(".q-number-hint").text(), bad).toContain("只能填写数字");
+      w.unmount();
+    }
+  });
+
+  it("低于下限（-1）不按收口提交：提示范围并回显当前值", async () => {
+    const w = mount(QNumber, { props: { modelValue: 90, min: 0, max: 3650, required: true } });
+    const input = w.find("input");
+    await typeOnly(input, "-1");
+    await input.trigger("blur");
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+    expect(w.emitted("change")).toBeUndefined();
+    expect((input.element as HTMLInputElement).value).toBe("90");
+    expect(w.find(".q-number-hint").text()).toContain("不能小于 0");
+    w.unmount();
+  });
+
+  it("显式 0 是合法值：emit 0 并触发一次 change", async () => {
+    const w = mount(QNumber, { props: { modelValue: 90, min: 0, max: 3650, required: true } });
+    const input = w.find("input");
+    await input.setValue("0");
+    await input.trigger("blur");
+    const ev = w.emitted("update:modelValue");
+    expect(ev?.[ev.length - 1]).toEqual([0]);
+    expect(w.emitted("change")?.length).toBe(1);
+    expect((input.element as HTMLInputElement).value).toBe("0");
+    expect(w.find(".q-number-hint").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("高于上限仍按既有步进器契约收口后提交（不是静默丢弃）", async () => {
+    const w = mount(QNumber, { props: { modelValue: 5, min: 0, max: 30, required: true } });
+    const input = w.find("input");
+    await input.setValue("99");
+    await input.trigger("blur");
+    const ev = w.emitted("update:modelValue");
+    expect(ev?.[ev.length - 1]).toEqual([30]);
+    expect(w.emitted("change")?.length).toBe(1);
+    expect((input.element as HTMLInputElement).value).toBe("30");
+    w.unmount();
+  });
+});

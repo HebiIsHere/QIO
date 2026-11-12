@@ -35,6 +35,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   assign: [keys: string[], target: { credentialId: string; modelId: string } | null];
+  /** #65：失败后重试「刚才那次分配」（父级保留原目标） */
+  retry: [keys: string[]];
 }>();
 
 const GROUP_LABELS: Record<string, string> = {
@@ -315,8 +317,29 @@ function badgeOf(row: Row): { text: string; tone: string } | null {
 
 /** 只读用途的一句话状态（与后端 delivery 同一口径）。 */
 function readonlyBadge(row: Row): string {
+  // 嵌入：用的是 QIO 当前内置配置，不是「未配置/未接通」。
+  if (isEmbedding(row)) return "使用当前配置";
   return row.delivery === "existing" ? "沿用现有处理方式" : "未接通独立调用路径";
 }
+
+/** 嵌入模型：用户只需要知道「在用当前配置」，不需要看到内部用途名。 */
+function isEmbedding(row: Row): boolean {
+  return row.primary.usageKey === "embedding" || row.primary.kind === "embedding";
+}
+
+/** 行的显示名：嵌入写「嵌入模型」（#文案 1）。 */
+function displayLabel(row: Row): string {
+  return isEmbedding(row) ? "嵌入模型" : row.label;
+}
+
+/** 历史配置的说明只在组标题下写一次，不在嵌入行里重复一遍。 */
+function showRowNote(row: Row): boolean {
+  if (!row.note) return false;
+  if (isEmbedding(row)) return false;
+  return true;
+}
+
+const hasEmbeddingRow = computed(() => readonlyRows.value.some((row) => isEmbedding(row)));
 
 /** 历史覆盖指向的目标（只用于如实展示，不说成当前实际使用）。 */
 function historicalText(row: Row): string {
@@ -342,6 +365,9 @@ const usageError = computed(() => props.errors ?? {});
       </div>
     </header>
 
+    <p class="list__note" data-test="usage-follow-note">
+      共同条件：没有单独指定的用途跟随默认模型；每行显示它当前实际会用的目标。
+    </p>
     <p v-for="note in sharedNotes" :key="note" class="list__note">{{ note }}</p>
 
     <div v-for="group in groupedRows" :key="group.group" class="group">
@@ -349,7 +375,7 @@ const usageError = computed(() => props.errors ?? {});
       <div v-for="row in group.rows" :key="row.keys[0]" class="row">
         <div class="row__main">
           <div class="row__label">
-            <span class="row__name">{{ row.label }}</span>
+            <span class="row__name">{{ displayLabel(row) }}</span>
             <span v-if="row.subtitle" class="row__sub">{{ row.subtitle }}</span>
             <span v-if="isFollowing(row)" class="qio-state quiet">跟随默认</span>
             <span v-for="badge in [badgeOf(row)].filter(Boolean)" :key="badge!.text" class="qio-state" :class="badge!.tone">
@@ -370,6 +396,15 @@ const usageError = computed(() => props.errors ?? {});
           <p v-if="busyKey === row.keys[0]" class="row__note" role="status">正在保存…</p>
         </div>
         <div class="row__actions">
+          <button
+            v-if="usageError[row.keys[0]]"
+            type="button"
+            class="qio-btn mini"
+            data-testid="usage-retry"
+            @click="emit('retry', row.keys)"
+          >
+            重试
+          </button>
           <button
             type="button"
             class="qio-btn mini"
@@ -405,16 +440,19 @@ const usageError = computed(() => props.errors ?? {});
       </div>
     </div>
 
-    <!-- 不生效的用途：只读说明，不再画成可用选择器。 -->
-    <div v-if="readonlyRows.length" class="group" data-test="usage-readonly">
-      <h4 class="group__title">不单独生效的用途</h4>
+    <!-- 不生效的用途：只读说明 + 历史配置，默认收起（按需展开）。 -->
+    <details v-if="readonlyRows.length" class="group" data-test="usage-readonly">
+      <summary class="list__note">不单独生效的用途与历史配置（按需展开）</summary>
       <p class="list__note">
         这些用途当前没有独立的模型调用路径：保留历史配置的可见性与清除入口，这里的模型选择不会改变真实请求。
+      </p>
+      <p v-if="hasEmbeddingRow" class="list__note" data-test="usage-embedding-note">
+        嵌入模型使用 QIO 当前内置配置（不能在这里换成外部嵌入模型）；历史覆盖只保留可见性与清除入口。
       </p>
       <div v-for="row in readonlyRows" :key="row.keys[0]" class="row row--readonly">
         <div class="row__main">
           <div class="row__label">
-            <span class="row__name">{{ row.label }}</span>
+            <span class="row__name">{{ displayLabel(row) }}</span>
             <span class="qio-state quiet">{{ readonlyBadge(row) }}</span>
             <span v-if="row.historical" class="qio-state warn" data-test="usage-historical">
               历史配置（未生效）
@@ -426,7 +464,7 @@ const usageError = computed(() => props.errors ?? {});
               不可用：{{ historicalUnavailable(row) }}
             </span>
           </div>
-          <p v-if="row.note" class="row__note">{{ row.note }}</p>
+          <p v-if="showRowNote(row)" class="row__note">{{ row.note }}</p>
           <p v-if="usageError[row.keys[0]]" class="qio-feedback err" role="alert">
             {{ usageError[row.keys[0]] }}
           </p>
@@ -436,14 +474,14 @@ const usageError = computed(() => props.errors ?? {});
           <button
             type="button"
             class="qio-btn mini quiet"
-            :aria-label="'清除' + row.label + '的历史覆盖'"
+            :aria-label="'清除' + displayLabel(row) + '的历史覆盖'"
             @click="emit('assign', row.keys, null)"
           >
             清除历史覆盖
           </button>
         </div>
       </div>
-    </div>
+    </details>
 
     <p v-if="!groupedRows.length && !readonlyRows.length" class="muted">正在加载用途分配…</p>
   </section>

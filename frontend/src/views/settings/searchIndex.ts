@@ -241,6 +241,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     category: "memory",
     description: "短 5 / 标准 10 / 长 15 / 自定义 1-30 轮",
     keywords: ["记忆", "分档", "封块", "轮数", "fragment"],
+    // #24：记忆分段收进「高级选项」，搜索定位前必须先展开
+    fold: "memory.advanced",
   },
   {
     key: "memory.fragment.custom-turns",
@@ -248,6 +250,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     category: "memory",
     description: "自定义分档下的单段轮数（1-30）",
     keywords: ["自定义", "轮数", "记忆"],
+    fold: "memory.advanced",
   },
   {
     key: "memory.fragment.max-tokens",
@@ -255,6 +258,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     category: "memory",
     description: "内容长度兜底上限（2000-200000）；到点分段不代表阶段完成",
     keywords: ["长度", "token", "分段", "记忆"],
+    fold: "memory.advanced",
   },
   {
     key: "memory.maintenance.enabled",

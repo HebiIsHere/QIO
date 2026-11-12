@@ -111,8 +111,15 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     const w = await mountSettings();
     await openCategory(w, "memory");
     const memory = sectionById(w, "memory");
-    expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(true);
-    // 本轮清理解释性文案：改为断言控件结构与按组保存行为，不再断言被删掉的说明文字。
+    // #16：没有改动时不摆常驻保存条；首屏先给后台整理三项（#24）
+    expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(false);
+    expect(memory.text()).toContain("启用后台整理");
+    expect(memory.text()).toContain("整理间隔");
+    expect(memory.text()).toContain("立即整理");
+    // 分段设置与模型用量在「高级选项」里（默认收起，控件仍在 DOM）
+    expect(
+      memory.find('[data-settings-fold-toggle="memory.advanced"]').attributes("aria-expanded"),
+    ).toBe("false");
     expect(memory.find('[data-settings-key="memory.fragment.tier"]').exists()).toBe(true);
     expect(memory.find('[data-settings-key="memory.fragment.max-tokens"]').exists()).toBe(true);
     await chooseSelectOption(memory, "自定义");
@@ -289,7 +296,7 @@ describe("模型与服务容器", () => {
     w.unmount();
   });
 
-  it("联网搜索状态分「未配置 / 已配置（未检查）」，不把已配置说成检查通过", async () => {
+  it("联网搜索状态分「未配置 / 已配置，尚未检查」，不把已配置说成检查通过", async () => {
     const { api } = await import("../../../services/api");
     (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       searxng_url: "https://searx.example",
@@ -301,10 +308,136 @@ describe("模型与服务容器", () => {
     const w = await mountSettings();
     await openCategory(w, "models");
     const models = sectionById(w, "models");
-    expect(models.find('[data-search-channel="bocha"]').text()).toContain("已配置（未检查）");
-    expect(models.find('[data-search-channel="searxng"]').text()).toContain("已填写地址（未检查）");
-    expect(models.find('[data-search-channel="keyless"]').text()).toContain("开启（未检查）");
+    expect(models.find('[data-search-channel="bocha"]').text()).toContain("已配置，尚未检查");
+    expect(models.find('[data-search-channel="searxng"]').text()).toContain("已填写地址，尚未检查");
+    // #7：免密钥通道的状态只写「已开启 / 已关闭」，检查状态单独一段
+    expect(models.find('[data-search-channel="keyless"] [data-channel-config]').text()).toBe("已开启");
+    expect(models.find('[data-search-channel="keyless"] [data-channel-check]').text()).toBe("，尚未检查");
     expect(models.text()).toContain("「已配置」不代表「检查通过」");
+    expect(models.text()).toContain("检查只在你主动点击");
+    w.unmount();
+  });
+
+  it("#23 检查只由用户点按触发；改配置后回到「已配置，尚未检查」，旧结论不沿用", async () => {
+    const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "https://old.example",
+      bocha_has_key: true,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    (api.getSearchStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      channels: [
+        { channel: "searxng", configured: true, checked: true, ok: true, reason: "" },
+      ],
+      checked_at: "2026-11-12T00:00:00Z",
+    });
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+
+    // 挂载不自动做连接检查
+    expect(api.checkSearch).not.toHaveBeenCalled();
+    expect(models.find('[data-search-channel="searxng"] [data-channel-check]').text()).toContain(
+      "检查通过",
+    );
+
+    // 改动 SearXNG 地址并保存：旧检查结论属于旧地址，必须回到「尚未检查」
+    await models.find('[data-settings-fold-toggle="models.search.advanced"]').trigger("click");
+    await nextTick();
+    await models.find('input[aria-label="自建 SearXNG 地址"]').setValue("https://new.example");
+    await nextTick();
+    await models
+      .find('[data-settings-group="models.search"] [data-settings-action="save"]')
+      .trigger("click");
+    await flushFrames();
+    const searxngRow = models.find('[data-search-channel="searxng"]');
+    expect(searxngRow.text()).toContain("已填写地址，尚未检查");
+    expect(searxngRow.text()).not.toContain("检查通过");
+    w.unmount();
+  });
+
+  it("#23 用户点检查失败：保留配置、显示这次失败并可重试；成功后才显示「检查通过」", async () => {
+    const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "https://searx.example",
+      bocha_has_key: false,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    (api.checkSearch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      channels: [
+        { channel: "searxng", configured: true, checked: true, ok: false, reason: "连接被拒绝" },
+      ],
+    });
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+
+    await models.find('[data-testid="settings-search-check"]').trigger("click");
+    await flushFrames();
+    // 只描述「这一次检查」失败；已填配置保留
+    expect(models.find('[data-search-channel="searxng"]').text()).toContain("检查失败：连接被拒绝");
+    expect(
+      (models.find('input[aria-label="自建 SearXNG 地址"]').element as HTMLInputElement).value,
+    ).toBe("https://searx.example");
+    expect(models.find('[data-testid="settings-search-check"]').text()).toContain("重新检查");
+    expect(api.updateSearchSettings).not.toHaveBeenCalled();
+
+    // 用户再点一次检查：真实成功之后才写「检查通过」
+    (api.checkSearch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      channels: [
+        { channel: "searxng", configured: true, checked: true, ok: true, reason: "" },
+      ],
+    });
+    await models.find('[data-testid="settings-search-check"]').trigger("click");
+    await flushFrames();
+    expect(models.find('[data-search-channel="searxng"]').text()).toContain("检查通过");
+    expect(models.find('[data-search-channel="searxng"]').text()).not.toContain("检查失败");
+    w.unmount();
+  });
+
+  it("#7 免密钥通道状态只写「已开启 / 已关闭」，开关保留", async () => {
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    expect(models.find('[data-search-channel="keyless"] [data-channel-config]').text()).toBe("已开启");
+    const toggle = models.find('button[aria-label="免密钥联网搜索"]');
+    expect(toggle.exists()).toBe(true);
+    await toggle.trigger("click");
+    await flushFrames();
+    expect(models.find('[data-search-channel="keyless"] [data-channel-config]').text()).toBe("已关闭");
+    w.unmount();
+  });
+
+  it("#8 博查通道常态保留「状态 / 替换 / 清除」，「留空保留原密钥」只在替换输入旁说明", async () => {
+    const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "",
+      bocha_has_key: true,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    await flushFrames();
+    const row = models.find('[data-settings-key="models.search.bocha"]');
+    expect(row.text()).toContain("已配置");
+    expect(row.text()).toContain("替换");
+    expect(row.text()).toContain("清除");
+    // 常态不显示长句说明
+    expect(row.text()).not.toContain("留空保留");
+    const replace = row.findAll("button").find((button) => button.text() === "替换");
+    await replace!.trigger("click");
+    await nextTick();
+    const editingRow = models.find('[data-settings-key="models.search.bocha"]');
+    expect(editingRow.find('[data-testid="settings-search-bocha-hint"]').text()).toContain(
+      "留空保存不会改动已保存的 Key",
+    );
     w.unmount();
   });
 

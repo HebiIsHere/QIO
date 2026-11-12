@@ -14,7 +14,7 @@ import { useSecurityStore } from "../../stores/security";
 import {
   LEGACY_VALUE_LABELS,
   PERMISSION_MODES,
-  PERMISSION_MODE_DESCRIPTIONS,
+  PERMISSION_MODE_FACTS,
   PERMISSION_MODE_LABELS,
   PERMISSION_MODE_SAFETY_NOTE,
   permissionModeSwitchNote,
@@ -69,11 +69,11 @@ function reload() {
   <section class="sec perm-mode" data-im="permission-mode-settings">
     <h2>权限模式</h2>
     <p class="desc">
-      权限模式决定 QIO 能直接做什么、什么必须经过你确认。当前模式常驻显示在输入区上方。
+      三档用同一结构说明：可读什么、可改什么、何时需要审批。当前模式常驻显示在全局栏；这里的选择只由你点击改变。
     </p>
 
     <p class="current-row" data-im="permission-mode-current">
-      <span class="current-label">当前：{{ security.loaded ? current : security.loading ? "读取中…" : "尚未读取" }}</span>
+      <span class="current-label">当前模式：{{ security.loaded ? current : security.loading ? "读取中…" : "尚未读取" }}</span>
       <span v-if="security.compat" class="compat-tag">兼容旧接口</span>
       <span v-if="security.loading" class="saving-tag">读取中…</span>
       <span v-else-if="security.saving" class="saving-tag">正在保存…</span>
@@ -85,9 +85,19 @@ function reload() {
         @click="reload"
       >重新读取</button>
     </p>
-    <p v-if="legacyText && security.loaded" class="legacy mono" data-im="permission-mode-legacy">
-      {{ legacyText }}
-    </p>
+
+    <!-- 旧配置值不再作为常驻展示：只放在诊断里，需要排查时才展开。 -->
+    <details
+      v-if="security.loaded && (security.legacyValue || security.compat)"
+      class="perm-diag"
+      data-im="permission-mode-diagnostics"
+    >
+      <summary>诊断信息（旧配置值 / 兼容旧接口）</summary>
+      <p v-if="legacyText" class="legacy mono" data-im="permission-mode-legacy">{{ legacyText }}</p>
+      <p class="diag-line">
+        权限模式接口：{{ security.compat ? "旧设置接口（兼容读取，未知旧值按受限模式处理）" : "GET /api/security/mode" }}
+      </p>
+    </details>
 
     <div
       class="mode-list"
@@ -112,7 +122,21 @@ function reload() {
           {{ PERMISSION_MODE_LABELS[mode] }}
           <span v-if="mode === 'restricted'" class="mode-tag">默认</span>
         </span>
-        <span class="mode-desc">{{ PERMISSION_MODE_DESCRIPTIONS[mode] }}</span>
+        <!-- 三模式同一结构：可读什么 / 可改什么 / 何时需要审批。 -->
+        <span class="mode-facts" :data-mode-facts="mode">
+          <span class="mode-fact">
+            <span class="mode-fact__label">可读什么</span>
+            <span class="mode-fact__text">{{ PERMISSION_MODE_FACTS[mode].read }}</span>
+          </span>
+          <span class="mode-fact">
+            <span class="mode-fact__label">可改什么</span>
+            <span class="mode-fact__text">{{ PERMISSION_MODE_FACTS[mode].write }}</span>
+          </span>
+          <span class="mode-fact">
+            <span class="mode-fact__label">何时需要审批</span>
+            <span class="mode-fact__text">{{ PERMISSION_MODE_FACTS[mode].approval }}</span>
+          </span>
+        </span>
       </button>
     </div>
 
@@ -123,10 +147,8 @@ function reload() {
       {{ security.error }}
     </p>
 
-    <p class="safety-note">{{ PERMISSION_MODE_SAFETY_NOTE }}</p>
-    <p class="safety-note">
-      诚实说明：QIO 的受限子进程不是安全沙箱；它靠操作系统完整性级别与执行边界降低风险，但不等同于隔离环境。
-    </p>
+    <!-- 唯一一段系统权限边界说明：受限子进程不是安全沙箱（不重复第二遍）。 -->
+    <p class="safety-note" data-im="permission-mode-safety-note">{{ PERMISSION_MODE_SAFETY_NOTE }}</p>
   </section>
 </template>
 
@@ -224,10 +246,39 @@ function reload() {
   border-radius: 0;
   padding: 0;
 }
-.mode-desc {
+.mode-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+.mode-fact {
+  display: flex;
+  gap: 8px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);
+}
+.mode-fact__label {
+  flex: 0 0 68px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.mode-fact__text { min-width: 0; overflow-wrap: anywhere; }
+.perm-diag {
+  margin: 2px 0 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.perm-diag summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.perm-diag .diag-line {
+  margin: 6px 0 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 /* 切换后的提示：只留文字与语义色，不再画灰底 + 左侧竖条 */
 .switch-note {

@@ -412,7 +412,7 @@ describe("用途分配 · 不生效的用途改为只读说明", () => {
 
   it("历史配置如实标「历史配置（未生效）」，并保留清除入口", async () => {
     const wrapper = section();
-    const row = rowByText(wrapper, "向量 / 嵌入");
+    const row = rowByText(wrapper, "嵌入模型");
     expect(row.text()).toContain("历史配置（未生效）");
     expect(row.text()).toContain("m1");
     await buttonByText(row, "清除历史覆盖").trigger("click");

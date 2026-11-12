@@ -189,6 +189,17 @@ describe("模型与服务面板 · 接线冒烟", () => {
     expect(wrapper.text()).toContain("工作用 DeepSeek");
     expect(wrapper.text()).toContain("默认模型");
     expect(wrapper.text()).toContain("用途分配");
+    // #22 首页第一事实：当前对话实际在用的模型（不是「默认模型」设置本身）
+    const actual = wrapper.find('[data-testid="models-actual-chat"]');
+    expect(actual.exists()).toBe(true);
+    expect(actual.text()).toContain("当前对话实际在用");
+    expect(actual.text()).toContain("工作用 DeepSeek");
+    expect(actual.text()).toContain("m1");
+    // #22 用途分配默认收起（渐进披露），需要时再展开
+    expect(wrapper.find('[data-testid="models-usage-toggle"]').attributes("aria-expanded")).toBe("false");
+    expect(
+      (wrapper.find('[data-testid="models-usage-body"]').element as HTMLElement).style.display,
+    ).toBe("none");
     expect(wrapper.text()).not.toContain("sk-");
     expect(wrapper.text()).not.toContain("secret");
 
@@ -210,6 +221,46 @@ describe("模型与服务面板 · 接线冒烟", () => {
       followsDefault: true,
       resolved: { credentialId: "key_a", modelId: "m1" },
     });
+  });
+
+  it("#22 模型清单为空时不显示 0/0 已验证；没设默认模型但能对话时只在默认模型一项里提示", async () => {
+    (modelCatalogApi.getCatalog as ReturnType<typeof vi.fn>).mockResolvedValue(
+      catalog({
+        connections: [connection({ models: [] })],
+        default: null,
+        usages: [
+          usage({
+            usageKey: "main-chat",
+            label: "主对话",
+            resolved: {
+              credentialId: "key_a",
+              modelId: "m1",
+              source: "legacy",
+              usable: true,
+              unavailableReason: "",
+              credentialName: "工作用 DeepSeek",
+            },
+          }),
+        ],
+      }),
+    );
+    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValue({
+      credentials: [meta()],
+      default_key_id: "key_a",
+    });
+    (api.listProviders as ReturnType<typeof vi.fn>).mockResolvedValue({ providers: [], model_note: "" });
+    const wrapper = mountIt(ModelServicesPanel, {});
+    await flushPromises();
+
+    // 空清单不出现「0 / 0 已验证」这种暗示连接失败的文案
+    expect(wrapper.text()).not.toContain("0 / 0");
+    expect(wrapper.text()).toContain("还没有模型记录");
+    // 实际在用模型照常显示
+    expect(wrapper.find('[data-testid="models-actual-chat"]').text()).toContain("m1");
+    // 没设默认模型的提示只出现在「默认模型」一项里
+    const defaultSection = wrapper.find('[aria-labelledby="default-model-title"]');
+    expect(defaultSection.text()).toContain("还没有设置默认模型");
+    expect(wrapper.find('[data-testid="models-actual-chat"]').text()).not.toContain("还没有设置默认模型");
   });
 
   it("读取失败时保留上次已知的真实值，并在本分区报错（不清空只读区）", async () => {
