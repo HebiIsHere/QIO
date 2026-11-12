@@ -255,7 +255,14 @@ import {
   restoreCardDraftInput,
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
-import { CARD_KIND_LABELS, defaultCardSeed, participationOf } from "../../interactive/board";
+import {
+  CARD_KIND_LABELS,
+  CARD_VISIBILITY_LABELS,
+  cardVisibilityState,
+  defaultCardSeed,
+  participationOf,
+  type CardVisibilityState,
+} from "../../interactive/board";
 import { shouldAutoDetail, shouldShowImageDetailFallback } from "../../interactive/cardDetail";
 import {
   cardDocFields,
@@ -367,6 +374,8 @@ const emit = defineEmits<{
   (e: "drag-start", cardId: string, event: PointerEvent): void;
   (e: "patch", cardId: string, patch: Partial<BoardCard>, label: string): void;
   (e: "toggle", cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked" | "participation"): void;
+  /** #08/#54：唯一三态入口（显示并参与 / 显示但不参与 / 隐藏且不参与）。 */
+  (e: "visibility", cardId: string, state: CardVisibilityState): void;
   (e: "remove", cardId: string): void;
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
@@ -815,6 +824,38 @@ const imageDetailTitle = computed(() =>
   imageDetailHint(imageDisplay.value) || "查看完整图片（只改查看方式，不改内容与卡片尺寸）",
 );
 const participationIncluded = computed(() => participationOf(props.card) === "included");
+
+/**
+ * #08/#54：三态参与的唯一入口（用户要求）。
+ * 三档文案逐字取 CARD_VISIBILITY_LABELS；入口只改 hidden + participation，
+ * 与选中 / 预览 / 框选 / 提交完成无关（那些动作不改这三态）。
+ */
+const visibilityState = computed<CardVisibilityState>(() => cardVisibilityState(props.card));
+const VISIBILITY_OPTIONS: CardVisibilityState[] = ["included", "displayed_excluded", "hidden_excluded"];
+const visibilityMenuOpen = ref(false);
+
+function chooseVisibility(state: CardVisibilityState): void {
+  visibilityMenuOpen.value = false;
+  if (state === visibilityState.value) return;
+  emit("visibility", props.card.id, state);
+}
+
+function onVisibilityOutside(event: Event): void {
+  if (!visibilityMenuOpen.value) return;
+  const target = event.target as HTMLElement | null;
+  if (target && typeof target.closest === "function" && target.closest("[data-im='card-visibility-wrap']")) return;
+  visibilityMenuOpen.value = false;
+}
+
+watch(visibilityMenuOpen, (open) => {
+  if (typeof document === "undefined") return;
+  if (open) document.addEventListener("pointerdown", onVisibilityOutside, true);
+  else document.removeEventListener("pointerdown", onVisibilityOutside, true);
+});
+
+onBeforeUnmount(() => {
+  if (typeof document !== "undefined") document.removeEventListener("pointerdown", onVisibilityOutside, true);
+});
 
 function toggleImageDetail(): void {
   imageDetailOpen.value = !imageDetailOpen.value;
@@ -1814,21 +1855,39 @@ watch(
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
       <span v-if="titleText" class="title" data-im="card-title" v-qio-tip="titleText">{{ titleText }}</span>
-      <!-- 参与讨论：所有卡片都有的小控件；与选中/书签/阅读状态无关。图片详情态同样浮在图上。 -->
-      <button
-        class="participation"
-        :class="{ 'is-on': participationIncluded }"
-        type="button"
-        data-im="card-participation"
-        :data-card-id="card.id"
-        :data-participation="participationIncluded ? 'included' : 'excluded'"
-        :aria-pressed="participationIncluded"
-        v-qio-tip="participationIncluded
-          ? '参与讨论：QIO 本次可读取这张卡；点击退出讨论范围'
-          : '不参与：QIO 本次看不到这张卡；点击重新加入讨论'"
-        @pointerdown.stop
-        @click.stop="emit('toggle', card.id, 'participation')"
-      >{{ participationIncluded ? "参与" : "不参与" }}</button>
+      <!--
+        #08/#54：唯一的三态参与入口（显示并参与 / 显示但不参与 / 隐藏且不参与）。
+        只改 hidden + participation；选中 / 预览 / 框选 / 提交完成都不会改变这三态。
+      -->
+      <div class="visibility" data-im="card-visibility-wrap">
+        <button
+          class="participation visibility-entry"
+          :class="{ 'is-on': visibilityState === 'included' }"
+          type="button"
+          data-im="card-visibility"
+          :data-card-id="card.id"
+          :data-visibility="visibilityState"
+          :aria-expanded="visibilityMenuOpen"
+          aria-haspopup="menu"
+          v-qio-tip="'参与三态：' + CARD_VISIBILITY_LABELS[visibilityState] + '（点击切换）'"
+          @pointerdown.stop
+          @click.stop="visibilityMenuOpen = !visibilityMenuOpen"
+        >{{ CARD_VISIBILITY_LABELS[visibilityState] }}</button>
+        <div v-if="visibilityMenuOpen" class="visibility-menu" role="menu" data-im="card-visibility-menu">
+          <button
+            v-for="option in VISIBILITY_OPTIONS"
+            :key="option"
+            class="visibility-option"
+            :class="{ 'is-current': option === visibilityState }"
+            type="button"
+            role="menuitemradio"
+            :aria-checked="option === visibilityState"
+            :data-im="'card-visibility-' + option"
+            @pointerdown.stop
+            @click.stop="chooseVisibility(option)"
+          >{{ CARD_VISIBILITY_LABELS[option] }}</button>
+        </div>
+      </div>
       <!--
         两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
         折叠态只有「恢复卡片」（把卡片展开回常态）；
@@ -2566,6 +2625,35 @@ watch(
   font-size: 10px;
   cursor: pointer;
 }
+.visibility { position: relative; display: inline-flex; flex: none; }
+.visibility-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--sp-1));
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: var(--sp-1);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--qio-ui-radius);
+  box-shadow: var(--elev-floating, var(--shadow-2));
+}
+.visibility-option {
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  padding: 2px var(--sp-2);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--qio-ui-radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.visibility-option:hover { color: var(--text-strong); background: var(--bg-surface); }
+.visibility-option.is-current { color: var(--text-strong); }
 .participation.is-on {
   color: var(--link);
   border-color: var(--accent);

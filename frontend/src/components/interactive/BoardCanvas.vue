@@ -48,9 +48,12 @@ import {
   removeLink,
   renameGroup,
   selectInRect,
+  CARD_VISIBILITY_LABELS,
+  setCardVisibilityState,
   setGroupCollapsed,
   setGroupOrdered,
   setSelection,
+  type CardVisibilityState,
   updateCard,
   updateLink,
   type DropPreview,
@@ -2304,11 +2307,12 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
     return;
   }
   if (flag === "hidden") {
-    const hidden = !card.hidden;
-    commit(
-      updateCard(current, cardId, { hidden, participation: hidden ? "excluded" : "included" }),
-      hidden ? "隐藏卡片（退出讨论范围）" : "取消隐藏",
-    );
+    /*
+      #08/#54/#54-文案12：隐藏快捷入口同样写三态 —— 隐藏 = 隐藏且不参与；
+      恢复默认只回到「显示但不参与」，绝不自动重新授权读取。
+    */
+    const target: CardVisibilityState = card.hidden ? "displayed_excluded" : "hidden_excluded";
+    commit(setCardVisibilityState(current, cardId, target), target === "hidden_excluded" ? "隐藏卡片（隐藏且不参与）" : "恢复显示（显示但不参与）");
     return;
   }
   if (flag === "folded") {
@@ -2316,6 +2320,16 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
     return;
   }
   commit(updateCard(current, cardId, { bookmarked: !card.bookmarked }), card.bookmarked ? "取消书签" : "加书签");
+}
+
+/**
+ * #08/#54：三态入口的唯一落点。只改 hidden + participation（板面既有字段），
+ * 与选择 / 预览 / 框选 / 提交完成无关；写板面走既有 commit（含保存与撤回能力）。
+ */
+function onCardVisibility(cardId: string, state: CardVisibilityState) {
+  const current = boardState.value;
+  if (!current) return;
+  commit(setCardVisibilityState(current, cardId, state), "设置参与三态：" + CARD_VISIBILITY_LABELS[state]);
 }
 
 /**
@@ -3482,6 +3496,7 @@ onBeforeUnmount(() => {
             @drag-start="onDragStart"
             @patch="onCardPatch"
             @toggle="onCardToggle"
+            @visibility="onCardVisibility"
             @remove="onCardRemove"
             @duplicate="onCardDuplicate"
             @leave-group="onCardLeaveGroup"
