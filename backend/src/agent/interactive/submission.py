@@ -68,11 +68,40 @@ class RequestIdentityConflict(Exception):
 MAX_CLIENT_REQUEST_ID = 200
 
 
-#: 只影响显示、不构成提交内容的表达式：普通移动 / 缩放。
+#: 不构成「有效提交内容」的表达式（#13）：
+#: - layout_only：普通移动 / 缩放，只影响显示；
+#: - blank_card_added：空白卡（trim 后无正文、meta 里也没有材料语义）被保留在板面，
+#:   但**它自己不算一次有效提交** —— 用户只加了一张空白卡时，提交按钮与后端都应判空。
 #: 注意它与 models.NON_INTENT_EXPRESSIONS 不是一回事：材料增删、注释撤回、关系移除
 #: 虽然 intentBearing=false（不代表用户提出的工作），但它们仍然是**板面内容变化**，
-#: 需要交给 QIO 了解，所以不算「空提交」。
-DISPLAY_ONLY_EXPRESSIONS = ("layout_only",)
+#: 需要交给 QIO 了解，所以不算「空提交」。空白卡参与的关系 / 分组 / 删除仍按实际语义
+#: 计入内容（独立变化照常提交）。
+DISPLAY_ONLY_EXPRESSIONS = ("layout_only", "blank_card_added")
+
+
+#: 文字卡的空文档元数据（前端新卡默认就带这一层空壳，不等于「有内容」）。
+_TEXT_CARD_EMPTY_META_KEYS = frozenset({"doc", "docText"})
+
+
+def _is_blank_card(card: dict) -> bool:
+    """空白卡（#13）：保留在板面，但本身不构成有效提交内容。
+
+    口径：正文 trim 后为空，且 meta 里除 display（显示比例）外没有任何**材料语义**。
+    - 文字卡：meta 里只有空文本卡文档（doc.blocks 为空且 docText 为空）时仍算空白；
+    - 文件卡 / code / url 卡带自己的 meta 或正文，不算空白卡。
+    """
+    if str(card.get("content") or "").strip():
+        return False
+    meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+    semantic = {key: value for key, value in meta.items() if key != "display"}
+    if card.get("kind") == "text":
+        extra = {key: value for key, value in semantic.items() if key not in _TEXT_CARD_EMPTY_META_KEYS}
+        if extra:
+            return False
+        doc = semantic.get("doc") if isinstance(semantic.get("doc"), dict) else {}
+        blocks = doc.get("blocks") if isinstance(doc.get("blocks"), list) else []
+        return not blocks and not str(semantic.get("docText") or "").strip()
+    return not semantic
 
 _SNIPPET_LIMIT = 24
 
@@ -357,6 +386,17 @@ def diff_states(before: dict, after: dict) -> list[dict]:
                     content=str(card.get("content") or ""),
                     source=_reply_source(card),
                     updated_at=card.get("updatedAt"),
+                )
+            )
+            continue
+        if _is_blank_card(card):
+            # #13：空白卡保留但不计为有效提交；仍记录一条非内容表达，便于用户看懂
+            # 「板面有变化、但这次没有可提交内容」的原因（不算内容、不更新基准）。
+            expressions.append(
+                _expr(
+                    "blank_card_added",
+                    card_ids=[cid],
+                    summary="新增空白卡（本身不计为有效提交内容）",
                 )
             )
             continue
@@ -760,7 +800,8 @@ def _decide_status(baseline: dict | None, expressions: list[dict], after: dict) 
     if not content:
         return (
             "empty",
-            "没有可提交内容：本次没有允许查看的内容，或只有普通移动 / 缩放这类不构成表达的变化",
+            "没有可提交内容：本次没有允许查看的内容，或只有普通移动 / 缩放、"
+            "空白卡这类不构成有效表达的变化；可以先补充文字 / 材料，或建立关系后再提交",
         )
     return "succeeded", None
 
