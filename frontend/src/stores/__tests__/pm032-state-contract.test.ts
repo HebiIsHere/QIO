@@ -351,3 +351,38 @@ describe("#44-46 批次导入数据层", () => {
     expect(item.error).toContain("原文件卡已被删除或被替换");
   });
 });
+
+describe("#41 提交详情的理解读取三态", () => {
+  it("首次读取失败=读取失败（可重试）；重试成功且为空=成功读取为空", async () => {
+    vi.mocked(api.fetchUnderstanding).mockRejectedValueOnce(new Error("理解读取失败") as never);
+    const store = useInteractiveStore();
+    await store.load();
+    expect(store.understandingLoadState).toBe("error");
+    expect(store.understandingLoadedOnce).toBe(false);
+    expect(store.understandingLoadError).toContain("理解读取失败");
+    // 重试：成功读取为空 → 这才是「没有理解过程」，不是读取失败
+    vi.mocked(api.fetchUnderstanding).mockResolvedValue({ understandings: [] } as never);
+    await store.refreshUnderstanding();
+    expect(store.understandingLoadState).toBe("ok");
+    expect(store.understandingLoadedOnce).toBe(true);
+    expect(store.understandingLoadError).toBeNull();
+    expect(store.understanding).toBeNull();
+  });
+
+  it("已有上次结果后再读取失败：error 但 loadedOnce=true（上次结果），旧内容保留", async () => {
+    vi.mocked(api.fetchUnderstanding).mockResolvedValue({
+      understanding: understanding({ status: "understood" }),
+      understandings: [understanding({ status: "understood" })],
+    } as never);
+    const store = useInteractiveStore();
+    await store.load();
+    expect(store.understandingLoadedOnce).toBe(true);
+    expect(store.understanding?.id).toBe("u1");
+    vi.mocked(api.fetchUnderstanding).mockRejectedValueOnce(new Error("又断了") as never);
+    await store.refreshUnderstanding();
+    expect(store.understandingLoadState).toBe("error");
+    expect(store.understandingLoadedOnce).toBe(true);
+    expect(store.understandingLoadError).toContain("又断了");
+    expect(store.understanding?.id).toBe("u1");
+  });
+});
