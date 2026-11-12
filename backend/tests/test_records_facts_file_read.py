@@ -322,6 +322,31 @@ class _PermissionStub(Tool):
         )
 
 
+def test_loop_records_file_read_fact_without_double_counting():
+    """core/loop.py 的 _record_turn_facts 是「先 record_tool 再 record_facts」：
+    同一失败在台账里只留 1 条可读事实，答案注记不重复（三处去重的接缝）。"""
+    from types import SimpleNamespace
+
+    loop = AgentLoop(_Adapter(), ToolRegistry(), EventBus())
+    result = ToolResult(
+        ok=False,
+        error=(
+            "读不到附件「季度报告.docx」：文件不在原来登记的位置（状态 missing）。"
+            "可以让用户重新指定位置后再读。"
+        ),
+        category="unavailable",
+        recoverable=True,
+        code="file_read_failed",
+        facts={"file_read": dict(_READ_FACT)},
+    )
+    loop._record_turn_facts(
+        SimpleNamespace(id="call_1", name="read_attachment"), result
+    )
+    assert loop.turn_facts.file_read_failures == [_READ_FACT]
+    assert len(loop.turn_facts.unresolved()) == 1
+    assert loop.turn_facts.annotation() is None
+
+
 async def test_tool_end_file_read_is_none_for_other_failures():
     events = await _dispatch(_PermissionStub(), {}, call_id="call_perm_1")
     end = next(event for event in events if event["type"] == "TOOL_END")["data"]
