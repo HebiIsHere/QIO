@@ -377,6 +377,7 @@ defineExpose({
 .tb-help-pop li { font-size: var(--fs-xs); line-height: 1.6; color: var(--text-secondary); }
 .tb-help-pop .help-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); }
 
+/*
   提交区容器：display: contents —— 它自己不生成盒子，内部的历史 / 统计 / 操作组
   直接成为上面 .tb-main 的网格项（SubmitCluster 自己声明 grid-area）。
   于是「第一行右 = 上次提交状态」「第二行左 = 本次统计」这种交错只用一个 grid 就能成立。
