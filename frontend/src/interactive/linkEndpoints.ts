@@ -693,13 +693,80 @@ function foldedGroupOf(
   return null;
 }
 
-function endpointLabel(endpoint: ResolvedEndpoint): string {
-  if (endpoint.kind === "group") return "组「" + (endpoint.group?.name || "未命名组") + "」";
-  return "卡片";
+/** 端点卡片名称的兜底类型名（只作类型线索，不冒充用户命名 / 文件名）。 */
+const ENDPOINT_KIND_FALLBACK: Record<string, string> = {
+  text: "文字注释",
+  file: "文件",
+  code: "代码",
+  url: "网址",
+  reply: "QIO 结果",
+};
+
+/** 空正文 / 系统占位文案不能当端点名（#09）。 */
+const EMPTY_BODY_PLACEHOLDERS = new Set([
+  "空白卡片",
+  "空白卡",
+  "无内容",
+  "（空）",
+  "(空)",
+  "未命名卡片",
+  "（还没有网址）",
+]);
+
+/** 端点名最大显示长度：只用于 aria 名称，超出截断并保留省略号。 */
+const ENDPOINT_NAME_MAX = 24;
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text) return text;
+  }
+  return "";
 }
 
-function ariaLabelFor(meaning: string, src: ResolvedEndpoint, dst: ResolvedEndpoint): string {
-  return "关系「" + meaning + "」；起点：" + endpointLabel(src) + "；终点：" + endpointLabel(dst);
+function shortenEndpointName(name: string): string {
+  return name.length > ENDPOINT_NAME_MAX ? name.slice(0, ENDPOINT_NAME_MAX) + "…" : name;
+}
+
+/**
+ * #09：关系端点名的取值顺序 —— **用户命名 > 真实文件名 > 正文首行**。
+ * - 用户命名：meta.title / meta.name（改名后的显示名）；
+ * - 真实文件名：meta.file.filename / meta.file.name / meta.filename；
+ * - 正文首行：只有真实内容才算名字；空正文与系统占位文案一律跳过。
+ * 返回空串表示「没有可用名字」，由调用方补类型线索，绝不拿占位文案冒充。
+ */
+export function endpointCardName(card: {
+  kind?: string;
+  content?: string;
+  meta?: Record<string, unknown> | null;
+}): string {
+  const meta = (card.meta ?? {}) as Record<string, unknown>;
+  const userNamed = firstText(meta.title, meta.name);
+  if (userNamed) return shortenEndpointName(userNamed);
+  const file = meta.file && typeof meta.file === "object" ? (meta.file as Record<string, unknown>) : null;
+  const fileName = firstText(file?.filename, file?.name, meta.filename);
+  if (fileName) return shortenEndpointName(fileName);
+  const content = typeof card.content === "string" ? card.content : "";
+  const firstLine = content
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0) ?? "";
+  if (firstLine && !EMPTY_BODY_PLACEHOLDERS.has(firstLine)) return shortenEndpointName(firstLine);
+  return "";
+}
+
+/** 组端点名：用户起的组名，缺省如实标「未命名组」。 */
+function groupEndpointLabel(endpoint: ResolvedEndpoint): string {
+  return "组「" + (endpoint.group?.name || "未命名组") + "」";
+}
+
+function ariaLabelFor(
+  meaning: string,
+  src: ResolvedEndpoint,
+  dst: ResolvedEndpoint,
+  labelOf: (endpoint: ResolvedEndpoint) => string,
+): string {
+  return "关系「" + meaning + "」；起点：" + labelOf(src) + "；终点：" + labelOf(dst);
 }
 
 /**
@@ -718,6 +785,33 @@ export function buildDisplayLinks(input: DisplayLinksInput): DisplayLinksResult 
   const rangeCtx: EndpointContext = hasIncludedFilter
     ? { cards, groups, includedCardIds: input.includedCardIds }
     : baseCtx;
+
+  /*
+    #09：同名端点的区分线索 —— 先按板面顺序收集有名字的卡片；同一名字出现多次时，
+    标签后补「（第 N 张）」，保证读屏 / 悬停读到的两条端点能区分。
+  */
+  const sameNameOrder = new Map<string, string[]>();
+  for (const card of cards) {
+    if (!card || card.deleted) continue;
+    const name = endpointCardName(card);
+    if (!name) continue;
+    const list = sameNameOrder.get(name) ?? [];
+    list.push(card.id);
+    sameNameOrder.set(name, list);
+  }
+  const labelOf = (endpoint: ResolvedEndpoint): string => {
+    if (endpoint.kind === "group") return groupEndpointLabel(endpoint);
+    const card = endpoint.card;
+    const base = card ? endpointCardName(card) : "";
+    if (!base) {
+      // 没有用户命名 / 文件名 / 正文：只给类型线索，不拿占位文案冒充端点名。
+      return ENDPOINT_KIND_FALLBACK[String(card?.kind ?? "")] ?? "卡片";
+    }
+    const ids = sameNameOrder.get(base) ?? [];
+    if (ids.length <= 1) return base;
+    const index = ids.indexOf(endpoint.id);
+    return base + "（第" + (index >= 0 ? index + 1 : ids.length) + "张）";
+  };
 
   const links: DisplayLink[] = [];
   const skipped: Array<{ id: string; reason: SkippedLinkReason }> = [];
@@ -803,7 +897,7 @@ export function buildDisplayLinks(input: DisplayLinksInput): DisplayLinksResult 
       meaning,
       active: input.activeLinkId === link.id,
       rangeVisible,
-      ariaLabel: ariaLabelFor(meaning, displaySrc, displayDst),
+      ariaLabel: ariaLabelFor(meaning, displaySrc, displayDst, labelOf),
     });
   }
 

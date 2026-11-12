@@ -410,7 +410,8 @@ defineExpose({ focusName });
           :placeholder="nameHint"
           data-im="group-name"
           :data-group-id="group.id"
-          aria-label="组名"
+          :title="group.name"
+          :aria-label="'组名：' + group.name"
           @change="onRename"
           @keydown.enter="onNameKeydown"
         />

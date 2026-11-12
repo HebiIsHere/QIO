@@ -48,9 +48,12 @@ import {
   removeLink,
   renameGroup,
   selectInRect,
+  CARD_VISIBILITY_LABELS,
+  setCardVisibilityState,
   setGroupCollapsed,
   setGroupOrdered,
   setSelection,
+  type CardVisibilityState,
   updateCard,
   updateLink,
   type DropPreview,
@@ -107,6 +110,7 @@ import {
   GROUP_PAD_X,
   CARD_ANCHOR_GAP,
   cardEdgeAnchors,
+  endpointCardName,
   groupEdgeAnchors,
   parseEndpoint,
   type CardAnchor,
@@ -2304,11 +2308,12 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
     return;
   }
   if (flag === "hidden") {
-    const hidden = !card.hidden;
-    commit(
-      updateCard(current, cardId, { hidden, participation: hidden ? "excluded" : "included" }),
-      hidden ? "隐藏卡片（退出讨论范围）" : "取消隐藏",
-    );
+    /*
+      #08/#54/#54-文案12：隐藏快捷入口同样写三态 —— 隐藏 = 隐藏且不参与；
+      恢复默认只回到「显示但不参与」，绝不自动重新授权读取。
+    */
+    const target: CardVisibilityState = card.hidden ? "displayed_excluded" : "hidden_excluded";
+    commit(setCardVisibilityState(current, cardId, target), target === "hidden_excluded" ? "隐藏卡片（隐藏且不参与）" : "恢复显示（显示但不参与）");
     return;
   }
   if (flag === "folded") {
@@ -2316,6 +2321,16 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
     return;
   }
   commit(updateCard(current, cardId, { bookmarked: !card.bookmarked }), card.bookmarked ? "取消书签" : "加书签");
+}
+
+/**
+ * #08/#54：三态入口的唯一落点。只改 hidden + participation（板面既有字段），
+ * 与选择 / 预览 / 框选 / 提交完成无关；写板面走既有 commit（含保存与撤回能力）。
+ */
+function onCardVisibility(cardId: string, state: CardVisibilityState) {
+  const current = boardState.value;
+  if (!current) return;
+  commit(setCardVisibilityState(current, cardId, state), "设置参与三态：" + CARD_VISIBILITY_LABELS[state]);
 }
 
 /**
@@ -3049,12 +3064,30 @@ const editingLink = computed(() => {
   return current.links.find((link) => link.id === editingLinkId.value) ?? null;
 });
 
+/**
+ * #09：关系编辑框里的两端名字 —— 用户命名 > 真实文件名 > 正文首行；
+ * 组端点用组名。空正文不拿占位文案冒充端点名。
+ */
+function linkEndpointSummary(raw: string): string {
+  const current = boardState.value;
+  if (!current) return "（卡片）";
+  const parsed = parseEndpoint(raw);
+  if (!parsed.ok) return "（已失效的端点）";
+  if (parsed.endpoint.kind === "group") {
+    const group = current.groups.find((item) => item.id === parsed.endpoint.id && !item.deleted);
+    return "组「" + (group?.name || "未命名组") + "」";
+  }
+  const card = cardById(current, parsed.endpoint.id);
+  if (!card || card.deleted) return "（已删除的卡片）";
+  const name = endpointCardName(card);
+  return name || cardSummary(card);
+}
+
 const editingLinkSummary = computed(() => {
   const link = editingLink.value;
-  const current = boardState.value;
-  if (!link || !current) return "";
-  const src = cardSummary(cardById(current, link.src));
-  const dst = cardSummary(cardById(current, link.dst));
+  if (!link) return "";
+  const src = linkEndpointSummary(link.src);
+  const dst = linkEndpointSummary(link.dst);
   return linkDirection.value ? src + " → " + dst + "（方向由你标注）" : src + " ↔ " + dst + "（无方向）";
 });
 
@@ -3482,6 +3515,7 @@ onBeforeUnmount(() => {
             @drag-start="onDragStart"
             @patch="onCardPatch"
             @toggle="onCardToggle"
+            @visibility="onCardVisibility"
             @remove="onCardRemove"
             @duplicate="onCardDuplicate"
             @leave-group="onCardLeaveGroup"

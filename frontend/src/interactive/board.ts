@@ -275,6 +275,67 @@ export function setParticipation(state: BoardState, cardId: string, included: bo
   return normalizeState(work);
 }
 
+/**
+ * 三态参与（#08/#54）唯一映射 —— 与 i-material 后端 `board.card_access_state` 同一口径：
+ * - `included`          显示并参与（hidden=false + participation=included）
+ * - `displayed_excluded` 显示但不参与（hidden=false + participation=excluded）
+ * - `hidden_excluded`   隐藏且不参与（hidden=true，参与恒为 excluded）
+ */
+export type CardVisibilityState = "included" | "displayed_excluded" | "hidden_excluded";
+
+/** 三态入口的唯一文案（用户要求逐字，不在别处再造一套）。 */
+export const CARD_VISIBILITY_LABELS: Record<CardVisibilityState, string> = {
+  included: "显示并参与",
+  displayed_excluded: "显示但不参与",
+  hidden_excluded: "隐藏且不参与",
+};
+
+/** 一张卡当前落在三态的哪一档（hidden 优先级最高，绝不因旧字段扩大读取范围）。 */
+export function cardVisibilityState(card: {
+  participation?: Participation;
+  hidden: boolean;
+  checked: boolean;
+  kind: CardKind;
+  meta?: Record<string, unknown> | null;
+}): CardVisibilityState {
+  if (card.hidden) return "hidden_excluded";
+  return participationOf(card) === "included" ? "included" : "displayed_excluded";
+}
+
+/**
+ * 写入三态：只改 hidden + participation（不碰选中 / 书签 / 位置 / 内容）。
+ * 旧兼容字段（checked）只做镜像；不调用 syncLegacyParticipation ——
+ * 它会把「显示但不参与」的文件卡反向改成 hidden=true（旧规则），与三态冲突。
+ */
+export function setCardVisibilityState(
+  state: BoardState,
+  cardId: string,
+  target: CardVisibilityState,
+): BoardState {
+  const work = normalizeState(state);
+  const card = cardById(work, cardId);
+  if (!card || card.deleted) return work;
+  if (LEGACY_UNSHIPPABLE_KINDS.includes(card.kind)) return work;
+  if (target === "included") return setParticipation(work, cardId, true);
+  const participation: Participation = "excluded";
+  const hidden = target === "hidden_excluded";
+  if (card.participation === participation && Boolean(card.hidden) === hidden) return work;
+  card.participation = participation;
+  card.hidden = hidden;
+  if (card.kind === "text" || card.kind === "reply") card.checked = false;
+  card.updatedAt = nowIso();
+  work.updatedAt = nowIso();
+  return normalizeState(work);
+}
+
+/**
+ * 恢复隐藏卡的默认档位：**只回到「显示但不参与」**，不会自动回到参与
+ * （用户要求；避免「恢复显示」被误解成重新授权读取）。
+ */
+export function restoreHiddenCard(state: BoardState, cardId: string): BoardState {
+  return setCardVisibilityState(state, cardId, "displayed_excluded");
+}
+
 /** 组级参与：全部参与 / 全部不参与；组本身没有独立 participation。 */
 export function setGroupParticipation(state: BoardState, groupId: string, included: boolean): BoardState {
   const work = normalizeState(state);
