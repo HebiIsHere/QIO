@@ -1,0 +1,25 @@
+﻿{
+    "requests":  [
+                     {
+                         "at":  "2026-11-13T00:32:30",
+                         "mono":  37703.7514816,
+                         "path":  "/v1/chat/completions",
+                         "key":  {
+                                     "present":  true,
+                                     "sha256_16":  "219246c228537eec",
+                                     "length":  22,
+                                     "tail":  "0001"
+                                 },
+                         "model":  "verify-model",
+                         "stream_requested":  false,
+                         "message_count":  1,
+                         "tool_count":  1,
+                         "step_kind":  "text",
+                         "_body":  "{\"messages\": [{\"role\": \"user\", \"content\": \"ping\"}], \"model\": \"verify-model\", \"max_tokens\": 8, \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"ping\", \"description\": \"Returns pong.\", \"parameters\": {\"type\": \"object\", \"properties\": {}}}}]}",
+                         "body_truncated":  false,
+                         "message_roles":  [
+                                               "user"
+                                           ]
+                     }
+                 ]
+}

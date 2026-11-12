@@ -1,0 +1,13 @@
+import { CdpBrowser, Page, sleep } from "./cdp.mjs";
+const b = await CdpBrowser.launch({ port: 9336 });
+const p = await Page.create(b); await p.setViewport(1440,900);
+await p.goto("http://127.0.0.1:5199/");
+await p.waitFor("document.querySelector('#composer-mode-switch .mode-btn')", { timeout: 40000 });
+console.log("html before:", (await p.eval("document.querySelector('#composer-mode-switch').outerHTML")).slice(0,1500));
+await p.click("#composer-mode-switch .mode-btn");
+await sleep(1500);
+console.log("html after:", (await p.eval("document.querySelector('#composer-mode-switch').outerHTML")).slice(0,2000));
+console.log("body tail:", (await p.eval("document.body.innerText")).slice(-600).replace(/\n/g," | "));
+console.log("modals:", await p.eval("[...document.querySelectorAll('[role=dialog],.modal,.menu,[class*=mode]')].map(e=>({c:e.className, t:(e.innerText||'').slice(0,60)})).slice(0,20)"));
+await p.screenshot("D:/qio-dev/pm032-interactive/_lead-logs/pm-qio032/e2e/shots/probe4-mode.png");
+await b.close();

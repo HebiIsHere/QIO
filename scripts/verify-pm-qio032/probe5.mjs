@@ -1,0 +1,15 @@
+import { CdpBrowser, Page, sleep } from "./cdp.mjs";
+const b = await CdpBrowser.launch({ port: 9337 });
+const p = await Page.create(b); await p.setViewport(1440,900);
+const errs=[]; b.on(m=>{const q=m.params||{}; if(m.method==="Runtime.exceptionThrown") errs.push(JSON.stringify(q.exceptionDetails).slice(0,400)); if(m.method==="Runtime.consoleAPICalled"&&q.type==="error") errs.push((q.args||[]).map(a=>a.value||a.description).join(" ").slice(0,300));});
+await p.goto("http://127.0.0.1:5199/");
+await p.waitFor("document.querySelector('#composer-mode-switch .mode-btn')", { timeout: 40000 });
+console.log("box:", JSON.stringify(await p.box("#composer-mode-switch .mode-btn")));
+console.log("clickers:", JSON.stringify(await p.eval("(function(){const el=document.querySelector('#composer-mode-switch .mode-btn'); const r=el.getBoundingClientRect(); const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2); return {hit: hit?hit.outerHTML.slice(0,200):null, disabled:el.disabled, aria:el.getAttribute('aria-label')};})()")));
+await p.eval("document.querySelector('#composer-mode-switch .mode-btn').click()");
+await sleep(2000);
+console.log("after js click mode:", await p.attr("#composer-mode-switch .mode-btn","data-current-mode"), "hash:", await p.eval("location.hash"), "board:", await p.exists('[data-im="board"]'));
+console.log("toasts:", await p.eval("[...document.querySelectorAll('[role=status],[role=alert],.toast,.notice,.hint')].map(e=>(e.innerText||'').trim().slice(0,100)).filter(Boolean)"));
+console.log("errs:", errs.slice(0,10));
+await p.screenshot("D:/qio-dev/pm032-interactive/_lead-logs/pm-qio032/e2e/shots/probe5-after-jsclick.png");
+await b.close();

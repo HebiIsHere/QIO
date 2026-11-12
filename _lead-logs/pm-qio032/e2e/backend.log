@@ -1,0 +1,1 @@
+local API authentication is DISABLED (QIO_DEV_INSECURE=1): any local process can call the QIO API. Development only.
