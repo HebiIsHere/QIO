@@ -253,8 +253,10 @@ function isAbort(error: unknown): boolean {
 const shownPage = computed(() => currentPage());
 const totalLabel = computed(() => (pages.value ? String(pages.value) : "?"));
 
+// 用「三个来源」而不是返回数组的 getter：运行时对象被替换（更新检查失败提示等）时
+// factsData 还是同一份值，不该把整份 PDF 重新加载、把当前搜索/翻页状态冲掉。
 watch(
-  () => [props.attachmentId, props.version, props.factsData] as const,
+  [() => props.attachmentId, () => props.version, () => props.factsData],
   () => {
     void load();
   },

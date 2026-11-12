@@ -120,7 +120,7 @@ async function parseEnvelope(): Promise<void> {
 }
 
 watch(
-  () => [runtime.value?.phase, runtime.value?.version, kind.value] as const,
+  () => (runtime.value?.phase ?? "") + "|" + (runtime.value?.version ?? "") + "|" + kind.value,
   () => {
     void parseEnvelope();
   },
@@ -304,6 +304,8 @@ function scheduleSearch(): void {
 }
 
 watch(searchQuery, () => {
+  // 搜索词先立即写回标签（切文件 / 全窗口 / 收起后再回来不丢；防抖只用于计算命中）。
+  savePosition({ search: searchQuery.value.trim() });
   // 查询词一变，旧命中/旧错误立即失效（不能在新查询词下继续显示旧结果或「无匹配」）。
   if (kind.value === "pdf" && searchQuery.value.trim() !== pdfSearchQuery.value) {
     activeHitIndex.value = -1;
@@ -584,6 +586,16 @@ function startPolling(): void {
   }, FILE_UPDATE_POLL_MS);
 }
 
+/**
+ * 立即把当前标签的最新阅读状态写回：搜索词 + 滚动位置（#53）。
+ * PreviewPanel 在切标签/收起/全窗口前调用；卸载时也兜底调用一次。
+ * 位置按标签 id 写入，晚到的调用只影响它自己那一份，不会覆盖别的标签。
+ */
+function flushPosition(): void {
+  savePosition({ search: searchQuery.value.trim() });
+  flushScroll();
+}
+
 // ── 生命周期 ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
@@ -598,7 +610,7 @@ onMounted(() => {
 watch(
   () => routeKey(),
   () => {
-    flushScroll();
+    flushPosition();
     restored = false;
     searchQuery.value = String(props.tab.position.search || "");
     isolatePdfSearchState();
@@ -610,8 +622,10 @@ watch(
 );
 
 // 文件内容原地更新（同一标签的新版本）：旧文件的命中/错误不能留到新版本上。
+// 用标量键：运行时对象因「更新检查失败提示」等被整体替换时不算内容变化，
+// 否则会把当前搜索状态重置成「搜索中」（迟到的无关写入不能覆盖用户刚做的编辑）。
 watch(
-  () => [kind.value, runtime.value?.version, runtime.value?.phase] as const,
+  () => kind.value + "|" + (runtime.value?.version ?? "") + "|" + (runtime.value?.phase ?? ""),
   () => {
     isolatePdfSearchState();
     if (kind.value === "pdf" && searchQuery.value.trim()) {
@@ -652,7 +666,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
-  flushScroll();
+  flushPosition();
   if (scrollTimer) clearTimeout(scrollTimer);
   if (searchTimer) clearTimeout(searchTimer);
   if (updateTimer) clearTimeout(updateTimer);
@@ -718,6 +732,9 @@ function onSlidePage(page: number): void {
   slidePage.value = page;
   savePosition({ page });
 }
+
+/** 供外壳在切标签/收起/全窗口前立即取走最新阅读状态（#53）。 */
+defineExpose({ flushPosition });
 </script>
 
 <template>
