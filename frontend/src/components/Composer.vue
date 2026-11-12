@@ -278,7 +278,15 @@ async function submit() {
     // 例外（契约 5）：发送停在「正在确认」时**不**恢复草稿 —— 那条消息还留在对话流里，
     // 确认条的【重试 / 放弃】才是接管入口；把原文放回输入框，用户再按 Enter 就会以
     // 另一个请求身份再发一次，恰好绕开幂等保护。
-    if (!session.pendingSendConfirm && !text.value.trim()) {
+    /**
+     * #42：失败回执只能落在**发起这次发送的话题**里。
+     *
+     * 等待回执期间用户可能已经切到别的话题：这时把甲的原文写进乙的输入框，
+     * 不只是「看得不对」—— 草稿保存器会立刻把它当成乙的草稿落盘，
+     * 乙从此带着甲的文字。原文不会丢：它已经在失败事项里（归属甲），
+     * 用户回到甲后从「发送异常」主动取回，两份内容都保留。
+     */
+    if (!session.pendingSendConfirm && !text.value.trim() && isCurrentTopic(sendTopicId)) {
       text.value = draftSnapshot;
       await nextTick();
       autosize();
