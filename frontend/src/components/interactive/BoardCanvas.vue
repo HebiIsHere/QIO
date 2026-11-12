@@ -58,6 +58,7 @@ import {
 import {
   placeToolbarRelativeToCard,
   rectsIntersect,
+  toolbarButtonLayout,
   type OverlayRect,
 } from "../../interactive/overlayPlacement";
 import { prefersReducedMotion } from "../../utils/motion";
@@ -837,33 +838,33 @@ const renderedCardAnchors = computed<CardAnchor[]>(() => {
   ];
 });
 
-const TOOL_COUNT = 5;
-const TOOL_STEP = 36;
-const TOOL_START = 8;
-const TOOL_MARGIN = 14;
+/** 连接点的视觉半径（px）：工具栏与卡片外框的空隙必须大于它，否则会压住连接点。 */
+const TOOLBAR_PORT_RADIUS = 9;
 
 /**
  * 逐按钮实时位置（相对卡片左上角）。
- * 上边容量用尽后，最左侧按钮移到左边并压住前一个；
- * 左边容量也用尽后自动进入第二列。
+ *
+ * #04（PM-QIO032）：不再无条件贴上边 —— 按**板面可用矩形**换边 / 沿边内收：
+ * - 卡片贴板面上沿（或放大到卡片顶边在可视区上方）→ 换到卡片下方；
+ * - 卡片贴左 / 右边 → 整排沿边滑动，按钮始终完整落在可视区里；
+ * - 卡片比可视区还大（放大查看）→ 按钮「向内调整」到可视区内，编辑按钮仍完整可点；
+ * - 可视区量不到（jsdom / 首帧）时退回既有「按卡片自身尺寸分列」的行为（逐字段不变）。
+ * 卡片外侧的按钮与卡片边缘留 12px（> 连接点半径），不压连接点；按钮不压卡片标题 / 编辑区。
  */
 function toolbarButtonPositions(card: BoardCardModel): Array<{ x: number; y: number }> {
   const rect = displayRect(card);
-  const topCapacity = Math.max(0, Math.min(TOOL_COUNT, Math.floor((rect.w / 2 - TOOL_MARGIN) / TOOL_STEP)));
-  const leftCount = TOOL_COUNT - topCapacity;
-  const leftCapacity = Math.max(1, Math.floor((rect.h / 2 - TOOL_MARGIN) / TOOL_STEP));
-  const out: Array<{ x: number; y: number }> = [];
-  for (let i = 0; i < TOOL_COUNT; i += 1) {
-    if (i < leftCount) {
-      const rank = leftCount - 1 - i;
-      const column = Math.floor(rank / leftCapacity);
-      const row = rank % leftCapacity;
-      out.push({ x: -42 - column * TOOL_STEP, y: TOOL_START + row * TOOL_STEP });
-    } else {
-      out.push({ x: TOOL_START + (i - leftCount) * TOOL_STEP, y: -42 });
-    }
-  }
-  return out;
+  const region = boardRegion.value;
+  const visible =
+    region.size.w > 0 && region.size.h > 0
+      ? { x: region.origin.x, y: region.origin.y, w: region.size.w, h: region.size.h }
+      : null;
+  const ports = [
+    { x: rect.w / 2, y: 0, r: TOOLBAR_PORT_RADIUS },
+    { x: rect.w, y: rect.h / 2, r: TOOLBAR_PORT_RADIUS },
+    { x: rect.w / 2, y: rect.h, r: TOOLBAR_PORT_RADIUS },
+    { x: 0, y: rect.h / 2, r: TOOLBAR_PORT_RADIUS },
+  ];
+  return toolbarButtonLayout({ card: rect, visible, ports }).map((box) => ({ x: box.x, y: box.y }));
 }
 
 function commit(next: BoardState, label: string) {
