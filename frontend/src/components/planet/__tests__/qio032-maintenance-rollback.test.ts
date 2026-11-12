@@ -265,7 +265,7 @@ describe("#33 撤回结果可读化", () => {
     await w.find(".restore-dialog__confirm").trigger("click");
     await flushPromises();
     const result = w.find("[data-restore-result]");
-    expect(result.find("[data-restore-result-label]").text()).toContain("撤回已完成");
+    expect(result.find("[data-restore-result-label]").text()).toContain("已撤回");
     expect(result.find("[data-restore-result-counts]").text()).toContain("已恢复 1 条");
     expect(result.find("[data-restore-result-counts]").text()).toContain("未恢复 0 条");
     const entry = result.find('[data-restore-entry="op_merge"]');

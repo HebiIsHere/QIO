@@ -305,6 +305,12 @@ const maintenanceItems = computed(() => {
 
 const restoreArbiter = useModalArbiterStore();
 const restoreDialogOpen = ref(false);
+/**
+ * 弹窗的稳定身份：打开时确定，关闭过程中**不能**跟着 restoreTarget 一起变空。
+ * 否则 dialog 关闭时按空 id 去仲裁器注销，原 id 永远留在栈里 —— 之后所有恢复弹窗都会被
+ * 「另一个中央弹窗正在处理」挡住（只读历史态关闭后复现）。
+ */
+const restoreModalId = ref("");
 const restoreTarget = ref<{ batch_id?: string; item_id?: string } | null>(null);
 const restoreTargetLabel = ref("");
 const restoreDialogTitle = ref("整批撤回这次记忆整理？");
@@ -356,6 +362,7 @@ function openRestoreDialog(
   const modalId = target.batch_id
     ? "memory-batch-restore:" + target.batch_id
     : "memory-item-restore:" + (target.item_id || "");
+  restoreModalId.value = modalId;
   const allowed = restoreArbiter.open({ id: modalId, kind: "recovery", dismissible: true });
   if (!allowed) {
     restoreBlocked.value = "另一个中央弹窗正在处理，先完成或关闭它，再执行恢复。";
@@ -492,7 +499,7 @@ const restoreDialogItems = computed<RestoreDialogItem[]>(() => {
 });
 
 const RESTORE_STATUS_LABELS: Record<string, string> = {
-  rolled_back: "撤回已完成",
+  rolled_back: "已撤回（全部完成）",
   restored: "恢复已完成",
   already_rolled_back: "此前已撤回",
   already_restored: "此前已恢复",
@@ -1035,11 +1042,7 @@ onBeforeUnmount(() => {
     <!-- 撤回/恢复：复用既有中央弹窗（预览 + 确认） -->
     <MaintenanceRestoreDialog
       :open="restoreDialogOpen"
-      :modal-id="
-        restoreTarget?.batch_id
-          ? 'memory-batch-restore:' + restoreTarget.batch_id
-          : 'memory-item-restore:' + (restoreTarget?.item_id || '')
-      "
+      :modal-id="restoreModalId"
       :title="restoreDialogTitle"
       :confirm-text="restoreDialogConfirmText"
       :target-label="restoreTargetLabel"
