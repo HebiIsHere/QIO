@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   dismissInterruptedTurn: vi.fn(),
 }));
 
-vi.mock("../../../services/api", () => ({
+vi.mock("../../services/api", () => ({
   ApiError: class ApiError extends Error {
     constructor(
       readonly status: number,
@@ -100,11 +100,13 @@ beforeEach(() => {
 
 describe("文案 3：取消已受理发送的中间状态", () => {
   it("请求在飞时显示「正在取消」，收到回执后才更新为结果", async () => {
-    // 取消接口延迟 30ms 返回：期间界面只能显示「正在取消」，不能提前给出结果
+    // 用「手动 resolve 的 deferred」制造真实的在飞窗口：不能靠 30ms 定时器，
+    // 否则机器快时回执会先于断言到达，测试变成时序抖动（集成时实测过一次红）。
+    let resolveCancel: ((value: unknown) => void) | null = null;
     mocks.cancelTurn.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
-          setTimeout(() => resolve({ ok: true, cancelled: true, turn_id: "turn_1" }), 30);
+          resolveCancel = resolve;
         }) as never,
     );
     const { w, session } = setup();
@@ -115,9 +117,12 @@ describe("文案 3：取消已受理发送的中间状态", () => {
     await w.find('[data-im="composer-pending-cancel"]').trigger("click");
     await flushPromises();
     expect(w.text(), "请求在飞时应显示「正在取消」").toContain("正在取消");
+    expect(resolveCancel, "取消请求应该已经在飞").not.toBeNull();
 
-    await vi.waitFor(() => expect(w.find(".notice").exists()).toBe(true), { timeout: 3000 });
+    resolveCancel!({ ok: true, cancelled: true, turn_id: "turn_1" });
+    await flushPromises();
     expect(w.text(), "收到回执后中间态应消失").not.toContain("正在取消");
+    await vi.waitFor(() => expect(w.find(".notice").exists()).toBe(true), { timeout: 3000 });
     expect(w.find(".notice").text()).toContain("取消");
   });
 });
