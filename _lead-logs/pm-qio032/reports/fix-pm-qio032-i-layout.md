@@ -10,6 +10,7 @@
 - commits：
   - `1a32b24f` fix(interactive-layout): 页面壳面板空间/失败门禁/单一聊天入口与提交区状态文案
   - `65e130f5` fix(interactive-layout): 工具区连续承载面、Esc 先取消拖动、任务入口失败标记与测试口径
+  - `4f368cbe` fix(interactive-layout): 提交详情接入上次结果读取三态与失败重试（#41，i-state 字段可选读取）
   - 报告提交：见本文件所在 commit
 
 ## 2. 改动 / 新增文件清单
@@ -27,7 +28,7 @@
 - `frontend/src/components/MessageStream.vue`（**只改 #16 互动专属空态**：新增可选 prop `emptyVariant`，其它模式空态保持原样）
 
 测试：
-- 新增 `frontend/src/views/__tests__/pm032-layout-shell.test.ts`（30 个用例）
+- 新增 `frontend/src/views/__tests__/pm032-layout-shell.test.ts`（31 个用例）
 - 更新既有测试（原因逐条见 §6）：conversationLayout / InteractiveConversation / a-unknown-consistency / i2v2-a-intent-read-failure / p1b-v2-chrome-tools / submitClusterPanels
 
 ## 3. 逐项结果表
@@ -41,7 +42,7 @@
 | #16 | 已修复 | MessageStream 新增可选 `emptyVariant="interactive"`：互动空态「发消息，或提交板面 / 在下方输入框发消息；板面改动准备好后点「提交」」；默认空态（含话题星球）逐字未变；InteractiveConversation 传该 prop。pm032「#16」 |
 | #20 | 部分（UI 全部实现；首次失败区分依赖 i-state 字段） | 有上次数据：只读横幅 + 重试 + 画布/工具栏 `inert`；首次失败：整页「板面没有读取出来」+「重试」「返回对话」。优先读 i-state `boardLoadedOnce/boardReadOnly/boardEditBlockedReason/retryBoardLoad`（可选读取，合并后自动生效）；基线回退 loadError+board。i2v2 板面失败用例已改为基线等价路径，pm032 另测源码结构。**首次失败真机区分待 i-state 合并后 Lead E2E** |
 | #40 | 已修复（层叠 + 输入法优先） | 统一用共享 `useEscapeLayer`：对话展开（动态注册）/ 提交详情面板 / 任务面板（页面壳）/ 书签栏各自注册；后打开者优先，`isComposingKeyEvent` 保证中文输入法先取消选字，确认框走同一层级栈天然优先；拖动高度时 Esc 先取消拖动（不回退展开态）。Esc 只收显示：不清草稿、不停止回复。pm032「#40」+ InteractiveConversation Esc 用例 |
-| #41 | 部分 | 提交详情区分：读取失败（`pendingError` + 「重试读取」）、成功为空（「本次没有改动」）、有上次结果（分开说明）；`understandingLoadError` 维度的第三态未接（i-state 建议用 lastSubmission+understandingLoadError，基线 store 已有 understandingLoadError，但详情面板语义待与 i-tasks/i-state 对齐）。pm032 只断言已有结构 |
+| #41 | 已修复（UI；字段可选读取 i-state 103c0126/5e7b244f） | 提交详情三态：① 读取失败：`understandingLoadState==='error'` 且 `understandingLoadedOnce=false` →「上次结果读取失败」（可重试）；已有上次数据再失败 →「上次结果更新失败，当前显示上次读取的内容」（旧内容保留）；② 成功读取为空才显示「服务端还没有上次提交 / 理解记录」；③ 本次改动读取失败单独一条（`pendingExpressions` 本地错误 + 重试），成功读取为空才显示「本次没有改动」。数据来自 `refreshUnderstanding()`，失败不清旧数据。pm032「#41」用例 |
 | #55 | 已修复 | 板内搜索无命中：结果层保留并显示「没有找到卡片」；清空关键词收起。旧用例（断言“不渲染任何结果层/说明”）按新验收改写为断言新行为（见 §6）。pm032「#55」 |
 | #73 | 已修复 | 书签栏：单行紧凑、关闭入口在列表头部、打开时注册 Esc 可收起、长列表 `flex:1 + overflow-y:auto` 单独滚动。pm032「#73」 |
 | #76 | 已修复 | 悬浮工具区改为一枚连续、轻量承载面（半透明 + 模糊 + 胶囊），按钮退回透明表面；卡片文字/连线只从承载面后方经过，不从按钮间隙穿出。pm032「#76」 |
@@ -81,13 +82,18 @@ npx vitest run --reporter=dot \
   src/views/__tests__/InteractiveViewFloating.test.ts \
   src/views/__tests__/InteractiveOldEntriesGone.test.ts \
   src/components/__tests__/MessageStream.test.ts
-# 结果：Test Files 17 passed (17) / Tests 196 passed (196)
+# 结果：Test Files 17 passed (17) / Tests 197 passed (197)（新增 pm032-layout-shell 31 用例）
 
 npx vue-tsc --noEmit
 # 结果：exit 0（自己范围 0 错误）
 ```
 
 未跑：全量 pytest / npm test / build / cargo / 真实网络或模型（按 CONTRACT §4）。
+
+删除项引用核查（Lead 要求）：
+- `annotate-*` / `annotateOpen` / `tb-annotate`：全 frontend 生产代码 **0 引用**，仅本分支负向断言（pm032-layout-shell #14）。
+- `data-ic-close` / `.ic-close`：全 frontend 生产代码 **0 引用**，仅负向断言（pm032/InteractiveConversation）；`components/approval/TopicApprovalContent.vue` 的 `topic-close` 是另一个组件的独立类名，与聊天关闭按钮无关，未改。
+- `data-ic-toggle`：生产代码唯一一处（InteractiveConversation 的输入区旁入口），其余均为测试引用。
 
 ## 5. 新增/变更对外接口与消费方注意
 
@@ -99,6 +105,7 @@ npx vue-tsc --noEmit
 - `MessageStream.vue`：新增可选 prop `emptyVariant?: "default" | "interactive"`（默认 default，其它入口逐字不变）。
 - `InteractiveBookmarks.vue`：Esc 层 id `interactive-bookmarks`。
 - `InteractiveView.vue`：根节点新增 `data-im-panel-space="side-by-side|switch"`；新增 `data-im="board-load-failed" | "board-load-retry" | "board-load-back" | "submit-duplicate" 等选择器；任务入口失败标记 `data-im="tasks-entry-error"`。
+- `SubmitCluster.vue`（#41）：可选读取 i-state 的 `understandingLoadState / understandingLoadError / understandingLoadedOnce`；新增选择器 `data-im="submit-last-read-error" / "submit-last-read-retry" / "submit-last-result-empty" / "submit-details-error" / "submit-details-retry"`。
 - 依赖 i-state 承诺接口（可选读取，合并后自动生效）：`boardLoadedOnce / boardReadOnly / boardEditBlockedReason / retryBoardLoad / canSubmit / submitBlockedReason / roundStatusLabel / roundStatusDetail`。字段名如需微调，只改 3 处 computed 的读取即可。
 - 与 i-tasks 约定：TaskCenterPanel 内不注册 Esc（页面壳注册 tasksOpen 一层）；任务入口失败标记仅页面壳；面板内错误/重试 `task-read-error` 由 i-tasks 实现。
 
@@ -118,6 +125,6 @@ npx vue-tsc --noEmit
 1. **真机 E2E 未做**（按分工由 Lead）：800×600 单开/组合开面板、1121/1120 实际边界与中心命中、Tab/Esc、净白/暗紫晶主题、中文输入法。本分支只做组件/纯函数级证据。
 2. #05/#71 的“并排”几何：本分支实现「窄窗明确切换 + 层级不遮挡」；宽窗任务面板与提交详情本身不重叠（一个右上、一个底部工具栏上方），未新增并排容器。若 Lead E2E 发现 1121+ 仍有重叠，需要 TaskCenterPanel 定位配合（i-tasks 文件）。
 3. #20 首次失败与「上次结果」的区分、#03 全轮次标签、#13 门禁原因：依赖 i-state 分支（commit 103c0126）合并；本分支已按字段可选消费，合并前走基线回退。合并后请跑一次真机失败注入验证。
-4. #41 仍缺 `understandingLoadError` 维度的第三态与失败重试入口（当前 pendingExpressions 失败已可重试；理解/意图读取失败重试入口在任务面板）。
+4. #41：UI 三态已接，但依赖 i-state 5e7b244f 合并后字段才存在；合并前走基线回退（只显示正常内容）。合并后建议真机注入一次 understanding 读取失败，确认「读取失败 / 上次结果 / 成功为空」三态与重试。
 5. i-tasks 的 TaskCenterPanel 错误/重试 UI 与 Esc 层级、i-state 的 `acceptanceLookupNote` 文案变更需在父分支合并后联调；本分支未改它们文件。
 6. 未自造 store 状态：所有跨分支数据均以可选读取 + 基线回退消费，类型检查在本 worktree 通过（vue-tsc exit 0）。
