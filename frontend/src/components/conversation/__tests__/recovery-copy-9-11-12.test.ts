@@ -184,7 +184,10 @@ describe("文案 12：继续/停止操作条保留真实原因和按钮", () => 
     pending.resolve({ ok: true });
     await flushPromises();
 
-    expect(session.pendingContinue?.id, "旧回执把新的暂停清掉了").toBe("appr_new");
+    expect(
+      (session.pendingContinue as { id?: string } | null)?.id,
+      "旧回执把新的暂停清掉了",
+    ).toBe("appr_new");
     const text = w.text();
     expect(text).toContain("输出 token 预算已用完");
     expect(text).toContain("继续");
