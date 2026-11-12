@@ -70,9 +70,10 @@ export const COMPOSER_ENTRY_TEXT: Record<
     hint: "QIO 申请切换或新建话题；打开同一申请处理，不会自行切换",
   },
   queue: {
-    label: "排队消息",
-    title: "已提交的排队消息",
-    hint: "查看已经交给 QIO、还在等待执行的消息，可逐条取消",
+    // 文案 11：队列常态用「待发送消息」
+    label: "待发送消息",
+    title: "待发送消息",
+    hint: "查看还没发送的消息，可逐条取消",
   },
   approvals: {
     label: "待审批",
