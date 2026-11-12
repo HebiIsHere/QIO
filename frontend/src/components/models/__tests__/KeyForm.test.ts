@@ -246,8 +246,12 @@ describe("Key 接入 · 文案与底部动作（#17 / #18 / #89）", () => {
     expect(source).toMatch(/class="qio-btn" :disabled="busy" @click="emit\('cancel'\)"/);
     expect(source).toMatch(/class="qio-btn primary"/);
     // KeyForm 只收口尺寸：等分 + 36px，不新增宽度魔法数字
-    expect(source).toMatch(/\.actions \.qio-btn\s*\{[^}]*flex:\s*1 1 0/);
-    expect(source).toMatch(/\.actions \.qio-btn\s*\{[^}]*height:\s*36px/);
+    //（选择器写成「容器 + 重复类名」，权重压过上面的 :deep(.qio-btn)，不引入 !important）
+    expect(source).toMatch(/\.actions\.qio-modal-actions \.qio-btn\.qio-btn\s*\{[^}]*flex:\s*1 1 0/);
+    expect(source).toMatch(/\.actions\.qio-modal-actions \.qio-btn\.qio-btn\s*\{[^}]*height:\s*36px/);
+    // 窄窗（≤480）：共享规则换成纵排 + 撑满；上面高权重的尺寸规则必须把宽度交还，
+    // 否则两个按钮会缩成内容宽贴左排（实测 leftGap=1 / rightGap=143）
+    expect(source).toMatch(/@media \(max-width: 480px\)[\s\S]*?\.actions\.qio-modal-actions \.qio-btn\.qio-btn\s*\{[^}]*width:\s*100%/);
     // 不再把动作组钉在右边（#89 的同轴要求）
     expect(source).not.toMatch(/\.actions\s*\{[^}]*justify-content:\s*flex-end/);
   });

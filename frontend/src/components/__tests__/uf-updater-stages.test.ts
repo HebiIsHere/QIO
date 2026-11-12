@@ -161,8 +161,10 @@ describe("UpdateCard 如实展示阶段", () => {
     store.phase = "ready";
     store.stage = "done";
     await w.vm.$nextTick();
-    expect(w.text()).toContain("重启后生效");
-    expect(w.text()).toContain("结束当前运行");
+    // #25：结果页把「重启哪一个应用、什么之后生效」说全，不再只写「重启后生效」
+    expect(w.text()).toContain("重启 QIO 后生效");
+    // 结果页要说明「结束当前运行」这件事：写清会关闭并重新打开当前 QIO
+    expect(w.text()).toContain("关闭当前 QIO 并重新打开");
     expect(w.find("[data-action='restart']").exists()).toBe(true);
     w.unmount();
   });
