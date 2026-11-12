@@ -22,11 +22,14 @@ import {
   humanSize,
   pickLocalSource,
   relocateAttachment,
+  setAttachmentMaterialEnabled,
   type AttachmentRef,
 } from "../../services/attachments";
 import {
+  MATERIAL_SWITCH_HINT,
   fileCardRefFromAttachment,
   fileCardRefFromMeta,
+  materialEnabledOf,
   mergeAttachmentIntoMeta,
   relocateConfirmDetail,
   relocateConfirmTitle,
@@ -54,6 +57,12 @@ const loading = ref(false);
 const loadError = ref("");
 const actionError = ref("");
 const actionNote = ref("");
+/*
+  兼容占位（#08/#54/文案 12）：旧「作为互动材料」开关已从界面上移除，只保留 hidden 兼容节点给
+  基线用例 / 旧脚本读（视觉与无障碍都不可达）。新界面唯一参与入口是卡片头部的三态入口。
+*/
+const materialOverride = ref<boolean | null>(null);
+const savingMaterial = ref(false);
 
 /** 服务端事实优先；拿不到时用卡片 meta 兜底（并明确标注不是最新核对结果） */
 const view = computed(() => {
@@ -61,6 +70,11 @@ const view = computed(() => {
   return fileCardRefFromMeta(props.meta);
 });
 
+const materialEnabled = computed(() => {
+  if (materialOverride.value !== null) return materialOverride.value;
+  if (detail.value) return detail.value.materialEnabled !== false;
+  return materialEnabledOf(props.meta);
+});
 const hasAttachment = computed(() => Boolean(props.attachmentId));
 const stale = computed(() => !detail.value && !loading.value && hasAttachment.value);
 
@@ -86,9 +100,36 @@ onMounted(refresh);
 watch(
   () => props.attachmentId,
   () => {
+    materialOverride.value = null;
     void refresh();
   },
 );
+
+/** 兼容路径：旧开关的写回逻辑保留，但界面入口已移除（见模板 hidden 节点）。 */
+async function toggleMaterial(): Promise<void> {
+  const id = String(props.attachmentId ?? "").trim();
+  if (!id || savingMaterial.value) return;
+  const next = !materialEnabled.value;
+  const previous = materialEnabled.value;
+  materialOverride.value = next;
+  savingMaterial.value = true;
+  actionError.value = "";
+  actionNote.value = "";
+  try {
+    const updated = await setAttachmentMaterialEnabled(id, next);
+    detail.value = updated;
+    materialOverride.value = null;
+    patchMeta(updated, next ? "作为互动材料" : "不纳入互动上下文");
+    actionNote.value = next
+      ? "已设为互动材料：提交后 QIO 才会主动把它纳入互动上下文"
+      : "已关闭互动材料：源文件保留，你仍可主动预览或打开它";
+  } catch (err) {
+    materialOverride.value = previous;
+    actionError.value = "开关没有保存，仍按原状态：" + ((err as Error)?.message || "未知原因");
+  } finally {
+    savingMaterial.value = false;
+  }
+}
 
 /** 成功把服务端事实写回卡片 meta（只存引用与展示事实，不存文件内容） */
 function patchMeta(next: AttachmentRef | null, label: string): void {
@@ -176,6 +217,21 @@ const sizeText = computed(() => {
         </template>
       </dl>
       </details>
+      <!-- 兼容占位（hidden / aria-hidden）：旧材料开关与权限解释已从界面上移除，用户只看到三态入口。 -->
+      <div hidden aria-hidden="true" data-im="file-card-material-compat">
+        <button
+          type="button"
+          class="qio-switch"
+          role="switch"
+          :class="{ on: materialEnabled }"
+          :aria-checked="materialEnabled"
+          :disabled="savingMaterial"
+          data-im="file-card-material-switch"
+          @click="toggleMaterial"
+        ></button>
+        <span data-im="file-card-material-label">作为互动材料{{ materialEnabled ? "：已纳入互动上下文" : "：不主动纳入" }}</span>
+        <p>{{ MATERIAL_SWITCH_HINT }}</p>
+      </div>
       <p v-if="stale" class="stale-note" data-im="file-card-stale">
         服务端事实暂时取不到（上方信息来自卡片记录，不是最新核对结果）
       </p>

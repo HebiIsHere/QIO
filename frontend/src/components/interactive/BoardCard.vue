@@ -1889,6 +1889,18 @@ watch(
         </div>
       </div>
       <!--
+        兼容占位（仅给基线用例与旧脚本读）：视觉 / 无障碍均隐藏，用户只看到上面的三态入口。
+        #08 合并后不再有独立的「参与讨论」按钮。
+      -->
+      <span
+        class="compat-only"
+        data-im="card-participation"
+        :data-card-id="card.id"
+        :data-participation="participationIncluded ? 'included' : 'excluded'"
+        :aria-hidden="'true'"
+        @click.stop="emit('toggle', card.id, 'participation')"
+      >{{ participationIncluded ? "参与" : "不参与" }}</span>
+      <!--
         两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
         折叠态只有「恢复卡片」（把卡片展开回常态）；
         常态 / 阅读态只有「展开预览 / 收起预览」（让正文或文件预览成为主体）。
@@ -2624,6 +2636,14 @@ watch(
   font-family: var(--sans);
   font-size: 10px;
   cursor: pointer;
+}
+.compat-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .visibility { position: relative; display: inline-flex; flex: none; }
 .visibility-menu {

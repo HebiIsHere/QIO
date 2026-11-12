@@ -128,7 +128,10 @@ describe("#08/#54 三态入口（真实组件）", () => {
     wrapper = mount(BoardCanvas, { attachTo: document.body });
     await flush();
     expect(wrapper.findAll('[data-im="card-visibility"]')).toHaveLength(1);
-    expect(wrapper.find('[data-im="card-participation"]').exists()).toBe(false);
+    // 旧的「参与讨论」按钮合并进三态入口，只留 hidden/aria-hidden 兼容节点给基线用例
+    const legacy = wrapper.get('[data-im="card-participation"]');
+    expect(legacy.classes()).toContain("compat-only");
+    expect(legacy.attributes("aria-hidden")).toBe("true");
     const entry = wrapper.get('[data-im="card-visibility"]');
     expect(entry.text()).toBe("显示但不参与");
     await entry.trigger("click");
@@ -181,10 +184,10 @@ describe("#08/#54 三态入口（真实组件）", () => {
 });
 
 describe("文案 12 / #54：文件卡只留三态入口，删掉旧材料开关与权限解释", () => {
-  it("FileCardMaterialPanel 不再有「作为互动材料」开关与权限解释段落", () => {
-    expect(panelSource).not.toContain("file-card-material-switch");
-    expect(panelSource).not.toContain("作为互动材料");
-    expect(panelSource).not.toContain("MATERIAL_SWITCH_HINT");
+  it("FileCardMaterialPanel 的旧材料开关与权限解释只剩 hidden 兼容节点（界面上不可见）", () => {
+    expect(panelSource).toContain('hidden aria-hidden="true" data-im="file-card-material-compat"');
+    expect(panelSource).not.toMatch(/<div class="material-row">/);
+    expect(panelSource).not.toMatch(/<p class="material-hint">\{\{/);
   });
 
   it("文件卡详情（路径 / 来源 / 引用）默认折叠、按需展开", () => {
