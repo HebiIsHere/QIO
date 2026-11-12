@@ -75,7 +75,8 @@ watch(
  * 解除后也不主动显示，等用户下一次真实悬停/聚焦。
  */
 const TIP_RESUME_GRACE_MS = 250;
-let tipResumeTimer: ReturnType<typeof setTimeout> | null = null;
+/** window.setTimeout 的返回值（浏览器/DOM 环境是 number；不用 NodeJS.Timeout 以免类型双源） */
+let tipResumeTimer: number | null = null;
 watch(
   () => planetContinuum.phase,
   (phase) => {

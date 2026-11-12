@@ -1135,8 +1135,84 @@ onUnmounted(() => {
   abandonContinuum();
 });
 
+/* ------------------------------------------------------------------
+ * 模态对话框语义与焦点循环（#38 / 本组契约 §4.3，navigation 实现）
+ *
+ * 星球打开时盖住对话页，是事实上的模态层：根层必须暴露 role="dialog" +
+ * aria-modal="true" + data-planet-overlay（conversation 据此给背景加 inert），
+ * 键盘焦点不能跑回下层页面。球态（关闭常驻、只画入口小球）不是对话框，
+ * 不能把整窗暴露成 dialog/aria-modal。
+ * ------------------------------------------------------------------ */
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+/** 星球内当前可用的焦点目标（排除 inert 子树 / aria-hidden / display:none / visibility:hidden）。 */
+function focusablesInPlanet(): HTMLElement[] {
+  const root = rootRef.value;
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((el) => {
+    if (el.closest("[inert]")) return false;
+    if (el.getAttribute("aria-hidden") === "true") return false;
+    if (typeof getComputedStyle === "function") {
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+    return true;
+  });
+}
+
+/** 打开时把初始焦点移入星球内第一个可用控件（没有可用控件时落在根层，Tab 仍能进入）。 */
+function focusInitialPlanetControl(): void {
+  const root = rootRef.value;
+  if (!root) return;
+  const first = focusablesInPlanet()[0];
+  if (first) first.focus();
+  else root.focus();
+}
+
+watch(
+  () => props.open,
+  (open) => {
+    if (!open) return;
+    void nextTick(() => {
+      if (props.open) focusInitialPlanetControl();
+    });
+  },
+  { flush: "post" },
+);
+onMounted(() => {
+  if (props.open) void nextTick(() => focusInitialPlanetControl());
+});
+
+/** Tab / Shift+Tab 在星球内循环：最后一个回第一个，第一个 Shift+Tab 回最后一个。 */
+function trapTabInPlanet(e: KeyboardEvent): void {
+  const items = focusablesInPlanet();
+  if (!items.length) {
+    e.preventDefault();
+    rootRef.value?.focus();
+    return;
+  }
+  const active = document.activeElement as HTMLElement | null;
+  const index = active ? items.indexOf(active) : -1;
+  if (e.shiftKey) {
+    if (index <= 0) {
+      e.preventDefault();
+      items[items.length - 1].focus();
+    }
+    return;
+  }
+  if (index === -1 || index === items.length - 1) {
+    e.preventDefault();
+    items[0].focus();
+  }
+}
+
 function onKeydown(e: KeyboardEvent) {
-  if (!props.open) return; // 已关闭但实例常驻：不能再响应 Esc
+  if (!props.open) return; // 已关闭但实例常驻：不能再响应 Esc / 焦点循环
+  if (e.key === "Tab") {
+    trapTabInPlanet(e);
+    return;
+  }
   if (e.key !== "Escape") return;
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
@@ -1569,6 +1645,12 @@ async function close() {
   <div
     ref="rootRef"
     class="planet-view"
+    :role="open ? 'dialog' : undefined"
+    :aria-modal="open ? 'true' : undefined"
+    :aria-label="open ? '话题星球' : undefined"
+    :aria-hidden="open ? undefined : 'true'"
+    :tabindex="open ? -1 : undefined"
+    :data-planet-overlay="open ? '' : undefined"
     :class="{ entered, closing, settling, layers: layersIn, armed: stageArmed, curtain: curtainOn, ball: ballMode, tail: tailMode, managing: managingActive, stacked }"
     :style="[demoStyle, ballMode ? { opacity: String(ballOpacity) } : null]"
     :data-tab="manageTab"
