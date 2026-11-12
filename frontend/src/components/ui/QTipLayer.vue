@@ -14,6 +14,7 @@
 import { computed, getCurrentInstance, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { computeTipPosition, hideTip, setTipPosition, tipState } from "../../composables/useQioTip";
+import { contentRect } from "../../utils/windowFrame";
 
 const tipEl = ref<HTMLElement | null>(null);
 
@@ -39,7 +40,8 @@ async function measureAndPlace(): Promise<void> {
   // jsdom 不做排版（尺寸为 0）时也写出一个确定性位置：便于断言“算过定位”，
   // 真实浏览器里下一帧就会量到正确尺寸。
   setTipPosition(
-    computeTipPosition(tipState.rect, { width, height }, { width: window.innerWidth, height: window.innerHeight }),
+    /* 只按可见内容区钳制：透明留白带里不该出现提示（留白为 0 时与旧行为一致） */
+    computeTipPosition(tipState.rect, { width, height }, contentRect()),
   );
 }
 
@@ -92,14 +94,14 @@ onBeforeUnmount(() => {
 <style scoped>
 .qio-tip-layer {
   position: fixed;
-  inset: 0;
+  inset: var(--window-frame-inset);
   z-index: var(--qio-z-tip, 320);
   pointer-events: none;
 }
 .qio-tip {
   position: fixed;
   z-index: var(--qio-z-tip, 320);
-  max-width: min(280px, calc(100vw - 2 * var(--sp-2)));
+  max-width: min(280px, calc(100vw - 2 * var(--window-frame-inset) - 2 * var(--sp-2)));
   padding: 6px 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--qio-ui-radius);

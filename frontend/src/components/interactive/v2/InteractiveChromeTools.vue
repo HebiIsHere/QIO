@@ -27,6 +27,7 @@ import {
   placeChromePopover,
   type ChromePopoverPlacement,
 } from "./chromePlacement";
+import { contentRect } from "../../../utils/windowFrame";
 import { useChromeExtraTarget } from "./chromeTarget";
 import { saveStatusView } from "./saveStatus";
 
@@ -140,7 +141,7 @@ function updatePlacement(): void {
       width: rect.width,
       height: rect.height,
     },
-    { width: window.innerWidth || 0, height: window.innerHeight || 0 },
+    contentRect(),
     {
       margin: CHROME_POPOVER_MARGIN,
       gap: CHROME_POPOVER_GAP,

@@ -11,6 +11,7 @@
  */
 import { computed, onScopeDispose, ref, watch, type Ref } from "vue";
 import { prefersReducedMotion } from "../utils/motion";
+import { frameInsetPx } from "../utils/windowFrame";
 import {
   floatingState,
   loadHidePrefs,
@@ -24,7 +25,10 @@ export interface DefaultPos {
   x: number;
   y: number;
 }
-export type DefaultPosFn = (el: HTMLElement, viewport: { width: number; height: number }) => DefaultPos;
+export type DefaultPosFn = (
+  el: HTMLElement,
+  viewport: { width: number; height: number; inset?: number },
+) => DefaultPos;
 
 export interface UseFloatingWindowOptions {
   id: DockId;
@@ -46,6 +50,23 @@ export interface UseFloatingWindowOptions {
 }
 
 const SNAP_PAD = 4;
+/**
+ * 浮动组件的实际安全边距：贴边间距 + 窗口透明留白。
+ *
+ * 0.3.2 透明窗里 WebView 视口仍包含 28px 留白带；浮动球/齿轮若按 innerWidth 钳制，
+ * 会停到留白带里（看着像悬在窗口外）。留白为 0（最大化/贴靠/native/dwm）时与旧行为完全一致。
+ */
+function snapPad(): number {
+  return SNAP_PAD + frameInsetPx();
+}
+function frameViewport(): { width: number; height: number; inset: number } {
+  const inset = frameInsetPx();
+  return {
+    width: Math.max(0, (typeof window === "undefined" ? 0 : window.innerWidth) - inset * 2),
+    height: Math.max(0, (typeof window === "undefined" ? 0 : window.innerHeight) - inset * 2),
+    inset,
+  };
+}
 const DRAG_THRESHOLD = 3;
 const SNAP_FALLBACK_MS = 210;
 
@@ -117,7 +138,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
   }
 
   function initPosition(el: HTMLElement) {
-    const vp = { width: window.innerWidth, height: window.innerHeight };
+    const vp = frameViewport();
     const r = rectOf(el);
     const saved = loadPositions()[options.id];
     const hidePref = loadHidePrefs()[options.id];
@@ -137,10 +158,12 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     }
     // 贴靠隐藏偏好独立持久化：设置页开关优先于位置键里的旧值
     entry.hideEnabled = hidePref ?? saved?.hideEnabled ?? false;
-    const maxX = Math.max(SNAP_PAD, vp.width - r.width - SNAP_PAD);
-    const maxY = Math.max(SNAP_PAD, vp.height - r.height - SNAP_PAD);
-    x = clamp(x, SNAP_PAD, maxX);
-    y = clamp(y, SNAP_PAD, maxY);
+    const minX = SNAP_PAD + vp.inset;
+    const minY = SNAP_PAD + vp.inset;
+    const maxX = Math.max(minX, vp.inset + vp.width - r.width - SNAP_PAD);
+    const maxY = Math.max(minY, vp.inset + vp.height - r.height - SNAP_PAD);
+    x = clamp(x, minX, maxX);
+    y = clamp(y, minY, maxY);
     entry.x = x;
     entry.y = y;
     entry.width = r.width;
@@ -245,7 +268,7 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
   }
 
   function snap(el: HTMLElement) {
-    const vp = { width: window.innerWidth, height: window.innerHeight };
+    const vp = frameViewport();
     const r = rectOf(el);
     const w = r.width;
     const h = r.height;
@@ -254,9 +277,10 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     entry.height = h;
     const cx = r.left + w / 2;
     const cy = r.top + h / 2;
-    const clampV = (v: number, max: number) => clamp(v, SNAP_PAD, max);
-    const maxL = Math.max(SNAP_PAD, vp.width - w - SNAP_PAD);
-    const maxT = Math.max(SNAP_PAD, vp.height - h - SNAP_PAD);
+    const padL = SNAP_PAD + vp.inset;
+    const clampV = (v: number, max: number) => clamp(v, padL, max);
+    const maxL = Math.max(padL, vp.inset + vp.width - w - SNAP_PAD);
+    const maxT = Math.max(padL, vp.inset + vp.height - h - SNAP_PAD);
     const others = blockerRects();
     let rect: { left: number; top: number } | null = null;
     let target: DockTarget | null = null;
@@ -265,9 +289,9 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       // 贴角：按距离排序，跳过与已贴靠组件重叠的角
       const corners = (
         [
-          { c: "tl" as DockTarget, left: SNAP_PAD, top: SNAP_PAD },
-          { c: "tr" as DockTarget, left: maxL, top: SNAP_PAD },
-          { c: "bl" as DockTarget, left: SNAP_PAD, top: maxT },
+          { c: "tl" as DockTarget, left: padL, top: padL },
+          { c: "tr" as DockTarget, left: maxL, top: padL },
+          { c: "bl" as DockTarget, left: padL, top: maxT },
           { c: "br" as DockTarget, left: maxL, top: maxT },
         ] as const
       )
@@ -288,18 +312,18 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     } else {
       // 贴边：按中心距排序；优先保留垂直/水平位置，重叠则沿边微调（4 / max / 中点）
       const edges: { e: DockTarget; d: number; tops?: number[]; lefts?: number[] }[] = [
-        { e: "left" as DockTarget, d: cx, tops: [clampV(r.top, maxT), SNAP_PAD, maxT, maxT / 2] },
-        { e: "right" as DockTarget, d: vp.width - cx, tops: [clampV(r.top, maxT), SNAP_PAD, maxT, maxT / 2] },
-        { e: "top" as DockTarget, d: cy, lefts: [clampV(r.left, maxL), SNAP_PAD, maxL, maxL / 2] },
-        { e: "bottom" as DockTarget, d: vp.height - cy, lefts: [clampV(r.left, maxL), SNAP_PAD, maxL, maxL / 2] },
+        { e: "left" as DockTarget, d: cx, tops: [clampV(r.top, maxT), padL, maxT, maxT / 2] },
+        { e: "right" as DockTarget, d: vp.width - cx, tops: [clampV(r.top, maxT), padL, maxT, maxT / 2] },
+        { e: "top" as DockTarget, d: cy, lefts: [clampV(r.left, maxL), padL, maxL, maxL / 2] },
+        { e: "bottom" as DockTarget, d: vp.height - cy, lefts: [clampV(r.left, maxL), padL, maxL, maxL / 2] },
       ].sort((a, b) => a.d - b.d);
 
       for (const ed of edges) {
         if (ed.e === "left") {
           for (const t of ed.tops ?? []) {
-            const er = { left: SNAP_PAD, top: t, right: SNAP_PAD + w, bottom: t + h };
+            const er = { left: padL, top: t, right: padL + w, bottom: t + h };
             if (!others.some((o) => overlap(er, o))) {
-              rect = { left: SNAP_PAD, top: t };
+              rect = { left: padL, top: t };
               target = ed.e;
               break;
             }
@@ -315,9 +339,9 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
           }
         } else if (ed.e === "top") {
           for (const l of ed.lefts ?? []) {
-            const er = { left: l, top: SNAP_PAD, right: l + w, bottom: SNAP_PAD + h };
+            const er = { left: l, top: padL, right: l + w, bottom: padL + h };
             if (!others.some((o) => overlap(er, o))) {
-              rect = { left: l, top: SNAP_PAD };
+              rect = { left: l, top: padL };
               target = ed.e;
               break;
             }
@@ -403,12 +427,14 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     }
     if (!moved.value) return; // 未超过阈值不移动（点击/微抖动不触发拖动）
     beginDrag(el);
-    const vp = { width: window.innerWidth, height: window.innerHeight };
+    const vp = frameViewport();
     const r = rectOf(el);
-    const maxX = Math.max(SNAP_PAD, vp.width - r.width - SNAP_PAD);
-    const maxY = Math.max(SNAP_PAD, vp.height - r.height - SNAP_PAD);
-    const x = clamp(originX + (ev.clientX - startX), SNAP_PAD, maxX);
-    const y = clamp(originY + (ev.clientY - startY), SNAP_PAD, maxY);
+    const minX = SNAP_PAD + vp.inset;
+    const minY = SNAP_PAD + vp.inset;
+    const maxX = Math.max(minX, vp.inset + vp.width - r.width - SNAP_PAD);
+    const maxY = Math.max(minY, vp.inset + vp.height - r.height - SNAP_PAD);
+    const x = clamp(originX + (ev.clientX - startX), minX, maxX);
+    const y = clamp(originY + (ev.clientY - startY), minY, maxY);
     place(el, x, y);
   }
 
@@ -440,39 +466,41 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
     if (dragging) return;
     const el = elRef.value;
     if (!el) return;
-    const vp = { width: window.innerWidth, height: window.innerHeight };
+    const vp = frameViewport();
     const r = rectOf(el);
     entry.width = r.width;
     entry.height = r.height;
-    const maxX = Math.max(SNAP_PAD, vp.width - r.width - SNAP_PAD);
-    const maxY = Math.max(SNAP_PAD, vp.height - r.height - SNAP_PAD);
+    const minX = SNAP_PAD + vp.inset;
+    const minY = SNAP_PAD + vp.inset;
+    const maxX = Math.max(minX, vp.inset + vp.width - r.width - SNAP_PAD);
+    const maxY = Math.max(minY, vp.inset + vp.height - r.height - SNAP_PAD);
     // 贴靠关系随窗口尺寸保持：right/bottom 距新边缘仍是同一个 margin，
     // 而不是留在旧的 absolute x/y；未贴靠的组件也被钳制回可视区。
     let x = r.left;
     let y = r.top;
     switch (entry.dockedTo) {
       case "left":
-        x = SNAP_PAD;
+        x = minX;
         break;
       case "right":
         x = maxX;
         break;
       case "top":
-        y = SNAP_PAD;
+        y = minY;
         break;
       case "bottom":
         y = maxY;
         break;
       case "tl":
-        x = SNAP_PAD;
-        y = SNAP_PAD;
+        x = minX;
+        y = minY;
         break;
       case "tr":
         x = maxX;
-        y = SNAP_PAD;
+        y = minY;
         break;
       case "bl":
-        x = SNAP_PAD;
+        x = minX;
         y = maxY;
         break;
       case "br":
@@ -482,8 +510,8 @@ export function useFloatingWindow(elRef: Ref<HTMLElement | null>, options: UseFl
       default:
         break;
     }
-    x = clamp(x, SNAP_PAD, maxX);
-    y = clamp(y, SNAP_PAD, maxY);
+    x = clamp(x, minX, maxX);
+    y = clamp(y, minY, maxY);
     // 障碍（输入气泡变高 / 挪位）这时才可能压住球：重新贴靠一次，
     // 换一条边也比停在被压住的位置好 —— 那里球既看不见也点不到。
     if (isBlocked({ left: x, top: y, right: x + r.width, bottom: y + r.height }, blockerRects())) {

@@ -18,6 +18,7 @@ import Composer from "../../Composer.vue";
 import ComposerEntries from "../../conversation/ComposerEntries.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import { useSessionStore } from "../../../stores/session";
+import { contentViewport } from "../../../utils/windowFrame";
 import { publishChatFrame } from "../../../interactive/chatFrameState";
 import type { ChatFrame } from "../../../interactive/chatFrame";
 import type { ExtraComposerEntry } from "../../conversation/ComposerEntries.vue";
@@ -95,7 +96,8 @@ const storageKey = computed(
 );
 
 function viewportHeight(): number {
-  return typeof window === "undefined" ? 0 : window.innerHeight;
+  /* 可见内容区高度：透明留白窗里不再把 2*pad 算进可用高度 */
+  return typeof window === "undefined" ? 0 : contentViewport().height;
 }
 
 function effectiveHeight(value: number): number {

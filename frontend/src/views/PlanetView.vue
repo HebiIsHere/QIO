@@ -1679,6 +1679,10 @@ async function close() {
      overflow:clip 在视觉上同样裁切，但**不建立滚动容器**，因此横向滚动能力彻底不存在
      （验收硬条件：不是「藏起滚动条但内容还在左右滚」）。 */
   overflow: clip;
+  /* 只画在可见圆角窗内：planet-view 是 fixed 层，surface 的 overflow 裁不到它；
+     用 clip-path 而不是改 inset —— 星球转场数学用 offsetParent 链算布局坐标，
+     保持 inset:0 让链上的原点与 0.3.1 一致（球态/展开/收起对齐零风险）。 */
+  clip-path: inset(var(--window-frame-inset) round var(--window-radius));
   /* 入口小球自己的画布尺寸。球态（.ball）与收缩尾段（.tail）共用同一个值。
      2026-10-27：入口改成「与输入胶囊等高」的球（对话页星球入口直径 = --composer-pill-h = 54px）。
      球体在画布高度里占 88.7%（固定 FOV），所以画布 = 54 / 0.887 ≈ 61px，
@@ -1730,7 +1734,9 @@ async function close() {
    ====================================================================== */
 .planet-content {
   position: absolute;
-  inset: var(--titlebar-height) 0 0 0;
+  /* 内容层落在可见内容区内：留白内不排版任何控件（planet-view 本身仍 fixed inset:0，
+     保证星球转场用 offsetParent 链算出的布局原点=视口原点，球态/转场对齐不受影响） */
+  inset: var(--titlebar-height) var(--window-frame-inset) var(--window-frame-inset) var(--window-frame-inset);
   display: flex;
   flex-direction: column;
   /* 默认浏览态**不裁切**：球顶弧可以像基线一样伸到全局栏后面，美术与基线一致。

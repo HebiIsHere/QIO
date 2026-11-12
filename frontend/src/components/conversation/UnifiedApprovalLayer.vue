@@ -312,7 +312,7 @@ defineExpose({ openApprovals, retryAutoOpen });
 /* 顶部提示栈：与统一审批弹窗（z-index 200）分层，绝不抢层的交互；位置只在这里定义。 */
 .ua-notices {
   position: fixed;
-  top: calc(var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) + 40px);
+  top: calc(var(--qio-top-notes-offset, calc(var(--chrome-top) + 12px)) + 40px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 91;

@@ -1,6 +1,8 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-html,body{height:100%;}
-body{background:var(--bg-base);color:var(--text-primary);font-family:var(--sans);
+/* css 透明窗：窗口客户区最外层必须透明（留白区透出桌面）；实底画在 .window-frame__surface 上。
+   native/dwm 模式下留白/圆角归零，surface 铺满客户区，视觉与 0.3.1 等价。 */
+html,body{height:100%;background:transparent;}
+body{background:transparent;color:var(--text-primary);font-family:var(--sans);
   font-size:var(--fs-base);line-height:var(--lh-base);
   transition:background var(--dur-slow) var(--ease),color var(--dur-slow) var(--ease);}
 h1,h2,h3,.serif{font-family:var(--serif);}
@@ -10,6 +12,9 @@ h1,h2,h3,.serif{font-family:var(--serif);}
 :focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;border-radius:var(--r-xs);}
 
 /* ---- 跳到主操作：平时不可见，键盘聚焦时才出现（长页面/长列表的键盘通道） ---- */
+/* native 模式（decorations:true）：系统窗框已提供最小化/最大化/关闭，
+   DOM 再画一套会出现两套按钮且状态不同步 → 只隐藏按钮组，拖拽面与页面视觉保留。 */
+html[data-window-frame="native"] .window-controls{display:none;}
 .skip-link{
   position:fixed;left:12px;top:-48px;z-index:60;height:32px;padding:0 14px;
   display:inline-flex;align-items:center;border-radius:var(--r-md);
@@ -312,7 +317,8 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
   width:100%;max-width:420px;margin:var(--sp-4) auto 0;}
 /* 配对同宽 + 同高：所有动作按钮等分（2 个或 3 个都不会一个宽一个窄） */
 .qio-modal-actions > *{flex:1 1 0;min-width:0;max-width:200px;height:36px;}
-.qio-modal-scrim{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;
+.qio-modal-scrim{position:fixed;inset:var(--window-frame-inset);z-index:90;display:flex;align-items:center;justify-content:center;
+  border-radius:var(--window-radius);
   padding:var(--sp-6);
   /* 轻遮罩 + 轻模糊：仍能辨认原页面，不做成“另一个应用的黑屏” */
   background:color-mix(in srgb, var(--bg-base) 52%, transparent);
@@ -337,7 +343,8 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-confirm__actions{margin-top:var(--sp-3);}
 .qio-confirm--inline{border:1px solid var(--border-strong);border-radius:var(--qio-ui-radius);padding:var(--sp-3);background:var(--bg-inset);}
 .qio-confirm--popover,.qio-confirm--layer{padding:var(--sp-4);border-radius:var(--qio-ui-radius);}
-.qio-confirm-scrim{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
+.qio-confirm-scrim{position:fixed;inset:var(--window-frame-inset);z-index:80;display:flex;align-items:center;justify-content:center;
+  border-radius:var(--window-radius);
   padding:var(--sp-6);
   background:color-mix(in srgb, var(--bg-base) 52%, transparent);
   backdrop-filter:blur(calc(var(--glass-blur) * 0.4));

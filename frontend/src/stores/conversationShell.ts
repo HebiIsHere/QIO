@@ -10,6 +10,7 @@
  */
 import { defineStore } from "pinia";
 import { api } from "../services/api";
+import { contentViewport } from "../utils/windowFrame";
 import type { ConversationLayoutPrefs, TaskView } from "../conversation/contracts";
 import type { PreviewTabState } from "../conversation/previewTypes";
 import {
@@ -98,7 +99,7 @@ export const useConversationShellStore = defineStore("conversationShell", {
     installViewportTracking(): () => void {
       if (typeof window === "undefined") return () => undefined;
       const sync = () => {
-        this.viewportWidth = window.innerWidth || 1440;
+        this.viewportWidth = contentViewport().width || 1440;
       };
       sync();
       window.addEventListener("resize", sync, { passive: true });

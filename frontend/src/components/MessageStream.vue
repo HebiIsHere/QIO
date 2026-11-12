@@ -21,6 +21,7 @@ import TurnProcess from "./TurnProcess.vue";
 import ContinueBar from "./ContinueBar.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
+import { contentViewport } from "../utils/windowFrame";
 import { groupTurns, visibleIntentExecutionMessages, type StreamTurn } from "../stores/session";
 import {
   anchorOffsetOf,
@@ -596,7 +597,7 @@ function saveReadingPosition(el?: HTMLElement | null, options?: { allowDetached?
     messageCount: list.length,
     lastMessageId: last ? last.id : null,
     savedAt: Date.now(),
-    viewportWidth: typeof window !== "undefined" ? window.innerWidth : 0,
+    viewportWidth: typeof window !== "undefined" ? contentViewport().width : 0,
   };
   session.streamScrollTop = node.scrollTop;
   viewport.savePosition(base);

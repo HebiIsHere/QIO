@@ -61,6 +61,12 @@ vi.mock("../../services/desktop", () => ({
   ackCloseRequest: mocks.ack,
   syncCloseBehaviorToShell: mocks.syncBehavior,
   noteShellQuit: mocks.noteQuit,
+  /* 0.3.2 窗口通道：WindowChrome 会上报命中区、监听状态与 caption-hover */
+  setHitRegions: vi.fn(async () => true),
+  listenWindowState: vi.fn(async () => mocks.unlisten),
+  listenCaptionHover: vi.fn(async () => mocks.unlisten),
+  listenFrameReady: vi.fn(async () => mocks.unlisten),
+  getWindowFrame: vi.fn(async () => null),
 }));
 vi.mock("../../services/api", () => ({
   api: {

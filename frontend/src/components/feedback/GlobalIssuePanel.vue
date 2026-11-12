@@ -187,13 +187,13 @@ onBeforeUnmount(() => {
 <style scoped>
 .uf-issue-panel {
   position: fixed;
-  top: calc(var(--titlebar-height, 32px) + 8px);
-  right: 12px;
+  top: calc(var(--chrome-top, calc(var(--titlebar-height, 32px) + 12px)) + 8px);
+  right: calc(var(--window-frame-inset) + 12px);
   z-index: 198;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: min(440px, calc(100vw - 24px));
+  width: min(440px, calc(100vw - 2 * var(--window-frame-inset) - 24px));
   max-height: min(70vh, 560px);
   padding: 12px 14px 14px;
   border: 1px solid var(--border-strong);

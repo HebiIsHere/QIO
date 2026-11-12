@@ -19,6 +19,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
+import { contentRect } from "../../utils/windowFrame";
 import {
   cardById,
   createGroup,
@@ -160,7 +161,9 @@ const GAP = 8;
   看起来像「点了整理什么也没出现」。所以这里逐级向上取交集，不用「窗口高度减固定值」。
 */
 function clipBox(element: HTMLElement): { top: number; bottom: number; left: number; right: number } {
-  const box = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+  /* 初始可用框 = 可见内容区（窗口留白之外），再与所有裁剪祖先求交 */
+  const content = contentRect();
+  const box = { top: content.top, bottom: content.bottom, left: content.left, right: content.right };
   let node: HTMLElement | null = element.parentElement;
   while (node) {
     const style = getComputedStyle(node);

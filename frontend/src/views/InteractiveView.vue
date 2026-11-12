@@ -11,6 +11,7 @@
 import { vQioTip } from "../composables/useQioTip";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
+import { contentViewport } from "../utils/windowFrame";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
 import ConversationModeSwitch from "../components/conversation/ConversationModeSwitch.vue";
@@ -45,12 +46,12 @@ const bookmarksOpen = ref(false);
 const conversationMaxHeight = ref(
   typeof window === "undefined"
     ? 420
-    : Math.max(280, Math.min(720, window.innerHeight - 306)),
+    : Math.max(280, Math.min(720, contentViewport().height - 306)),
 );
 function syncConversationMaxHeight(): void {
   if (typeof window === "undefined") return;
   // 对话浮在板面上：最多长到仍露出约 220px 板面（70 全局栏 + 220 板面 + 16 边距）。
-  conversationMaxHeight.value = Math.max(280, Math.min(720, window.innerHeight - 306));
+  conversationMaxHeight.value = Math.max(280, Math.min(720, contentViewport().height - 306));
 }
 
 /* ------------------------------------------------------------------

@@ -613,7 +613,8 @@ async function finish() {
 <style scoped>
 .onboarding {
   position: fixed;
-  inset: 0;
+  inset: var(--window-frame-inset);
+  border-radius: var(--window-radius);
   z-index: 60;
   display: flex;
   align-items: center;

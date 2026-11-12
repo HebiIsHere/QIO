@@ -1193,7 +1193,9 @@ function retryKnowledgeDetail() {
 <style scoped>
 .ua-mask {
   position: fixed;
-  inset: 0;
+  /* 只覆盖可见内容区（圆角窗内），不铺到透明留白带/圆角外 */
+  inset: var(--window-frame-inset);
+  border-radius: var(--window-radius);
   z-index: 200;
   display: flex;
   align-items: center;
@@ -1209,7 +1211,7 @@ function retryKnowledgeDetail() {
 }
 .ua-modal {
   width: min(540px, 100%);
-  max-height: min(86vh, 720px);
+  max-height: min(calc(100vh - 2 * var(--window-frame-inset) - 48px), 720px);
   display: flex;
   flex-direction: column;
   gap: 10px;

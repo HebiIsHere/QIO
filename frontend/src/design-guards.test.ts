@@ -160,11 +160,42 @@ describe("无边框窗口契约", () => {
   const app = FILES.find((f) => f.path === "App.vue");
   const chrome = FILES.find((f) => f.path === "components/WindowChrome.vue");
 
-  it("tauri.conf.json：窗口无边框，且保留阴影（Win11 圆角与窗口边缘靠它）", () => {
-    const conf = readJson("src-tauri/tauri.conf.json");
-    const win = conf.app.windows[0];
-    expect(win.decorations).toBe(false);
-    expect(win.shadow).toBe(true);
+  /**
+   * 0.3.2：窗口由壳按 QIO_WINDOW_FRAME 程序化创建（css/native/dwm），
+   * tauri.conf.json 的静态窗口配置不再是唯一事实来源。以壳源码是否已具备该模式为分流点：
+   * 未落地的改造期保留旧配置断言（测试始终有真实断言，不空转）。
+   */
+  function rustSources(): string {
+    /* 0.3.2 壳把窗口层拆到 src-tauri/src/window_frame/ 子目录，必须递归收集 */
+    const root = resolve(process.cwd(), "src-tauri", "src");
+    let out = "";
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (name.endsWith(".rs")) out += readFileSync(full, "utf8");
+      }
+    };
+    walk(root);
+    return out;
+  }
+  const rust = rustSources();
+  const shellSupportsFrame = rust.includes("QIO_WINDOW_FRAME");
+
+  it("窗口创建按 QIO_WINDOW_FRAME 三模式（css/native/dwm）；css 模式透明且无系统阴影", () => {
+    if (!shellSupportsFrame) {
+      const conf = readJson("src-tauri/tauri.conf.json");
+      const win = conf.app.windows[0] ?? {};
+      expect(win.decorations).toBe(false);
+      expect(win.shadow).toBe(true);
+      return;
+    }
+    expect(rust).toContain("QIO_WINDOW_FRAME");
+    expect(rust).toMatch(/transparent/i);
+    expect(rust).toMatch(/decorations/i);
+    expect(rust).toMatch(/shadow/i);
+    // css 模式不请求系统圆角（圆角由 CSS 画，避免双层圆角/阴影）
+    expect(rust).toMatch(/DWMWCP_DONOTROUND|DWMWCP_DEFAULT/);
   });
 
   it("capabilities：拖拽与三个窗口按钮的权限一个都不能少", () => {
@@ -199,14 +230,17 @@ describe("无边框窗口契约", () => {
     // 默认位置必须让开标题条 —— 有人在这条上写死 12px，它就会重新被压住
     const notes = app!.text.match(/\.top-notes\s*\{[^}]*\}/);
     expect(notes, ".top-notes 样式块").toBeTruthy();
-    expect(notes![0]).toContain("var(--titlebar-height)");
+    // 0.3.2：顶部落点优先用组合令牌 --chrome-top（= 留白 + 标题条），
+    // 旧写法 --titlebar-height 仍然可接受（native/旧壳留白为 0）。
+    expect(notes![0]).toMatch(/var\(--chrome-top\)|var\(--titlebar-height\)/);
   });
 
   it("拖拽面在 WindowChrome 里，且按钮不在拖拽面内部", () => {
     expect(chrome).toBeTruthy();
     expect(chrome!.text).toContain("data-tauri-drag-region");
     // 按钮与拖拽面是兄弟：按钮长在拖拽面里，点击会被拖拽逻辑吃掉
-    expect(chrome!.text).toMatch(/<div class="drag-surface" data-tauri-drag-region[\s\S]*?<\/div>\s*<div v-if="inShell" class="window-controls">/);
+    // 0.3.2：拖拽面新增 ref（上报 titlebar 命中区），模板断言允许 class 前的其它属性
+    expect(chrome!.text).toMatch(/<div[^>]*class="drag-surface"[^>]*data-tauri-drag-region[\s\S]*?<\/div>\s*<div v-if="inShell" class="window-controls">/);
   });
 
   it("按钮容器不许铺满整条：否则整个拖拽面都被它盖住，窗口拖不动", () => {

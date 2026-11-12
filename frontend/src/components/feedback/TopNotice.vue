@@ -238,7 +238,7 @@ function onKeydown(event: KeyboardEvent): void {
 /* 窗口居中、全局栏下方；宽度自适应内容但不超过窄窗。 */
 .uf-notice {
   position: fixed;
-  top: calc(var(--titlebar-height, 32px) + 12px);
+  top: calc(var(--chrome-top, calc(var(--titlebar-height, 32px) + 12px)) + 12px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 196;
@@ -247,7 +247,7 @@ function onKeydown(event: KeyboardEvent): void {
   align-items: center;
   gap: 6px;
   width: max-content;
-  max-width: min(560px, calc(100vw - 24px));
+  max-width: min(560px, calc(100vw - 2 * var(--window-frame-inset) - 24px));
   min-height: 36px;
   padding: 5px 8px;
   border: 1px solid var(--border-subtle);

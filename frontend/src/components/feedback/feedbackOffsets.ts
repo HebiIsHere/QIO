@@ -11,6 +11,10 @@ export const FEEDBACK_TOP_GAP = 12;
 export function feedbackTopPx(extraGap = 0): number {
   if (typeof document === "undefined") return 0;
   const rootStyle = globalThis.getComputedStyle?.(document.documentElement);
+  /* 可见内容区留白（透明窗）：浮层落点从可见区顶算起，而不是从窗口客户区顶算起。
+     读不到 CSS 变量（jsdom / 0.3.1 旧壳）时按 0 —— 与改造前完全一致。 */
+  const insetRaw = Number.parseFloat(rootStyle?.getPropertyValue("--window-frame-inset") ?? "");
+  const inset = Number.isFinite(insetRaw) && insetRaw > 0 ? insetRaw : 0;
   const parsed = Number.parseFloat(rootStyle?.getPropertyValue("--titlebar-height") ?? "");
   const bar = Number.isFinite(parsed) && parsed > 0 ? parsed : 32;
   let notesHeight = 0;
@@ -19,5 +23,5 @@ export function feedbackTopPx(extraGap = 0): number {
     const rect = notes.getBoundingClientRect();
     notesHeight = Number.isFinite(rect.height) ? Math.max(0, Math.round(rect.height)) : 0;
   }
-  return bar + FEEDBACK_TOP_GAP + (notesHeight > 0 ? notesHeight + 8 : 0) + extraGap;
+  return inset + bar + FEEDBACK_TOP_GAP + (notesHeight > 0 ? notesHeight + 8 : 0) + extraGap;
 }

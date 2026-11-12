@@ -610,7 +610,9 @@ describe("放弃开发：列表滚动与窄窗口", () => {
     const src = SOURCE();
     expect(src).toMatch(/\.dev-task-row\s*\{[^}]*min-width:\s*0/s);
     expect(src).toMatch(/\.dev-task-list\s*\{[^}]*min-height:\s*0/s);
-    // 面板宽度跟随可用宽度，不写死
-    expect(src).toMatch(/width:\s*min\(560px,\s*calc\(100vw\s*-\s*32px\)\)/);
+    // 面板宽度跟随可见内容区宽度（0.3.2：再减去两侧透明留白），不写死
+    expect(src).toMatch(
+      /width:\s*min\(560px,\s*calc\(100vw\s*-\s*2\s*\*\s*var\(--window-frame-inset\)\s*-\s*32px\)\)/,
+    );
   });
 });

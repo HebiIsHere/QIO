@@ -732,7 +732,8 @@ onBeforeUnmount(() => {
 }
 .ic-scrim {
   position: fixed;
-  inset: 0;
+  inset: var(--window-frame-inset);
+  border-radius: var(--window-radius);
   z-index: calc(var(--im-z-dialog) + 30);
   display: flex;
   align-items: center;
@@ -750,7 +751,7 @@ onBeforeUnmount(() => {
   width: min(560px, 100%);
   /* 对话框本身不滚（clip 不建立滚动容器）：滚动收敛到正文一层（.ic-body），
      标题 / 说明 / 操作区固定在框内，再长的影响清单也藏不掉「取消 / 确认」。 */
-  max-height: min(84vh, 760px);
+  max-height: min(calc(100vh - 2 * var(--window-frame-inset) - 48px), 760px);
   overflow: clip;
   padding: var(--sp-4);
   color: var(--text-primary);

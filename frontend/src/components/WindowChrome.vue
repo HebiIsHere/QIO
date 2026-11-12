@@ -46,10 +46,17 @@ import { vQioTip } from "../composables/useQioTip";
 import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
 import {
   ackCloseRequest,
+  listenCaptionHover,
   listenShellEvent,
+  listenWindowState,
   noteShellQuit,
   requestClose,
+  setHitRegions,
+  type QioHitRegions,
+  type WindowRectPx,
 } from "../services/desktop";
+import { currentWindowFrameState } from "../composables/useWindowFrame";
+import { frameInsetPx, windowRadiusPx } from "../utils/windowFrame";
 
 /** @tauri-apps/api/window 里我们真正用到的那几个方法（只声明用到的部分，便于测试替身）。 */
 interface ShellWindow {
@@ -77,6 +84,15 @@ const ui = useUiStore();
 const askOpen = ref(false);
 const rememberChoice = ref(false);
 const busy = ref(false);
+
+/* ---- 0.3.2 命中区上报需要的 DOM（物理 px 几何从这里量） ---- */
+const chromeRoot = ref<HTMLElement | null>(null);
+const dragSurface = ref<HTMLElement | null>(null);
+const btnMin = ref<HTMLButtonElement | null>(null);
+const btnMax = ref<HTMLButtonElement | null>(null);
+const btnClose = ref<HTMLButtonElement | null>(null);
+/** max 按钮的 hover（overlay 覆盖后 DOM :hover 不触发，由 qio://caption-hover 驱动） */
+const maxHovered = ref(false);
 /**
  * 标题条操作的真实失败（可见、可重试、可取消）。
  *
@@ -119,6 +135,10 @@ let shell: ShellWindow | null = null;
 let unlisten: (() => void) | null = null;
 let unlistenClose: (() => void) | null = null;
 let unlistenTrayQuit: (() => void) | null = null;
+let unlistenWindowState: (() => void) | null = null;
+let unlistenCaptionHover: (() => void) | null = null;
+let chromeResizeObserver: ResizeObserver | null = null;
+let chromeMutationObserver: MutationObserver | null = null;
 let disposed = false;
 /** 进入对话页前 documentElement 上的内联标题条高度（离开时原样恢复）。 */
 let previousTitlebarHeight: string | null = null;
@@ -177,7 +197,28 @@ function applyGlobalBarChrome(on: boolean) {
   previousTitlebarPriority = "";
 }
 
-watch(hasGlobalBar, (value) => applyGlobalBarChrome(value), { immediate: true });
+watch(
+  hasGlobalBar,
+  (value) => {
+    applyGlobalBarChrome(value);
+    /* 标题条高度 32↔70 会改变拖拽面与按钮矩形：布局落地后重新上报 */
+    void nextTick(() => scheduleHitRegions());
+  },
+  { immediate: true },
+);
+/* 路由切换会改变全局栏控件（设置/权限/异常/互动挂载点）：洞的矩形跟着变 */
+watch(
+  () => router.currentRoute.value.fullPath,
+  () => {
+    void nextTick(() => scheduleHitRegions());
+  },
+);
+watch(
+  isInteractive,
+  () => {
+    void nextTick(() => scheduleHitRegions());
+  },
+);
 
 // ── R9 §11：关闭请求 / ask 确认框（壳负责真正的关闭行为，这里只做 UI）─────────────
 
@@ -421,6 +462,98 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+/* ------------------------------------------------------------------
+ * 0.3.2 窗口命中区上报（全部物理 px、窗口客户区坐标 = rect * devicePixelRatio）
+ *
+ * 为什么必须上报：css/dwm 模式的标题栏上盖了原生 overlay 子窗。
+ * - maxButton → 壳返回 HTMAXBUTTON（Win11 Snap Layouts），点击由壳 toggle；
+ * - titlebar → HTCAPTION（系统拖动/Aero Snap/双击最大化）；
+ * - 其余可点控件（设置 / 权限模式 / 异常入口 / 互动挂载点 / min / close）必须作为
+ *   interactive 洞上报，否则会被 HTCAPTION 吃掉点击。
+ *
+ * 时机：mount / resize / onResized / 标题条高度切换（32↔70）/ 路由切换 / qio://window-state
+ * 事件后 rAF 合并；区域的坐标每次都重新量，不缓存。
+ * ------------------------------------------------------------------ */
+let hitRaf = 0;
+let lastHitJson = "";
+
+function reportHitRegions(): void {
+  if (!inShell.value) return;
+  const dpr = window.devicePixelRatio || 1;
+  const frame = currentWindowFrameState();
+  const zeroed =
+    frame.frame === "native" || frame.frame === "dwm" || frame.state !== "normal";
+  const paddingCss = zeroed ? 0 : frameInsetPx();
+  const radiusCss = zeroed ? 0 : windowRadiusPx();
+  const visibleRect = (el: Element | null): WindowRectPx | null => {
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: Math.round(rect.left * dpr),
+      y: Math.round(rect.top * dpr),
+      w: Math.round(rect.width * dpr),
+      h: Math.round(rect.height * dpr),
+    };
+  };
+  const collectHoles = (): WindowRectPx[] => {
+    const root = chromeRoot.value;
+    if (!root) return [];
+    /* 这些控件必须保持 WebView 可点；max 单独走 maxButton，不重复上报 */
+    const nodes = root.querySelectorAll<HTMLElement>(
+      ".chrome-actions .chrome-btn, .chrome-mode, .uf-issue-entry, #qio-interactive-chrome-extra",
+    );
+    const holes: WindowRectPx[] = [];
+    for (const node of Array.from(nodes)) {
+      const rect = visibleRect(node);
+      if (rect) holes.push(rect);
+    }
+    return holes;
+  };
+  const nativeFrame = frame.frame === "native";
+  const regions: QioHitRegions = {
+    dpr,
+    framePadding: Math.round(paddingCss * dpr),
+    radius: Math.round(radiusCss * dpr),
+    cornerRadius: Math.round(radiusCss * dpr),
+    /* 可见边缘内 8 物理 px 八方向缩放（仅 css + normal；其余模式交给系统/tao） */
+    resizeBorder: frame.frame === "css" && frame.state === "normal" ? 8 : 0,
+    state: frame.state,
+    /* native 模式由系统窗框提供标题条/三键：不上报自绘命中，避免双层处理 */
+    titlebar: nativeFrame ? null : visibleRect(dragSurface.value),
+    maxButton: nativeFrame ? null : visibleRect(btnMax.value),
+    otherButtons: nativeFrame
+      ? []
+      : [visibleRect(btnMin.value), visibleRect(btnClose.value)].filter(
+          (rect): rect is WindowRectPx => rect !== null,
+        ),
+    interactive: collectHoles(),
+  };
+  const json = JSON.stringify(regions);
+  if (json === lastHitJson) return;
+  lastHitJson = json;
+  void setHitRegions(regions);
+}
+
+function scheduleHitRegions(): void {
+  if (typeof window === "undefined") return;
+  /* jsdom/无 rAF 环境退回 setTimeout：上报是纯增强，不能因为没有 rAF 就抛错 */
+  const hasRaf = typeof window.requestAnimationFrame === "function";
+  if (hitRaf) {
+    if (hasRaf && typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(hitRaf);
+    else window.clearTimeout(hitRaf);
+  }
+  hitRaf = hasRaf
+    ? window.requestAnimationFrame(() => {
+        hitRaf = 0;
+        reportHitRegions();
+      })
+    : (window.setTimeout(() => {
+        hitRaf = 0;
+        reportHitRegions();
+      }, 0) as unknown as number);
+}
+
 onMounted(async () => {
   if (!tauriInternals()) return;
   try {
@@ -431,7 +564,11 @@ onMounted(async () => {
     inShell.value = true;
     await syncMaximized();
     // 拖边缩放、Win+方向键、双击标题条都可能改变最大化状态：跟着系统走
-    unlisten = await win.onResized(() => void syncMaximized());
+    unlisten = await win.onResized(() => {
+      void syncMaximized();
+      /* 拖边缩放 / Win+方向 / 双击标题条都会改变命中区 */
+      scheduleHitRegions();
+    });
     if (disposed) {
       unlisten?.();
       unlisten = null;
@@ -452,6 +589,31 @@ onMounted(async () => {
         console.warn("[qio] 退出时断开事件流失败（不影响壳侧退出）", err);
       }
     });
+    /* 窗口状态 / hover 通道（旧壳/浏览器里静默降级为空取消函数） */
+    unlistenWindowState = await listenWindowState(() => {
+      /* CSS 令牌由 useWindowFrame 更新；这里只重新量命中区并清掉可能残留的 hover */
+      maxHovered.value = false;
+      scheduleHitRegions();
+    });
+    unlistenCaptionHover = await listenCaptionHover((payload) => {
+      if (payload.target === "max") maxHovered.value = Boolean(payload.hover);
+    });
+    /* 布局变化（resize / 全局栏控件出现/消失）后重新上报；变化都合并到同一帧 */
+    window.addEventListener("resize", scheduleHitRegions);
+    if (typeof ResizeObserver === "function" && chromeRoot.value) {
+      chromeResizeObserver = new ResizeObserver(() => scheduleHitRegions());
+      chromeResizeObserver.observe(chromeRoot.value);
+    }
+    if (typeof MutationObserver === "function" && chromeRoot.value) {
+      chromeMutationObserver = new MutationObserver(() => scheduleHitRegions());
+      chromeMutationObserver.observe(chromeRoot.value, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden"],
+      });
+    }
+    scheduleHitRegions();
     window.addEventListener("keydown", onKeydown, true);
   } catch (err) {
     console.error("[qio] 窗口标题条初始化失败", err);
@@ -469,6 +631,17 @@ onBeforeUnmount(() => {
   unlistenClose = null;
   unlistenTrayQuit?.();
   unlistenTrayQuit = null;
+  unlistenWindowState?.();
+  unlistenWindowState = null;
+  unlistenCaptionHover?.();
+  unlistenCaptionHover = null;
+  chromeResizeObserver?.disconnect();
+  chromeResizeObserver = null;
+  chromeMutationObserver?.disconnect();
+  chromeMutationObserver = null;
+  if (hitRaf) window.cancelAnimationFrame(hitRaf);
+  hitRaf = 0;
+  window.removeEventListener("resize", scheduleHitRegions);
   window.removeEventListener("keydown", onKeydown, true);
   if (askOpen.value) leaveCloseAsk();
   shell = null;
@@ -478,13 +651,15 @@ onBeforeUnmount(() => {
 
 <template>
   <div
+    ref="chromeRoot"
     class="window-chrome"
     :class="{ 'conversation-bar': hasGlobalBar, 'interactive-bar': isInteractive }"
   >
     <!-- 拖拽面：双击由 Tauri 内置逻辑转成「最大化/还原」 -->
-    <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
+    <div ref="dragSurface" class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
     <div v-if="inShell" class="window-controls">
       <button
+        ref="btnMin"
         class="wc-btn"
         type="button"
         aria-label="最小化"
@@ -494,7 +669,9 @@ onBeforeUnmount(() => {
         <QIcon name="window-minimize" :size="12" />
       </button>
       <button
+        ref="btnMax"
         class="wc-btn"
+        :class="{ 'is-hover': maxHovered }"
         type="button"
         :aria-label="maximized ? '向下还原' : '最大化'"
         v-qio-tip="maximized ? '把窗口还原到原来的大小' : '把窗口最大化（也可以双击标题条）'"
@@ -504,6 +681,7 @@ onBeforeUnmount(() => {
       </button>
       <!-- R9 §11：发窗口关闭请求，由壳按 ui.close_behavior 执行（ask 才回来弹框） -->
       <button
+        ref="btnClose"
         class="wc-btn wc-close"
         type="button"
         aria-label="关闭"
@@ -658,9 +836,10 @@ onBeforeUnmount(() => {
    模态开着也应该能拖窗口、能关窗口。 */
 .window-chrome {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
+  /* 窗口层：贴可见内容区（透明留白之外），最大化/贴靠/native/dwm 时 inset=0 */
+  top: var(--window-frame-inset);
+  left: var(--window-frame-inset);
+  right: var(--window-frame-inset);
   height: var(--titlebar-height);
   z-index: 240;
   user-select: none;
@@ -707,7 +886,10 @@ onBeforeUnmount(() => {
   stroke-width: 1.1;
   stroke-linecap: round;
 }
-.wc-btn:hover {
+/* :hover 与壳事件驱动二选一：css 模式 max 按钮被原生 overlay 覆盖时 DOM:hover 不触发，
+   由 qio://caption-hover 给 .is-hover 补同一份视觉。 */
+.wc-btn:hover,
+.wc-btn.is-hover {
   background: var(--layer-hover);
   color: var(--text-strong);
 }
@@ -719,7 +901,8 @@ onBeforeUnmount(() => {
   outline-offset: -2px;
 }
 .wc-close:hover,
-.wc-close:active {
+.wc-close:active,
+.wc-close.is-hover {
   background: var(--danger-soft);
   color: var(--danger);
 }
@@ -848,9 +1031,9 @@ onBeforeUnmount(() => {
  * 浏览器里只留真实可用的设置入口（不画点了没反应的窗口按钮）。
  */
 .window-chrome.conversation-bar {
-  top: 8px;
-  left: 8px;
-  right: 8px;
+  top: calc(var(--window-frame-inset) + 8px);
+  left: calc(var(--window-frame-inset) + 8px);
+  right: calc(var(--window-frame-inset) + 8px);
   height: 52px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xl);
@@ -992,7 +1175,8 @@ onBeforeUnmount(() => {
 /* 关闭确认框：盖住整个窗口（fixed 相对视口），轻遮罩 + 轻模糊；比标题条自身再高一层。 */
 .close-ask-scrim {
   position: fixed;
-  inset: 0;
+  inset: var(--window-frame-inset);
+  border-radius: var(--window-radius);
   z-index: 2;
   display: flex;
   align-items: center;
@@ -1110,14 +1294,14 @@ onBeforeUnmount(() => {
 /* ---- 标题条操作的可见失败：原因 + 真实重试 + 取消 ---- */
 .chrome-failure {
   position: fixed;
-  top: calc(var(--titlebar-height) + 10px);
+  top: calc(var(--chrome-top) + 10px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 2;
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: min(600px, calc(100vw - 32px));
+  max-width: min(600px, calc(100vw - 2 * var(--window-frame-inset) - 32px));
   padding: 8px 12px;
   border: 1px solid var(--border-danger);
   border-radius: var(--qio-ui-radius);
@@ -1150,7 +1334,7 @@ onBeforeUnmount(() => {
 .close-busy {
   position: fixed;
   left: 50%;
-  bottom: 24px;
+  bottom: calc(var(--window-frame-inset) + 24px);
   transform: translateX(-50%);
   z-index: 2;
   display: inline-flex;

@@ -20,6 +20,9 @@ export interface AnchorRectLike {
 export interface ViewportSize {
   width: number;
   height: number;
+  /** 视口矩形左上角在 fixed 坐标系中的位置；透明留白窗里 = 可见内容区 inset（默认 0 = 旧行为）。 */
+  left?: number;
+  top?: number;
 }
 
 export interface ChromePopoverOptions {
@@ -70,19 +73,23 @@ export function placeChromePopover(
   const maxWidth = nonNegative(options.maxWidth, CHROME_SEARCH_MAX_WIDTH);
   const viewportWidth = Math.max(0, finite(viewport.width));
   const viewportHeight = Math.max(0, finite(viewport.height));
+  /* 可见内容区原点：全部钳制都相对它，右/下边界也用它换算（0 = 普通视口，行为不变）。 */
+  const originLeft = Math.max(0, finite(viewport.left));
+  const originTop = Math.max(0, finite(viewport.top));
 
   const width = Math.max(0, Math.min(desiredWidth, maxWidth, viewportWidth - margin * 2));
   const anchorRight = finite(anchor.right) || finite(anchor.left) + finite(anchor.width);
   const anchorBottom = finite(anchor.bottom) || finite(anchor.top) + finite(anchor.height);
 
-  const minLeft = margin;
-  const maxLeft = Math.max(minLeft, viewportWidth - margin - width);
+  const minLeft = originLeft + margin;
+  const maxLeft = Math.max(minLeft, originLeft + viewportWidth - margin - width);
   const left = Math.min(Math.max(anchorRight - width, minLeft), maxLeft);
+  const minTop = originTop + margin;
   const top = Math.min(
-    Math.max(anchorBottom + gap, margin),
-    Math.max(margin, viewportHeight - margin),
+    Math.max(anchorBottom + gap, minTop),
+    Math.max(minTop, originTop + viewportHeight - margin),
   );
-  const maxHeight = Math.max(0, viewportHeight - margin - top);
+  const maxHeight = Math.max(0, originTop + viewportHeight - margin - top);
 
   return { left, top, width, maxHeight };
 }

@@ -340,10 +340,11 @@ async function resume(task: DevTaskRow) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: calc(100vh - var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) - var(--dev-panel-reserve));
+  /* 100vh/100dvh 都含透明留白带：减 2*inset 才是可见内容区高度（留白为 0 时与旧值一致） */
+  max-height: calc(100vh - 2 * var(--window-frame-inset) - var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) - var(--dev-panel-reserve));
   /* 动态视口高度更贴合真机（地址栏/工具栏收起时不再被裁掉）；旧内核落到上一行 */
-  max-height: max(180px, calc(100dvh - var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) - var(--dev-panel-reserve)));
-  width: min(560px, calc(100vw - 32px));
+  max-height: max(180px, calc(100dvh - 2 * var(--window-frame-inset) - var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) - var(--dev-panel-reserve)));
+  width: min(560px, calc(100vw - 2 * var(--window-frame-inset) - 32px));
   padding: 10px 14px; border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-elevated); border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-2); pointer-events: auto;

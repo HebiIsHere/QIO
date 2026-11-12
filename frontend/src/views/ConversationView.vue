@@ -619,7 +619,9 @@ onBeforeUnmount(() => {
 .conversation-workspace::before {
   content: "";
   position: fixed;
-  inset: 0;
+  /* 背景层只画在可见内容区（含圆角），不再把透明留白带染色 */
+  inset: var(--window-frame-inset);
+  border-radius: var(--window-radius);
   z-index: -1;
   pointer-events: none;
   background:

@@ -78,9 +78,10 @@ const float = anchored.value
       // 球会既看不见也点不到（用户看到的是「星球没办法进行移动」）。
       avoidSelectors: FLOAT_AVOID_SELECTORS,
       // 非锚定模式（其他页面）保持原浮动行为：默认右下角、可拖动。
+      // vp 是可见内容视口（不含透明留白）；inset 加回应，右下角距可见边仍是 26/24px
       defaultPos: (el, vp) => ({
-        x: vp.width - 26 - (el.offsetWidth || 96),
-        y: vp.height - 24 - (el.offsetHeight || 96),
+        x: (vp.inset ?? 0) + vp.width - 26 - (el.offsetWidth || 96),
+        y: (vp.inset ?? 0) + vp.height - 24 - (el.offsetHeight || 96),
       }),
     });
 

@@ -132,19 +132,28 @@ export function setTipPosition(position: TipPosition | null): void {
 export function computeTipPosition(
   anchor: TipAnchorRect,
   tipSize: { width: number; height: number },
-  viewport: { width: number; height: number },
+  viewport: { width: number; height: number; left?: number; top?: number },
 ): TipPosition {
   const margin = TIP_VIEWPORT_MARGIN_PX;
   const gap = TIP_GAP_PX;
-  const spaceBelow = viewport.height - anchor.bottom;
-  const spaceAbove = anchor.top;
+  /* 可见内容区原点（透明留白窗里 = inset；0 = 旧视口行为）。 */
+  const originLeft = Math.max(0, Number(viewport.left) || 0);
+  const originTop = Math.max(0, Number(viewport.top) || 0);
+  const spaceBelow = originTop + viewport.height - anchor.bottom;
+  const spaceAbove = anchor.top - originTop;
   const fitsBelow = spaceBelow >= tipSize.height + gap + margin;
   const fitsAbove = spaceAbove >= tipSize.height + gap + margin;
   const placeBelow = fitsBelow || !fitsAbove;
   const rawTop = placeBelow ? anchor.bottom + gap : anchor.top - gap - tipSize.height;
-  const top = Math.max(margin, Math.min(rawTop, viewport.height - tipSize.height - margin));
+  const top = Math.max(
+    originTop + margin,
+    Math.min(rawTop, originTop + viewport.height - tipSize.height - margin),
+  );
   const rawLeft = anchor.left + anchor.width / 2 - tipSize.width / 2;
-  const left = Math.max(margin, Math.min(rawLeft, Math.max(margin, viewport.width - tipSize.width - margin)));
+  const left = Math.max(
+    originLeft + margin,
+    Math.min(rawLeft, Math.max(originLeft + margin, originLeft + viewport.width - tipSize.width - margin)),
+  );
   return { top: Math.round(top), left: Math.round(left), placement: placeBelow ? "bottom" : "top" };
 }
 

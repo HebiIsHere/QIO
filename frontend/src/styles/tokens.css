@@ -30,6 +30,16 @@
      唯一事实来源 —— 组件用 CSS 读它，需要像素数的 JS（浮动组件默认位置）走
      utils/titlebar.ts 的 titlebarHeight() 也读同一个值，不允许各自写死一个 32。 */
   --titlebar-height:32px;
+  /* ---- 窗口外框（0.3.2 透明留白 + CSS 20px 圆角）----
+     几何事实：窗口客户区 = 透明留白带（--window-frame-pad）+ 可见圆角窗（--window-radius）。
+     全窗 fixed 层、顶部锚定层、需要像素数的 JS 一律读下面三个令牌；
+     留白与阴影预算：28px pad + soft·A（spike 实测边界残余 alpha 0.39%，见 0.3.2 接入方案）。 */
+  --window-frame-pad: 28px;
+  --window-radius: 20px;
+  --window-frame-inset: var(--window-frame-pad);
+  --window-shadow: 0 5px 20px rgba(0, 0, 0, .40), 0 1px 4px rgba(0, 0, 0, .28);
+  /* 顶部锚定/全局栏的组合落点：留白 + 标题条（组件不要各写一份 inset+titlebar） */
+  --chrome-top: calc(var(--window-frame-inset) + var(--titlebar-height));
   /* 间距 / 圆角 */
   --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px;
   --r-xs:6px; --r-sm:8px; --r-md:10px; --r-lg:14px; --r-xl:20px; --r-pill:999px;
@@ -133,6 +143,8 @@
 :root[data-theme="light"] {
   --bg-base:#fcfcfb; --bg-surface:#ffffff; --bg-elevated:#ffffff; --bg-inset:#f3f3f1;
   --border-subtle:#e7e7e4; --border-strong:#cbcbc6;
+  /* 亮色主题：窗口阴影 alpha x0.5（几何/留白预算不变），颜色用本主题的近黑 */
+  --window-shadow: 0 5px 20px rgba(20, 16, 24, .20), 0 1px 4px rgba(20, 16, 24, .15);
   --text-strong:#201f1d; --text-primary:#30302d; --text-secondary:#5f5e59;
   /* faint 是纯装饰级文字，仍要过 3:1：#94938e 实测 2.99:1，压深一档到 3.19:1 */
   --text-muted:#75736c; --text-faint:#8f8e89;
@@ -172,4 +184,18 @@
   --bg-accent-subtle:#fbeaf4; --accent-veil:rgba(197,27,125,.55); --accent-softer:rgba(197,27,125,.2);
   --border-danger:#c33a3a; --success-soft:rgba(31,125,84,.15); --danger-soft:rgba(195,58,58,.15); --warning-soft:rgba(138,106,31,.15);
   --approve-bg:#2a6e4f; --reject-bg:#6e2a2a;
+}
+
+/* ---- 窗口模式 / 三态：留白、圆角、自绘阴影归零 ----
+   native：decorations:true（系统窗框/系统阴影）；dwm：0.3.1 现状对照（不透明窗 + DWM 圆角）。
+   maximized/snapped：内容铺满可见区，禁止残留 28px 透明带、20px 圆角与 CSS 阴影。
+   只由 composables/useWindowFrame.ts 根据壳事件写 <html data-window-frame / data-window-state>。 */
+:root[data-window-frame="native"],
+:root[data-window-frame="dwm"],
+:root[data-window-state="maximized"],
+:root[data-window-state="snapped"] {
+  --window-frame-pad: 0px;
+  --window-frame-inset: 0px;
+  --window-radius: 0px;
+  --window-shadow: none;
 }

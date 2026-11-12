@@ -37,7 +37,10 @@ describe("星球页：内容区域在全局栏下方（契约 §3.1）", () => {
   it("新增 .planet-content 一层：绝对定位在标题条之下", () => {
     const body = ruleBody(PLANET, ".planet-content");
     expect(body).toContain("position: absolute");
-    expect(body).toContain("inset: var(--titlebar-height) 0 0 0");
+    // 0.3.2：内容层同时内缩到可见内容区（透明留白之外），标题条高度仍是顶部让位
+    expect(body).toContain(
+      "inset: var(--titlebar-height) var(--window-frame-inset) var(--window-frame-inset) var(--window-frame-inset)",
+    );
   });
 
   it("整层仍是 fixed + overflow: clip（不建立可被程序性滚动的容器）", () => {

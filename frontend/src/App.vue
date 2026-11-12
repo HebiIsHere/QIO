@@ -16,6 +16,14 @@ import GlobalFeedbackHost from "./components/feedback/GlobalFeedbackHost.vue";
 import BootStatus from "./components/BootStatus.vue";
 import SetupIncompleteNotice from "./components/onboarding/SetupIncompleteNotice.vue";
 import { waitForBackend } from "./services/boot";
+import { useWindowFrame } from "./composables/useWindowFrame";
+
+/**
+ * 窗口外框（0.3.2）：透明留白 + 20px 圆角 + 亮暗两套阴影；最大化/贴靠归零。
+ * 必须在 setup 阶段就订阅壳状态通道（首屏 get + qio://window-state），
+ * 否则 BootStatus 期间窗口已经是透明留白，data-window-* 却要等后端就绪才可能被写。
+ */
+useWindowFrame();
 
 const events = useEventStore();
 const ui = useUiStore();
@@ -98,7 +106,12 @@ onUnmounted(stopTicker);
 </script>
 
 <template>
-  <div class="app-shell">
+  <!-- 窗口外框：外层 fixed 铺满客户区，留白区透明（透出桌面/阴影带）；
+       内层 surface 才有实底、20px 圆角与自绘阴影，并裁切所有非 fixed 内容。
+       native/dwm 模式与最大化/贴靠时 --window-frame-pad/--window-radius 归零（见 tokens.css）。 -->
+  <div class="window-frame">
+    <div class="window-frame__surface">
+      <div class="app-shell">
     <!-- 无边框窗口的自定义标题条：系统页眉没了，可拖拽与三个窗口按钮由它补上。
          它是 fixed 的窗口层，所以这里用 padding-top 把页面内容整体让下去一个条高，
          而不是靠浮在上面 —— 否则顶部那一条里的控件会「看得见、点不到」。 -->
@@ -138,6 +151,8 @@ onUnmounted(stopTicker);
     <GlobalFeedbackHost />
     <!-- 初始设置未完成的一次性中性提醒：只有真正显示过才记为已提醒（Lead 挂一次） -->
     <SetupIncompleteNotice />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -145,11 +160,36 @@ onUnmounted(stopTicker);
 :root {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color: var(--text-primary);
-  background: var(--bg-base);
+  /* 透明窗：最外层不能有实底（实底在 .window-frame__surface） */
+  background: transparent;
 }
 * { box-sizing: border-box; }
-body { margin: 0; }
-.app-shell { width: 100vw; height: 100vh; overflow: hidden; padding-top: var(--titlebar-height); }
+body { margin: 0; background: transparent; }
+/*
+ * 窗口外框（0.3.2，唯一一份窗口级几何）：
+ * - 外层铺满 WebView 客户区，只负责透明留白；pointer-events:none 让留白带不拦截点击
+ *   （留白处的桌面连接/穿透由壳处理，网页层不额外捕获）。
+ * - surface 是唯一实底/圆角/阴影来源；overflow:hidden 只裁普通内容，
+ *   不影响 fixed 后代（没有 transform/filter/contain，不创建包含块）。
+ */
+.window-frame {
+  position: fixed;
+  inset: 0;
+  padding: var(--window-frame-pad);
+  pointer-events: none;
+}
+.window-frame__surface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--window-radius);
+  background: var(--bg-base);
+  box-shadow: var(--window-shadow);
+  overflow: hidden;
+  pointer-events: auto;
+}
+/* 页面内容相对 surface 铺满；标题条是 fixed 窗口层，这里用 padding-top 让出一条 */
+.app-shell { width: 100%; height: 100%; overflow: hidden; padding-top: var(--titlebar-height); }
 /*
  * 顶部居中的提示条（待确认的审批 / 上次没执行的操作 / 没做完的开发任务）。
  * 容器 shrink-to-fit，空白区域不挡下面页面的点击。
@@ -158,9 +198,9 @@ body { margin: 0; }
   /* 顶部有「还没设置完」横幅时，对话页会把这条浮层让到横幅下面（见 ConversationView）；
      没有横幅时默认落在自定义标题条下方一个边距 —— 标题条是窗口层（z-index 240），
      比这里的 190 高，压在它底下会「看得见、点不到」。 */
-  position: fixed; top: var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)); left: 50%; transform: translateX(-50%);
+  position: fixed; top: var(--qio-top-notes-offset, calc(var(--chrome-top) + 12px)); left: 50%; transform: translateX(-50%);
   z-index: 190; display: flex; flex-direction: column; align-items: center; gap: 8px;
-  max-width: min(560px, calc(100vw - 32px));
+  max-width: min(560px, calc(100vw - 2 * var(--window-frame-inset) - 32px));
   pointer-events: none;
 }
 </style>

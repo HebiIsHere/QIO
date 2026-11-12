@@ -18,7 +18,8 @@
 <style scoped>
 .planet-boot {
   position: fixed;
-  inset: 0;
+  inset: var(--window-frame-inset);
+  border-radius: var(--window-radius);
   z-index: 50;
   display: flex;
   align-items: flex-end;

@@ -308,7 +308,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .restore-scrim {
   position: fixed;
-  inset: 0;
+  inset: var(--window-frame-inset);
+  border-radius: var(--window-radius);
   z-index: 210;
   display: flex;
   align-items: center;
@@ -321,7 +322,7 @@ onBeforeUnmount(() => {
 /* 居中对称；只在这一层纵向滚动（条目多时不把按钮挤出屏幕）。 */
 .restore-dialog {
   width: min(560px, 100%);
-  max-height: min(80vh, 720px);
+  max-height: min(calc(100vh - 2 * var(--window-frame-inset) - 48px), 720px);
   display: flex;
   flex-direction: column;
   gap: 10px;

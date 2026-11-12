@@ -323,7 +323,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--sp-2);
   width: min(var(--qio-modal-width, 480px), 100%);
-  max-height: calc(100vh - 2 * var(--sp-6));
+  max-height: calc(100vh - 2 * var(--window-frame-inset) - 2 * var(--sp-6));
   padding: var(--sp-5) var(--sp-5) var(--sp-4);
   border-radius: var(--qio-ui-radius);
   color: var(--text-primary);
@@ -342,7 +342,7 @@ onBeforeUnmount(() => {
 @media (max-width: 480px) {
   .qio-modal {
     padding: var(--sp-4);
-    max-height: calc(100vh - 2 * var(--sp-4));
+    max-height: calc(100vh - 2 * var(--window-frame-inset) - 2 * var(--sp-4));
   }
 }
 </style>
