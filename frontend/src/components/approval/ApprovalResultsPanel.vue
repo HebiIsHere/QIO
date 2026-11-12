@@ -223,16 +223,20 @@ onMounted(() => {
       </li>
     </ul>
 
-    <!-- 空态：只有在「历史确实读成功」时才说没有记录 -->
+    <!-- 文案 8：空态只写「暂无审批结果」；只有在「历史确实读成功」时才说没有记录 -->
     <p
       v-else-if="!historyFailed && !results.historyLoading"
       class="ar-empty"
       data-test="approval-results-empty"
-    >
-      还没有审批结果。批准或拒绝的申请完成后会在这里留下记录（来自后端历史，刷新后仍可查看）。
-    </p>
+    >暂无审批结果</p>
 
     <footer class="ar-foot">
+      <!-- #56：计数来自历史查询本身（history 行），不用实时事件条数冒充 -->
+      <span
+        v-if="!historyFailed && results.historyLoadedAt !== null"
+        class="ar-hint mono"
+        data-test="approval-history-count"
+      >审批历史 {{ results.history.length }} 条</span>
       <span class="ar-hint">结果与历史是只读记录；这里不能批准或拒绝任何申请。</span>
       <button class="ar-btn" type="button" :disabled="results.historyLoading" @click="reloadHistory">
         刷新历史

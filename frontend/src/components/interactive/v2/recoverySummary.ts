@@ -79,9 +79,9 @@ export const RECOVERY_ENTRY_TEXT = {
   hint: "保存失败、草稿冲突、受理不明、需要恢复的意图与自动重试用尽都在这里处理",
 } as const;
 
-/** 面板空态：没有事项时明确说「没有」，而不是留一片空白。 */
+/** 面板空态（文案 11）：没有可恢复的任务时只写这一句，不附加解释。 */
 export function recoveryEmptyText(): string {
-  return "现在没有需要恢复或收尾的事项。";
+  return "暂无可恢复的任务";
 }
 /** 恢复事项的种类（身份前缀就是它，保证同一事项在刷新后仍是同一个 id）。 */
 export type RecoveryItemKind =

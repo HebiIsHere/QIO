@@ -120,7 +120,8 @@ describe("F03 任务入口：真实界面 + 准确空态", () => {
     await byIm(wrapper, "tasks-entry")[0].trigger("click");
     await flushPromises();
     expect(byIm(wrapper, "task-center").length, "任务入口必须打开真实面板（基线只切开关）").toBe(1);
-    expect(textOf(wrapper, "task-empty")).toContain("没有");
+    // PM-QIO032 #18：空任务只显示「暂无任务」（文案口径变化，行为不变）
+    expect(textOf(wrapper, "task-empty")).toBe("暂无任务");
     // 面板自己会重新核实服务端事实
     expect(mocks.api.fetchIntentViews.mock.calls.length).toBeGreaterThanOrEqual(2);
     wrapper.unmount();
