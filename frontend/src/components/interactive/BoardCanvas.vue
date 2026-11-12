@@ -110,6 +110,7 @@ import {
   GROUP_PAD_X,
   CARD_ANCHOR_GAP,
   cardEdgeAnchors,
+  endpointCardName,
   groupEdgeAnchors,
   parseEndpoint,
   type CardAnchor,
@@ -3063,12 +3064,30 @@ const editingLink = computed(() => {
   return current.links.find((link) => link.id === editingLinkId.value) ?? null;
 });
 
+/**
+ * #09：关系编辑框里的两端名字 —— 用户命名 > 真实文件名 > 正文首行；
+ * 组端点用组名。空正文不拿占位文案冒充端点名。
+ */
+function linkEndpointSummary(raw: string): string {
+  const current = boardState.value;
+  if (!current) return "（卡片）";
+  const parsed = parseEndpoint(raw);
+  if (!parsed.ok) return "（已失效的端点）";
+  if (parsed.endpoint.kind === "group") {
+    const group = current.groups.find((item) => item.id === parsed.endpoint.id && !item.deleted);
+    return "组「" + (group?.name || "未命名组") + "」";
+  }
+  const card = cardById(current, parsed.endpoint.id);
+  if (!card || card.deleted) return "（已删除的卡片）";
+  const name = endpointCardName(card);
+  return name || cardSummary(card);
+}
+
 const editingLinkSummary = computed(() => {
   const link = editingLink.value;
-  const current = boardState.value;
-  if (!link || !current) return "";
-  const src = cardSummary(cardById(current, link.src));
-  const dst = cardSummary(cardById(current, link.dst));
+  if (!link) return "";
+  const src = linkEndpointSummary(link.src);
+  const dst = linkEndpointSummary(link.dst);
   return linkDirection.value ? src + " → " + dst + "（方向由你标注）" : src + " ↔ " + dst + "（无方向）";
 });
 
