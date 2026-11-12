@@ -15,6 +15,7 @@ import { flushPromises } from "@vue/test-utils";
 import { useInteractiveStore } from "../interactive";
 import * as api from "../../services/interactive";
 import { emptyState, addCard } from "../../interactive/board";
+import { EVENT_TYPES } from "../../services/events";
 import type { BoardState, SubmissionResult, Understanding } from "../../interactive/types";
 
 vi.mock("../../services/api", () => ({
@@ -292,6 +293,23 @@ describe("#26 待确认任务事件幂等应用", () => {
     // 别的板面的事件不落地
     expect(store.applyInteractiveIntentsChanged({ ...payload, board_id: "board_other" })).toBe(false);
     expect(store.intentViews[0].status).toBe("awaiting_confirmation");
+  });
+
+  it("#26 订阅身份：事件类型在前端 EVENT_TYPES 里；未知 intent 不编造卡片", () => {
+    expect(EVENT_TYPES).toContain("INTERACTIVE_INTENTS_CHANGED");
+    const store = useInteractiveStore();
+    store.intentViews = [{ intent_id: "i1", status: "proposed", title: "已知任务", version: 1 }] as never;
+    expect(
+      store.applyInteractiveIntentsChanged({
+        board_id: BOARD_ID,
+        intent_ids: ["i_new"],
+        statuses: { i_new: "approved" },
+        reason: "proposed",
+      }),
+    ).toBe(true);
+    // 未知 id 不造卡：列表仍是原来那一条（权威刷新由 mock 的 fetchIntentViews 兜底）
+    expect(store.intentViews).toHaveLength(1);
+    expect(store.intentViews[0].intent_id).toBe("i1");
   });
 });
 

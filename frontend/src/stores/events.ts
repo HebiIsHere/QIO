@@ -19,6 +19,7 @@ import { toPendingApproval } from "../services/approvalLifecycle";
 import { api, type TurnFactsRow } from "../services/api";
 import { resetBackend } from "../services/backend";
 import { invalidateRestore, restoreRuntimeState } from "./restore";
+import { useInteractiveStore } from "./interactive";
 
 /**
  * 续作轮里「本轮 user 消息已经落库之后」才会出现的事件（见后端 turn_orchestrator 的写入顺序：
@@ -488,6 +489,23 @@ export const useEventStore = defineStore("events", {
            * 权威仍是 GET /api/recovery/records；重复 / 重放事件幂等（最多多拉一次）。
            */
           session.requestRecoveryInboxRefresh();
+          break;
+        }
+        case "INTERACTIVE_INTENTS_CHANGED": {
+          /**
+           * PM-QIO032 #26（Lead 授权的最小订阅，仅互动事件；其它事件语义不动）：
+           * 后端在提案 / 更新 / 确认成功后发来「这批意图的真实状态」。
+           * store 按 intent_id 幂等 upsert（重复投递 / 重连补发不生成重复卡），
+           * 非当前板面的事件直接忽略；未知 id 不编造卡片，走权威 intent-views 合并刷新。
+           */
+          useInteractiveStore().applyInteractiveIntentsChanged(
+            event.data as unknown as {
+              board_id?: string;
+              intent_ids?: string[];
+              statuses?: Record<string, string>;
+              reason?: string;
+            },
+          );
           break;
         }
         case "CAPABILITY": {
