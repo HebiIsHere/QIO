@@ -323,6 +323,21 @@
 .qio-settings .qio-btn.qio-btn.mini { height: 28px; padding: 0 8px; font-size: 11.5px; }
 .qio-settings .qio-btn.qio-btn.danger { color: var(--danger); background: none; border: 0; }
 .qio-settings .qio-btn.qio-btn.danger:hover { background: radial-gradient(120% 160% at 0% 50%, var(--danger-soft), transparent 72%); color: var(--danger); }
+/*
+ * #87：普通按钮的「透明底、无边框」规则（0-3-0）会压过全局 .qio-btn.danger-solid（0-2-0），
+ * 让危险确认按钮只剩普通文字色。这里把实心危险档恢复回来：填色、反白字、无边框。
+ * 注意：确认层若由 QModal/QConfirm Teleport 到 body，就不再命中 .qio-settings 作用域，
+ * 那段由 components/ui 自己的 scoped 样式负责；本规则只兜住仍渲染在设置页内的场景。
+ */
+.qio-settings .qio-btn.qio-btn.danger-solid {
+  background: var(--danger);
+  border: 0;
+  color: var(--bg-base);
+}
+.qio-settings .qio-btn.qio-btn.danger-solid:hover {
+  background: var(--danger);
+  color: var(--bg-base);
+}
 
 /* 开关：保留可见拨动结构（线性轨道 + 星球滑块），不给外壳加边框 */
 .qio-settings .qio-switch.qio-switch {
