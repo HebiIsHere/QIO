@@ -1,11 +1,14 @@
 <script setup lang="ts">
 /**
  * 常规：外观（主题 / 动画 / 滚动指示条）、输出速度、设置助手入口、
- * 窗口行为（两个贴靠隐藏开关 + 还原默认布局 + 关闭主窗口行为），
- * 以及「高级选项」里的诊断开关（基线「开发者模式」）。
+ * 窗口行为（关闭主窗口行为），以及「高级选项」里的诊断开关（基线「开发者模式」）。
  *
- * 保存方式：全部即时保存 —— 这些设置要么只落在本地（主题 / 动画 / 指示条 / 贴靠隐藏 /
- * 诊断），要么一次只有一个值（输出速度 / 关闭行为）。失败时控件回滚到真实值。
+ * 保存方式：全部即时保存 —— 这些设置要么只落在本地（主题 / 动画 / 指示条 / 诊断），
+ * 要么一次只有一个值（输出速度 / 关闭行为）。失败时控件回滚到真实值。
+ *
+ * #39（定稿 A）：星球入口固定在对话输入区旁、设置入口固定在全局顶栏，两个入口都不再是
+ * 可拖动浮动组件，所以「贴靠后自动隐藏」「还原默认布局」两项设置已经失效，统一移除；
+ * 也删掉对应的搜索索引与入口提示（不能让用户保存一个什么都不做的开关，再显示「已保存」）。
  */
 import { ref, watch } from "vue";
 import QSelect from "../../../components/ui/QSelect.vue";
@@ -23,12 +26,6 @@ import {
   setScrollbarPreference,
   type ScrollbarPreference,
 } from "../../../utils/scrollIndicator";
-import {
-  floatingState,
-  resetFloatPositions,
-  setHideEnabled,
-  type DockId,
-} from "../../../composables/floatingState";
 import { useQioSettingsSave } from "../../../composables/useQioSettingsSave";
 import SettingRow from "../shell/SettingRow.vue";
 import SegmentedControl from "../shell/SegmentedControl.vue";
@@ -139,35 +136,6 @@ function rerunOnboarding(): void {
   save.setNotice("ok", "设置助手已重新打开");
 }
 
-/* ---------------- 窗口行为 ---------------- */
-/**
- * 只有两个可拖动的浮动组件（星球入口 / 设置入口）会贴靠并自动隐藏；
- * floatingState 里的 composer 是历史占位（输入区由布局承载，不可拖动、也不会被隐藏），
- * 所以这里不提供一个会「把输入框藏起来」的开关。
- */
-const WINDOW_ITEMS: { id: DockId; title: string; key: string }[] = [
-  {
-    id: "planet-dock",
-    title: "星球入口贴靠后自动隐藏",
-    key: "regular.window.planet-hide",
-  },
-  {
-    id: "settings-float",
-    title: "设置入口贴靠后自动隐藏",
-    key: "regular.window.settings-hide",
-  },
-];
-function toggleWindowHide(id: DockId): void {
-  const next = !floatingState[id].hideEnabled;
-  setHideEnabled(id, next);
-  const item = WINDOW_ITEMS.find((entry) => entry.id === id);
-  save.setNotice("ok", `${item?.title ?? "入口"}：${next ? "开启" : "关闭"}`);
-}
-function resetWindowLayout(): void {
-  resetFloatPositions();
-  save.setNotice("ok", "已还原默认布局（贴靠隐藏关闭、位置回到默认）");
-}
-
 /* ---------------- 关闭主窗口行为（R9 契约 §11） ---------------- */
 const CLOSE_OPTIONS = CLOSE_BEHAVIOR_OPTIONS;
 function closeBehaviorLabel(value: CloseBehavior): string {
@@ -276,33 +244,6 @@ function toggleDiagnostics(): void {
     </header>
 
     <SettingRow
-      v-for="item in WINDOW_ITEMS"
-      :key="item.id"
-      :title="item.title"
-      :settings-key="item.key"
-    >
-      <button
-        type="button"
-        class="qio-switch"
-        :class="{ on: floatingState[item.id].hideEnabled }"
-        role="switch"
-        :aria-checked="floatingState[item.id].hideEnabled"
-        :aria-label="item.title"
-        @click="toggleWindowHide(item.id)"
-      ></button>
-      <span class="set-state mono" aria-hidden="true">
-        {{ floatingState[item.id].hideEnabled ? "开" : "关" }}
-      </span>
-    </SettingRow>
-
-    <SettingRow
-      title="布局"
-      settings-key="regular.window.reset-layout"
-    >
-      <button type="button" class="qio-btn" @click="resetWindowLayout">还原默认布局</button>
-    </SettingRow>
-
-    <SettingRow
       title="关闭主窗口时"
       settings-key="regular.window.close-behavior"
     >
@@ -314,8 +255,8 @@ function toggleDiagnostics(): void {
           @update:model-value="onCloseBehaviorChange"
         />
         <p class="set-hint">
-          「最小化到托盘」只是隐藏窗口：QIO 与后端继续运行，可从系统托盘恢复；
-          「直接退出」会先停止受理新工作、保存状态并有界收尾，等待中的有效审批会保留到下次启动。
+          「最小化到托盘」只是隐藏窗口：QIO 与后端继续运行。
+          「直接退出」后，仍有效的待审批事项会保留到下次启动。
         </p>
       </div>
     </SettingRow>

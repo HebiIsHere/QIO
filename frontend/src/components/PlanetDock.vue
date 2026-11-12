@@ -85,6 +85,19 @@ const float = anchored.value
       }),
     });
 
+/**
+ * 入口文案（#39）：对话页 v3 的星球入口是**锚定**在输入区旁的固定控件（不拖动、不贴边），
+ * 所以锚定模式不能再说「可拖动贴边」；只有遗留的非锚定浮动模式仍保留该能力与提示。
+ */
+const entryLabel = computed(() =>
+  anchored.value ? "打开话题星球（星球入口）" : "打开话题星球（星球入口；可拖动贴边）",
+);
+const entryTip = computed(() =>
+  anchored.value
+    ? "打开话题星球：查看话题、知识与记忆待确认"
+    : "打开话题星球：查看话题、知识与记忆待确认（可拖动贴边）",
+);
+
 function onClick() {
   if (!anchored.value && float.moved.value) return; // 拖动不误触发
   if (handedOff.value) return; // 转场中不重复触发
@@ -99,8 +112,8 @@ function onClick() {
     :class="{ activating, handed: handedOff, receiving, anchored }"
     data-planet-entry
     :aria-expanded="handedOff"
-    aria-label="打开话题星球（星球入口；可拖动贴边）"
-    v-qio-tip="'打开话题星球：查看话题、知识与记忆待确认（可拖动贴边）'"
+    :aria-label="entryLabel"
+    v-qio-tip="entryTip"
     @click="onClick"
   >
     <!-- 真实渲染未就位时才显示 2D 压缩态（首屏兜底 / WebGL 不可用） -->

@@ -16,7 +16,7 @@
  * 离开设置页：不自动保存、不弹询问、不发额外写请求；未保存草稿随组件卸载丢弃（§5）。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import router from "../router";
+import router, { settingsReturnPath } from "../router";
 import { useUiStore } from "../stores/ui";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
 import { contentViewport } from "../utils/windowFrame";
@@ -85,12 +85,25 @@ function openSearch(): void {
   });
 }
 
-function closeSearch(): void {
+/**
+ * 关闭搜索面板。
+ *
+ * #67：Esc 关闭后焦点必须回到搜索入口 —— 否则焦点落在被隐藏的面板/输入框上，
+ * 键盘用户会「丢焦点」（下一次 Tab 从文档开头重新数）。
+ */
+function closeSearch(reason?: "escape" | "dismiss"): void {
   if (!searchOpen.value) return;
   searchOpen.value = false;
+  const restoreFocus = reason === "escape";
   void nextTick(() => {
     if (rootRef.value) rootRef.value.scrollTop = contentScroll;
+    if (restoreFocus) focusSearchEntry();
   });
+}
+
+/** 搜索入口按钮：Esc 关闭搜索的唯一合理焦点落点（在设置导航里常驻）。 */
+function focusSearchEntry(): void {
+  rootRef.value?.querySelector<HTMLElement>('[data-testid="settings-search-entry"]')?.focus();
 }
 
 function toggleSearch(): void {
@@ -166,11 +179,25 @@ function selectCategory(id: SettingsCategoryId): void {
   if (searchOpen.value) closeSearch();
 }
 
-function backToConversation(): void {
-  void router.push({ name: "conversation" }).catch(() => {
+/**
+ * 返回（#48）：从互动页进入就回原板面（含当时的查询参数/片段），
+ * 直达设置（深链 / 启动即设置）默认回对话页。
+ *
+ * 返回目标是「进入设置那一刻」记录的真实来源（router 守卫写在 router.ts），
+ * 设置页内部的分类切换、搜索都不改变它。
+ */
+function backToSource(): void {
+  const path = settingsReturnPath();
+  void router.push(path === "/" ? { name: "conversation" } : { path }).catch(() => {
     /* 单测环境没有真实路由：返回内容页失败不影响设置页自身 */
   });
 }
+
+/** 返回按钮文案随来源变化：从互动进来时写「返回互动」，不误称「返回对话」。 */
+const backLabel = settingsReturnPath().startsWith("/interactive") ? "返回互动" : "返回对话";
+const backDescription = backLabel === "返回互动"
+  ? "回到互动页的原板面（未保存的修改会丢弃）"
+  : "回到对话页（未保存的修改会丢弃）";
 
 /* ---------------- 生命周期 ---------------- */
 onMounted(() => {
@@ -207,8 +234,10 @@ onUnmounted(() => {
       :narrow="narrow"
       :search-open="searchOpen"
       :can-return-to-search="canReturnToSearch"
+      :back-label="backLabel"
+      :back-description="backDescription"
       @select="selectCategory"
-      @back="backToConversation"
+      @back="backToSource"
       @toggle-search="toggleSearch"
       @return-to-results="returnToResults"
     />
@@ -220,7 +249,7 @@ onUnmounted(() => {
         :open="searchOpen"
         @update:query="searchQuery = $event"
         @select="onSearchSelect"
-        @close="closeSearch"
+        @close="closeSearch($event)"
       />
 
       <div v-show="!searchOpen" ref="panelsRef" class="set-panels" data-testid="settings-panels">

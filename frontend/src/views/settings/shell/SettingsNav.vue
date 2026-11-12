@@ -22,8 +22,15 @@ const props = withDefaults(
     searchOpen: boolean;
     /** 搜索过且当前不在搜索面板：显示「返回搜索结果」 */
     canReturnToSearch: boolean;
+    /** 返回目标文案（#48：从互动进入时是「返回互动」，直达设置默认「返回对话」） */
+    backLabel: string;
+    backDescription: string;
   }>(),
-  { canReturnToSearch: false },
+  {
+    canReturnToSearch: false,
+    backLabel: "返回对话",
+    backDescription: "回到对话页（未保存的修改会丢弃）",
+  },
 );
 
 const emit = defineEmits<{
@@ -62,8 +69,8 @@ function onTabKey(event: KeyboardEvent, index: number, id: SettingsCategoryId): 
     <div class="set-nav__tools">
       <QIconButton
         icon="chevron-left"
-        label="返回对话"
-        description="回到对话页（未保存的修改会丢弃）"
+        :label="backLabel"
+        :description="backDescription"
         size="sm"
         data-testid="settings-back"
         @click="emit('back')"

@@ -11,10 +11,13 @@ vi.mock("../../services/api", () => ({
   },
 }));
 
-async function mountDock() {
+async function mountDock(anchored = false) {
   const pinia = createPinia();
   setActivePinia(pinia);
-  const w = mount(PlanetDock, { global: { plugins: [pinia] } });
+  const w = mount(PlanetDock, {
+    props: anchored ? { anchored: true } : {},
+    global: { plugins: [pinia] },
+  });
   await nextTick(); // 等浮动系统初始化（flush: post）
   return w;
 }
@@ -24,11 +27,21 @@ beforeEach(() => {
 });
 
 describe("PlanetDock 话题星球入口", () => {
-  it("渲染悬浮球按钮（可访问标签）", async () => {
-    const w = await mountDock();
+  it("渲染悬浮球按钮（可访问标签）：浮动模式保留贴边能力（#39 边界）", async () => {
+    const w = await mountDock(false);
     const dock = w.find(".dock");
     expect(dock.exists()).toBe(true);
     expect(dock.attributes("aria-label")).toBe("打开话题星球（星球入口；可拖动贴边）");
+    w.unmount();
+  });
+
+  it("对话页锚定入口不再声称可拖动贴边（#39）", async () => {
+    const w = await mountDock(true);
+    const dock = w.find(".dock");
+    expect(dock.classes()).toContain("anchored");
+    // 旧行为被本项否定：锚定入口曾复用浮动模式的「可拖动贴边」表述（实际不可拖动）
+    expect(dock.attributes("aria-label")).toBe("打开话题星球（星球入口）");
+    expect(dock.attributes("aria-label")).not.toContain("贴边");
     w.unmount();
   });
 

@@ -27,7 +27,8 @@ const props = withDefaults(
 const emit = defineEmits<{
   "update:query": [value: string];
   select: [entry: SettingsSearchEntry];
-  close: [];
+  /** reason：escape 表示键盘关闭（焦点要还给搜索入口），dismiss 表示点关闭按钮 */
+  close: [reason: "escape" | "dismiss"];
 }>();
 
 const inputRef = ref<HTMLInputElement | null>(null);
@@ -50,10 +51,17 @@ function focusInput(): void {
   void nextTick(() => inputRef.value?.focus());
 }
 
+/** 中文输入法组字中的按键（含 Esc 取消选字）属于输入法，不能当成面板操作。 */
+function isComposingKey(event: KeyboardEvent): boolean {
+  // isComposing 是标准字段；keyCode 229 是部分 WebView/输入法留下的兼容信号
+  return event.isComposing || event.keyCode === 229;
+}
+
 function onInputKeydown(event: KeyboardEvent): void {
   if (event.key === "Escape") {
+    if (isComposingKey(event)) return;
     event.preventDefault();
-    emit("close");
+    emit("close", "escape");
     return;
   }
   if (event.key === "ArrowDown" && results.value.length) {
@@ -71,8 +79,9 @@ function hitElements(): HTMLButtonElement[] {
 /** 结果列表里的方向键：在命中项之间移动焦点（不改变页面滚动容器）。 */
 function onResultsKeydown(event: KeyboardEvent): void {
   if (event.key === "Escape") {
+    if (isComposingKey(event)) return;
     event.preventDefault();
-    emit("close");
+    emit("close", "escape");
     return;
   }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -115,7 +124,7 @@ defineExpose({ focusInput });
         size="sm"
         @click="clearQuery"
       />
-      <QIconButton icon="close" label="关闭搜索" description="关闭搜索面板，回到设置内容" size="sm" @click="emit('close')" />
+      <QIconButton icon="close" label="关闭搜索" description="关闭搜索面板，回到设置内容" size="sm" @click="emit('close', 'dismiss')" />
     </div>
 
     <p v-if="!trimmed" class="set-search__hint">
@@ -146,7 +155,7 @@ defineExpose({ focusInput });
               @click="emit('select', entry)"
             >
               <span class="set-search__hit-title">{{ entry.title }}</span>
-              <span class="set-search__hit-cat mono">{{ settingsCategoryLabel(entry.category) }}</span>
+              <!-- #66：分类已在上面的分组标题里出现一次；结果行不再重复分类 -->
               <span class="set-search__hit-desc">{{ entry.description }}</span>
             </button>
           </li>
