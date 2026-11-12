@@ -41,10 +41,19 @@ const arbiter = getActivePinia() ? useModalArbiterStore() : null;
 const arbiterBlocked = ref(false);
 
 const panelRef = ref<HTMLElement | null>(null);
+
+/*
+ * 操作（账本）与成果（结果卡）是两个独立读取：各自的 loading / error / 不可用 /
+ * 数据 / 重试按钮。单边 503 不能把另一侧也清空，也不能把「读取失败」说成「没有数据」。
+ */
 const operations = ref<LedgerOperationView[]>([]);
+const operationsLoading = ref(false);
+const operationsError = ref("");
+const operationsUnavailable = ref("");
 const results = ref<IntentResultView[]>([]);
-const loading = ref(false);
-const error = ref("");
+const resultsLoading = ref(false);
+const resultsError = ref("");
+const resultsUnavailable = ref("");
 
 const intentId = computed(() => props.intent?.intent_id ?? "");
 /** 真正可以显示并接收键盘：父级要求打开 + 仲裁放行 + 是当前活动层。 */
@@ -99,43 +108,122 @@ watch(
 );
 
 /* --------------------------------------------------------------------------
- * 读取：代次 + 目的意图双重校验，任何迟到 / 过期响应都不落到界面上。
+ * 读取：记录身份（intentId + boardId + open）+ 每次读取的代次与单侧尝试号校验。
+ *
+ * 操作与成果分别读取、分别失败、分别重试；任何迟到 / 过期响应都只丢弃自己，
+ * 不落到界面上（也不会让另一侧的读取状态跟着变）。
  * ------------------------------------------------------------------------ */
-let loadGeneration = 0;
-
-function isCurrentLoad(mine: number, targetIntentId: string): boolean {
-  return mine === loadGeneration && props.open && intentId.value === targetIntentId;
+interface ReadTarget {
+  generation: number;
+  intentId: string;
+  boardId: string;
 }
 
-async function load(): Promise<void> {
-  const mine = ++loadGeneration;
-  const targetIntentId = intentId.value;
-  const boardId = props.boardId;
-  // 先清空上一个任务的详情、错误与结果：新标题下不显示旧内容，只显示当前读取状态。
+let loadGeneration = 0;
+let operationsAttempt = 0;
+let resultsAttempt = 0;
+
+function errorText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** 只有「同一轮读取 + 同一记录 + 面板仍打开 + 该侧还是最新一次尝试」才允许写回。 */
+function isCurrentRead(target: ReadTarget, attempt: number, side: "operations" | "results"): boolean {
+  if (target.generation !== loadGeneration) return false;
+  if (!props.open) return false;
+  if (intentId.value !== target.intentId) return false;
+  if (props.boardId !== target.boardId) return false;
+  return side === "operations" ? attempt === operationsAttempt : attempt === resultsAttempt;
+}
+
+/** 切记录 / 重开 / 关面板：先作废上一轮所有在途读取，并立即清空旧内容。 */
+function beginReadCycle(): ReadTarget {
+  loadGeneration += 1;
+  operationsAttempt += 1;
+  resultsAttempt += 1;
   operations.value = [];
+  operationsLoading.value = false;
+  operationsError.value = "";
+  operationsUnavailable.value = "";
   results.value = [];
-  error.value = "";
-  loading.value = false;
-  if (!props.open || !targetIntentId || !boardId) return;
-  loading.value = true;
+  resultsLoading.value = false;
+  resultsError.value = "";
+  resultsUnavailable.value = "";
+  return { generation: loadGeneration, intentId: intentId.value, boardId: props.boardId };
+}
+
+function currentTarget(): ReadTarget {
+  return { generation: loadGeneration, intentId: intentId.value, boardId: props.boardId };
+}
+
+async function loadOperations(target: ReadTarget): Promise<void> {
+  if (!props.open || !target.intentId || !target.boardId) return;
+  const attempt = ++operationsAttempt;
+  operationsLoading.value = true;
+  operationsError.value = "";
+  operationsUnavailable.value = "";
   try {
-    const [ledger, result] = await Promise.all([
-      fetchLedger(boardId),
-      fetchIntentResults(boardId),
-    ]);
-    if (!isCurrentLoad(mine, targetIntentId)) return;
+    const ledger = await fetchLedger(target.boardId);
+    if (!isCurrentRead(target, attempt, "operations")) return;
+    if (ledger.available === false) {
+      operations.value = [];
+      operationsUnavailable.value = ledger.reason || "服务端没有说明原因";
+      return;
+    }
     operations.value = (ledger.operations ?? []).filter(
-      (item) => !item.intent_id || item.intent_id === targetIntentId,
-    );
-    results.value = (result.results ?? []).filter(
-      (item) => !item.intent_id || item.intent_id === targetIntentId,
+      (item) => !item.intent_id || item.intent_id === target.intentId,
     );
   } catch (cause) {
-    if (!isCurrentLoad(mine, targetIntentId)) return;
-    error.value = cause instanceof Error ? cause.message : String(cause);
+    if (!isCurrentRead(target, attempt, "operations")) return;
+    operations.value = [];
+    operationsError.value = errorText(cause);
   } finally {
-    if (isCurrentLoad(mine, targetIntentId)) loading.value = false;
+    if (isCurrentRead(target, attempt, "operations")) operationsLoading.value = false;
   }
+}
+
+async function loadResults(target: ReadTarget): Promise<void> {
+  if (!props.open || !target.intentId || !target.boardId) return;
+  const attempt = ++resultsAttempt;
+  resultsLoading.value = true;
+  resultsError.value = "";
+  resultsUnavailable.value = "";
+  try {
+    const result = await fetchIntentResults(target.boardId);
+    if (!isCurrentRead(target, attempt, "results")) return;
+    if (result.available === false) {
+      results.value = [];
+      resultsUnavailable.value = result.reason || "服务端没有说明原因";
+      return;
+    }
+    results.value = (result.results ?? []).filter(
+      (item) => !item.intent_id || item.intent_id === target.intentId,
+    );
+  } catch (cause) {
+    if (!isCurrentRead(target, attempt, "results")) return;
+    results.value = [];
+    resultsError.value = errorText(cause);
+  } finally {
+    if (isCurrentRead(target, attempt, "results")) resultsLoading.value = false;
+  }
+}
+
+/** 进入一条记录：作废旧在途读取、清空旧内容，两侧各自独立发起。 */
+async function load(): Promise<void> {
+  const target = beginReadCycle();
+  if (!props.open || !target.intentId || !target.boardId) return;
+  await Promise.allSettled([loadOperations(target), loadResults(target)]);
+}
+
+/** 重试只重读对应一侧：另一侧的状态与内容原样保留。 */
+function retryOperations(): void {
+  if (operationsLoading.value) return;
+  void loadOperations(currentTarget());
+}
+
+function retryResults(): void {
+  if (resultsLoading.value) return;
+  void loadResults(currentTarget());
 }
 
 watch(
@@ -359,12 +447,18 @@ function ids(values: string[] | undefined): string {
 
     <section class="erp-block">
       <h3>实际操作</h3>
-      <p v-if="loading" class="erp-muted" data-im="execution-record-loading">正在读取操作记录…</p>
-      <div v-else-if="error" class="erp-error" role="alert" data-im="execution-record-error">
-        <p>读取失败：{{ error }}</p>
-        <button class="erp-retry" type="button" data-im="execution-record-retry" @click="load">重试</button>
+      <p v-if="operationsLoading" class="erp-muted" data-im="execution-record-loading">正在读取操作记录…</p>
+      <div v-else-if="operationsError" class="erp-error" role="alert" data-im="execution-record-error">
+        <p>读取失败：{{ operationsError }}</p>
+        <p class="erp-muted">读取失败不等于没有操作记录，请重试。</p>
+        <button class="erp-retry" type="button" data-im="execution-record-retry" @click="retryOperations">重试读取操作记录</button>
       </div>
-      <ul v-else-if="operations.length">
+      <div v-else-if="operationsUnavailable" class="erp-error" role="alert" data-im="execution-record-unavailable">
+        <p>操作账本暂时不可用：{{ operationsUnavailable }}</p>
+        <p class="erp-muted">账本不可用不等于没有操作记录。</p>
+        <button class="erp-retry" type="button" data-im="execution-record-retry" @click="retryOperations">重试读取操作记录</button>
+      </div>
+      <ul v-else-if="operations.length" data-im="execution-record-operations">
         <li v-for="item in operations" :key="item.operation_id || item.operation_key || item.action">
           {{ item.action || "未命名操作" }} · {{ item.status || "状态未记录" }}
           <span v-if="item.operation_key" class="erp-muted">（{{ item.operation_key }}）</span>
@@ -375,11 +469,18 @@ function ids(values: string[] | undefined): string {
 
     <section class="erp-block">
       <h3>结果</h3>
-      <p v-if="loading" class="erp-muted">正在读取结果…</p>
-      <p v-else-if="error" class="erp-muted" data-im="execution-record-results-error">
-        读取失败，暂时没有可显示的结果（不能当作「没有结果」）。
-      </p>
-      <ul v-else-if="results.length">
+      <p v-if="resultsLoading" class="erp-muted" data-im="execution-record-results-loading">正在读取结果…</p>
+      <div v-else-if="resultsError" class="erp-error" role="alert" data-im="execution-record-results-error">
+        <p>读取失败：{{ resultsError }}</p>
+        <p class="erp-muted">读取失败不等于没有成果，不能当作「没有结果」。</p>
+        <button class="erp-retry" type="button" data-im="execution-record-results-retry" @click="retryResults">重试读取结果</button>
+      </div>
+      <div v-else-if="resultsUnavailable" class="erp-error" role="alert" data-im="execution-record-results-unavailable">
+        <p>结果暂时不可用：{{ resultsUnavailable }}</p>
+        <p class="erp-muted">结果不可用不等于没有成果。</p>
+        <button class="erp-retry" type="button" data-im="execution-record-results-retry" @click="retryResults">重试读取结果</button>
+      </div>
+      <ul v-else-if="results.length" data-im="execution-record-results">
         <li v-for="item in results" :key="item.result_id">
           {{ item.title || item.kind || "结果" }}<span v-if="item.content">：{{ item.content }}</span>
         </li>
