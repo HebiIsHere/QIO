@@ -34,13 +34,15 @@ function ruleBody(source: string, selector: string): string {
 const PLANET = read("views/PlanetView.vue");
 
 describe("星球页：内容区域在全局栏下方（契约 §3.1）", () => {
-  it("新增 .planet-content 一层：绝对定位在标题条之下", () => {
+  it("新增 .planet-content 一层：绝对定位在标题条实际底边之下", () => {
     const body = ruleBody(PLANET, ".planet-content");
     expect(body).toContain("position: absolute");
-    // 0.3.2：内容层同时内缩到可见内容区（透明留白之外），标题条高度仍是顶部让位
+    // 0.3.2 + #36/#75：内容层内缩到可见内容区，顶边读「透明留白 + 标题条」的组合令牌；
+    // 旧行为被本项否定：曾用裸 --titlebar-height（从客户区顶算），按钮上沿被窗口层吃掉。
     expect(body).toContain(
-      "inset: var(--titlebar-height) var(--window-frame-inset) var(--window-frame-inset) var(--window-frame-inset)",
+      "inset: var(--chrome-top) var(--window-frame-inset) var(--window-frame-inset) var(--window-frame-inset)",
     );
+    expect(body).not.toContain("var(--titlebar-height)");
   });
 
   it("整层仍是 fixed + overflow: clip（不建立可被程序性滚动的容器）", () => {
@@ -123,8 +125,9 @@ describe("星球页：管理展开只靠布局位移（契约 §3.3 / §4.1）",
     expect(PLANET).not.toContain("WindowChrome");
     expect(PLANET).not.toContain("window-controls");
     expect(PLANET).not.toContain("data-tauri-drag-region");
-    // 管理区只能展开在全局栏下面：内容层读同一个标题条令牌
-    expect(PLANET).toContain("var(--titlebar-height)");
+    // 管理区只能展开在全局栏下面：内容层读「留白 + 标题条」的实际底边令牌
+    // （旧行为被本项否定：曾只算 --titlebar-height，管理区导航上沿被标题条盖住）
+    expect(PLANET).toContain("var(--chrome-top)");
   });
 
   it("管理展开不做任何相机/重对焦补间（旋转由 C 的 setManageYaw 负责）", () => {

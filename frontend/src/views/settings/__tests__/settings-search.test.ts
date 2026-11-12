@@ -100,10 +100,11 @@ describe("设置搜索索引", () => {
     expect(searchSettings("贴边")).toEqual([]);
     expect(searchSettings("还原默认布局")).toEqual([]);
 
+    // 用户定稿逐字对齐：搜索行说明不能夹带括号/分号后半句（补充信息只在 keywords）
     const keyless = SETTINGS_SEARCH_INDEX.find((entry) => entry.key === "models.search.keyless");
-    expect(keyless?.description).toContain("使用免密钥搜索服务");
+    expect(keyless?.description).toBe("使用免密钥搜索服务");
     const maxTokens = SETTINGS_SEARCH_INDEX.find((entry) => entry.key === "memory.fragment.max-tokens");
-    expect(maxTokens?.description).toContain("单段长度上限（按估算字符数计）");
+    expect(maxTokens?.description).toBe("单段长度上限（按估算字符数计）");
   });
 
   it("搜索按标题优先并支持用途名", () => {

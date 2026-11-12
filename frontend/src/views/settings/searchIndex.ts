@@ -175,8 +175,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     key: "models.search.keyless",
     title: "免密钥联网搜索",
     category: "models",
-    description: "使用免密钥搜索服务（Exa / Parallel，失败回退 DuckDuckGo）；不是联网搜索总开关",
-    keywords: ["免密钥", "keyless", "exa", "parallel", "duckduckgo"],
+    // 文案 #14：搜索行说明逐字对齐用户定稿；补充信息只放关键词，不放进结果行说明。
+    description: "使用免密钥搜索服务",
+    keywords: ["免密钥", "keyless", "免费", "回退", "exa", "parallel", "duckduckgo"],
   },
   {
     key: "models.search.bocha",
@@ -236,8 +237,9 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     key: "memory.fragment.max-tokens",
     title: "单段长度目标",
     category: "memory",
-    description: "单段长度上限（按估算字符数计）；到点分段不代表阶段完成",
-    keywords: ["长度", "上限", "token", "估算字符", "分段", "记忆"],
+    // 文案 #15：搜索行说明逐字对齐用户定稿。
+    description: "单段长度上限（按估算字符数计）",
+    keywords: ["长度", "上限", "token", "估算字符", "分段", "到点分段", "记忆"],
   },
   {
     key: "memory.maintenance.enabled",
