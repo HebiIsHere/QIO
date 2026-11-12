@@ -89,6 +89,10 @@ CRITICAL_EVENTS: frozenset[EventType] = frozenset(
         # 页面一直看不到「重试回答」入口；即使溢出触发 RESYNC，前端也会走
         # restore → loadRecoveryInbox，同样保证最终可见。
         EventType.RECOVERY_INBOX_CHANGED,
+        # #26：互动意图清单变化是一次性「清单可能变了」通知；背压时静默丢掉会让页面
+        # 一直看不到新虚线卡 / 任务数，即使溢出触发 RESYNC，前端也会拉 intent-views 兜底，
+        # 但按关键事件处理才能保证「生成待确认任务 → 页面立即同步」这条路径不丢。
+        EventType.INTERACTIVE_INTENTS_CHANGED,
         EventType.CAPABILITY,
         EventType.FALLBACK,
         EventType.WARNING,

@@ -9,6 +9,7 @@ agent.interactive.intents（仓库层）与 agent.interactive.execution（真实
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
@@ -19,6 +20,8 @@ from agent.interactive import intent_service
 from agent.interactive import submission as submission_module
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 #: 演示执行推进允许的结果；revert_rest 用于执行「等待用户决定」的其余撤回项
 ADVANCE_OUTCOMES = tuple(intents.ADVANCE_OUTCOMES) + ("revert_rest",)
@@ -506,6 +509,24 @@ def _start_intent_turn(
     return started
 
 
+async def _publish_intents_changed(
+    request: Request, *, board_id: str, intent_ids, reason: str
+) -> None:
+    """#26：意图清单变化（新建待确认 / 更新 / 确认）后发事件，页面无需刷新即可同步。
+
+    事件只是「清单可能变了」的旁路通知：失败只告警，绝不改响应、不改状态。
+    """
+    ids = [str(item) for item in intent_ids or () if str(item).strip()]
+    if not ids:
+        return
+    try:
+        publisher = getattr(intent_service, "publish_intents_changed", None)
+        if callable(publisher):
+            await publisher(_conn(request), board_id=board_id, intent_ids=ids, reason=reason)
+    except Exception:  # noqa: BLE001 - 通知是旁路，失败不影响已完成的真实操作
+        logger.warning("publish intents changed failed", exc_info=True)
+
+
 def _attach_turn_start(response: dict, started: dict, *, service_ok: bool) -> dict:
     """把真实续作结果挂到旧响应上；旧字段保留，新增 turnId / resume / turnStart。"""
     response["turnId"] = started.get("turnId")
@@ -604,6 +625,10 @@ def _legacy_intent_view(item: dict) -> dict:
         "conflicts": [],
         "authorization": {},
         "authorization_valid": status != "proposed",
+        # #27：旧意图没有第三阶段授权快照 / 历史版本，如实给「未失效、无变更」，
+        # 不拿旧实现的状态差异冒充「原授权因范围变化失效」。形状与 IntentView 一致。
+        "authorization_invalidated": False,
+        "authorization_changes": [],
         "outcome": str(item.get("reason") or ""),
         "summary": str(item.get("summary") or ""),
         "attempt": int(item.get("attempt") or 1),
@@ -719,7 +744,11 @@ async def confirm_single_intent(
         intent_ids=confirmed,
         source="confirm",
     )
-    return _attach_turn_start(response, started, service_ok=bool(response.get("ok")))
+    response = _attach_turn_start(response, started, service_ok=bool(response.get("ok")))
+    await _publish_intents_changed(
+        request, board_id=board_id, intent_ids=confirmed, reason="confirmed"
+    )
+    return response
 
 
 @router.post("/api/interactive/intents/batch-confirm")
@@ -765,7 +794,11 @@ async def confirm_intents_batch(request: Request, body: dict) -> dict:
         intent_ids=confirmed,
         source="batch_confirm",
     )
-    return _attach_turn_start(response, started, service_ok=bool(response.get("ok")))
+    response = _attach_turn_start(response, started, service_ok=bool(response.get("ok")))
+    await _publish_intents_changed(
+        request, board_id=board_id, intent_ids=confirmed, reason="confirmed"
+    )
+    return response
 
 
 # -- 等待 / 账本 / 结果 / 恢复（只读为主）-------------------------------------

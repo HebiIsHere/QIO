@@ -39,6 +39,13 @@ class EventType(str, Enum):
     # GET /api/recovery/records。载荷：{record_id, turn_id, topic_id, kind,
     # failed_stage, action}（前两者冻结必填）。
     RECOVERY_INBOX_CHANGED = "RECOVERY_INBOX_CHANGED"
+    # #26：互动意图清单（虚线卡 / 任务数）变化通知。后端生成待确认意图、更新意图、
+    # 用户确认之后发布：原页面无需刷新即可同步虚线卡与任务数。
+    # 载荷：{board_id, submission_id, intent_ids: [str], statuses: {intent_id: status},
+    #        reason: proposed|updated|confirmed|changed}。
+    # 客户端按 intent_id 幂等应用（upsert）：重复投递 / 重连补发不会生成重复卡；
+    # 权威状态仍以 GET intent-views 为准，本事件只表示「清单可能变了」。
+    INTERACTIVE_INTENTS_CHANGED = "INTERACTIVE_INTENTS_CHANGED"
     TOOL_START = "TOOL_START"
     TOOL_END = "TOOL_END"
     # 模型自主决定的过程说明（announce / progress / warning / result）。
