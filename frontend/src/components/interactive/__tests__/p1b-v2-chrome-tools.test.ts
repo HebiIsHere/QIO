@@ -250,14 +250,24 @@ describe("InteractiveChromeTools：板内搜索（内联输入）", () => {
     }
   });
 
-  it("没有匹配时不渲染结果列表，也不加「没有匹配」之类说明文字", async () => {
+  it("没有匹配时保留结果层并显示「没有找到卡片」；清空关键词后收起", async () => {
     store.board = board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做" });
     await mountTools();
     await focusSearch();
     await typeQuery("完全不存在的关键词");
+    // #55：无命中不静默消失 —— 结果层保留，并给出明确的空态文案。
+    const results = pick("[data-iw-chrome-search-results]");
+    expect(results).not.toBeNull();
+    expect(pickOrFail("[data-iw-chrome-search-empty]").textContent).toContain("没有找到卡片");
+    // 搜索框自身的文字仍只有 query，不加说明文字
+    const input = pickOrFail<HTMLInputElement>("[data-iw-chrome-search-input]");
+    expect(input.value).toBe("完全不存在的关键词");
+
+    // 清空关键词 → 结果层收起
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
     expect(pick("[data-iw-chrome-search-results]")).toBeNull();
-    expect(pickOrFail("[data-iw-chrome-search-field]").textContent?.trim()).toBe("");
-    expect(pickOrFail("[data-iw-chrome-tools]").textContent).not.toContain("没有匹配");
   });
 
   it("Esc 收起结果、保留输入，且不把 Esc 交给板面", async () => {

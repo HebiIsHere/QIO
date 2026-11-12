@@ -212,13 +212,15 @@ describe("三类数据不许串用", () => {
     const result = w.get('[data-im="submit-result-panel"]').text();
     expect(result).toContain("上次提交的完整结论说明");
     expect(result, "上次提交结果不许掺入本次未提交的改动列表").not.toContain("本次有效改动");
-    expect(result).not.toContain("新增注释：本次要提交的那条");
+    expect(result).not.toContain("本次要提交的那条");
 
     await w.get('[data-im="submit-details"]').trigger("click");
     const details = w.get('[data-im="submit-details-box"]').text();
     expect(details).toContain("本次提交范围与改动");
     expect(details).toContain("本次作为互动材料");
-    expect(details).toContain("新增注释：本次要提交的那条");
+    expect(details).toContain("本次要提交的那条");
+    // 文案 2：每行只出现一次改动类别（行首标签），正文不再重复类别名
+    expect(details.split("新增注释").length - 1, "每行只出现一次改动类别").toBe(1);
     expect(details, "本次范围与改动里不许出现上次提交的结论").not.toContain("上次提交的完整结论说明");
   });
 

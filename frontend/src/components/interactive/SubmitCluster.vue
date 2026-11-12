@@ -21,7 +21,8 @@
 -->
 <script setup lang="ts">
 import { vQioTip } from "../../composables/useQioTip";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { registerEscapeLayer } from "../../composables/useEscapeLayer";
 import { useInteractiveStore } from "../../stores/interactive";
 import { fetchBoardState } from "../../services/interactive";
 import {
@@ -63,6 +64,7 @@ const props = withDefaults(
   }>(),
   { compact: false },
 );
+const emit = defineEmits<{ (e: "panel-open"): void }>();
 const store = useInteractiveStore();
 
 /**
@@ -79,6 +81,37 @@ function togglePanel(kind: PanelKind): void {
 function closePanel(): void {
   openPanel.value = null;
 }
+
+/*
+ * #40：详情 / 上次结果 / 过程面板打开时注册共用 Esc 层级栈 ——
+ * 即使焦点在聊天输入框里，Esc 也能先收起提交详情（只收面板：不清草稿、不停止回复）。
+ * 面板打开越晚，注册越晚、层级越靠上；确认框与输入法选字由共用层级栈优先处理。
+ */
+const hasPanel = computed(() => openPanel.value !== null);
+let disposeEscape: (() => void) | null = null;
+function syncEscapeLayer(open: boolean): void {
+  if (open && !disposeEscape) {
+    disposeEscape = registerEscapeLayer({
+      id: "submit-cluster-panel",
+      active: () => openPanel.value !== null,
+      onEscape: () => {
+        closePanel();
+        return true;
+      },
+    });
+  } else if (!open && disposeEscape) {
+    disposeEscape();
+    disposeEscape = null;
+  }
+}
+watch(hasPanel, (open) => syncEscapeLayer(open), { immediate: true });
+watch(openPanel, (panel) => {
+  if (panel) emit("panel-open");
+});
+onBeforeUnmount(() => {
+  disposeEscape?.();
+  disposeEscape = null;
+});
 
 const busy = computed(() => store.submitStatus === "submitting");
 
@@ -208,7 +241,7 @@ const outcomeLabel = computed(() => {
       succeeded: "已提交",
       failed: "提交失败",
       empty: "无内容可提交",
-      duplicate: "未重复提交",
+      duplicate: "已提交过",
     };
     return map[String(last.status ?? "")] ?? "已提交";
   }
@@ -465,6 +498,42 @@ const stateLabel = computed(() =>
 const pendingLabel = computed(() =>
   summary.value.total > 0 ? `未提交 ${summary.value.total} 项改动` : "没有未提交的改动",
 );
+
+/*
+ * 跨分支数据契约（i-state v1）：提交门禁与轮次主状态由 store 统一提供，UI 只消费，
+ * 不再自己在组件里算第二套（#03 / #13）。基线版本还没有这些字段时回退到既有状态，
+ * 字段落地后自动生效（全部可选读取，不改 store）。
+ */
+interface SubmitStateExtras {
+  canSubmit?: boolean;
+  submitBlockedReason?: string | null;
+  roundStatus?: "idle" | "submitting" | "unknown" | "queued" | "processing" | "replied" | "awaiting_confirm" | "failed" | "settled";
+  roundStatusLabel?: string;
+  roundStatusDetail?: string | null;
+  roundSettled?: boolean;
+}
+const submitState = computed(() => store as unknown as SubmitStateExtras);
+/** #13：无有效内容（空白卡不算）时禁用提交；原因优先用 store 的提示。 */
+const canSubmit = computed(() => {
+  const gate = submitState.value.canSubmit;
+  if (typeof gate === "boolean") return gate;
+  return Boolean(store.board) && !busy.value;
+});
+const submitBlockedReason = computed(() => submitState.value.submitBlockedReason || "");
+const submitTip = computed(() => {
+  if (canSubmit.value) return failure.value?.nextStep ?? "";
+  return submitBlockedReason.value || "没有可提交的有效改动：空白卡不算，先填写文字卡或建立关系 / 删除";
+});
+/** #03：提交区唯一主状态：优先用 store 的统一轮次标签（排队 / 处理中 / 已回复 / 待确认 / 失败 / 终态）。 */
+const primaryStatusLabel = computed(() => {
+  const label = submitState.value.roundStatusLabel;
+  if (label) return label;
+  // 文案 1 / #80：回执待确认与重复提交用任务书措辞（不把「未重复提交」说成失败或新提交）。
+  if (store.submitStatus === "unknown") return "提交结果待确认";
+  if (store.submitStatus === "duplicate") return "已提交过";
+  return stateLabel.value;
+});
+const roundStatusDetail = computed(() => submitState.value.roundStatusDetail || "");
 /**
  * 失败说明（契约 §11.6）：原因、保留情况、下一步全部取**本次请求**的事实。
  *
@@ -637,6 +706,12 @@ const submitLabel = computed(() => {
 function onSubmit() {
   void store.submit();
 }
+
+/** 供页面壳 / 工具栏调用（#05 窄窗切换、#40 Esc 层级）：只关面板，不改数据。 */
+defineExpose({
+  closePanel,
+  isPanelOpen: () => openPanel.value !== null,
+});
 </script>
 
 <template>
@@ -702,7 +777,7 @@ function onSubmit() {
         class="line state-line"
         data-im="submit-status"
         role="status"
-      >本次提交：{{ stateLabel }}</p>
+      >本次提交：{{ primaryStatusLabel }}</p>
 
       <!--
         P1：提交时把「未点完成编辑」的草稿提升成了正文。这件事必须说出来（契约 4）：
@@ -877,14 +952,9 @@ function onSubmit() {
         保留改动与勾选，明确要求先确认结果，不诱导直接重复提交。
       -->
       <p v-else-if="store.submitStatus === 'unknown'" class="blocked" role="status" data-im="submit-unknown">
-        <span class="blocked-text" data-im="submit-unknown-reason">
-          提交结果未知：没有拿到服务端回执，这次提交可能已经受理。改动与勾选都保留；请先查证结果，不要直接重复提交
-          （查证只按这次请求身份向服务端精确核对，不会自动重复提交）。
-        </span>
-        <!--
-          F10 + 契约 §1.3：未知时给的是**只读查证**入口（按请求身份精确匹配 + 重新读取），
-          不是「重新提交」—— 绝不用一次新的提交去赌原请求有没有受理。
-        -->
+        <!-- #81 / 文案 1：回执待确认时常态只留一行短状态 +「查提交结果」；
+             查证与重新读取的细节放进按需展开的「提交详情」，不在底部堆叠。 -->
+        <span class="blocked-text" data-im="submit-unknown-reason">提交结果待确认，改动已保留</span>
         <button
           class="details"
           type="button"
@@ -892,20 +962,19 @@ function onSubmit() {
           :disabled="verifyingAcceptance"
           @click="verifyAcceptance"
         >
-          {{ verifyingAcceptance ? "查证中…" : "查证受理结果（按请求身份）" }}
+          {{ verifyingAcceptance ? "查证中…" : "查提交结果" }}
         </button>
+      </p>
+
+      <!-- #80：重复提交保留原受理记录与状态，明确说「已提交过」，可查看原进度。 -->
+      <p v-else-if="store.submitStatus === 'duplicate'" class="blocked" role="status" data-im="submit-duplicate">
+        <span class="blocked-text" data-im="submit-duplicate-text">已提交过：这次请求保留了原来的受理记录，没有再次执行</span>
         <button
           class="details"
           type="button"
-          data-im="submit-unknown-refresh"
-          :disabled="refreshRetrying"
-          @click="retryRefresh"
-        >
-          {{ refreshRetrying ? "重新读取中…" : "只重新读取页面事实" }}
-        </button>
-        <span v-if="store.acceptanceLookupNote" class="blocked-text" data-im="submit-unknown-lookup-note">
-          {{ store.acceptanceLookupNote }}
-        </span>
+          data-im="submit-duplicate-view"
+          @click="togglePanel('result')"
+        >查看原进度</button>
       </p>
 
       <!--
@@ -994,10 +1063,10 @@ function onSubmit() {
         type="button"
         data-im="submit-details"
         :data-state-tone="isFailed ? 'problem' : store.submitStatus === 'idle' ? 'plain' : 'active'"
-        :aria-label="compact ? '提交状态与详情' : undefined"
+        aria-label="提交详情"
         :aria-expanded="openPanel === 'details'"
         aria-controls="submit-details-panel"
-        v-qio-tip="compact ? '提交状态与本次提交范围（点击查看详情）' : '本次提交范围与改动（只读，不会再次提交）'"
+        v-qio-tip="'提交详情'"
         @click="togglePanel('details')"
       >
         <template v-if="compact">
@@ -1013,8 +1082,8 @@ function onSubmit() {
         class="submit"
         type="button"
         data-im="submit"
-        v-qio-tip="failure?.nextStep ?? ''"
-        :disabled="busy || !store.board"
+        v-qio-tip="submitTip"
+        :disabled="busy || !canSubmit"
         @click="onSubmit"
       >
         {{ submitLabel }}
@@ -1071,10 +1140,33 @@ function onSubmit() {
         >
           <p class="sc-panel-head" data-im="submit-details-head">本次提交范围与改动</p>
           <p class="sc-panel-text" data-im="submit-details-range">{{ rangeText }}</p>
+          <p v-if="roundStatusDetail" class="sc-panel-text" data-im="submit-round-detail">{{ roundStatusDetail }}</p>
+          <!-- #41：本次改动读取失败 / 有效空态 / 上次结果分开说；失败处可重试。 -->
+          <p v-if="pendingError" class="sc-panel-text" role="alert" data-im="submit-details-error">
+            本次改动读取失败：{{ pendingError }}（这不代表本次没有改动）
+            <button class="details" type="button" data-im="submit-details-retry" @click="refreshPending">重试读取</button>
+          </p>
+          <p
+            v-else-if="store.lastSubmission"
+            class="sc-panel-note"
+            data-im="submit-details-last"
+          >上次提交结果与本次改动分开：上面只说上次记录，下面只说本次未提交的改动。</p>
+          <!-- #81：回执待确认的查证细节按需展开（图：仍按原请求查证，绝不自动重复提交）。 -->
+          <div v-if="store.submitStatus === 'unknown'" class="sc-panel-section" data-im="submit-unknown-details">
+            <p class="sc-panel-text">没有拿到回执：这次提交可能已经受理。查证只按这次请求身份向服务端精确核对，不会自动重复提交。</p>
+            <button
+              class="details"
+              type="button"
+              data-im="submit-unknown-refresh"
+              :disabled="refreshRetrying"
+              @click="retryRefresh"
+            >{{ refreshRetrying ? "重新读取中…" : "只重新读取页面事实" }}</button>
+            <p v-if="store.acceptanceLookupNote" class="sc-panel-text" data-im="submit-unknown-lookup-note">{{ store.acceptanceLookupNote }}</p>
+          </div>
           <BoardChangeList
+            v-if="!pendingError"
             :expressions="pendingExpressions"
-            title="本次有效改动（尚未提交）"
-            empty-text="本次还没有可提交的改动（服务端在每次保存后重算）。"
+            empty-text="本次没有改动"
           />
         </div>
 

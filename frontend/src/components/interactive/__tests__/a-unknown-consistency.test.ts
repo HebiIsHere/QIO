@@ -75,22 +75,26 @@ describe("unknown 在类型 / 合成状态 / 按钮 / 文案四处一致", () =>
     const submitButton = wrapper.get('[data-im="submit"]');
     expect(submitButton.text()).toContain("同一身份");
 
-    // ④ 文案：未知区块说清「不会自动重复提交」，并给出按身份的只读查证入口
+    // ④ 文案（文案 1 / #81）：回执待确认时底部只留一行短状态 +「查提交结果」；
+    //   「按原请求身份查证、不会自动重复提交」的细节按需展开在「提交详情」里。
     const unknown = wrapper.get('[data-im="submit-unknown"]');
-    expect(unknown.text()).toContain("提交结果未知");
-    expect(unknown.text(), "文案必须与按钮一致地说明沿用同一身份").toContain("请求身份");
-    expect(unknown.text()).toContain("不会自动重复提交");
+    expect(unknown.text()).toContain("提交结果待确认，改动已保留");
     expect(wrapper.find('[data-im="submit-failure"]').exists(), "未知不是失败").toBe(false);
-    expect(wrapper.get('[data-im="submit-status"]').text()).toContain("提交结果未知");
+    expect(wrapper.get('[data-im="submit-status"]').text()).toContain("提交结果待确认");
 
     const verifyButton = wrapper.get('[data-im="submit-unknown-verify"]');
+    expect(verifyButton.text()).toContain("查提交结果");
     await verifyButton.trigger("click");
     expect(verify, "查证必须走按请求身份的精确查证入口").toHaveBeenCalledTimes(1);
     expect(submitAttempt, "查证绝不允许顺带再提交一次").not.toHaveBeenCalled();
 
-    // 查证仍然没结论：界面必须照实说「结果仍然未知」
+    // 查证仍然没结论：界面必须照实说「结果仍然未知」（明细在按需展开的提交详情里）
     store.acceptanceLookupNote = "已按同一个请求身份向服务端查证：没有记录。结果仍然未知。";
+    await wrapper.get('[data-im="submit-details"]').trigger("click");
     await wrapper.vm.$nextTick();
+    const detailText = wrapper.get('[data-im="submit-details-box"]').text();
+    expect(detailText, "文案必须与按钮一致地说明沿用同一身份").toContain("请求身份");
+    expect(detailText).toContain("不会自动重复提交");
     const note = wrapper.get('[data-im="submit-unknown-lookup-note"]');
     expect(note.text()).toContain("结果仍然未知");
   });

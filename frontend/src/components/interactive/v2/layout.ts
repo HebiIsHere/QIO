@@ -47,6 +47,24 @@ export const BOOKMARK_BOTTOM_RATIO = 0.18;
 export const CHAT_MAX_RATIO = 0.46;
 export const CHAT_MIN_HEIGHT = 140;
 
+/*
+ * 面板空间规则（#05 / #71）：任务面板与提交详情是两块会同时出现的浮层。
+ * - 宽窗（≥ 1121 实际可用宽度）允许并排；
+ * - 窄窗（≤ 1120，含 800×600）明确切换：同一时间只显示最近打开的那一块，
+ *   但各自的开关、选择与滚动位置仍在自己的组件/store 里保留（关闭不等于清空）；
+ * - 聊天与执行记录不参与这个切换：聊天开合共用输入区旁唯一入口，
+ *   执行记录是阻挡式浮层（层级高于任务面板与聊天），不会被它们遮住。
+ * 阈值按验收口径取 1120/1121 边界，量的是**实际可用宽度**（内容视口），不是 window 外框。
+ */
+export const PANEL_SIDE_BY_SIDE_MIN_WIDTH = 1121;
+export type PanelSpaceMode = "side-by-side" | "switch";
+
+export function panelSpaceMode(availableWidth: number): PanelSpaceMode {
+  const width = Number(availableWidth);
+  if (!Number.isFinite(width) || width <= 0) return "switch";
+  return width >= PANEL_SIDE_BY_SIDE_MIN_WIDTH ? "side-by-side" : "switch";
+}
+
 /** 首次量到高度之前使用的兜底高度（组件实测到真实高度后立即替换）。 */
 export const TOOLBAR_FALLBACK_HEIGHT = 48;
 export const COMPOSER_FALLBACK_HEIGHT = 64;

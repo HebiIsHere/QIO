@@ -92,7 +92,11 @@ let listenersOn = false;
  */
 let suppressNextActivate = false;
 
-/** 结果只在「已进入输入状态 + 有查询词」时出现；空结果不渲染任何说明文字。 */
+/**
+ * 结果层在「已进入输入状态 + 有查询词」时出现。
+ * #55：有查询词但没有命中时**保留结果层**并明确说「没有找到卡片」（不静默消失）；
+ * 清空关键词即收起结果层（resultsOpen 变 false），输入框本身只清空保持焦点。
+ */
 const resultsOpen = computed(() => expanded.value && query.value.trim().length > 0);
 
 const hits = computed<Hit[]>(() => {
@@ -323,7 +327,7 @@ onBeforeUnmount(removeGlobalListeners);
   <!-- 结果列表：小浮层（不是弹窗）→ Teleport 到 body + fixed，避免被全局栏裁切 -->
   <Teleport v-if="mountTarget" to="body">
     <ul
-      v-if="resultsOpen && hits.length"
+      v-if="resultsOpen"
       ref="resultsEl"
       class="iw-search-results"
       data-iw-chrome-search-results
@@ -332,6 +336,9 @@ onBeforeUnmount(removeGlobalListeners);
       v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
       @keydown="onResultsKeydown"
     >
+      <li v-if="!hits.length" class="iw-search-empty" data-iw-chrome-search-empty role="status">
+        没有找到卡片
+      </li>
       <li v-for="hit in hits" :key="hit.id">
         <button
           class="iw-search-result"
@@ -513,6 +520,12 @@ onBeforeUnmount(removeGlobalListeners);
     opacity: 1;
     transform: none;
   }
+}
+.iw-search-empty {
+  padding: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 .iw-search-result {
   width: 100%;

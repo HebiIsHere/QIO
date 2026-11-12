@@ -42,8 +42,9 @@ describe("收起态文案：只说真实状态，不编造未读", () => {
     expect(conversationStatusText({ turnRunning: true, queuedCount: 2 })).toBe("正在回复 · 已排队 2 条");
     expect(conversationStatusText({ turnRunning: false, queuedCount: 3 })).toBe("已排队 3 条");
     expect(conversationStatusText({ hasDraft: true })).toBe("草稿已保留");
-    expect(conversationStatusText({})).toBe("点开继续对话");
-    expect(conversationStatusText({ queuedCount: -5 })).toBe("点开继续对话");
+    // 文案 4：展开入口只写「展开对话」；没有真实状态时状态行保持安静，不再写「点开继续对话」。
+    expect(conversationStatusText({})).toBe("");
+    expect(conversationStatusText({ queuedCount: -5 })).toBe("");
   });
 });
 

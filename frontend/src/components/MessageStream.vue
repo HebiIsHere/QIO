@@ -33,6 +33,14 @@ import {
 import { subscribeComposerMetrics } from "../composables/composerMetrics";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
 
+/**
+ * #16：互动页专属空态（只影响互动模式的一句引导）。
+ * 其它模式不传这个 prop，保持自己的空态（含话题星球入口）原样。
+ */
+const props = withDefaults(defineProps<{ emptyVariant?: "default" | "interactive" }>(), {
+  emptyVariant: "default",
+});
+
 const session = useSessionStore();
 const approvals = useApprovalsStore();
 const viewport = useChatViewportStore();
@@ -1284,6 +1292,11 @@ const phaseLabel = computed(() => {
       <template v-else-if="session.history.status === 'error'">
         <div class="greet serif">历史没有读取出来</div>
         <div class="sub mono">这不代表没有消息；可在上方状态条里重试</div>
+      </template>
+      <!-- #16：互动空态只提示发消息或提交板面；对话模式的星球入口不移到这里。 -->
+      <template v-else-if="props.emptyVariant === 'interactive'">
+        <div class="greet serif">发消息，或提交板面</div>
+        <div class="sub mono">在下方输入框发消息；板面改动准备好后点「提交」</div>
       </template>
       <template v-else>
         <div class="greet serif">今天想聊点什么？</div>
