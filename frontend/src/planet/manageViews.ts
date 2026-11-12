@@ -148,12 +148,45 @@ function hitEntity(card: EntityCard): SearchHit {
   return { kind: "entity", id: card.id, title: card.name, note: `${attributes} 属性 · ${relations} 关系` };
 }
 
+/** 关键词是否出现在任意文本里（null/undefined 一律不命中；大小写不敏感） */
+function hasKeyword(text: string | null | undefined, q: string): boolean {
+  return (text ?? "").toLowerCase().includes(q);
+}
+
+/**
+ * 单来源命中：话题（标题 / 关键词 / 摘要预览）。
+ * 三个来源各自一个纯函数 —— 全局搜索按来源分别取回、分别失败，匹配规则也要能单独验。
+ */
+export function buildTopicHits(topics: TopicFingerprint[], query: string): SearchHit[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return topics.filter((t) => matchesTopic(t, q)).map(hitTopic);
+}
+
+/** 单来源命中：知识（正文 / 关联话题名）。 */
+export function buildKnowledgeHits(knowledge: KnowledgeItem[], query: string): SearchHit[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return knowledge.filter((k) => hasKeyword(k.content, q) || hasKeyword(k.topic_name, q)).map(hitKnowledge);
+}
+
+/** 单来源命中：实体（名称 / 别名 / 摘要）。 */
+export function buildEntityHits(entities: EntityCard[], query: string): SearchHit[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return entities
+    .filter((e) => hasKeyword(e.name, q) || (e.aliases ?? []).some((a) => hasKeyword(a, q)) || hasKeyword(e.summary, q))
+    .map(hitEntity);
+}
+
 /**
  * 全局搜索：一次搜索同时覆盖话题 / 知识 / 实体（与当前标签页无关），结果按三类分组。
  * 纯函数 —— 数据由调用方并行取好再传进来，这里只做匹配与截断（顺序保持后端顺序）。
+ *
+ * 保留这个「三类一起算」的入口给纯逻辑单测；界面按来源分别维护成功/失败状态，
+ * 用的是上面三个单来源函数（见 GlobalSearchPanel）。
  */
 export function buildSearchGroups(source: SearchSource, query: string): SearchGroups {
-  const q = query.trim().toLowerCase();
   const empty: SearchGroups = {
     topics: [],
     knowledge: [],
@@ -161,17 +194,12 @@ export function buildSearchGroups(source: SearchSource, query: string): SearchGr
     total: 0,
     counts: { topics: 0, knowledge: 0, entities: 0 },
   };
-  if (!q) return empty;
-  const has = (text: string | null | undefined) => (text ?? "").toLowerCase().includes(q);
+  if (!query.trim()) return empty;
 
   // 全量命中：展示层的分批只影响「显示多少条」，不影响总数与后续可达性。
-  const topics = source.topics.filter((t) => matchesTopic(t, q)).map(hitTopic);
-  const knowledge = source.knowledge
-    .filter((k) => has(k.content) || has(k.topic_name))
-    .map(hitKnowledge);
-  const entities = source.entities
-    .filter((e) => has(e.name) || (e.aliases ?? []).some((a) => has(a)) || has(e.summary))
-    .map(hitEntity);
+  const topics = buildTopicHits(source.topics, query);
+  const knowledge = buildKnowledgeHits(source.knowledge, query);
+  const entities = buildEntityHits(source.entities, query);
 
   return {
     topics,

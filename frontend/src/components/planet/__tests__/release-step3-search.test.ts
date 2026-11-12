@@ -150,21 +150,29 @@ describe("F11 全局搜索：真实总数与分批查看更多", () => {
     w.unmount();
   });
 
-  it("失败保留上次结果并可重试：重试成功后才更新", async () => {
+  it("单个来源失败：其他来源结果保留，单源重试成功后才更新", async () => {
     const w = mount(GlobalSearchPanel, { props: { active: true, debounceMs: 0 } });
     await flushPromises();
     await search(w, "薄荷");
+    expect(w.find(".gs-summary").text()).toContain("共 15 项结果");
 
-    mocks.apiMock.listEntities.mockRejectedValueOnce(new Error("offline"));
+    mocks.apiMock.listEntities.mockRejectedValueOnce(new Error("listEntities -> 503: 服务不可用"));
     // 同一个关键词再触发一次检索（输入值加空格 → 关键词仍相同）
     await w.find("input").setValue("薄荷 ");
     await flushPromises();
-    expect(w.find(".gs-error").exists()).toBe(true);
+    // 失败来源就地报错（可单源重试），其余来源的结果照常保留
+    const error = w.find('[data-search-source-error="entities"]');
+    expect(error.exists()).toBe(true);
+    expect(error.text()).toContain("实体搜索失败");
     expect(w.find('[data-search-id="t0"]').exists()).toBe(true);
+    expect(w.find('[data-search-id="k0"]').exists()).toBe(true);
+    expect(w.find('[data-search-id="e0"]').exists()).toBe(false);
+    // 失败来源不贡献数字：总数只算成功的 12 + 2
+    expect(w.find(".gs-summary").text()).toContain("共 14 项结果");
 
-    await w.find(".gs-error button").trigger("click");
+    await w.find('[data-search-source-retry="entities"]').trigger("click");
     await flushPromises();
-    expect(w.find(".gs-error").exists()).toBe(false);
+    expect(w.find('[data-search-source-error="entities"]').exists()).toBe(false);
     expect(w.find(".gs-summary").text()).toContain("共 15 项结果");
     w.unmount();
   });

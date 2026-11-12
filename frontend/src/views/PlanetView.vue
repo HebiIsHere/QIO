@@ -378,6 +378,8 @@ watch(
 const managementMounted = ref(false);
 /** 管理区实例：Esc 分层时先问它「这一层能不能退」（搜索 / 待处理 / 整理记录先退一层） */
 const managementRef = ref<{ escapeLayer?: () => boolean } | null>(null);
+/** 页面工具行实例：Esc 退出搜索后把焦点交回真实搜索入口（不是伪造焦点） */
+const pageToolsRef = ref<{ focusSearch?: () => void } | null>(null);
 /** 外部落点请求：对话页记忆提醒 / 深链 / 页面工具行搜索 */
 const requestView = ref<PlanetTab | null>(null);
 const requestFocusId = ref<string | null>(null);
@@ -1137,13 +1139,23 @@ onUnmounted(() => {
 function onKeydown(e: KeyboardEvent) {
   if (!props.open) return; // 已关闭但实例常驻：不能再响应 Esc
   if (e.key !== "Escape") return;
+  // 中文输入法组字中：Esc 优先给输入法（取消候选），不拦截、不误关搜索
+  if (e.isComposing || e.keyCode === 229) return;
   const t = e.target as HTMLElement | null;
-  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+  // 搜索视图内的 Esc 就是「退出搜索」，即使焦点在输入框里也归页面处理；
+  // 其他输入框里的 Esc 仍留给控件自己（基线行为不变）。
+  const inSearch = Boolean(t?.closest?.("[data-mp-search]"));
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT") && !inSearch) return;
   // 最上层优先：管理区是用户刚打开的一层，Esc 先退它，再按才收起整个星球。
   // 管理区内部还有一层（搜索 / 待处理 / 整理记录）：先退到进入前的标签页，再退整个管理区。
   if (managementOpen.value) {
+    const wasSearch = manageView.value === "search";
     const handled = managementRef.value?.escapeLayer?.() ?? false;
-    if (handled) return;
+    if (handled) {
+      // 退出搜索后焦点回到页面工具行里**真实的**搜索入口按钮（键盘用户不用重新摸路）
+      if (wasSearch) pageToolsRef.value?.focusSearch?.();
+      return;
+    }
     manage.setExpanded(false);
     return;
   }
@@ -1616,6 +1628,7 @@ async function close() {
       <!-- 页面工具行：内容区域右上角的一行克制入口（搜索 + 管理，带真实未处理数量角标）。
            它跟着内容层一起滚动/裁切，不会盖住管理区内容。 -->
       <PageTools
+        ref="pageToolsRef"
         class="page-tools-layer"
         :expanded="managementOpen"
         :pending-count="pendingStore.count"
