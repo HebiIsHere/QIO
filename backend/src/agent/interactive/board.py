@@ -1025,6 +1025,56 @@ def set_participation(state: dict, card_id: str, included: bool) -> dict:
     return normalize_state(work)
 
 
+# --- 三态参与入口（#08 / #54：显示并参与 / 显示但不参与 / 隐藏且不参与）------
+
+#: 三态的唯一取值（界面标签与后端授权共用一个映射，不各自解释 participation）。
+ACCESS_INCLUDED = "included"              # 显示并参与
+ACCESS_DISPLAYED = "displayed_excluded"   # 显示但不参与
+ACCESS_HIDDEN = "hidden_excluded"         # 隐藏且不参与
+ACCESS_STATES = (ACCESS_INCLUDED, ACCESS_DISPLAYED, ACCESS_HIDDEN)
+
+
+def card_access_state(card: dict) -> str:
+    """一张卡当前的三态（#08/#54）。
+
+    唯一事实源仍是 models.card_participation（hidden 优先）：本函数只做三态映射，
+    不复制可见性判定，供界面标签与后端授权检查共用同一口径。
+    """
+    if not isinstance(card, dict):
+        return ACCESS_HIDDEN
+    if card.get("hidden", False):
+        return ACCESS_HIDDEN
+    if models.card_participation(card) == models.PARTICIPATION_INCLUDED:
+        return ACCESS_INCLUDED
+    return ACCESS_DISPLAYED
+
+
+def set_card_access_state(state: dict, card_id: str, access_state: str) -> dict:
+    """按三态设置一张卡（预览 / 选择 / 框选 / 提交都不走这里，只有用户显式选择才改）。
+
+    - included（显示并参与）：hidden=false、participation=included；
+    - displayed_excluded（显示但不参与）：hidden=false、participation=excluded；
+    - hidden_excluded（隐藏且不参与）：hidden=true（participation 必为 excluded）。
+
+    「恢复隐藏」只能映射到 displayed_excluded 这一支：旧实现里恢复隐藏若沿用
+    原 participation 会悄悄回到参与（扩大读取范围），本函数从入口上杜绝。
+    非法取值不改状态（不猜）。
+    """
+    if access_state not in ACCESS_STATES:
+        return normalize_state(state)
+    work = normalize_state(state)
+    card = models.card_by_id(work, card_id)
+    if card is None or card.get("deleted", False):
+        return work
+    if access_state == ACCESS_INCLUDED:
+        return set_participation(work, card_id, True)
+    if access_state == ACCESS_DISPLAYED:
+        if card.get("hidden", False):
+            work = set_hidden(work, card_id, False)
+        return set_participation(work, card_id, False)
+    return set_hidden(work, card_id, True)
+
+
 def set_folded(state: dict, card_id: str, folded: bool) -> dict:
     """折叠只改变显示，不影响任何含义。"""
     work = normalize_state(state)

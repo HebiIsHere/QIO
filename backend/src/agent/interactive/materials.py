@@ -154,6 +154,325 @@ def resolve_images(
             out.append(item)
     return out
 
+# ---------------------------------------------------------------------------
+# 提交轮次材料（#28）：只读提交当时的冻结快照（A 版）
+# ---------------------------------------------------------------------------
+#
+# 正式提交的一轮只用**提交当时**的卡片、关系与材料版本。之后用户保存 B 版时，
+# 板面查看（board_inspect）、读卡（board_read_cards）、读文件（read_attachment）与
+# 材料解析都必须继续返回 A 版；源文件已变化且旧内容不可得时提示重新提交，
+# 绝不悄悄替换成 B 版。本节的快照读取函数是这三路共同的事实来源。
+
+_SNAPSHOT_KEYS = ("cards", "groups", "links")
+
+
+def _snapshot_shape(raw: Any) -> dict | None:
+    """把已保存的提交投影收敛成快照形状；缺键的旧记录不算快照（不假装 A 版）。"""
+    if not isinstance(raw, dict):
+        return None
+    if not all(key in raw for key in _SNAPSHOT_KEYS):
+        return None
+    return {
+        "cards": [card for card in raw.get("cards") or [] if isinstance(card, dict)],
+        "groups": [group for group in raw.get("groups") or [] if isinstance(group, dict)],
+        "links": [link for link in raw.get("links") or [] if isinstance(link, dict)],
+        "selection": [item for item in raw.get("selection") or [] if isinstance(item, str)],
+    }
+
+
+def load_submission_snapshot(
+    conn: sqlite3.Connection, *, board_id: str, submission_id: str
+) -> dict:
+    """读取**提交当时冻结的可见范围投影**（A 版）。
+
+    返回：
+    - available：是否真的拿到了提交快照（旧记录 / 测试桩缺快照时如实 False）；
+    - reason：不可用原因（可读）；
+    - snapshot：{cards, groups, links, selection}（只含当时允许查看的范围）；
+    - submissionId / boardId / createdAt：身份与时间事实。
+
+    调用方不得在 available=False 时假装自己拿到的是 A 版。
+    """
+    sid = str(submission_id or "").strip()
+    bid = str(board_id or "").strip()
+    result: dict = {
+        "available": False,
+        "reason": "",
+        "snapshot": {},
+        "submissionId": sid,
+        "boardId": bid,
+        "createdAt": "",
+    }
+    if not sid:
+        result["reason"] = "没有提交身份：无法读取提交当时的材料范围"
+        return result
+    try:
+        row = conn.execute(
+            "SELECT board_id, visible, after_state, created_at"
+            " FROM board_submissions WHERE id = ?",
+            (sid,),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        result["reason"] = f"读取提交记录失败：{type(exc).__name__}"
+        return result
+    if row is None:
+        result["reason"] = f"找不到这条提交记录：{sid}"
+        return result
+    row_board = str(row["board_id"] or "")
+    if bid and row_board != bid:
+        result["reason"] = f"提交 {sid} 不属于板面 {bid}"
+        return result
+    for column in ("visible", "after_state"):
+        try:
+            raw = models.loads(row[column], None)
+        except (KeyError, IndexError):
+            raw = None
+        snapshot = _snapshot_shape(raw)
+        if snapshot is not None:
+            result.update(
+                {
+                    "available": True,
+                    "reason": "",
+                    "snapshot": snapshot,
+                    "boardId": row_board or bid,
+                    "createdAt": str(row["created_at"] or ""),
+                }
+            )
+            return result
+    result.update(
+        {
+            "boardId": row_board or bid,
+            "createdAt": str(row["created_at"] or ""),
+            "reason": "这条提交没有保存当时的可见范围快照：不能假装本轮仍按 A 版材料执行，请重新提交",
+        }
+    )
+    return result
+
+
+def _recorded_file_size(card: dict) -> int | None:
+    """提交快照里登记的文件大小（meta.file.size）；缺失 / 非法返回 None（不猜）。"""
+    meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+    block = meta.get("file") if isinstance(meta.get("file"), dict) else {}
+    value = block.get("size", meta.get("size"))
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return int(value) if value > 0 else None
+
+
+def _current_material_size(service: Any, att: Any) -> int | None:
+    """当前真实可读文件的大小（副本或引用原文件）；读不到返回 None。"""
+    if service is None or att is None:
+        return None
+    try:
+        path, _origin = service_for_content(service, att)
+    except Exception:  # noqa: BLE001 - 大小只用于核对变化，读不到按未知处理
+        return None
+    if path is None:
+        return None
+    try:
+        return int(Path(path).stat().st_size)
+    except OSError:
+        return None
+
+
+def material_change_reason(service: Any, att: Any, card: dict) -> str:
+    """提交后材料源是否已变化（变化 = 旧内容不可得，必须提示重新提交）。
+
+    只认**可核对的事实**：附件记录不存在、状态不是 ready、真实文件大小与提交快照
+    登记的 size 不一致。不猜「可能改过」，也不在没变化时报警。
+    """
+    if att is None:
+        return "这张材料在提交后已不可取得（附件记录不存在），旧内容无法确认；请重新提交后再读"
+    state = str(getattr(att, "state", "") or "")
+    if state and state != "ready":
+        return (
+            f"这张材料在提交后的状态是 {state}，旧内容不可取得；"
+            "请重新提交后再让 QIO 读取"
+        )
+    recorded = _recorded_file_size(card)
+    if recorded is None:
+        return ""
+    current = _current_material_size(service, att)
+    if current is None:
+        return "这张材料在提交后已读不到内容（源文件不可得）；请重新提交后再读"
+    if current != recorded:
+        return (
+            f"这张材料在提交后已变化（提交时 {recorded} 字节，现在是 {current} 字节）："
+            "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
+        )
+    return ""
+
+
+def _file_attachment_entries(
+    cards: Iterable[dict],
+) -> list[tuple[dict, str]]:
+    """卡片里登记的文件附件 id（只有文件卡有）；保持输入顺序。"""
+    out: list[tuple[dict, str]] = []
+    for card in cards:
+        if str(card.get("kind") or "") != "file":
+            continue
+        meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+        att_id = _attachment_id(meta, "file")
+        if att_id:
+            out.append((card, att_id))
+    return out
+
+
+def _resolve_file_attachment(service: Any, att_id: str) -> Any:
+    if service is None:
+        return None
+    try:
+        return service.get(att_id, check=False)
+    except Exception:  # noqa: BLE001 - 单条附件查询失败按不可读处理
+        return None
+
+
+def submission_attachment_scope(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    submission_id: str,
+    attachments: Any = None,
+) -> dict:
+    """提交快照（A 版）允许读取的附件 + 已变化事实（附件读取的同一授权判断）。
+
+    与提交投影 / 工具读卡 / 材料解析共用 models.selectable_cards：
+    只有「提交时在可见范围内」的文件卡附件才允许读；提交后新增、已参与范围外、
+    被隐藏或在 B 版里才出现的附件都不在 allowed 里。stale 里的附件是「允许读取但
+    源内容已不可得」：调用方必须提示重新提交，不得读取当前内容。
+    """
+    loaded = load_submission_snapshot(
+        conn, board_id=board_id, submission_id=submission_id
+    )
+    scope: dict = {
+        "available": bool(loaded["available"]),
+        "reason": str(loaded["reason"] or ""),
+        "submissionId": str(loaded["submissionId"] or ""),
+        "boardId": str(loaded["boardId"] or ""),
+        "allowed": {},
+        "stale": {},
+        "changed": [],
+    }
+    if not loaded["available"]:
+        return scope
+    state = loaded["snapshot"]
+    service = attachments if attachments is not None else _derive_service(conn)
+    snapshot_cards = models.selectable_cards(state)
+    for card, att_id in _file_attachment_entries(snapshot_cards):
+        meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+        block = meta.get("file") if isinstance(meta.get("file"), dict) else {}
+        scope["allowed"][att_id] = {
+            "cardId": str(card.get("id") or ""),
+            "name": str(block.get("name") or meta.get("name") or ""),
+            "size": _recorded_file_size(card),
+        }
+        att = _resolve_file_attachment(service, att_id)
+        reason = material_change_reason(service, att, card)
+        if reason:
+            scope["stale"][att_id] = reason
+            scope["changed"].append(
+                {
+                    "cardId": str(card.get("id") or ""),
+                    "attachmentId": att_id,
+                    "reason": reason,
+                }
+            )
+    return scope
+
+
+def submission_materials(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    submission_id: str,
+    attachments: Any = None,
+    max_chars: int = DEFAULT_MAX_CHARS,
+    vision: bool = False,
+) -> dict:
+    """提交轮次的材料（TXT 正文 / PNG 图片）—— 只从提交当时的 A 版快照交付。
+
+    - cards / materials / images 全部来自提交快照；提交后保存的 B 版不进这里；
+    - 可见范围仍走 models.selectable_cards（与提交投影同一授权判断）；
+    - 源文件已变化且旧内容不可得的材料**不交付新的内容**，entries 里如实标记
+      read=false + reason（提示重新提交），并在 stale 里列出；
+    - 返回结构：
+      {available, reason, boardId, submissionId, createdAt, state, cards,
+       materials, images, attachmentIds, stale}
+    """
+    loaded = load_submission_snapshot(
+        conn, board_id=board_id, submission_id=submission_id
+    )
+    result: dict = {
+        "available": bool(loaded["available"]),
+        "reason": str(loaded["reason"] or ""),
+        "boardId": str(loaded["boardId"] or board_id or ""),
+        "submissionId": str(loaded["submissionId"] or submission_id or ""),
+        "createdAt": str(loaded["createdAt"] or ""),
+        "state": {},
+        "cards": [],
+        "materials": [],
+        "images": [],
+        "attachmentIds": [],
+        "stale": [],
+    }
+    if not loaded["available"]:
+        return result
+    state = loaded["snapshot"]
+    service = attachments if attachments is not None else _derive_service(conn)
+    cards = [dict(card) for card in models.selectable_cards(state)]
+    result["state"] = state
+    result["cards"] = cards
+
+    stale_cards: list[tuple[dict, str, str]] = []
+    stale_ids: set[str] = set()
+    for card, att_id in _file_attachment_entries(cards):
+        att = _resolve_file_attachment(service, att_id)
+        reason = material_change_reason(service, att, card)
+        if reason:
+            stale_cards.append((card, att_id, reason))
+            stale_ids.add(str(card.get("id") or ""))
+            result["stale"].append(
+                {"cardId": str(card.get("id") or ""), "attachmentId": att_id, "reason": reason}
+            )
+    # 保持快照原顺序；已变化的文件卡不进正文解析（不拿新内容冒充旧内容）。
+    ordered_cards = [card for card in cards if str(card.get("id") or "") not in stale_ids]
+
+    entries = resolve_materials(
+        conn,
+        state=state,
+        cards=ordered_cards,
+        attachments=service,
+        max_chars=_char_limit(max_chars),
+        vision=bool(vision),
+    )
+    for card, att_id, reason in stale_cards:
+        entries.append(
+            _entry(
+                card,
+                source="unreadable",
+                label=_label(card),
+                version=_content_version(card),
+                read=False,
+                bytes=0,
+                characters=0,
+                attachment_id=att_id,
+                reason=reason,
+                notes=["提交快照里的旧内容不可取得；请重新提交后再读"],
+            )
+        )
+    result["materials"] = entries
+    images = resolve_images(
+        conn, state=state, cards=ordered_cards, attachments=service
+    )
+    result["images"] = [item for item in images if isinstance(item, dict)]
+    attachment_ids: list[str] = []
+    for entry in entries:
+        att_id = str(entry.get("attachmentId") or "")
+        if att_id and att_id not in attachment_ids:
+            attachment_ids.append(att_id)
+    result["attachmentIds"] = attachment_ids
+    return result
+
 
 def collected_media_candidates(
     attachments: Any,
