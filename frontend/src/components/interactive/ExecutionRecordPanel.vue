@@ -24,6 +24,18 @@ import type {
   IntentView,
   LedgerOperationView,
 } from "../../interactive/intentWorkbench";
+import {
+  actionLabel,
+  authorizationLines as authorizationReadableLines,
+  basisSummaryLine,
+  diagnosticJson,
+  operationStatusLabel,
+  readableValue,
+  resultContentDisplay,
+  resultKindLabel,
+  retryStatusLabel,
+  scopeLines as scopeReadableLines,
+} from "../../interactive/executionRecordDisplay";
 
 const props = withDefaults(
   defineProps<{
@@ -65,17 +77,39 @@ const visible = computed(
     (arbiter ? arbiter.isVisible(MODAL_ID) : true),
 );
 const scope = computed(() => props.intent?.scope ?? {});
-const authorization = computed(() => {
-  const raw = props.intent?.authorization;
-  return raw && typeof raw === "object" ? Object.entries(raw) : [];
-});
+/** 授权范围只给「数量 + 可读名称」；原始 ID / 枚举 / 结构数据只在诊断里。 */
+const scopeLines = computed(() => scopeReadableLines(scope.value));
+const authorizationLines = computed(() => authorizationReadableLines(props.intent?.authorization));
+const authorizationText = computed(() =>
+  authorizationLines.value.map((line) => line.label + " " + line.value).join(" · "),
+);
 const retry = computed(() => props.intent?.retry ?? null);
 const retryText = computed(() => {
   if (!retry.value) return "没有重试记录";
   const attempts = retry.value.attempts ?? 0;
   const limit = retry.value.limit ?? 3;
-  return `${statusLabel(retry.value.status)} · 已自动重试 ${attempts} / ${limit} 次`;
+  return `${retryStatusLabel(retry.value.status)} · 已自动重试 ${attempts} / ${limit} 次`;
 });
+/** 意图状态：已登记状态给中文；未登记状态不回显内部枚举（原文在诊断里）。 */
+const intentStatusText = computed(() => {
+  const raw = typeof props.intent?.status === "string" ? props.intent.status.trim() : "";
+  if (!raw) return "状态未记录";
+  const label = statusLabel(raw);
+  return label === raw ? "状态未记录" : label;
+});
+const outcomeText = computed(() => {
+  const view = props.intent;
+  if (!view) return "";
+  return readableValue(view.summary).trim() || readableValue(view.outcome).trim();
+});
+
+function resultTitle(item: IntentResultView): string {
+  return readableValue(item.title).trim() || resultKindLabel(item.kind);
+}
+
+function resultSummary(item: IntentResultView): string {
+  return resultContentDisplay(item.content).text;
+}
 
 /* --------------------------------------------------------------------------
  * 仲裁登记：被更高优先级弹窗挡住时不显示（等它关闭后再出现），与 QModal 同规则。
@@ -386,10 +420,6 @@ onBeforeUnmount(() => {
   if (arbiter?.isOpen(MODAL_ID)) arbiter.close(MODAL_ID);
   restoreFocus();
 });
-
-function ids(values: string[] | undefined): string {
-  return values?.length ? values.join("、") : "未记录";
-}
 </script>
 
 <template>
@@ -416,33 +446,26 @@ function ids(values: string[] | undefined): string {
       <h2>执行记录</h2>
       <button class="erp-close" type="button" data-im="execution-record-close" aria-label="关闭执行记录" @click="requestClose">×</button>
     </header>
-    <p class="erp-title">{{ intent.title }}</p>
-    <p class="erp-status" :data-status="intent.status">状态：{{ statusLabel(intent.status) }}</p>
-    <p v-if="intent.goal" class="erp-line"><strong>目标：</strong>{{ intent.goal }}</p>
-    <p v-if="intent.expected" class="erp-line"><strong>预期：</strong>{{ intent.expected }}</p>
-    <p v-if="intent.summary || intent.outcome" class="erp-line" data-im="execution-record-outcome">
-      <strong>真实结果：</strong>{{ intent.summary || intent.outcome }}
+    <p class="erp-title">{{ readableValue(intent.title) }}</p>
+    <p class="erp-status" :data-status="intent.status" data-im="execution-record-status">状态：{{ intentStatusText }}</p>
+    <p v-if="intent.goal" class="erp-line"><strong>目标：</strong>{{ readableValue(intent.goal) }}</p>
+    <p v-if="intent.expected" class="erp-line"><strong>预期：</strong>{{ readableValue(intent.expected) }}</p>
+    <p v-if="outcomeText" class="erp-line" data-im="execution-record-outcome">
+      <strong>真实结果：</strong>{{ outcomeText }}
     </p>
 
-    <section class="erp-block">
+    <section class="erp-block" data-im="execution-record-basis">
       <h3>确认材料与版本</h3>
-      <ul v-if="intent.basis?.length">
-        <li v-for="item in intent.basis" :key="item.card_id">
-          {{ item.card_id }} · 版本 {{ item.version }}
-        </li>
-      </ul>
+      <p v-if="intent.basis?.length" data-im="execution-record-basis-summary">
+        {{ basisSummaryLine(intent.basis) }}
+      </p>
       <p v-else class="erp-muted">没有记录确认材料。</p>
     </section>
 
-    <section class="erp-block">
+    <section class="erp-block" data-im="execution-record-scope">
       <h3>授权范围</h3>
-      <p>可读：{{ ids(scope.read_card_ids) }}</p>
-      <p>可写：{{ ids(scope.write_card_ids) }}</p>
-      <p>组：{{ ids(scope.group_ids) }}</p>
-      <p>允许操作：{{ ids(scope.allowed_actions) }}</p>
-      <p v-if="authorization.length" class="erp-muted">
-        授权快照：{{ authorization.map(([key, value]) => key + "=" + String(value)).join(" · ") }}
-      </p>
+      <p v-for="line in scopeLines" :key="line.label">{{ line.label }}：{{ line.value }}</p>
+      <p class="erp-muted" data-im="execution-record-authorization">授权快照：{{ authorizationText }}</p>
     </section>
 
     <section class="erp-block">
@@ -460,7 +483,7 @@ function ids(values: string[] | undefined): string {
       </div>
       <ul v-else-if="operations.length" data-im="execution-record-operations">
         <li v-for="item in operations" :key="item.operation_id || item.operation_key || item.action">
-          {{ item.action || "未命名操作" }} · {{ item.status || "状态未记录" }}
+          {{ actionLabel(item.action) }} · {{ operationStatusLabel(item.status) }}
           <span v-if="item.operation_key" class="erp-muted">（{{ item.operation_key }}）</span>
         </li>
       </ul>
@@ -482,18 +505,36 @@ function ids(values: string[] | undefined): string {
       </div>
       <ul v-else-if="results.length" data-im="execution-record-results">
         <li v-for="item in results" :key="item.result_id">
-          {{ item.title || item.kind || "结果" }}<span v-if="item.content">：{{ item.content }}</span>
+          {{ resultTitle(item) }}<span v-if="resultSummary(item)">：{{ resultSummary(item) }}</span>
         </li>
       </ul>
       <p v-else class="erp-muted">没有已保存的结果卡。</p>
     </section>
 
-    <section class="erp-block">
+    <section class="erp-block" data-im="execution-record-retry-facts">
       <h3>失败、重试与恢复</h3>
       <p>{{ retryText }}</p>
-      <p v-if="retry?.last_error" class="erp-error">最近失败原因：{{ retry.last_error }}</p>
-      <p v-if="retry?.next_action" class="erp-muted">下一步：{{ retry.next_action }}</p>
+      <p v-if="retry?.last_error" class="erp-error">最近失败原因：{{ readableValue(retry.last_error) }}</p>
+      <p v-if="retry?.next_action" class="erp-muted">下一步：{{ readableValue(retry.next_action) }}</p>
     </section>
+
+    <!-- 诊断：原始 ID / 内部枚举 / 结构数据只在这里（默认折叠，可展开核对）。 -->
+    <details class="erp-diagnostics" data-im="execution-record-diagnostics">
+      <summary>诊断（原始标识与结构数据）</summary>
+      <dl class="erp-diagnostics-list mono">
+        <dt>意图标识</dt><dd>{{ readableValue(intent.intent_id) || "未记录" }}</dd>
+        <dt>板面标识</dt><dd>{{ readableValue(props.boardId) || "未记录" }}</dd>
+        <dt>意图版本</dt><dd>{{ readableValue(intent.version) || "未记录" }}</dd>
+        <dt>意图状态原文</dt><dd>{{ diagnosticJson(intent.status) }}</dd>
+        <dt>允许操作原文</dt><dd><pre>{{ diagnosticJson(scope.allowed_actions) }}</pre></dd>
+        <dt>授权范围原文</dt><dd><pre>{{ diagnosticJson(scope) }}</pre></dd>
+        <dt>授权原文</dt><dd><pre>{{ diagnosticJson(intent.authorization) }}</pre></dd>
+        <dt>确认材料原文</dt><dd><pre>{{ diagnosticJson(intent.basis) }}</pre></dd>
+        <dt>操作原始条目</dt><dd><pre>{{ diagnosticJson(operations) }}</pre></dd>
+        <dt>结果原始条目</dt><dd><pre>{{ diagnosticJson(results) }}</pre></dd>
+        <dt>重试原文</dt><dd><pre>{{ diagnosticJson(retry) }}</pre></dd>
+      </dl>
+    </details>
   </section>
 </template>
 
@@ -559,6 +600,34 @@ function ids(values: string[] | undefined): string {
   cursor: pointer;
 }
 .erp-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* 诊断：默认折叠，展开后原文可核对；结构数据不内嵌进主文本。 */
+.erp-diagnostics {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+}
+.erp-diagnostics > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.erp-diagnostics > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.erp-diagnostics-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: var(--sp-2) 0 0;
+}
+.erp-diagnostics-list dt { color: var(--text-muted); }
+.erp-diagnostics-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.erp-diagnostics-list pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
 @media (max-width: 720px) {
   .erp { inset: 3% 3%; padding: var(--sp-3); }
 }
