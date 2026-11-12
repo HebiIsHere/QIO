@@ -40,7 +40,7 @@ withDefaults(
   <div class="pv-text" :data-pv-mode="mode">
     <template v-if="mode === 'markdown'">
       <p class="pv-fact">
-        Markdown · 共 {{ totalLines }} 行 · 已解析为正文 · 只读
+        Markdown · 共 {{ totalLines }} 行 · 已解析为正文
       </p>
       <div class="pv-markdown" data-pv-markdown :key="markKey">
         <MarkdownContent :source="markdownSource" />
@@ -48,7 +48,7 @@ withDefaults(
     </template>
     <template v-else>
       <p class="pv-fact">
-        <span class="mono">{{ languageLabel }}</span> · 共 {{ totalLines }} 行 · 编码 {{ encoding }} · 只读
+        <span class="mono">{{ languageLabel }}</span> · 共 {{ totalLines }} 行 · 编码 {{ encoding }}
       </p>
       <p v-if="truncated" class="pv-warn">
         内容超出预览上限：这里只显示前一部分（已截断，完整内容请打开或下载）
