@@ -208,8 +208,11 @@ describe("F08 定位收起组内卡片：先展开、再按实际可用视野定
     expect(cardEls(wrapper, "b"), "定位收起组内卡片必须先展开组，让目标可见").toHaveLength(1);
     expect(cardEls(wrapper, "b")[0].classes()).toContain("highlight");
     expect(wrapper.text()).toContain("已展开");
-    // 定位只改查看位置：板面状态一个字段都不改，也不产生提交
-    expect(labels, "定位不是板面改动，不该 commit").toHaveLength(0);
+    // #59：定位需要先展开收起的组，展开只写 group.collapsed（纯显示状态），
+    // 不改成员 / 参与 / 正文，也不产生内容提交。
+    // 收起（本用例为制造收起态主动收起）会写一次显示状态；定位展开走查看路径，
+    // 不产生额外板面提交 —— 定位不是板面改动。
+    expect(labels, "定位触发的展开不应产生板面提交").toEqual(["收起组（显示状态）"]);
     const after = store.board!;
     expect(board.groupById(after, "g1")!.members).toEqual(["a", "b"]);
     expect(board.cardById(after, "b")).toMatchObject({ x: 100, y: 1300, content: "要定位的卡片" });

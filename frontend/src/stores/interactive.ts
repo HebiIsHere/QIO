@@ -93,6 +93,7 @@ import {
   frozenViewPayload,
   readBoardScale,
   hasEffectiveSubmissionContent,
+  cardHasEffectiveContent,
   type SubmissionIdentity,
 } from "../interactive/submission";
 import { readBoardArea } from "../interactive/viewport";
@@ -521,6 +522,40 @@ export const useInteractiveStore = defineStore("interactive", () => {
   });
 
   /**
+   * #13 与 P1 的交界：未点「完成编辑」的草稿会在提交时被提升为正文（既有语义）。
+   * 只看 board 当前内容会把「只有待提升草稿、正文还空」的合法提交误判成空提交，
+   * 所以空提交门把「本次会被提升的草稿」也算作有效内容；冲突未决的草稿不算
+   * （那种情况提交时会由 promoteDraftsBeforeSubmit 明确拦下并说明）。
+   */
+  /**
+   * #13 的「有效内容」只看板面上有没有真实内容（非空白卡 / 有效关系 / 非空组），
+   * 不是「相对上次保存有没有 diff」：板面上已有真实内容时再提交一次是合法动作
+   * （服务端仍按 submission.diff_states 判定是否空提交），不能在这里误禁。
+   */
+  function boardHasAnyEffectiveContent(): boolean {
+    const state = board.value;
+    if (!state) return false;
+    if (state.cards.some((card) => !card.deleted && cardHasEffectiveContent(card))) return true;
+    if (state.links.some((link) => !link.deleted)) return true;
+    if (state.groups.some((group) => !group.deleted && (group.members?.length ?? 0) > 0)) return true;
+    return false;
+  }
+
+  function hasPromotableDraftContent(): boolean {
+    if (!board.value) return false;
+    for (const card of board.value.cards) {
+      if (!cardSubmittedFor(card)) continue;
+      if (!hasCardDraft(card.id)) continue;
+      if (draftConflicts.value[cardDraftKey(card.id)]) continue;
+      if (boardContentConflictFor(card.id)) continue;
+      if (!draftDiffersFromContent(card.id, card.content)) continue;
+      if (!cardDraftText(card.id).trim()) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * #13：提交门（数据层）—— 按钮禁用与 submit() 用同一口径，不许两套判定。
    * `submitBlockedReason` 为 null 才能提交；它只说明前端能确定的情况，
    * 服务端回执仍是空提交 / 重复提交的权威。
@@ -528,9 +563,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const submitBlockedReason = computed<string | null>(() => {
     if (boardEditBlockedReason.value !== null) return boardEditBlockedReason.value;
     if (submitStatus.value === "submitting") return "正在提交，请等这次返回。";
+    // 上一次提交明确失败 / 结果未知：允许用户立即重试（服务端仍按同一身份与真实内容判定），
+    // 不能因为「当前候选看起来没有新改动」把重试入口也禁掉。
+    if (submitStatus.value === "failed" || submitStatus.value === "unknown" || submitResultUnknown.value) {
+      return null;
+    }
     if (pendingImpact.value) return "这次改动还有待确认的影响说明，请先确认或取消。";
-    if (!board.value) return "板面还没有读到，暂时不能提交。";
-    if (!hasEffectiveSubmissionContent(board.value, cleanState)) {
+    // 板面还没读到但也没有读取失败（例如只挂提交区的隔离渲染）：不臆断为空，交给服务端权威。
+    // 真正的读取失败由 boardEditBlockedReason 统一拦截（#20）。
+    if (!board.value) return null;
+    if (
+      !hasEffectiveSubmissionContent(board.value, cleanState) &&
+      !boardHasAnyEffectiveContent() &&
+      !hasPromotableDraftContent()
+    ) {
       return "没有可提交的有效改动：空白卡片本身不算内容。请先填写文字卡、勾选要参与的注释，或建立关系 / 删除卡片。";
     }
     return null;
@@ -607,7 +653,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     idle: "未提交",
     submitting: "提交中",
     unknown: "提交结果待确认",
-    queued: "排队中",
+    queued: "已提交，排队中",
     processing: "处理中",
     replied: "已回复",
     awaiting_confirm: "待确认",
@@ -3582,15 +3628,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return null;
     }
     /**
-     * #13：前端空提交判定与后端同口径（空白卡不算；关系 / 删除等有效变化算）。
-     * 没有有效内容时不发请求，直接把可操作的下一步说清楚（按钮侧还有 canSubmit）。
+     * #13：空提交判定分工 —— UI 用 canSubmit / submitBlockedReason 在**按钮侧**禁用
+     * 并给出下一步（真正没有有效内容时用户点不到）；这里不提前拦截，
+     * 因为服务端 submission.diff_states 才是空提交的权威判定，前端只负责如实展示回执。
+     * 这样直接调用 store.submit() 的既有链路（受理/理解/查证）语义不变。
      */
-    if (!hasEffectiveSubmissionContent(board.value, cleanState)) {
-      submitStatus.value = "empty";
-      submitError.value =
-        "没有可提交的有效改动：空白卡片本身不算提交内容。请先填写文字卡、勾选要参与的注释，或建立关系 / 删除卡片，然后再提交。";
-      return null;
-    }
     submitStatus.value = "submitting";
     /**
      * P1：把未确认草稿提升为正文，**必须在 saveNow() 之前**。

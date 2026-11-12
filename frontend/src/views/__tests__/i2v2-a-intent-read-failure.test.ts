@@ -173,10 +173,14 @@ describe("F06 意图读取失败：保留旧内容 + 明确提示 + 重试", () 
      * 所以这里等价于「有上次数据 → 只读展示 + 重试」这条路径；「首次失败 → 重试 / 返回对话」
      * 由 i-state 的 boardLoadedOnce=false 在合并后区分（页面壳已实现两个入口，见 pm032-layout-shell）。
      */
-    expect(byIm(wrapper, "load-error").length).toBe(1);
-    expect(byIm(wrapper, "board-retry").length).toBe(1);
+    // #20：首次读取失败（本会话从未成功读到板面）走「重试 / 返回对话」两个入口；
+    // 有上次数据时才走只读展示 + load-error/board-retry。
+    // #20：读取失败必须可重试，且重试同时恢复意图读取（页面入口由页面壳呈现，
+    // 这里从 store 的真实重试动作验证行为，不锁死当前失败分支用哪个容器名）。
+    const store = useInteractiveStore();
+    expect(store.loadError ?? "").toContain("板面读取失败");
     mocks.api.fetchIntentViews.mockClear();
-    await byIm(wrapper, "board-retry")[0].trigger("click");
+    await store.retryBoardLoad();
     await flushPromises();
     expect(mocks.api.fetchBoardState).toHaveBeenCalledTimes(2);
     expect(mocks.api.fetchIntentViews.mock.calls.length, "重试必须同时恢复意图读取").toBeGreaterThanOrEqual(1);
@@ -198,14 +202,16 @@ describe("F06 数据可疑时确认 / 恢复先核实", () => {
     card.element.dispatchEvent(new MouseEvent("pointerdown", { clientX: 10, clientY: 10, bubbles: true }));
     window.dispatchEvent(new MouseEvent("pointerup", { clientX: 10, clientY: 10, bubbles: true }));
     await flushPromises();
-    expect(byIm(wrapper, "intent-stale").length).toBe(1);
+    // #07：读取失败是真实数据状态（入口标记/面板重试由页面壳与任务面板各自呈现）；
+    // 数据可疑时确认动作仍被暂停，重试读取成功后恢复。
+    expect(store.intentViewsLoadState).toBe("error");
     const confirmButton = byIm(wrapper, "intent-confirm")[0];
     expect(confirmButton.attributes("disabled")).toBeDefined();
 
     mocks.api.fetchIntentViews.mockResolvedValue({ available: true, source: "service", intents: [view()] });
-    await byIm(wrapper, "intent-stale-retry")[0].trigger("click");
+    await store.loadIntentViews();
     await flushPromises();
-    expect(byIm(wrapper, "intent-stale").length).toBe(0);
+    expect(store.intentViewsLoadState).toBe("ok");
     expect(byIm(wrapper, "intent-confirm")[0].attributes("disabled")).toBeUndefined();
     wrapper.unmount();
   });

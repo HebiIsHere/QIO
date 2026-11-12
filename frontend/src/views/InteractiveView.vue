@@ -48,7 +48,7 @@ const router = useRouter();
  * 宽窗允许任务面板与提交详情并排；窄窗明确切换（同一时间只显示最近打开的那一块）。
  * 聊天开合不受影响（唯一入口在输入区旁）；执行记录层级更高，不会被它们遮住。
  * ------------------------------------------------------------------ */
-const viewportWidth = ref(typeof window === "undefined" ? 0 : window.innerWidth);
+const viewportWidth = ref(typeof window === "undefined" ? 0 : contentViewport().width);
 const panelSpace = computed(() => panelSpaceMode(viewportWidth.value));
 const toolbarRef = ref<InstanceType<typeof BoardToolbar> | null>(null);
 /** 提交详情 / 上次结果 / 过程面板被打开：窄窗时明确切走任务面板（不销毁任何状态）。 */

@@ -181,17 +181,25 @@ describe("#20 整板读取失败的只读门禁", () => {
 });
 
 describe("#13 空提交判定与后端同口径", () => {
-  it("只有空白文字卡：canSubmit=false、submit 不发请求并给出下一步", async () => {
+  it("只有空白文字卡：canSubmit=false 并给出下一步；空提交的权威判定在服务端回执", async () => {
     const store = useInteractiveStore();
     await store.load();
     const blank = addCard(emptyState(BOARD_ID), { kind: "text", content: "   ", checked: true });
     store.commit(blank as BoardState, "添加空白卡");
+    // UI 门禁：按钮禁用 + 下一步提示（用户不会在界面上发出空提交）
     expect(store.canSubmit).toBe(false);
     expect(store.submitBlockedReason).toContain("空白卡片");
+    // 服务端仍是空提交权威：直接调用 submit 时按真实回执落到 empty，不伪造成功
+    vi.mocked(api.submitBoard).mockResolvedValue(
+      submitResult({
+        status: "empty",
+        submission: { id: "s_empty", seq: 4, status: "empty", createdAt: NOW },
+        delivery: { delivered: false, reason: "empty", detail: "没有可提交的有效改动" },
+      }) as never,
+    );
     await store.submit();
-    expect(api.submitBoard).not.toHaveBeenCalled();
+    expect(api.submitBoard).toHaveBeenCalledTimes(1);
     expect(store.submitStatus).toBe("empty");
-    expect(store.submitError).toContain("空白卡片");
   });
 
   it("有正文的文字卡算有效内容", async () => {
