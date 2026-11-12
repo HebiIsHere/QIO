@@ -7,6 +7,8 @@
  * - 改地址 / 协议必须重新填 Key 并显式确认（与后端规则一致）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import KeyForm from "../KeyForm.vue";
 import { api } from "../../../services/api";
@@ -208,5 +210,45 @@ describe("Key 接入 · 编辑与发送目标变更", () => {
     await flushPromises();
     expect(api.updateCredentialMeta).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("换了发送目标");
+  });
+});
+
+/**
+ * #17 / #18 / #89 的文案与底部动作。
+ * 断言只针对本表单自己的 DOM 与源码（jsdom 不做排版，等宽/同高/居中由 CDP 实测证据守护）。
+ */
+describe("Key 接入 · 文案与底部动作（#17 / #18 / #89）", () => {
+  it("#17 服务商占位写「选择服务商」；自定义服务地址提示指向「高级选项」", async () => {
+    const wrapper = mountForm({ mode: "create" });
+    expect(wrapper.find(".qio-combo-trigger").text()).toContain("选择服务商");
+    expect(wrapper.text()).not.toContain("或下面的自定义服务地址");
+    await pickProvider(wrapper, "其他 / 自定义服务");
+    expect(wrapper.text()).toContain("「高级选项」里填写");
+  });
+
+  it("#18 累计用量上限：标题不重复 token 单位、数字框保留单位、「留空不限」只写一次", async () => {
+    const wrapper = mountForm({ mode: "create" });
+    await wrapper.find(".advanced-toggle").trigger("click");
+    const labels = wrapper.findAll(".field__label").map((item) => item.text());
+    expect(labels).toContain("累计用量上限");
+    expect(wrapper.text()).not.toContain("累计用量上限（token");
+    expect(wrapper.find(".q-number-unit").text()).toBe("token");
+    const occurrences = wrapper.text().match(/不限/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+    expect(wrapper.text()).toContain("留空表示不限");
+  });
+
+  it("#89 底部动作走共享按钮组规则，保留主次颜色与等宽同高来源", () => {
+    const source = readFileSync(join(process.cwd(), "src", "components", "models", "KeyForm.vue"), "utf8");
+    // 容器用共享 .qio-modal-actions（居中 / 等宽 / 同高 / 窄窗纵排都由 base.css 提供）
+    expect(source).toContain('class="actions qio-modal-actions"');
+    // 两个按钮仍是共享按钮原语：次级 .qio-btn、主操作 .qio-btn.primary
+    expect(source).toMatch(/class="qio-btn" :disabled="busy" @click="emit\('cancel'\)"/);
+    expect(source).toMatch(/class="qio-btn primary"/);
+    // KeyForm 只收口尺寸：等分 + 36px，不新增宽度魔法数字
+    expect(source).toMatch(/\.actions \.qio-btn\s*\{[^}]*flex:\s*1 1 0/);
+    expect(source).toMatch(/\.actions \.qio-btn\s*\{[^}]*height:\s*36px/);
+    // 不再把动作组钉在右边（#89 的同轴要求）
+    expect(source).not.toMatch(/\.actions\s*\{[^}]*justify-content:\s*flex-end/);
   });
 });
