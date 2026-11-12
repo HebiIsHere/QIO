@@ -5,6 +5,7 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
+最后核对：2026-11-12（**Windows 20px 自绘圆角窗口（0.3.2）：实现完成、带签名安装包已构建并通过发布闸门，0.3.1→0.3.2 静默覆盖升级的文件级校验 PASS；安装版真机验收按用户决定本轮未执行 → A–G 真机矩阵项 UNVERIFIED/待补测；未打标签、未发布**：分支 `feat/window-frame-032`（基线 `origin/main` @ `082f881f`），实现提交 `149ee3ea`（壳侧）+ `790c079b`（前端），发布提交 `aee56809`（版本号 7 处 + 发布说明），发布说明回填 `152525ca`。范围：窗口改为程序化建窗（`frontend/src-tauri/tauri.conf.json` 的 `app.windows: []`），css 模式透明窗 + 28 CSS px 留白 + 20 CSS px 圆角 + 亮/暗 soft·A 阴影 + overlay 原生子窗命中 + poll 穿透（默认开，`QIO_PASSTHROUGH=none` 可关）+ `qio://window-state` 三态归零；dwm=0.3.1 等价、native=系统窗框、css 初始化失败回退 native。产物：`QIO_0.3.2_x64-setup.exe` 129,277,488 字节、SHA256 `2a09e5f999669fb612607486969c4f23fa61e74743c7ea36a538e62f41925776`、构建 12 分 14 秒；发布闸门 18 PASS / 0 FAIL / 0 WARN；更新签名 Ed25519 真实验签 PASS。覆盖升级（静默 `/S /D=D:\QIO`，exit=0、14.3 秒、安装器未自动启动 QIO）：文件级 U1–U8/U10 PASS、U9 启动退出与 U11 更新检查 SKIP；用户数据保留（`D:\QIO-data\app.db` sha256 与 instance_id 不变、数据表计数与关键 settings/凭据不变；安装目录 `papers_leiwenqiang` 的 7 个文件逐字节保留；注册表 DisplayVersion=0.3.2、DbBaseline 保留；开始菜单指向 `D:\QIO\qio.exe`）。**UNVERIFIED/待补测**：安装版真机矩阵 A–G（外观/DPI 100/125/200、交互与 poll/overlay 真实命中、QIO 回归、三模式与回退、干净安装/卸载/应用内更新）本轮按用户决定未执行；Win10（build<22000 自动 native）/RDP/混合 DPI 无环境；overlay 左上 resize strip 1px 迟滞待真实光标复核。补测指针：`D:\qio-dev\qio-032-evidence\REPORT-032.md`、`D:\qio-dev\qio-032-evidence\acceptance\runbook-quiet-desktop.md`、`D:\qio-dev\qio-032-evidence\install\upgrade-result.json`、`D:\qio-dev\qio-032-evidence\release\sig-verify-0.3.2-installer.json`。）
 最后核对：2026-11-11（**QIO 0.3.1 应用内更新 522 故障已定位并修复：第三方加速节点 `gh.llkk.cc` 返回 HTTP 522，v0.3.1 `latest.json` 下载地址已切到可用节点；安装包与签名未变、无需重装**：现象：用户电脑上的 QIO 检查 0.3.1 更新时报告 HTTP 522。定位：522 是 Cloudflare 回源超时，来自更新链路中的第三方加速节点 `gh.llkk.cc`（实测其 latest.json 与安装包 URL 均 522；`ghproxy.net` 500/连接失败；`ghfast.top` 200；GitHub 直连 200）。`gh.llkk.cc` 同时是 v0.3.1 `latest.json` 里 `windows-x86_64` 下载 URL 的主机；按 tauri-plugin-updater 2.12.0 源码，检查更新会按端点顺序继续尝试（非 2xx 只记日志、不终止），所以 522 发生在清单内**安装包下载**阶段。修复：重新上传 v0.3.1 的 `latest.json` 资产，下载 URL 改为 `https://ghfast.top/https://github.com/HebiIsHere/QIO/releases/download/v0.3.1/QIO_0.3.1_x64-setup.exe`（同一安装包与同一 minisign 签名，未重打、无需重装）；`frontend/src-tauri/tauri.conf.json` 更新端点顺序调整为 GitHub 直连优先、可用加速节点次之、失效节点留作兜底（仅影响未来构建）。验证：`https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json` 返回 HTTP 200 / version=0.3.1 / 新下载 URL；目标资产经 `ghfast.top` HEAD 200 且 Content-Length=129,224,634；`latest.json` 与 `.sig` 的签名 key id `5af7e96c8e24bf8b` 与内嵌公钥一致、未变。边界：加速节点是第三方服务，可能再次失效；若再遇 522 可直接从 GitHub Release 下载 `QIO_0.3.1_x64-setup.exe` 手动安装（签名校验仍由更新器/安装流程保证）。详见 `docs/releases/v0.3.1.md` §六。）
 最后核对：2026-11-11（**v0.3.1 已发布：main 合并并推送、tag v0.3.1 与 GitHub Release 三个资产已上传；完整 CI 矩阵在发布候选提交上先红后绿，发布闸门 18 项 PASS**：基线 `origin/main` @ `a20f5e1f`（v0.3.0），发布候选/受测代码 SHA `fc658ebdd2c58d904f455f3b5ab7fbcfb56190a3`（main 先快进合并 `fix/topic-review-20261110` @ `878a0475`，再从 main 做 0.3.1 版本号 7 处 + 发布说明提交），tag `v0.3.1`（annotated tag object `2f4aa2cd`）指向该提交。**CI**：push main 触发 [run 42996466316](https://github.com/HebiIsHere/QIO/actions/runs/42996466316)，首跑仅 `backend (py3.12)` 失败 —— 一项计时用例 `test_interactive_during_heavy_work::test_a_cancel_request_is_served_while_slow_prediction_runs` 在 py3.12 runner 负载下 458ms 超 300ms 预算（同用例 py3.11 通过），按既有「负载敏感 flake」口径对失败 job 重跑（job `130455047486`）后通过；最终 backend py3.11/py3.12/windows、frontend、rust ubuntu/windows、frozen-worker、install-e2e、docs 全部 success，未为 flake 改产品代码。**构建/发布**：用本机更新签名私钥 + 口令（仅环境变量）经 `scripts/build_installer.ps1` 完整链路（内置 fp32 模型 / 自带 Python 3.11.16 运行时 33.9MB / 重建 sidecar 60.4MB / 卸载助手 / tauri build / NSIS 补丁 / 签名 / latest.json）产出 `QIO_0.3.1_x64-setup.exe`（129,224,634 字节，SHA256 `3be47c8141726589265dd2a4eb1c657bc61bc7633eea4a1a6b70ad2953ca9882`，更新签名 key id `5af7e96c8e24bf8b` 与内嵌公钥一致）；`scripts/release_gate.py` **18 PASS / 0 FAIL**（安装包/SHA256/latest.json 版本与签名结构/内置模型/sidecar 新鲜度与逐字节一致/NSIS 载荷/卸载契约/构建 manifest 身份），`publish_release.ps1` 先闸门后发布 `gh release create v0.3.1` 并上传 exe/exe.sig/latest.json；应用内更新源 `https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json` 实测 HTTP 200 且 version=0.3.1。**本版内容**：v0.3.0 之后的对话页 0.3.0 七项与 17 项一致性修复、统一话题判断与申请流程、话题系统结构整理（完整位置状态/导航命令身份/逻辑答案执行权与共享暂存）、复核补修 R1—R19（依据链/取消目标身份/原子导航/普通回答统一答案身份/保存失败暂存与恢复清单可见性/互动板提交依据与默认话题），详见 `docs/releases/v0.3.1.md`。**诚实边界**：本轮未执行真机安装→首次启动→覆盖升级→应用内更新→卸载的人工 E2E（CI install-e2e 与离线闸门只证明包结构与接线）；安装包未做 Windows Authenticode 代码签名（与既往一致）；真实厂商模型成功路径与浏览器端到端未验证。详见 `docs/releases/v0.3.1.md`、`docs/releases/release-history.jsonl`。）
 最后核对：2026-11-11（**话题系统复核补修 R19（承接 9de91bb 复核确认的两个剩余缺口）：实现、集成、定向验收完成；按本轮纪律只做定向验证，未启动全量、未触发 CI，未合并 main、未打标签、未发布、未改变生产更新源**：受检分支固定为 `fix/topic-review-20261110`，基线 `9de91bb`（= origin，工作树干净）。① **首次互动板提交的默认话题**：`interactive_store.submit` 的 `accept_turn` 在受理快照无 `topic_id`（受理这一刻还没有当前位置）时，按既有兜底语义 `AppContext.current_topic()` 只读解析默认话题（必要时创建默认话题节点；不 enter_topic、不写 Anchor/cursor、不推进版本），写回同一份 `basis["topic_id"]` 并作为轮次 topic 与 `turn.board_topic_id`；位置版本沿用同一份受理快照，之后用户切到 B 时轮首补锚/轮末推进按 R17 依据链 CAS 被拒（零位置副作用零广播），提问与回答都写入默认话题、权威位置保持 B、position_version 不推进、不发布切回默认话题的 ANCHOR。② **保存失败后的恢复清单可见性**：新增 SSE 事件 `RECOVERY_INBOX_CHANGED`（`CRITICAL_EVENTS`，payload record_id/turn_id/topic_id/kind/failed_stage/action）；`turn_orchestrator.persist` 在 `save_normal_answer` 抛错路径按 `answer_key_for` 查**已提交** pending 恢复记录，查到才发布（查不到不发、通知异常不掩盖原异常、原异常照抛）；前端收到事件复用既有 `session.loadRecoveryInbox()` 刷新，同实例已有请求在途时只登记「完成后补拉一轮」，由该请求 finally 解锁后补拉，保证新记录最终可见，普通并发单飞语义不变；点击「重试回答」继续走既有补存入口。验证：集成代码受测 SHA `2059e5aa`；Lead 真实 HTTP + fake provider 集成验收 11 passed（P1 两条含无导航正常路径、P2 一条含事件 record_id 与既有入口补存）、A 相邻回归 69 passed、B/事件相邻回归 45 passed、前端定向 72 passed / 8 files、`npx vue-tsc --noEmit` exit 0；基线 `9de91bb` 上同一集成用例 2 failed / 1 passed（P1 归属 B、P2 新事件不存在；P1 无导航路径基线即通过）。A/B 各自基线红与绿证据见 `D:\qio-dev\r19-evidence\`。**本轮未运行全量 pytest / 全量 vitest / 生产构建 / CI，未做真实浏览器浏览器端到端与真实模型验证**；P1 只修互动板提交入口，P2 通知只覆盖 persist 普通回答保存失败路径；事件不是清单权威（权威仍为 GET /api/recovery/records）。详见 `docs/topic-unify-r19-20261111.md`、`docs/topic-unify-r19-contract-20261111.md`、`docs/architecture.md` §22.11。）
@@ -1906,6 +1907,7 @@ P16–P24，直接并列会产生两套同号里程碑）。它们的验收结�
     几何等价性已验证（目标 300px 量到 302px），但它换来的是「主线程一卡动画就卡」
     （探针轮询下一度 p50 34ms vs 16ms），因此**决定不做**；尾段钉死 1:1 保留作为加固。
    判断这类问题必须以**真实动画**的逐帧数据为准，冻结渲染的静态对照会放大差异。
+- **Windows 20 CSS px 自绘圆角窗口（0.3.2）的安装版真机验收本轮未执行（用户决定）**：实现与带签名安装包已完成、静默覆盖升级的文件级校验 PASS（详见 P111），但安装版 A–G 真机矩阵（外观/DPI、交互与 poll/overlay 真实命中、QIO 回归、三模式与回退、干净安装/卸载/应用内更新）全部 UNVERIFIED；Win10（build<22000 自动 native）/RDP/混合 DPI 无环境 → UNVERIFIED；overlay 左上 resize strip 的 1px 命中迟滞待真实光标复核。补测顺序与脚本见 `D:\qio-dev\qio-032-evidence\acceptance\runbook-quiet-desktop.md`，结论回填 `D:\qio-dev\qio-032-evidence\REPORT-032.md`。
 
 ---
 
@@ -2064,6 +2066,32 @@ npm test
   最大化 → 客户区 1600×852 正好等于工作区，按钮自己变成「向下还原」，再点回到 1216×809；
   关闭 → 进程退出。**拖拽只核到结构**（真窗口里 `data-tauri-drag-region` 在位、权限与上面三个同批生效），
   没有再用系统级合成鼠标去拖窗口 —— 本机前台被别的应用占着，合成点击会落到那个应用上（实测踩过一次）。
+
+---
+
+## 本轮变更：Windows 20px 自绘圆角窗口（0.3.2，2026-11-12）
+
+**要解决的问题**：0.3.1 的窗口四角由 DWM 按系统半径裁切（本机实测约 14 物理 px @200%，≈7 CSS px），无法得到产品要求的 20 CSS px 圆角，四角外也没有统一的网页层阴影；同时最大化按钮没有 Win11 贴靠布局面板。0.3.2 改为「透明窗口 + 网页层留白 28 CSS px + 圆角 20 CSS px + CSS 阴影」：四角与阴影由 WebView 合成，DWM 只负责不裁切（`DWMWCP_DONOTROUND` + 边框色 none）。
+
+| 改法 | 实现 | 验证 |
+| --- | --- | --- |
+| 窗口透明与三模式建窗 | `frontend/src-tauri/src/window_frame/`（建窗/`QIO_WINDOW_FRAME` 分流）、`frontend/src-tauri/tauri.conf.json` 的 `app.windows: []`；native/dwm 均可回退 | 本机集成门禁 + 安装包构建；真机外观待补测 |
+| 命中（Snap/缩放/拖动） | overlay 原生透明子窗（`QioWindowOverlay`）：maxButton=`HTMAXBUTTON`、titlebar 段=`HTCAPTION`、可见内容边内侧八方向 resize 环；interactive 控件（设置入口/权限模式/异常入口/互动挂载点）挖洞保持 DOM 可点；press 期间 defer 重排 | 待安装版 B 组真机 |
+| 穿透 | css 模式默认 `poll`（8ms 轮询）：阴影带/圆角外加 `WS_EX_LAYERED|WS_EX_TRANSPARENT`，WebView2 子窗递归同步；进内容区/拖动/最小化/隐藏恢复交互；`QIO_PASSTHROUGH=none` 可关 | 待安装版 B/F 组真机 |
+| 网页层 | `.window-frame`/`.window-frame__surface`（`frontend/src/App.vue`）、窗口令牌（`frontend/src/styles/tokens.css`）、全窗 fixed 层内缩与内容视口（`frontend/src/styles/base.css`、`frontend/src/composables/useWindowFrame.ts`、`frontend/src/utils/windowFrame.ts`）、浮层 clamp | 前端全量测试；真机三态待补测 |
+| 状态与按钮 | `qio://window-state`（normal/maximized/snapped）三态归零、`qio://caption-hover` 补 hover、`WindowChrome` 保留关闭协议与三按钮路径 | 待安装版 B/C 组真机 |
+
+**已完成的工程验证**：本机集成门禁全部通过（`cargo check` 0 warning、`cargo test --bin qio`、前端全量 `npm test`、`vue-tsc`）；带签名安装包 `QIO_0.3.2_x64-setup.exe`（129,277,488 字节 / SHA256 `2a09e5f9…25776`，构建 12 分 14 秒）通过发布闸门 18 PASS / 0 FAIL / 0 WARN；更新签名 Ed25519 真实验签 PASS；0.3.1→0.3.2 静默覆盖升级文件级校验 PASS（U1–U8/U10、用户数据与设置保留，U9/U11 SKIP 待安静桌面）。
+
+**已知限制（不粉饰）**
+
+- 安装版真机矩阵 A–G（外观/DPI、交互、QIO 回归、三模式与回退、干净安装/卸载/应用内更新）本轮按用户决定**未执行** → UNVERIFIED；补测顺序见 `D:\qio-dev\qio-032-evidence\acceptance\runbook-quiet-desktop.md`。
+- Win10（`build < 22000` 自动 native）、RDP、混合 DPI 双屏无环境 → UNVERIFIED；100%/125% 缩放未验证（本机仅 200%）。
+- overlay 已知「窗口 move/resize/状态变化后左上 resize strip 1px 命中迟滞（右下正常）」的待修复问题，接入与补测时必须用真实光标逐点扫描，不能只信 `SendMessage`/布局 JSON。
+- poll 动态改 `WS_EX_LAYERED` 会改变 DWM 合成路径，透明窗 + CSS 阴影 + WebView2 重绘的长期影响以真机为准；`forward_click` 0.3.2 不接（poll 是唯一已验证穿透路径）。
+- 关闭协议（ask/tray/quit）、托盘、更新、卸载与本轮窗口改造解耦，但回归仍需在安装版补测。
+
+**证据**：`docs/releases/v0.3.2.md`、`docs/qio-window-frame-integration-032.md`、`D:\qio-dev\dist-0.3.2-release\`（安装包/签名/latest.json/gate-result.json）、`D:\qio-dev\qio-032-evidence\REPORT-032.md` 与 `D:\qio-dev\qio-032-evidence\`（acceptance/install/release）。
 
 ---
 
@@ -6232,6 +6260,17 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 验证：公开 latest.json HTTP 200 / version 0.3.1 / 新 URL；资产 HEAD 200 且长度 129,224,634；签名 key id 未变。
 - 边界：加速节点为第三方、可能再次失效；再遇 522 可从 GitHub Release 手动下载安装包。
 - 证据：`docs/releases/v0.3.1.md` §六；`D:\qio-dev\dist-0.3.1-release\latest.json`（修正后清单）。
+### P111 — Windows 20px 自绘圆角窗口（0.3.2）
+
+- **Status：** partial
+- **目标：** 用「透明窗口 + 网页层留白/圆角/阴影」实现 20 CSS px 圆角窗（替代 0.3.1 的 DWM 系统圆角），同时保留贴靠/最大化/缩放/关闭等原生行为与可回退路径；安装版真机验收因用户决定本轮不执行，按本文件口径记 partial。
+- **实现（壳侧，`frontend/src-tauri/`）：** 新增 `src/window_frame/` 模块（`config` 三模式与 `QIO_WINDOW_FRAME`/`QIO_PASSTHROUGH`；`outline` DWM 分流（css=DONOTROUND/native=跳过/dwm=ROUND）；`overlay` 原生透明子窗命中（类名 `QioWindowOverlay`：maxButton→HTMAXBUTTON、titlebar 段→HTCAPTION、可见内容边内侧八方向 resize 环，interactive 洞从 titlebar 挖掉；press 期间 defer 重排、每次 sync 重压 HWND_TOP）；`passthrough` poll 穿透（8ms、`WS_EX_LAYERED|WS_EX_TRANSPARENT` 加/撤、WebView2 子窗递归 2 级、拖动/最小化/隐藏强制交互、退出与主窗销毁清理）；`state` 几何/状态事件；`wndproc` 主窗非命中职责；`mod` 建窗与页面加载后 show 握手）；`src/main.rs` 改为程序化建窗（`tauri.conf.json` `app.windows: []`）；`capabilities/default.json` 现有窗口权限保持不变。
+- **实现（前端，`frontend/src/`）：** `.window-frame`/`.window-frame__surface` 根结构、`styles/tokens.css` 窗口令牌（留白/圆角/亮暗阴影/三态归零）、`styles/base.css` 透明根背景与全窗 fixed 层内缩、`services/desktop.ts` 与 `composables/useWindowFrame.ts`/`utils/windowFrame.ts`（内容视口、hit-regions 上报、`qio://window-state`/`caption-hover` 对接）、`WindowChrome.vue` 状态与 hover；全窗 fixed 层按 `--window-frame-inset` 内缩，`innerWidth/innerHeight` 与 `100vh/100dvh` 使用者改按内容区；两份冲突契约测试改写为双模式守卫并新增全窗层/视口守卫。
+- **验证：** ① 本机集成门禁全部通过（`cargo check` 0 warning、`cargo test --bin qio`、前端全量 `npm test`、`vue-tsc`；具体数字不写入本文件，见 `docs/releases/v0.3.2.md`）；② 带签名安装包已构建并通过发布闸门：`QIO_0.3.2_x64-setup.exe` 129,277,488 字节 / SHA256 `2a09e5f999669fb612607486969c4f23fa61e74743c7ea36a538e62f41925776`，构建 12 分 14 秒，gate 18 PASS / 0 FAIL / 0 WARN（`D:\qio-dev\dist-0.3.2-release\gate-result.json`）；更新签名用内嵌公钥做 Ed25519 真实验签 PASS；③ 0.3.1→0.3.2 静默覆盖升级文件级校验 PASS：`/S /D=D:\QIO`、exit=0、14.3 秒、安装器未自动启动 QIO；U1–U8/U10 PASS（qio.exe/uninstall.exe 0.3.2、sidecar 与 release 构建逐字节一致、安装目录用户文件保留、注册表与 DbBaseline、`D:\QIO-data\app.db` sha256 与 instance_id 不变、数据表计数与关键 settings/凭据不变、开始菜单指向正确）；U9 启动/退出与 U11 更新检查 SKIP（待安静桌面）。
+- **未验证边界（按用户决定，本轮不做安装版真机验收）：** A 外观/DPI（四角/阴影/启动白闪/白边；100%/125%/200% 仅本机 200% 可试）、B 交互（八方向真实拖拽缩放、阴影带/圆角外 poll 穿透、快速跨越、标题栏拖动/双击、最大化 + Snap 悬停/点选、拖边贴靠/Win+方向、贴靠/还原缝隙）、C QIO 回归（锚点菜单、审批遮罩/引导层三态、最小窗、托盘、关闭行为 ask/tray/quit、首屏）、D 三模式与回退（css/dwm/native 真机外观、css 初始化失败回退）、E 安装升级的 GUI 部分（干净安装、卸载、应用内更新检查）；Win10（build<22000 自动 native）/RDP/混合 DPI 无环境 → UNVERIFIED；overlay 左上 resize strip 的 1px 命中迟滞待真实光标逐点复核；poll 在透明窗 + WebView2 下的合成/性能仅以真机为准。补测指针：`D:\qio-dev\qio-032-evidence\REPORT-032.md`（报告，待回填）、`D:\qio-dev\qio-032-evidence\acceptance\runbook-quiet-desktop.md`（安静桌面按序执行）、`D:\qio-dev\qio-032-evidence\install\upgrade-acceptance-plan.md`。
+- **回退：** `QIO_WINDOW_FRAME=native`（完整系统窗框，功能等价 0.3.1）/ `QIO_WINDOW_FRAME=dwm`（0.3.1 等价外观）/ `QIO_PASSTHROUGH=none`（关闭 poll）；css 初始化任一步失败 → 记录结构化原因并以 native 重建；`QIO_WINDOW_TEST_FAIL_CSS=1` 仅测试用。
+- **证据：** `docs/qio-window-frame-integration-032.md`（集成规格唯一源）、`docs/releases/v0.3.2.md`（发布说明）、`D:\qio-dev\dist-0.3.2-release\`（安装包/签名/latest.json/SHA256SUMS/gate-result.json）、`D:\qio-dev\qio-032-evidence\REPORT-032.md`、`D:\qio-dev\qio-032-evidence\install\upgrade-result.json`、`D:\qio-dev\qio-032-evidence\release\sig-verify-0.3.2-installer.json`、`D:\qio-dev\qio-032-evidence\acceptance\`。
+
 
 
 
