@@ -406,6 +406,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 最近一次理解的状态：accepted / understanding / 三态结果 / failed */
   const understandingStatus = ref<UnderstandingStatus | null>(null);
   const understandingError = ref<string | null>(null);
+  /**
+   * #41：提交详情的「读取失败 / 上次结果 / 有效空态」三态需要知道**理解过程这一次读取**本身的结果，
+   * 而不是只看理解状态。与 `understandingError`（查询失败原因）分开：
+   * - error + understandingLoadedOnce=false → 读取失败（可重试）
+   * - error + understandingLoadedOnce=true  → 上次结果（旧内容保留）
+   * - ok + 空记录 → 成功读取为空（这才是「本次没有改动 / 没有理解过程」）
+   * 读取动作：`refreshUnderstanding()` / `loadUnderstanding()`（失败可重试）。
+   */
+  const understandingLoadState = ref<"idle" | "loading" | "ok" | "error">("idle");
+  const understandingLoadError = ref<string | null>(null);
+  const understandingLoadedOnce = ref(false);
   /** 正在查询理解状态（间隔 1s；页面不可见时停止） */
   const understandingPolling = ref(false);
   /** 自动查询停下但结果还没回来时的如实说明（不是错误） */
@@ -4529,6 +4540,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     understandings.value = [];
     understandingStatus.value = null;
     understandingError.value = null;
+    understandingLoadState.value = "idle";
+    understandingLoadError.value = null;
+    understandingLoadedOnce.value = false;
     understandingNote.value = null;
     acceptedUnderstandingId.value = null;
     submitNote.value = null;
@@ -4615,10 +4629,16 @@ export const useInteractiveStore = defineStore("interactive", () => {
   async function refreshUnderstanding(): Promise<Understanding | null> {
     const submissionId = understandingSubmissionId();
     let found: Understanding | null = null;
+    understandingLoadState.value = "loading";
     try {
       found = await loadUnderstanding(submissionId);
+      understandingLoadState.value = "ok";
+      understandingLoadError.value = null;
+      understandingLoadedOnce.value = true;
     } catch (err) {
       understandingError.value = (err as Error).message;
+      understandingLoadState.value = "error";
+      understandingLoadError.value = understandingError.value;
       return null;
     }
     /**
@@ -4798,8 +4818,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     try {
       // 本次提交的理解查询按**本次**受理回执的身份查（不是「最近一次 lastSubmission」）
       await loadUnderstanding(understandingSubmissionId(), epoch);
+      understandingLoadState.value = "ok";
+      understandingLoadError.value = null;
+      understandingLoadedOnce.value = true;
     } catch (err) {
       understandingError.value = (err as Error).message;
+      understandingLoadState.value = "error";
+      understandingLoadError.value = understandingError.value;
     }
     if (token !== understandingPollToken) return;
     if (understandingSettled(understandingStatus.value)) {
@@ -5335,6 +5360,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     understandings,
     understandingStatus,
     understandingError,
+    /** #41：理解过程读取的独立三态（读取失败 / 上次结果 / 成功空） */
+    understandingLoadState,
+    understandingLoadError,
+    understandingLoadedOnce,
     understandingPolling,
     understandingNote,
     understandingHistory,

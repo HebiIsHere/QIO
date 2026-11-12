@@ -30,7 +30,7 @@
 | #20 | **已修复（数据层门禁 + 重试）** | 新增 `boardLoadedOnce/boardReadOnly/boardEditBlockedReason/retryBoardLoad()`；`commit()` 在读取失败期间直接返回不应用（不改 board、不排保存）；`saveNow()`/`submit()` 拒绝并发明确原因。首次失败 reason 含「重试读取或返回对话」，有上次数据含「只能查看」。用例 2 个 |
 | #26 | **已修复（前端数据 + 订阅）** | `applyInteractiveIntentsChanged(payload)`：按 `intent_id` upsert（重复事件/重连不建重复卡）、非当前板面忽略、未知 id 不编造卡片并触发一次 300ms 去抖权威 intent-views 刷新；不重置视口/选择/面板。`services/events.ts` EVENT_TYPES + `stores/events.ts` case 已接（Lead 授权）。用例：重复事件幂等、非当前板面不落地、未知 id 不造卡、EVENT_TYPES 包含 |
 | #27 | **平台已就绪（UI/后端在本轮他人范围）** | store `intentViews` 原样透传服务端字段（含 `authorization_valid`，以及 i-submit 新增的 `authorization_invalidated/authorization_changes`），不裁剪不改名；已告知 i-tasks 直接读。判断「首次未授权=待确认 / 范围变化=需重新确认」的展示由 i-tasks 的 taskCenter/IntentLayer + i-submit 事实字段落地；store 无需新增映射 |
-| #41 | **基线已满足（store 侧能力）** | 提交详情所需三种来源既有：`lastSubmission`（有效空态/上次结果）、`understandingError`+`refreshUnderstanding()/retryUnderstanding()`、`intentViewsLoadedOnce/LoadState`+`loadIntentViews()`；成功读取为空由服务端回执 `before.empty` 表达。UI 区分由 i-layout 接线 |
+| #41 | **已修复（补理解读取三态）** | 新增 `understandingLoadState/understandingLoadError/understandingLoadedOnce`：error+LoadedOnce=false=读取失败（可重试）；error+LoadedOnce=true=上次结果（旧内容保留）；ok+空记录=成功读取为空（这才是「没有理解过程 / 本次没有改动」）。既有 `lastSubmission/understandingError***/intentViewsLoadedOnce` 与 `refreshUnderstanding()` 重试入口保留。UI 由 i-layout 接线 |
 | #44 | **数据层已修复（UI 由 i-canvas 接线）** | `beginImportBatch` 单批上限 5，第 6 份起 `status="unreceived"` 保留在 items（可重新导入）；`ImportBatchItem{key,name,status,error,attachmentId,cardId,boardId,taskId}` 提供「已接收/未接收」明细。用例覆盖 6 份批次 |
 | #45 | **数据层已修复** | `noteImportItem` 终态（succeeded/failed）不被后续回执覆盖（后续成功不覆盖前面的失败）；`retryImportItem` 只把对应文件重置为 pending，同批其它项不动。用例覆盖 |
 | #46 | **数据层已修复（跨路由 + 迟到守卫）** | 批次状态在 Pinia store（路由切换不销毁），绑定 `boardId/cardId/taskId`；迟到成功回执若绑定卡片已删除/替换 → 记 failed 并说明，不关联任何卡片。用例覆盖；跨路由真实进度依赖 i-canvas 在 UI 中把上传回执写入 store（接口已发布） |
@@ -44,7 +44,7 @@
 ```powershell
 cd D:\qio-dev\pm-qio032-i-state\frontend
 npx vitest run src/stores/__tests__/pm032-state-contract.test.ts
-# => Test Files 1 passed (1) / Tests 11 passed (11)
+# => Test Files 1 passed (1) / Tests 13 passed (13)（含 #41 读取三态 2 条）
 
 npx vitest run src/stores/__tests__/final-lead-m07-clear-binding.test.ts src/interactive/__tests__/final-a2-clear-protection.test.ts src/interactive/__tests__/final-a2-drafts-removal-result.test.ts
 # => Test Files passed / Tests 21+ passed（#06 基线证据）
@@ -59,6 +59,7 @@ npx vue-tsc --noEmit
 - **#13**：`canSubmit:boolean`、`submitBlockedReason:string|null`；`interactive/submission.ts` 新增 `effectiveSubmissionChanges()/hasEffectiveSubmissionContent()/isBlankTextCard()/cardHasEffectiveContent()`。
 - **#03**：`roundStatus`（模块级导出类型 `RoundStatus`）、`roundStatusLabel`、`roundStatusDetail`、`roundSettled`。
 - **#07**：`executionsLoadState`、`executionsLoadError`、`executionsLoadedOnce`。
+- **#41**：`understandingLoadState`、`understandingLoadError`、`understandingLoadedOnce`（重试入口仍是 `refreshUnderstanding()`）。
 - **#26**：`applyInteractiveIntentsChanged(payload: InteractiveIntentsChangedPayload): boolean`；事件类型加入 `EVENT_TYPES`，`stores/events.ts` 新 case。
 - **#44-46**：`beginImportBatch(targets, opts?)`、`noteImportItem(batchId,itemKey,patch)`、`retryImportItem(batchId,itemKey)`、`dismissImportBatch(batchId?)`、`importBatchById(id)`、`importFileSupportedLimit()`、`importBatches/currentImportBatch/latestImportBatchId`；类型 `ImportItemStatus/ImportBatchItem/ImportBatch`（模块级导出）。
 - 既有导出全部保留（submitStatus/submissionStage/understandingStatus/executionStatus/loadIntents/loadIntentViews/loadExecutions/requestDraftClear/draftConflicts 等）。
