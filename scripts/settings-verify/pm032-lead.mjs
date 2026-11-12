@@ -39,6 +39,7 @@ const cdpPort = Number(flag("cdp-port", 9806));
 const outDir = String(flag("out", "D:\\qio-dev\\_lead-logs\\pm032-settings\\lead\\shots"));
 const label = String(flag("report-label", flag("label", "run-" + stamp())));
 const allowFail = !!flag("allow-fail", false);
+const theme = String(flag("theme", ""));
 const only = String(flag("only", "")).split(",").map((s) => s.trim()).filter(Boolean);
 const want = (name) => only.length === 0 || only.includes(name);
 mkdirSync(outDir, { recursive: true });
@@ -80,6 +81,21 @@ async function clickText(browser, text, { exact = false } = {}) {
 function writeRequests(browser, since, pathPattern) {
   return browser.log.slice(since).filter((e) => e.kind === "request" && e.method !== "GET" && (!pathPattern || pathPattern.test(e.url)));
 }
+/** 直接读隔离后端（独立于 UI）：用来判定「真的落库了」，不靠界面回显。 */
+async function backendTools() {
+  const resp = await fetch(apiBase + "/api/settings/tools", { signal: AbortSignal.timeout(4000) });
+  return await resp.json();
+}
+async function waitBackendTools(predicate, timeoutMs = 6000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try { last = await backendTools(); } catch { last = null; }
+    if (last && predicate(last)) return { ok: true, value: last };
+    await sleep(200);
+  }
+  return { ok: false, value: last };
+}
 
 const HELPERS = [];
 async function setup(browser) { await openSettings(browser, appUrl); await ensureProbe(browser); }
@@ -110,7 +126,10 @@ async function measurePanels(browser, vp) {
   const panelWidths = rows.map((row) => row.panels?.w ?? null);
   record("layout-" + vp.width, "sections-share-outer-boundary", spread !== null && spread <= 1.5, { spread, widths, rows: rows.map((row) => ({ c: row.category, w: row.section?.w })) });
   record("layout-" + vp.width, "panels-wrapper-measured", panelWidths.every((w) => w !== null), { panelWidths });
-  if (vp.width === 1440) await shot(browser, "layout-1440-" + "panels");
+  await gotoCategory(browser, "regular");
+  await shot(browser, "layout-" + vp.width + "x" + vp.height + "-settings");
+  await gotoCategory(browser, "models");
+  await shot(browser, "layout-" + vp.width + "x" + vp.height + "-models");
   return rows;
 }
 
@@ -148,8 +167,8 @@ async function stubsForDangerConfirm(browser) {
   return offs;
 }
 
-async function openDangerConfirm(browser) {
-  await browser.setViewport(800, 600);
+async function openDangerConfirm(browser, vp = { width: 800, height: 600 }) {
+  await browser.setViewport(vp.width, vp.height);
   await sleep(700);
   await setup(browser);
   await gotoCategory(browser, "models");
@@ -173,8 +192,12 @@ async function measureConfirm(browser, scope) {
   const confirmOverlap = rectIntersect(m.confirm, m.chrome);
   record(scope, "dialog-in-viewport", !!m.dialogInView, { dialog: m.dialog, vw: m.vw, vh: m.vh });
   // #82 根因：设置内容区若成为 fixed 的包含块，遮罩会脱离视口（rect 高远大/原点为负），居中也会错位
-  const scrimCoversViewport = !!m.scrim && Math.abs(m.scrim.y) <= 2 && Math.abs(m.scrim.h - m.vh) <= 2 && m.scrim.w <= m.vw + 1;
-  record(scope, "scrim-covers-viewport", scrimCoversViewport, { scrim: m.scrim, vw: m.vw, vh: m.vh });
+  // 应用本体在窗口留白内（0.3.2 的 --window-frame-inset）：遮罩应正好覆盖「内容视口」，不是整窗。
+  const inset = await browser.evalJs("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--window-frame-inset')) || 0");
+  const expectW = +(m.vw - 2 * inset).toFixed(1);
+  const expectH = +(m.vh - 2 * inset).toFixed(1);
+  const scrimCoversViewport = !!m.scrim && Math.abs(m.scrim.x - inset) <= 2 && Math.abs(m.scrim.y - inset) <= 2 && Math.abs(m.scrim.w - expectW) <= 2 && Math.abs(m.scrim.h - expectH) <= 2;
+  record(scope, "scrim-covers-content-viewport", scrimCoversViewport, { scrim: m.scrim, inset, expectW, expectH, vw: m.vw, vh: m.vh });
   const centeredY = !!m.dialog && Math.abs(m.dialog.cy - m.vh / 2) <= 8;
   record(scope, "dialog-centered-in-viewport", centeredY, { dialogCy: m.dialog?.cy, viewportCenter: m.vh / 2 });
   record(scope, "title-close-not-covered-by-topbar", !titleOverlap && !closeOverlap && !!m.titleHit?.insideDialog, { titleOverlap, closeOverlap, titleHit: m.titleHit, closeHit: m.closeHit, chrome: m.chrome, dialog: m.dialog });
@@ -232,14 +255,20 @@ async function measureKeyForm(browser) {
   await sleep(500);
   const gone = await browser.evalJs("!document.querySelector('.qio-modal')");
   record("keyform", "esc-closes", !!gone, { gone });
-  // #89 窄窗（480）：纵排 + 撑满 + 整体居中
-  await browser.setViewport(480, 600);
-  await sleep(700);
+  // #89 窄窗（480）：纵排 + 撑满 + 整体居中（先回设置页再改视口，避免导航重置尺寸覆盖）
   await setup(browser);
+  await browser.setViewport(480, 600);
+  await sleep(800);
   await gotoCategory(browser, "models");
-  await waitModelsPanel(browser, { timeout: 15000 });
+  await waitModelsPanel(browser, { timeout: 20000 });
+  // 480 窄窗下模型面板首屏更慢：等到「添加 Key」真的可点再点，避免把加载抖动记成布局失败
+  for (let i = 0; i < 24; i += 1) {
+    const ready = await browser.evalJs("(() => { const root = window.__stg.root(); return [...root.querySelectorAll('button')].some((el) => window.__stg.visible(el) && /添加\s*Key|新建\s*Key/.test(window.__stg.norm(el.innerText || ''))); })()");
+    if (ready) break;
+    await sleep(300);
+  }
   const opened480 = await browser.evalJs(findOpen);
-  await sleep(900);
+  await sleep(1200);
   const n = await browser.evalJs("(() => { const actions = document.querySelector('.qio-modal .qio-modal-actions'); const modal = document.querySelector('.qio-modal'); if (!actions || !modal) return { found: false }; const r = (el) => { const b = el.getBoundingClientRect(); return { x: +b.x.toFixed(1), y: +b.y.toFixed(1), w: +b.width.toFixed(1), h: +b.height.toFixed(1), right: +b.right.toFixed(1) }; }; const btns = [...actions.querySelectorAll('button')].filter((el) => window.__stg.visible(el)); const a = r(actions); const b0 = btns.length ? r(btns[0]) : null; const b1 = btns.length > 1 ? r(btns[1]) : null; const m = r(modal); const leftGap = b0 ? b0.x - a.x : null; const rightGap = b1 ? a.right - b1.right : null; return { found: true, actions: a, buttons: btns.map((el) => r(el)), widths: btns.map((el) => r(el).w), heights: btns.map((el) => r(el).h), stacked: !!(b0 && b1 && b1.y >= b0.y + b0.h - 1), leftGap: leftGap === null ? null : +leftGap.toFixed(1), rightGap: rightGap === null ? null : +rightGap.toFixed(1), overflow: document.documentElement.scrollWidth > window.innerWidth + 1 }; })()");
   record("keyform-480", "footer-stacked-full-width-centered", !!(n.found && n.stacked && n.widths.length === 2 && Math.max(...n.widths) - Math.min(...n.widths) <= 1 && n.leftGap !== null && n.rightGap !== null && Math.abs(n.leftGap - n.rightGap) <= 2 && !n.overflow), n);
   await shot(browser, "keyform-480x600");
@@ -270,9 +299,10 @@ async function keyboardChecks(browser) {
   }
   record("keyboard", "tab-traps-focus", inside.length > 0 && inside.every((x) => x.inside), { inside });
   await browser.pressKey("Escape");
-  await sleep(600);
-  const closed = await browser.evalJs("!document.querySelector('.qio-confirm--layer')");
-  record("keyboard", "esc-closes-confirm", !!closed, { closed });
+  await sleep(900);
+  // 退场动画期间元素可能还在 DOM 里：判「不可见」而不是判「不存在」
+  const escState = await browser.evalJs("(() => { const layers = [...document.querySelectorAll('.qio-confirm-scrim, .qio-confirm--layer')]; const visible = layers.filter((el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; }); return { count: layers.length, visible: visible.length, ariaHidden: layers.map((el) => el.getAttribute('aria-hidden')) }; })()");
+  record("keyboard", "esc-closes-confirm", escState.visible === 0, escState);
   const focusBack = await browser.evalJs("(() => { const el = document.activeElement; const trigger = document.querySelector('[data-lead-trigger=\"1\"]'); return { onTrigger: !!trigger && el === trigger, tag: el ? el.tagName : null, text: el ? window.__stg.norm(el.innerText || '') : null }; })()");
   record("keyboard", "focus-returns-to-trigger", !!focusBack.onTrigger, focusBack);
 }
@@ -285,6 +315,21 @@ async function readRetention(browser) {
 async function notices(browser) {
   return browser.evalJs("(() => [...window.__stg.root().querySelectorAll('[role=status], [role=alert]')].filter((el) => window.__stg.visible(el)).map((el) => window.__stg.norm(el.innerText || '')).filter(Boolean))()");
 }
+/** 等「工具分区读到的值」与隔离后端一致：页面加载是异步的，立刻读会读到默认值 0。 */
+async function waitToolsLoaded(browser, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  let ui = null;
+  let server = null;
+  while (Date.now() < deadline) {
+    const s = await backendTools();
+    ui = await readRetention(browser);
+    server = s.record_retention_days;
+    if (ui && String(ui.value) === String(server)) return { ok: true, ui: ui.value, server };
+    await sleep(250);
+  }
+  return { ok: false, ui: ui?.value ?? null, server };
+}
+
 async function blameRetention(browser) {
   const inputSel = "[data-settings-key=\"tools.records.record-retention\"] input";
   await browser.evalJs("(() => { const el = document.querySelector('" + inputSel + "'); if (el) el.focus(); return !!el; })()");
@@ -294,7 +339,7 @@ async function retentionChecks(browser) {
   await browser.setViewport(1440, 900);
   await setup(browser);
   await gotoCategory(browser, "tools");
-  await sleep(900);
+  await sleep(400);
   const sel = "[data-settings-key=\"tools.records.record-retention\"] input";
   const exists = await browser.evalJs("!!document.querySelector('" + sel + "')");
   record("retention", "field-present", !!exists, { exists });
@@ -304,11 +349,14 @@ async function retentionChecks(browser) {
   // 1) 非法文本：不发保存请求，显示可读提示，保留最近已保存值
   let mark = browser.log.length;
   await browser.fill(sel, "abc");
-  await browser.evalJs("(() => { const el = document.querySelector('" + sel + "'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()");
-  await sleep(1200);
+  // fill 已经派发 input+change（Vue 的真实路径）；提示就在这一刻出现，先读它再 blur，
+  // 否则 blur 的第二次 commit 会把「已恢复」的提示收掉（这是测试时序，不是产品行为）。
+  await sleep(350);
+  const invalidNotice = await notices(browser);
+  await browser.evalJs("(() => { const el = document.querySelector('" + sel + "'); el.blur(); return true; })()");
+  await sleep(900);
   const invalidWrites = writeRequests(browser, mark, TOOLS_PATH);
   const afterInvalid = await readRetention(browser);
-  const invalidNotice = await notices(browser);
   record("retention", "invalid-text-no-write", invalidWrites.length === 0, { writes: invalidWrites.map((e) => e.method + " " + e.url), afterInvalid, notices: invalidNotice });
   record("retention", "invalid-text-keeps-saved-value", String(afterInvalid?.value) === String(initial?.value), { initial: initial?.value, after: afterInvalid?.value });
   record("retention", "invalid-text-readable-hint", invalidNotice.some((t) => /数字|整数|有效|非法|必填|留空/.test(t)), { notices: invalidNotice });
@@ -331,55 +379,77 @@ async function retentionChecks(browser) {
   // 整页刷新再核对
   await setup(browser);
   await gotoCategory(browser, "tools");
-  await sleep(900);
+  await waitToolsLoaded(browser);
   const afterReload = await readRetention(browser);
-  record("retention", "reload-consistent-with-server", String(afterReload?.value) === String(initial?.value), { initial: initial?.value, afterReload: afterReload?.value });
+  const serverAfterReload = await backendTools();
+  record("retention", "reload-consistent-with-server", String(afterReload?.value) === String(serverAfterReload.record_retention_days), { initial: initial?.value, afterReload: afterReload?.value, server: serverAfterReload.record_retention_days });
 
   // 3) 显式 0：真的保存为 0，刷新后仍为 0
+  // 注意：记录保留天数的默认值就是 0，拿它测「显式 0」会因「没变化」而不发请求；
+  // 改用输出保留天数（默认 90），把 90 → 0 走一遍，事后再恢复 90。
+  const OUT_SEL = "[data-settings-key=\"tools.records.output-retention\"] input";
+  // 先确保输出保留天数是一个非 0 的已知值（否则「改 0」等于没变化，测不到请求）
+  const knownOut = 45;
+  await browser.fill(OUT_SEL, String(knownOut));
+  await waitBackendTools((s) => Number(s.output_retention_days) === knownOut);
+  const outBefore = await browser.evalJs("(() => { const el = document.querySelector('" + OUT_SEL + "'); return el ? el.value : null; })()");
   mark = browser.log.length;
-  await browser.fill(sel, "0");
-  await browser.evalJs("(() => { const el = document.querySelector('" + sel + "'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()");
+  await browser.fill(OUT_SEL, "0");
   await sleep(1500);
   const zeroWrites = writeRequests(browser, mark, TOOLS_PATH);
   const zeroBody = zeroWrites.map((e) => e.postData);
-  record("retention", "explicit-zero-sends-request", zeroWrites.length >= 1 && zeroBody.some((b) => /"record_retention_days"\s*:\s*0/.test(String(b))), { writes: zeroWrites.map((e) => e.method + " " + e.url + " " + e.postData) });
+  record("retention", "explicit-zero-sends-request", zeroWrites.length >= 1 && zeroBody.some((b) => /"output_retention_days"\s*:\s*0/.test(String(b))), { writes: zeroWrites.map((e) => e.method + " " + e.url + " " + e.postData) });
+  // 「真的落库」用直读后端判定，不等 UI 回显（避免刷新与在途请求的竞态误判）
+  const zeroPersist = await waitBackendTools((s) => Number(s.output_retention_days) === 0);
   await setup(browser);
   await gotoCategory(browser, "tools");
-  await sleep(900);
-  const zeroAfterReload = await readRetention(browser);
-  record("retention", "explicit-zero-persisted", String(zeroAfterReload?.value) === "0", { afterReload: zeroAfterReload?.value });
+  await waitToolsLoaded(browser);
+  // 输出保留天数是另一个字段：同样要等它按后端真值渲染，否则读到的是初始默认 90
+  const zeroBackend = await backendTools();
+  for (let i = 0; i < 24; i += 1) {
+    const v = await browser.evalJs("(() => { const el = document.querySelector('[data-settings-key=\"tools.records.output-retention\"] input'); return el ? el.value : null; })()");
+    if (String(v) === String(zeroBackend.output_retention_days)) break;
+    await sleep(250);
+  }
+  const zeroAfterReload = await browser.evalJs("(() => { const el = document.querySelector('" + OUT_SEL + "'); return el ? el.value : null; })()");
+  record("retention", "explicit-zero-persisted", zeroPersist.ok && String(zeroAfterReload) === "0", { backend: zeroPersist.value?.output_retention_days, afterReload: zeroAfterReload, outBefore });
+  // 恢复输出保留天数（不改隔离库的初始事实太久）
+  await browser.fill(OUT_SEL, String(outBefore ?? 90));
+  await waitBackendTools((s) => Number(s.output_retention_days) === Number(outBefore ?? 90));
 
   // 4) 503 回滚 + 重试
   await setup(browser);
   await gotoCategory(browser, "tools");
-  await sleep(900);
+  await waitToolsLoaded(browser);
   const beforeFail = await readRetention(browser);
+  const serverBeforeFail = await backendTools();
+  // 必须用一个「与当前落库值不同」的目标，否则控件不变脏、根本不发请求，测不到失败路径
+  const failTarget = Number(serverBeforeFail.record_retention_days) === 12 ? 13 : 12;
   const fail = () => ({ status: 503, body: { detail: "验收注入：服务暂时不可用" } });
   const offs = [
     await browser.route({ method: "POST", path: /\/api\/settings\/tools/ }, fail),
     await browser.route({ method: "PUT", path: /\/api\/settings\/tools/ }, fail),
     await browser.route({ method: "PATCH", path: /\/api\/settings\/tools/ }, fail),
   ];
-  await browser.fill(sel, "12");
-  await browser.evalJs("(() => { const el = document.querySelector('" + sel + "'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()");
-  await sleep(1400);
+  await browser.fill(sel, String(failTarget));
+  await sleep(1600);
   const afterFail = await readRetention(browser);
   const failNotices = await notices(browser);
-  record("retention", "503-rolls-back-to-effective", String(afterFail?.value) === String(beforeFail?.value), { before: beforeFail?.value, after: afterFail?.value });
+  record("retention", "503-rolls-back-to-effective", String(afterFail?.value) === String(beforeFail?.value) && String(beforeFail?.value) === String(serverBeforeFail.record_retention_days), { beforeUi: beforeFail?.value, server: serverBeforeFail.record_retention_days, after: afterFail?.value, target: failTarget });
   record("retention", "503-error-shown-and-short", failNotices.some((t) => /失败|无法|服务/.test(t)) && failNotices.every((t) => t.length <= 160), { notices: failNotices });
   for (const off of offs) off();
-  await sleep(200);
-  // 重试：同一操作再提交一次，应成功并落库
+  await sleep(300);
+  // 重试：点提示里的「重试」重放刚才那次写入（#65 的原操作保留；不是让用户从头再填）
   mark = browser.log.length;
-  await browser.fill(sel, "12");
-  await browser.evalJs("(() => { const el = document.querySelector('" + sel + "'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()");
-  await sleep(1500);
+  const retried = await browser.evalJs("(() => { const btn = window.__stg.root().querySelector('[data-settings-action=retry]'); if (!btn) return { ok: false }; btn.click(); return { ok: true, text: window.__stg.norm(btn.innerText || '') }; })()");
+  await sleep(1800);
   const retryWrites = writeRequests(browser, mark, TOOLS_PATH);
+  const retryPersist = await waitBackendTools((s) => Number(s.record_retention_days) === failTarget);
   await setup(browser);
   await gotoCategory(browser, "tools");
-  await sleep(900);
+  await waitToolsLoaded(browser);
   const afterRetry = await readRetention(browser);
-  record("retention", "retry-succeeds", retryWrites.length >= 1 && String(afterRetry?.value) === "12", { writes: retryWrites.length, afterRetry: afterRetry?.value });
+  record("retention", "retry-succeeds", !!retried?.ok && retryWrites.length >= 1 && retryPersist.ok && String(afterRetry?.value) === String(failTarget), { retried, writes: retryWrites.length, backend: retryPersist.value?.record_retention_days, afterRetry: afterRetry?.value, target: failTarget });
 
   // 5) 迟到响应：旧响应不能覆盖新状态
   let call = 0;
@@ -417,7 +487,8 @@ async function searchStateChecks(browser) {
   ] } })));
   await setup(browser);
   await gotoCategory(browser, "models");
-  await sleep(800);
+  await waitModelsPanel(browser, { timeout: 15000 });
+  await sleep(1200);
   const stateText = await browser.evalJs("(() => { const root = window.__stg.root(); const chans = [...root.querySelectorAll('[data-channel-state], .set-channel')].filter((el) => window.__stg.visible(el)); return chans.map((el) => window.__stg.norm(el.innerText || '')).join(' | '); })()");
   const bodyText = await browser.evalJs("(() => { const sec = [...window.__stg.root().querySelectorAll('.set-section')].filter((el) => window.__stg.visible(el))[0]; return sec ? window.__stg.norm(sec.innerText || '') : ''; })()");
   const flagged = /已配置[，,]?\s*尚未检查/.test(bodyText) || /已配置[，,]?\s*尚未检查/.test(stateText);
@@ -435,13 +506,26 @@ async function searchStateChecks(browser) {
   offs2.push(await browser.route({ method: "POST", path: /\/api\/settings\/search\/check/ }, () => ({ status: 502, body: { detail: "验收注入：检查失败" } })));
   await setup(browser);
   await gotoCategory(browser, "models");
-  await sleep(800);
+  await waitModelsPanel(browser, { timeout: 15000 });
+  await sleep(1200);
   const checked = await browser.evalJs("(() => { const root = window.__stg.root(); const btn = [...root.querySelectorAll('button')].find((el) => window.__stg.visible(el) && /检查/.test(window.__stg.norm(el.innerText || ''))); if (!btn) return { ok: false }; btn.click(); return { ok: true, text: window.__stg.norm(btn.innerText || '') }; })()");
-  await sleep(1600);
-  const afterFailText = await browser.evalJs("(() => { const sec = [...window.__stg.root().querySelectorAll('.set-section')].filter((el) => window.__stg.visible(el))[0]; return sec ? window.__stg.norm(sec.innerText || '') : ''; })()");
+  // 等「检查」回执：最多 10s；同时记录请求/响应，便于区分「界面卡住」与「请求没回来」
+  let afterFailText = "";
+  let checkDiag = null;
+  for (let i = 0; i < 20; i += 1) {
+    await sleep(500);
+    afterFailText = await browser.evalJs("(() => { const sec = [...window.__stg.root().querySelectorAll('.set-section')].filter((el) => window.__stg.visible(el))[0]; return sec ? window.__stg.norm(sec.innerText || '') : ''; })()");
+    const btnText = await browser.evalJs("(() => { const root = window.__stg.root(); const btn = [...root.querySelectorAll('button')].find((el) => window.__stg.visible(el) && /检查|重试/.test(window.__stg.norm(el.innerText || ''))); return btn ? window.__stg.norm(btn.innerText || '') : null; })()");
+    checkDiag = { btnText, notices: await notices(browser) };
+    if (checkDiag.notices.length > 0 && !/检查中/.test(String(btnText))) break;
+  }
+  checkDiag = { ...checkDiag, log: browser.log.slice(-24).map((e) => e.kind + " " + (e.method || "") + " " + String(e.url || "").replace(apiBase, "") + (e.status ? " -> " + e.status : "")) };
+  record("search", "check-failure-diagnostic", true, checkDiag);
+  const afterFailText2 = await browser.evalJs("(() => { const sec = [...window.__stg.root().querySelectorAll('.set-section')].filter((el) => window.__stg.visible(el))[0]; return sec ? window.__stg.norm(sec.innerText || '') : ''; })()");
   const retryBtn = await browser.evalJs("(() => { const root = window.__stg.root(); return [...root.querySelectorAll('button')].filter((el) => window.__stg.visible(el)).map((el) => window.__stg.norm(el.innerText || '')).filter((t) => /检查|重试/.test(t)); })()");
-  record("search", "check-failure-keeps-config-and-retry", checked?.ok && /失败|未通过|无法/.test(afterFailText) && retryBtn.length > 0, { checked, retryButtons: retryBtn, sample: afterFailText.slice(0, 400) });
-  record("search", "check-failure-not-says-passed", !/检查通过/.test(afterFailText), { sample: afterFailText.slice(0, 300) });
+  record("search", "check-failure-keeps-config-and-retry", checked?.ok && /失败|未通过|无法/.test(afterFailText2) && retryBtn.length > 0, { checked, retryButtons: retryBtn, messages: checkDiag?.notices, sample: afterFailText2.slice(0, 300) });
+  const channelStates = await browser.evalJs("(() => [...window.__stg.root().querySelectorAll('[data-channel-config], [data-channel-check], .set-channel__state')].filter((el) => window.__stg.visible(el)).map((el) => window.__stg.norm(el.innerText || '')).filter(Boolean))()");
+  record("search", "check-failure-not-says-passed", !channelStates.some((t) => /检查通过/.test(t)), { channelStates, sample: afterFailText.slice(0, 200) });
   for (const off of offs2) off();
   run.searchBodySample = afterFailText.slice(0, 800);
 }
@@ -453,6 +537,7 @@ try {
   await browser.launch();
   await browser.installDialogGuards();
   await browser.navigate(appUrl + "/", 2600);
+  if (theme === "dark" || theme === "light") { await browser.setTheme(theme); run.theme = theme; await browser.navigate(appUrl + "/", 2400); }
   const fixtures = await installFixtures(browser);
   run.fixtures = fixtures.hits;
 
@@ -471,7 +556,7 @@ try {
     // 宽窗再量一次
     await browser.setViewport(1440, 900);
     await sleep(600);
-    const m2 = await openDangerConfirm(browser);
+    const m2 = await openDangerConfirm(browser, { width: 1440, height: 900 });
     if (m2?.clicked?.ok) {
       const mm = await measureConfirm(browser, "confirm-1440x900");
       if (mm && mm.visible) { checkDangerButtons(mm, "confirm-1440x900"); await shot(browser, "confirm-1440x900"); }
