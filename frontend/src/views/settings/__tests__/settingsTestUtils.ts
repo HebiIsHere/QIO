@@ -82,10 +82,22 @@ export function expectExists(value: unknown, what: string): asserts value {
   if (!value) throw new Error(`找不到 ${what}`);
 }
 
-/** 让两层 requestAnimationFrame / setTimeout 兜底都跑完（搜索定位用） */
+/**
+ * 让两层 requestAnimationFrame / setTimeout 兜底都跑完（搜索定位用）。
+ *
+ * 不用固定的 40ms：4 个 agent 共用机器时 rAF 会被调度拖后，固定等待会让
+ * 「搜索定位高亮」这类用例偶发误红。按帧等待才是确定性的（无 rAF 环境退回 setTimeout）。
+ */
 export async function flushFrames(): Promise<void> {
   await nextTick();
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise<void>((resolve) => {
+      const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => unknown })
+        .requestAnimationFrame;
+      if (typeof raf === "function") raf(() => resolve());
+      else setTimeout(resolve, 16);
+    });
+  }
   await nextTick();
   await flushPromises();
 }

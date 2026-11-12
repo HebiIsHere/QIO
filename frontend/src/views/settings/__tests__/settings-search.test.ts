@@ -98,7 +98,7 @@ describe("设置搜索索引", () => {
 });
 
 describe("搜索面板与定位", () => {
-  it("入口在设置页内，结果显示名称 + 分类 + 说明", async () => {
+  it("入口在设置页内：结果显示名称 + 说明，分类只在分组标题出现一次（#66）", async () => {
     const w = await mountSettings();
     await openSearch(w);
     const panel = w.find('[data-testid="settings-search-panel"]');
@@ -108,10 +108,30 @@ describe("搜索面板与定位", () => {
     const hit = w.find('[data-search-hit="regular.theme"]');
     expect(hit.exists()).toBe(true);
     expect(hit.text()).toContain("主题");
-    expect(hit.text()).toContain("常规");
     expect(hit.text()).toContain("暗紫晶");
+    // 旧行为被本项否定：结果行曾经重复显示「常规」，与分组标题重复。
+    expect(hit.text()).not.toContain("常规");
+    expect(hit.find(".set-search__hit-cat").exists()).toBe(false);
+    // 分类用分组标题区分（同分类的多条结果共用一个标题）
+    expect(w.find(".set-search__group").text()).toBe("常规");
     // 搜索入口没有替代全局栏：页面里仍然没有 h1
     expect(w.find("h1").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("每个分组只有一个分类标题，跨分类结果各自成组（#66）", async () => {
+    const w = await mountSettings();
+    await openSearch(w);
+    // 「1」出现在多个分类的说明里（速度档位 / 条数区间 / 轮数区间），能跨分类成组
+    await typeQuery(w, "1");
+    const groups = w.findAll(".set-search__group").map((group) => group.text());
+    expect(groups.length).toBeGreaterThan(1);
+    expect(groups).toContain("模型与服务");
+    expect(new Set(groups).size).toBe(groups.length);
+    for (const hit of w.findAll("[data-search-hit]")) {
+      const labels = ["常规", "模型与服务", "记忆与整理", "工具与权限", "关于与更新"];
+      expect(labels.some((label) => hit.text().includes(label))).toBe(false);
+    }
     w.unmount();
   });
 
@@ -197,6 +217,58 @@ describe("搜索面板与定位", () => {
 
     // Esc 关闭搜索面板（键盘可达）
     await w.find('[data-testid="settings-search-input"]').trigger("keydown", { key: "Escape" });
+    await flushFrames();
+    expect(
+      (w.find('[data-testid="settings-search-panel"]').element as HTMLElement).style.display,
+    ).toBe("none");
+    w.unmount();
+  });
+
+  it("Esc 关闭搜索后把焦点交还搜索入口（#67）", async () => {
+    const w = await mountSettings();
+    await openSearch(w);
+    await typeQuery(w, "主题");
+    await w.find('[data-testid="settings-search-input"]').trigger("keydown", { key: "Escape" });
+    await flushFrames();
+
+    expect(
+      (w.find('[data-testid="settings-search-panel"]').element as HTMLElement).style.display,
+    ).toBe("none");
+    expect(document.activeElement).toBe(w.find('[data-testid="settings-search-entry"]').element);
+    w.unmount();
+  });
+
+  it("结果列表里 Esc 关闭搜索也归还焦点（#67）", async () => {
+    const w = await mountSettings();
+    await openSearch(w);
+    await typeQuery(w, "主题");
+    await w.find('[data-testid="settings-search-input"]').trigger("keydown", { key: "ArrowDown" });
+    const firstHit = w.find('[data-search-hit="regular.theme"]');
+    expect(document.activeElement).toBe(firstHit.element);
+    await firstHit.trigger("keydown", { key: "Escape" });
+    await flushFrames();
+
+    expect(
+      (w.find('[data-testid="settings-search-panel"]').element as HTMLElement).style.display,
+    ).toBe("none");
+    expect(document.activeElement).toBe(w.find('[data-testid="settings-search-entry"]').element);
+    w.unmount();
+  });
+
+  it("中文输入法组字中按 Esc 只取消选字，不关闭搜索（#67）", async () => {
+    const w = await mountSettings();
+    await openSearch(w);
+    await typeQuery(w, "主题");
+    const input = w.find('[data-testid="settings-search-input"]');
+    await input.trigger("keydown", { key: "Escape", isComposing: true });
+    await flushFrames();
+    // 组字中：面板仍然打开，焦点仍在输入框（选字优先）
+    expect(
+      (w.find('[data-testid="settings-search-panel"]').element as HTMLElement).style.display,
+    ).not.toBe("none");
+    expect(document.activeElement).toBe(input.element);
+    // 组字结束后再按 Esc 才关闭
+    await input.trigger("keydown", { key: "Escape", isComposing: false });
     await flushFrames();
     expect(
       (w.find('[data-testid="settings-search-panel"]').element as HTMLElement).style.display,

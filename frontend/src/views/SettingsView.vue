@@ -85,12 +85,25 @@ function openSearch(): void {
   });
 }
 
-function closeSearch(): void {
+/**
+ * 关闭搜索面板。
+ *
+ * #67：Esc 关闭后焦点必须回到搜索入口 —— 否则焦点落在被隐藏的面板/输入框上，
+ * 键盘用户会「丢焦点」（下一次 Tab 从文档开头重新数）。
+ */
+function closeSearch(reason?: "escape" | "dismiss"): void {
   if (!searchOpen.value) return;
   searchOpen.value = false;
+  const restoreFocus = reason === "escape";
   void nextTick(() => {
     if (rootRef.value) rootRef.value.scrollTop = contentScroll;
+    if (restoreFocus) focusSearchEntry();
   });
+}
+
+/** 搜索入口按钮：Esc 关闭搜索的唯一合理焦点落点（在设置导航里常驻）。 */
+function focusSearchEntry(): void {
+  rootRef.value?.querySelector<HTMLElement>('[data-testid="settings-search-entry"]')?.focus();
 }
 
 function toggleSearch(): void {
@@ -220,7 +233,7 @@ onUnmounted(() => {
         :open="searchOpen"
         @update:query="searchQuery = $event"
         @select="onSearchSelect"
-        @close="closeSearch"
+        @close="closeSearch($event)"
       />
 
       <div v-show="!searchOpen" ref="panelsRef" class="set-panels" data-testid="settings-panels">
