@@ -40,6 +40,13 @@ const localErrors = ref<Record<string, string>>({});
 /** 每条自己最近一次的成功说明（列表消失前也能看到结果） */
 const localNotices = ref<Record<string, string>>({});
 /**
+ * 每条最近一次**失败的动作 id**（记录 id → 动作 id）。
+ *
+ * #77：重试必须重试原来那个动作 —— 用「第一个可用动作」顶替，会让用户在
+ * 「忽略」失败后点重试却执行了「继续发送」，两件事的后果完全不同。
+ */
+const failedActions = ref<Record<string, string>>({});
+/**
  * 正在等用户确认「旧执行者已停止」的那一条（F01）。
  *
  * 为什么单独一步确认：无归属 = 库里没有证据说明旧执行者停了。点「继续 / 知道了」
@@ -132,43 +139,105 @@ function actionLabel(action: RecoveryActionView): string {
   return recoveryActionLabel(action.id, action.label);
 }
 
+/** 就地写一条失败原因（清掉同一行的成功说明）。 */
+function sayError(id: string, message: string): void {
+  localNotices.value = { ...localNotices.value, [id]: "" };
+  localErrors.value = { ...localErrors.value, [id]: message };
+}
+
+/** 清单里当前的那条记录（没有 = 已经被处理 / 被后端清理）。 */
+function currentRecord(recordId: string): RecoveryRecordView | null {
+  return items.value.find((row) => row.record_id === recordId) ?? null;
+}
+
+/**
+ * #77：动作开始前核对「这条记录还在 + 这个动作还在 + 当前真的可用」。
+ * 任何一项不成立都给出真实原因（不盲目再打一次注定失败的请求，也不静默）。
+ */
+function readyAction(recordId: string, actionId: string): RecoveryActionView | null {
+  const current = currentRecord(recordId);
+  if (!current) {
+    sayError(
+      recordId,
+      "这条未完成事项已经不在清单里：可能已经被处理，或后端已经清理（刷新清单可以确认）。",
+    );
+    return null;
+  }
+  const action = actionsOf(current).find((item) => item.id === actionId) ?? null;
+  if (!action) {
+    sayError(recordId, "这个操作在当前状态下已经不存在（记录可能已经变化，刷新清单后再试）。");
+    return null;
+  }
+  if (!action.enabled) {
+    const reason = (action.reason || "").trim() || "记录状态已经变化";
+    sayError(recordId, actionLabel(action) + "现在不可用：" + reason);
+    return null;
+  }
+  return action;
+}
+
 /** 一次动作的结果；成功说明留在那一条旁边。 */
 async function run(record: RecoveryRecordView, action: RecoveryActionView) {
-  if (!action.enabled || busyId.value) return;
+  if (busyId.value) return;
   const id = record.record_id;
-  if (action.id === "confirm_stopped") {
+  const ready = readyAction(id, action.id);
+  if (!ready) return;
+  if (ready.id === "confirm_stopped") {
     // 先弹一次就地确认（这一步不执行任何东西），确认后才真的提交
     confirmingId.value = id;
     return;
   }
   localErrors.value = { ...localErrors.value, [id]: "" };
   localNotices.value = { ...localNotices.value, [id]: "" };
+  // 这一次动作重新开始：上一条失败动作从「待重试」里撤下（失败时再按当前动作记回）
+  if (failedActions.value[id]) {
+    const next = { ...failedActions.value };
+    delete next[id];
+    failedActions.value = next;
+  }
   let outcome: RecoveryOutcome;
-  if (action.id === "continue") outcome = await session.continueRecovery(id);
-  else if (action.id === "repair") outcome = await session.repairOrphan(id);
-  else if (action.id === "ignore") outcome = await session.ignoreRecovery(id);
-  else if (action.id === "requeue") outcome = await session.requeueDerived(id);
-  else if (action.id === "retry_answer" || action.id === "retry_topic_answer") {
+  if (ready.id === "continue") outcome = await session.continueRecovery(id);
+  else if (ready.id === "repair") outcome = await session.repairOrphan(id);
+  else if (ready.id === "ignore") outcome = await session.ignoreRecovery(id);
+  else if (ready.id === "requeue") outcome = await session.requeueDerived(id);
+  else if (ready.id === "retry_answer" || ready.id === "retry_topic_answer") {
     // F04：话题回答恢复只走 store 的唯一 retry 入口（不重发消息、不重跑话题工具）
     const result = await session.retryTopicAnswer(id);
     outcome = { ok: result.ok, message: result.message };
   } else {
     // 认不出的动作：如实说，不给一个点了没效果的按钮
-    localErrors.value = {
-      ...localErrors.value,
-      [id]: "这一版界面还不认识这个操作，请更新后再试",
-    };
+    sayError(id, "这一版界面还不认识这个操作，请更新后再试");
     return;
   }
   if (outcome.ok) {
     localNotices.value = { ...localNotices.value, [id]: outcome.message };
     return;
   }
+  // #77：记住失败发生的**这个动作**；重试只重试它
+  failedActions.value = { ...failedActions.value, [id]: ready.id };
   localErrors.value = { ...localErrors.value, [id]: outcome.message };
 }
 
-function retry(record: RecoveryRecordView, action: RecoveryActionView) {
-  void run(record, action);
+/**
+ * 重试上一次失败的那一个动作（原记录 + 原动作）。
+ * 动作已经不可用（记录消失 / 动作被删除 / 被禁用）时只给真实原因，不再调用接口。
+ */
+function retry(record: RecoveryRecordView) {
+  const id = record.record_id;
+  const actionId = failedActions.value[id];
+  if (!actionId) {
+    sayError(id, "没有记录到上一次失败的操作，请重新选择要处理的动作。");
+    return;
+  }
+  const ready = readyAction(id, actionId);
+  if (!ready) return;
+  if (ready.id === "confirm_stopped") {
+    confirmingId.value = id;
+    return;
+  }
+  const current = currentRecord(id);
+  if (!current) return;
+  void run(current, ready);
 }
 
 /** 用户在确认框里点了「确认已停止」：提交给服务端，结果就地说明。 */
@@ -182,6 +251,8 @@ async function confirmStopped(record: RecoveryRecordView) {
     localNotices.value = { ...localNotices.value, [id]: outcome.message };
     return;
   }
+  // #77：确认失败也记住「原失败动作是确认」，重试回到同一个确认步骤
+  failedActions.value = { ...failedActions.value, [id]: "confirm_stopped" };
   localErrors.value = { ...localErrors.value, [id]: outcome.message };
 }
 
@@ -320,12 +391,13 @@ function formatWhen(record: RecoveryRecordView): string {
         <!-- 失败就地说话 + 可重试（重试就是同一个动作再点一次） -->
         <p v-if="localErrors[record.record_id]" class="inline-error" role="status">
           <span class="text">{{ localErrors[record.record_id] }}</span>
+          <!-- #77：重试只重试**上一次失败的那个动作**（忽略失败只能重试忽略） -->
           <button
-            v-if="actionsOf(record).some((a) => a.enabled)"
+            v-if="failedActions[record.record_id]"
             class="qio-btn quiet btn-retry"
             type="button"
             :disabled="Boolean(busyId)"
-            @click="retry(record, actionsOf(record).find((a) => a.enabled)!)"
+            @click="retry(record)"
           >
             重试
           </button>
