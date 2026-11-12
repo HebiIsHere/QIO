@@ -30,6 +30,15 @@
  * 打开时 open({ id, kind: "confirm", dismissible: true })；返回 false 时不得显示，
  * 等挡路弹窗关闭后重试；被 suspendAll(by) 挂起时 v-show 隐藏（状态保留）；
  * 关闭/卸载时 close(id)。inline/popover 是就地控件，不参与中央弹窗仲裁。
+ *
+ * 窗口层（#82）：layer 档 **Teleport 到 body**，与 QModal 一致。
+ * 之前就地渲染，设置页的 .set-main 有 backdrop-filter —— 它会为 position:fixed 后代
+ * 创建包含块并形成 stacking context，于是遮罩不再相对“内容视口”，而是跟着可滚动的内容
+ * 盒子走：800×600 实测遮罩 rect 为 y=-1169 / height=2847，确认框标题与关闭按钮落到
+ * 顶部全局栏（WindowChrome，z-index 240）下面，点不到也看不清。
+ * 现在遮罩仍用既有 --window-frame-inset（= 内容视口的四边），面板高度上限取遮罩内容盒
+ * （不是写死 top/魔法数字）；窗口标题条继续是最高层（拖窗口/关窗口不被模态挡住）。
+ * layer 档的面板/遮罩带 data-qio-confirm-layer="window"，供验收脚本与设置页样式定位。
  */
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 import { getActivePinia } from "pinia";
@@ -222,22 +231,27 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Transition name="qio-fade">
-    <div
-      v-if="open && variant === 'layer' && !layerBlocked"
-      v-show="layerShown"
-      :aria-hidden="layerShown ? undefined : 'true'"
-      :inert="layerShown ? undefined : true"
-      class="qio-confirm-scrim"
-    >
+  <!-- layer 档是窗口层：Teleport 到 body，脱离设置页 .set-main 的 backdrop-filter 包含块
+       （就地渲染时遮罩会跟着滚动内容走、并被 z-index 240 的顶部全局栏盖住）。 -->
+  <Teleport to="body">
+    <Transition name="qio-fade">
       <div
-        ref="rootRef"
-        class="qio-confirm qio-confirm--layer qio-floating qio-pop-in"
-        role="dialog"
-        aria-modal="true"
-        :aria-labelledby="titleId"
-        :aria-describedby="detail ? detailId : undefined"
+        v-if="open && variant === 'layer' && !layerBlocked"
+        v-show="layerShown"
+        :aria-hidden="layerShown ? undefined : 'true'"
+        :inert="layerShown ? undefined : true"
+        class="qio-confirm-scrim"
+        data-qio-confirm-layer="window"
       >
+        <div
+          ref="rootRef"
+          class="qio-confirm qio-confirm--layer qio-floating qio-pop-in"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="titleId"
+          :aria-describedby="detail ? detailId : undefined"
+          data-qio-confirm-layer="window"
+        >
         <!-- 三列等宽：左槽只占位（空内容），标题严格居中，右槽关闭按钮 -->
         <div class="qio-modal-head qio-confirm__head">
           <span class="qio-modal-head__slot" aria-hidden="true" />
@@ -273,9 +287,10 @@ onBeforeUnmount(() => {
           data-qio-confirm-close
           @click="cancel"
         />
+        </div>
       </div>
-    </div>
-  </Transition>
+    </Transition>
+  </Teleport>
 
   <Transition name="qio-fade">
     <div
@@ -318,6 +333,21 @@ onBeforeUnmount(() => {
 .qio-confirm--layer {
   position: relative;
   max-width: min(420px, 100%);
+  /* 窗口层：面板永不超出遮罩内容盒（= 内容视口去掉遮罩内边距），长正文在面板内部滚动。
+     高度上限直接取父级 flex 容器（遮罩已按 --window-frame-inset 固定到内容视口），
+     不写死 top / height，也不用 100vh 再减魔法数字。 */
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 危险档确认按钮：用既有 --danger 令牌落地“实心危险”。
+   选择器（.qio-confirm--layer + data 钩子 + .danger-solid，再加 scoped 属性）比设置页
+   普通按钮覆盖规则（.qio-settings .qio-btn.qio-btn，0-3-0）更高一级，不依赖 !important；
+   即使将来 layer 不再 Teleport、或调用方把它放进别的按钮规则作用域，危险态也不会被压成普通按钮。 */
+.qio-confirm--layer[data-qio-confirm-layer="window"] [data-qio-confirm-action="confirm"].danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg-base);
 }
 /* 关闭按钮视觉在右上（右槽已留出等宽空间，标题不会被挤偏） */
 .qio-confirm__close {
