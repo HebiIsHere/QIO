@@ -48,6 +48,7 @@ import {
   removeLink,
   renameGroup,
   selectInRect,
+  setGroupCollapsed,
   setGroupOrdered,
   setSelection,
   updateCard,
@@ -351,6 +352,12 @@ const hiddenMemberIds = computed(() => {
 /** 真正画在板面上的卡片：收起的组只留组框概览。 */
 const renderedCards = computed(() => liveCards.value.filter((card) => !hiddenMemberIds.value.has(card.id)));
 
+/** 当前可见（真正画在板面上）的选择：#43 删除快捷键与 #58 删除都只作用于它们。 */
+const visibleSelectedIds = computed(() => {
+  const ids = new Set(renderedCards.value.map((card) => card.id));
+  return selection.value.filter((cardId) => ids.has(cardId));
+});
+
 /** 参与范围（§5.1 participation 是唯一事实源）：给连线层与卡片参与控件。 */
 const includedCardIds = computed(() =>
   liveCards.value.filter((card) => participationOf(card) === "included").map((card) => card.id),
@@ -385,18 +392,52 @@ function groupRect(group: BoardGroup): V2Rect {
   return { x: group.x, y: group.y, w: group.w, h: group.h };
 }
 
-/** 收起 / 展开一个组（纯显示状态；不改成员、顺序、材料范围）。 */
+/**
+ * 收起 / 展开一个组。
+ *
+ * #59：收起偏好按板面保存（group.collapsed 是纯显示状态，成员与提交范围不变），刷新后恢复；
+ * #58：收起后成员卡片不可见，选择里必须同步剔除它们（删除 / 工具栏 / 提交都不再作用于不可见成员）。
+ */
 function onGroupToggleCollapse(groupId: string, collapsed: boolean): void {
   const next = new Set(collapsedGroupSet.value);
   if (collapsed) next.add(groupId);
   else next.delete(groupId);
   collapsedGroupIds.value = [...next];
+  const current = boardState.value;
+  if (current) {
+    const hidden = new Set<string>();
+    if (collapsed) {
+      const group = current.groups.find((item) => item.id === groupId && !item.deleted);
+      for (const cardId of group?.members ?? []) hidden.add(cardId);
+    }
+    const visibleSelection = current.selection.filter((cardId) => !hidden.has(cardId));
+    let committed = setGroupCollapsed(current, groupId, collapsed);
+    if (visibleSelection.length !== current.selection.length) {
+      committed = setSelection(committed, visibleSelection);
+    }
+    commit(committed, collapsed ? "收起组（显示状态）" : "展开组（显示状态）");
+  }
   notice.value = collapsed ? "已收起这个组：只显示组框概览，成员没有变化。" : "已展开这个组。";
 }
 
 function isGroupCollapsed(groupId: string): boolean {
   return collapsedGroupSet.value.has(groupId);
 }
+
+/*
+  #59：刷新 / 撤销重做 / 换板后，以板面状态里的 group.collapsed 为准恢复收起显示
+  （只同步显示态；不写回板面、不触发保存）。
+*/
+watch(boardState, (next) => {
+  if (!next) return;
+  const persisted = next.groups
+    .filter((group) => !group.deleted && Boolean(group.collapsed))
+    .map((group) => group.id);
+  if (persisted.length === collapsedGroupIds.value.length && persisted.every((id) => collapsedGroupSet.value.has(id))) {
+    return;
+  }
+  collapsedGroupIds.value = persisted;
+}, { immediate: true });
 
 /** 传给连线层：收起组的成员的对外连线汇聚到组边缘（真实端点身份不变）。 */
 const foldedGroupIds = computed(() =>
@@ -2351,8 +2392,10 @@ function onCardJoinGroup(cardId: string, groupId: string) {
 
 function deleteSelected() {
   const current = boardState.value;
-  if (!current || !current.selection.length) return;
-  const removed = [...current.selection];
+  if (!current) return;
+  // #43/#58：只删除当前可见的对象；收起组里的成员不在删除范围内。
+  const removed = [...visibleSelectedIds.value];
+  if (!removed.length) return;
   let next = current;
   for (const cardId of removed) next = removeCard(next, cardId);
   commit(next, "删除所选卡片（撤回材料或注释）");
@@ -3187,6 +3230,48 @@ function onLocatePreview(event: Event) {
 
 // --- 键盘 -----------------------------------------------------------------
 
+/**
+ * #43：Delete / Backspace 的隔离面。
+ * 输入框 / 可编辑区 / 工具栏 / 卡片详情 / 弹窗 / 菜单 / 关系编辑器里的删除键
+ * 是**它们自己的**（删文字、删选项），画布一律不劫持。
+ */
+const DELETE_KEY_ISOLATED_SELECTOR = [
+  "input",
+  "textarea",
+  "select",
+  "[contenteditable='true']",
+  "[data-im='card-toolbar']",
+  "[data-im='board-toolbar']",
+  "[data-im='selection-menu']",
+  "[data-im='more-panel']",
+  "[data-im='link-editor']",
+  "[data-im='impact-dialog']",
+  "[data-im='search']",
+  "[data-im='preview']",
+  "[role='dialog']",
+  "[role='menu']",
+  "[role='menuitem']",
+  "button",
+  "a",
+  "label",
+].join(",");
+
+/**
+ * 画布是否真的拥有这次删除快捷键（#43）：
+ * 焦点在画布外（其它面板 / 聊天 / 浮层）或落在任何交互控件上时一律返回 false。
+ */
+function canvasOwnsDeleteKey(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (element && typeof element.closest === "function" && element.closest(DELETE_KEY_ISOLATED_SELECTOR)) return false;
+  const active = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (active && active !== document.body && active !== document.documentElement && typeof active.closest === "function") {
+    if (active.closest(DELETE_KEY_ISOLATED_SELECTOR)) return false;
+    const root = shell.value;
+    if (root && !root.contains(active)) return false;
+  }
+  return true;
+}
+
 function onKeyDown(event: KeyboardEvent) {
   const typing = isTypingTarget(event.target);
   if (event.key === "Escape") {
@@ -3218,7 +3303,10 @@ function onKeyDown(event: KeyboardEvent) {
     return;
   }
   if (typing) return;
-  if ((event.key === "Delete" || event.key === "Backspace") && selection.value.length) {
+  if (event.key === "Delete" || event.key === "Backspace") {
+    // #43：只有画布拥有焦点、且对象当前可见时才删除；否则把按键留给当前控件。
+    if (!visibleSelectedIds.value.length) return;
+    if (!canvasOwnsDeleteKey(event.target)) return;
     event.preventDefault();
     deleteSelected();
     return;
