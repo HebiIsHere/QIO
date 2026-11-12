@@ -683,7 +683,7 @@ def create_app(
             if report is not None:
                 log_close_report(report)
 
-    app = FastAPI(title="QIO", version="0.3.1", lifespan=lifespan)
+    app = FastAPI(title="QIO", version="0.3.2", lifespan=lifespan)
     # R9 §11：桌面壳真正退出前的唯一收尾入口（POST /api/lifecycle/shutdown）。
     # 入口（agent/main.py）通过 app.state.shutdown_coordinator 注入「如何让 uvicorn 退出」。
     app.include_router(build_lifecycle_router(ctx, shutdown))
