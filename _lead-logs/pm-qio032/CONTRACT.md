@@ -146,3 +146,15 @@ git rev-parse HEAD   # 必须是 7445170d...
   这些文件连同 \`api/interactive.py\`、\`api/events.py\` 一并归 **i-submit**。
 - \`api/bus.py\`、\`api/server.py\` 仍是共享文件：改动前把「事件名 + payload + 发布时机 + 去重键」发 lead + i-state，Lead 同意后落地，且只增不改。
 - #26 允许新增一个 SSE 事件（只增不改旧事件）；前端消费归 i-state。
+
+## 8. 共享文件例外授权（Lead，2026-11-12 晚）
+
+以下文件原本在「全体禁止」名单，因条目需要由 Lead 一次性授权给指定 owner，改动必须最小、只增不改既有行为，并在报告列出精确位置：
+
+- **i-state**：\`frontend/src/stores/events.ts\`（仅加 INTERACTIVE_INTENTS_CHANGED case）、
+  \`frontend/src/services/events.ts\`（EVENT_TYPES 仅加该项）。原因：#26 事件协议 +
+  后端 \`tests/test_event_protocol.py\` 的「前后端事件集合完全相等 / store 必须消费每个事件」守卫。
+- **i-submit**：\`backend/src/agent/services/turn_orchestrator.py\`、
+  \`backend/src/agent/services/app.py\`（仅 #01 首轮材料交付与附件读取授权两处接线；不改既有签名；
+  普通模式行为不变）。原因：轮次入口接线按分工归 i-submit，避免 Lead 在生产链路盲改。
+- 其余「全体禁止」文件仍然禁止；需要新例外先问 Lead。
