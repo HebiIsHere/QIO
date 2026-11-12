@@ -209,6 +209,25 @@ describe("文案 10 部分完成：标题 / 成功项 / 失败项 / 重试入口
   });
 });
 
+describe("文案 7 虚线意图：常态「待确认」，拖动预览时提示「移动预览」", () => {
+  it("拖动中才出现「移动预览」，松手后收起；常态仍显示「待确认」", async () => {
+    const wrapper = mountLayer([view({ intent_id: "i1", status: "proposed", display: { x: 100, y: 100 } })]);
+    await flushPromises();
+    expect(cardOf(wrapper, "i1").get('[data-im="virtual-intent-status"]').text()).toBe("待确认");
+    expect(cardOf(wrapper, "i1").find('[data-im="intent-move-preview"]').exists()).toBe(false);
+
+    const card = cardOf(wrapper, "i1");
+    card.element.dispatchEvent(new MouseEvent("pointerdown", { clientX: 150, clientY: 150, bubbles: true }));
+    window.dispatchEvent(new MouseEvent("pointermove", { clientX: 190, clientY: 170, bubbles: true }));
+    await flushPromises();
+    expect(cardOf(wrapper, "i1").get('[data-im="intent-move-preview"]').text()).toBe("移动预览");
+
+    window.dispatchEvent(new MouseEvent("pointerup", { clientX: 190, clientY: 170, bubbles: true }));
+    await flushPromises();
+    expect(cardOf(wrapper, "i1").find('[data-im="intent-move-preview"]').exists()).toBe(false);
+  });
+});
+
 describe("#74 意图层批量区：零个可处理项时收起", () => {
   it("没有可处理待确认项时不占一块批量条", async () => {
     const wrapper = mountLayer([view({ intent_id: "i1", status: "needs_update" })]);
