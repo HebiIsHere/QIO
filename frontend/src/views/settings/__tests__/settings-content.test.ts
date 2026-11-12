@@ -319,3 +319,35 @@ describe("模型与服务容器", () => {
     w.unmount();
   });
 });
+
+describe("关于与更新的文案边界（#13 / 第三方声明入口）", () => {
+  it("许可证保留 MIT 摘要与全文入口，不再指引「见仓库根目录」", async () => {
+    const w = await mountSettings();
+    await openCategory(w, "about");
+    const about = sectionById(w, "about");
+    const text = about.text();
+    expect(text).toContain("QIO 以 MIT 许可证开源");
+    expect(text).toContain("查看 QIO 许可全文");
+    expect(text).not.toContain("仓库根目录");
+    expect(text).not.toContain("本页展示的就是它");
+    // 全文仍然可读（构建期内联，不是链接）
+    expect(about.get('[data-testid="qio-license"]').text()).toContain("Permission is hereby granted");
+    w.unmount();
+  });
+
+  it("第三方声明入口写「查看第三方开源声明」，不再写生成物/仓库校验口径", async () => {
+    const w = await mountSettings();
+    await openCategory(w, "about");
+    const about = sectionById(w, "about");
+    const text = about.text();
+    expect(text).toContain("查看第三方开源声明");
+    expect(text).not.toContain("查看第三方开源组件声明");
+    expect(text).not.toContain("生成物");
+    expect(text).not.toContain("覆盖率由仓库里的校验脚本保证");
+    // 声明全文仍然与包一起分发、可离线展开
+    expect(about.get('[data-testid="third-party-notices"]').text()).toContain(
+      "QIO 第三方开源组件声明",
+    );
+    w.unmount();
+  });
+});

@@ -39,7 +39,6 @@ const appVersion = String(appPackage.version ?? "");
       <h2>许可证</h2>
       <p class="set-section__desc">
         QIO 以 MIT 许可证开源：可以自由使用、修改、再分发（含商用），只需保留版权声明与许可声明。
-        完整条款见仓库根目录的 LICENSE（本页展示的就是它）。
       </p>
     </header>
     <div data-settings-key="about.license">
@@ -52,12 +51,11 @@ const appVersion = String(appPackage.version ?? "");
       <h2>第三方开源组件</h2>
       <p class="set-section__desc">
         QIO 随安装包分发第三方开源组件（Python 依赖、npm 包、Rust crate、内置 CPython 运行时、
-        内置中文嵌入模型与中文字体）。完整声明随应用一起分发，无需联网即可查阅；
-        覆盖率由仓库里的校验脚本保证，少一个组件就失败。
+        内置中文嵌入模型与中文字体）。完整声明随应用一起分发，无需联网即可查阅。
       </p>
     </header>
     <div data-settings-key="about.third-party">
-      <AdvGroup id="about.third-party" label="查看第三方开源组件声明（生成物，请勿手工编辑）">
+      <AdvGroup id="about.third-party" label="查看第三方开源声明">
         <pre class="set-license" data-testid="third-party-notices">{{ thirdPartyNoticesText }}</pre>
       </AdvGroup>
     </div>
