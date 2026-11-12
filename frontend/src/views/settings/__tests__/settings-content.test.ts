@@ -126,12 +126,13 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     expect(run).toBeTruthy();
     await run!.trigger("click");
     await nextTick();
-    const dialog = w.find('[role="dialog"]');
-    expect(dialog.exists()).toBe(true);
-    expect(dialog.text()).toContain("立即整理记忆与知识？");
+    // layer 档确认框是窗口层（Teleport 到 body），按文档查而不是按组件子树查。
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.textContent).toContain("立即整理记忆与知识？");
     const { api } = await import("../../../services/api");
     expect(api.runMaintenance).not.toHaveBeenCalled();
-    await dialog.find('[data-qio-confirm-action="confirm"]').trigger("click");
+    (dialog!.querySelector('[data-qio-confirm-action="confirm"]') as HTMLElement).click();
     await flushFrames();
     expect(api.runMaintenance).toHaveBeenCalledTimes(1);
     w.unmount();

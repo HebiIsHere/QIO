@@ -14,6 +14,7 @@ import { useOnboardingStore } from "../../stores/onboarding";
 import { api, type CredentialMeta, type OnboardingSubmitPayload, type VerifyReport } from "../../services/api";
 import { getTheme, setTheme, type Theme } from "../../utils/theme";
 import CredentialForm from "../credentials/CredentialForm.vue";
+import QConfirm from "../ui/QConfirm.vue";
 import QInput from "../ui/QInput.vue";
 import QIconButton from "../ui/QIconButton.vue";
 import { usageSummary } from "../../services/credentials";
@@ -69,6 +70,8 @@ const isLast = computed(() => index.value === ONBOARDING_STEPS.length - 1);
 const closable = computed(
   () => Boolean(store.status?.has_content) || Boolean(store.status?.done),
 );
+/** 关闭前的草稿保护：只有真的填过东西时才提示会丢。 */
+const closeAsk = ref(false);
 /**
  * 「连接模型」这一步和设置页共用同一个表单（默认厂商、默认用途、保存与验证逻辑全一致）。
  * 这里只记最后一次结果：验证通过才算准备好了。
@@ -135,6 +138,41 @@ const draft = reactive({
   goals: [] as string[],
   answers: {} as Record<string, string>,
 });
+
+/**
+ * 关闭前的草稿保护：欢迎页只说明「资料何时保存」，不再在正文里反复解释「中途关掉等于没填」。
+ * 真正有内容会丢时，在关闭动作上当场说清楚（提示层只在已填过东西时出现）。
+ */
+const hasDraft = computed(() => {
+  const fields = [
+    draft.name,
+    draft.background,
+    draft.currentFocus,
+    draft.interests,
+    draft.familiarity,
+    draft.dontDo,
+    draft.howToTalk,
+  ];
+  if (fields.some((value) => value.trim())) return true;
+  if (draft.goals.some((value) => value.trim())) return true;
+  if (Object.values(draft.answers).some((value) => String(value ?? "").trim())) return true;
+  if (Object.values(draft.preferences).some((value) => String(value ?? "").trim())) return true;
+  return Object.values(draft.customPreferences).some((value) => String(value ?? "").trim());
+});
+
+function requestClose() {
+  if (!closable.value) return;
+  if (hasDraft.value) {
+    closeAsk.value = true;
+    return;
+  }
+  emit("done");
+}
+
+function confirmClose() {
+  closeAsk.value = false;
+  emit("done");
+}
 
 const goalInput = ref("");
 const nameError = ref("");
@@ -399,8 +437,23 @@ async function finish() {
         description="关闭引导；本次填写不会写入（下次打开是空白）"
         size="sm"
         tone="quiet"
-        @click="emit('done')"
+        @click="requestClose"
       />
+      <!-- 关闭前的草稿提示：只在真的填过内容时出现；取消＝继续填写，确认才丢弃并关闭 -->
+      <div v-if="closeAsk" class="onboarding-close-ask" role="presentation">
+        <QConfirm
+          :open="closeAsk"
+          variant="inline"
+          tone="danger"
+          title="关闭引导？"
+          detail="已填写的内容不会保存，下次打开是空白。"
+          confirm-text="关闭并丢弃"
+          cancel-text="继续填写"
+          title-id="onboarding-close-ask-title"
+          @confirm="confirmClose"
+          @cancel="closeAsk = false"
+        />
+      </div>
       <nav class="onboarding-steps" aria-label="设置步骤">
         <span
           v-for="(item, i) in ONBOARDING_STEPS"
@@ -418,9 +471,7 @@ async function finish() {
           <div class="brand" aria-hidden="true"><span class="brand-orb"></span></div>
           <h1>QIO</h1>
           <p class="lede">你的私人记忆星球</p>
-          <p class="hint">
-            接下来几步会让 QIO 真正认识你。全部内容只在你最后核对确认后才写进去；中途关掉就等于没填过。
-          </p>
+          <p class="hint">你的个人资料只会在最后核对确认后才保存。</p>
         </section>
 
         <section v-else-if="step === 'credential'" class="panel">
@@ -541,7 +592,7 @@ async function finish() {
 
         <section v-else-if="step === 'followup'" class="panel">
           <h2>追问</h2>
-          <p class="hint">这些问题根据你前面写的内容现问，可以跳过；跳过的不会出现在清单里。</p>
+          <p class="hint">这些问题根据你前面写的内容现问。</p>
           <p v-if="followUpState === 'loading'" class="note">正在根据你的描述准备问题…</p>
           <p v-else-if="!questions.length" class="note">这次没有需要追问的内容。</p>
           <label v-for="(question, i) in questions" :key="question" class="field">
@@ -552,7 +603,8 @@ async function finish() {
 
         <section v-else class="panel">
           <h2>核对并完成</h2>
-          <p class="hint">下面是将要写进 QIO 的内容。可以逐条修改或删除；删除的不会写进去。</p>
+          <!-- 逐项动作由每行的「修改 / 删除」按钮表达，不再写一长串说明 -->
+          <p class="hint">以下内容将在完成设置后保存。</p>
           <ul class="review-list">
             <li v-for="item in reviewItems" :key="item.key" class="review-item">
               <div class="review-text">
@@ -639,6 +691,20 @@ async function finish() {
   position: absolute;
   top: 10px;
   right: 12px;
+}
+/* 关闭前的草稿提示：盖在向导卡片内，不另开第二层窗口（引导本身已是整窗层）。 */
+.onboarding-close-ask {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-6);
+  border-radius: inherit;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 .onboarding-steps {
   display: flex;

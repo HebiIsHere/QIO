@@ -172,11 +172,12 @@ describe("联网搜索：免密钥通道不是总开关", () => {
     expect(clear.exists()).toBe(true);
     await clear.trigger("click");
     await nextTick();
-    const dialog = w.find('[role="dialog"]');
-    expect(dialog.exists()).toBe(true);
-    expect(dialog.text()).toContain("清除已保存的博查 API Key？");
+    // layer 档确认框是窗口层（Teleport 到 body），不在设置页组件子树里 —— 按文档查。
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.textContent).toContain("清除已保存的博查 API Key？");
     expect(api.updateSearchSettings).not.toHaveBeenCalled();
-    await dialog.find('[data-qio-confirm-action="confirm"]').trigger("click");
+    (dialog!.querySelector('[data-qio-confirm-action="confirm"]') as HTMLElement).click();
     await flushFrames();
     const body = (api.updateSearchSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(body).toEqual({ bocha_api_key: "" });
