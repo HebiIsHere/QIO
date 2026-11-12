@@ -138,3 +138,11 @@ git rev-parse HEAD   # 必须是 7445170d...
 - 先做能独立闭环、风险高的条目；再做文案/样式。修不完就如实报「未做/部分」，不要留下编译不过或半截状态。
 - 卡住超过 15 分钟：send_message 给 lead（附复现/报错），不要长时间空转。
 - 目标：先交一版可合并的工作分支（含测试），再迭代；不要为了凑条目破坏基线功能。
+
+
+## 7. 契约修订（2026-11-12，Lead）
+
+- 后端提交/查证/意图路由的实际文件是 \`api/interactive_store.py\`、\`api/interactive_intents.py\`（\`api/interactive.py\` 只是 router 汇总），
+  这些文件连同 \`api/interactive.py\`、\`api/events.py\` 一并归 **i-submit**。
+- \`api/bus.py\`、\`api/server.py\` 仍是共享文件：改动前把「事件名 + payload + 发布时机 + 去重键」发 lead + i-state，Lead 同意后落地，且只增不改。
+- #26 允许新增一个 SSE 事件（只增不改旧事件）；前端消费归 i-state。
