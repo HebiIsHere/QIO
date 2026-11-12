@@ -52,7 +52,7 @@ const mounted: VueWrapper[] = [];
 
 function mountLayer(views: unknown[], extra: Record<string, unknown> = {}) {
   const wrapper = mount(IntentLayer, {
-    props: { views, boardId: "board_1", width: 2400, height: 1600, ...extra },
+    props: { views: views as never, boardId: "board_1", width: 2400, height: 1600, ...extra },
     attachTo: document.body,
   });
   mounted.push(wrapper);

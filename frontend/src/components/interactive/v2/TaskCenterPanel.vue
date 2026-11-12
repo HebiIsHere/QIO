@@ -27,6 +27,7 @@ import {
   batchDecideIds,
   taskControlHint,
   taskControlLabel,
+  taskActionIcon,
   taskCountsSummary,
   taskEmptyText,
   taskReadFailures,
@@ -368,8 +369,8 @@ onMounted(() => {
                 v-qio-tip="taskControlHint(action)"
                 :disabled="Boolean(busy)"
                 @click="runControl(row, action)"
-              >{{ taskControlLabel(action, busy === row.intentId + ':' + action) }}</button>
-              <button class="tc-btn ghost" type="button" data-im="task-record" @click="openRecord(row)">执行记录</button>
+              ><QIcon :name="taskActionIcon(action)" :size="11" aria-hidden="true" />{{ taskControlLabel(action, busy === row.intentId + ':' + action) }}</button>
+              <button class="tc-btn ghost" type="button" data-im="task-record" @click="openRecord(row)"><QIcon name="clock" :size="11" aria-hidden="true" />执行记录</button>
             </span>
           </li>
         </ul>
@@ -403,8 +404,8 @@ onMounted(() => {
                 v-qio-tip="taskControlHint(action)"
                 :disabled="Boolean(busy)"
                 @click="runControl(row, action)"
-              >{{ taskControlLabel(action, busy === row.intentId + ':' + action) }}</button>
-              <button class="tc-btn ghost" type="button" data-im="task-record" @click="openRecord(row)">执行记录</button>
+              ><QIcon :name="taskActionIcon(action)" :size="11" aria-hidden="true" />{{ taskControlLabel(action, busy === row.intentId + ':' + action) }}</button>
+              <button class="tc-btn ghost" type="button" data-im="task-record" @click="openRecord(row)"><QIcon name="clock" :size="11" aria-hidden="true" />执行记录</button>
             </span>
           </li>
         </ul>
@@ -443,7 +444,7 @@ onMounted(() => {
                   :data-intent-id="row.intentId"
                   :disabled="Boolean(busy)"
                   @click="decide(row, 'approve')"
-                >{{ busy === row.intentId + ':approve' ? "处理中…" : "批准" }}</button>
+                ><QIcon name="check" :size="11" aria-hidden="true" />{{ busy === row.intentId + ':approve' ? "处理中…" : "批准" }}</button>
                 <button
                   class="tc-btn"
                   type="button"
@@ -451,7 +452,7 @@ onMounted(() => {
                   :data-intent-id="row.intentId"
                   :disabled="Boolean(busy)"
                   @click="decide(row, 'reject')"
-                >{{ busy === row.intentId + ':reject' ? "处理中…" : "拒绝" }}</button>
+                ><QIcon name="close" :size="11" aria-hidden="true" />{{ busy === row.intentId + ':reject' ? "处理中…" : "拒绝" }}</button>
               </template>
               <span v-else class="tc-hint">在板面的虚拟意图卡上确认（同批确认也在那里）</span>
             </span>
@@ -501,8 +502,8 @@ onMounted(() => {
                 :data-im="'task-recoverable'"
                 :data-intent-id="row.intentId"
                 @click="notice = '这条任务可以恢复：在输入区的「恢复与收尾」里处理（不会自动执行操作）。'"
-              >可恢复</button>
-              <button class="tc-btn ghost" type="button" data-im="task-record" @click="openRecord(row)">执行记录</button>
+              ><QIcon name="restore" :size="11" aria-hidden="true" />可恢复</button>
+              <button class="tc-btn ghost" type="button" data-im="task-record" @click="openRecord(row)"><QIcon name="clock" :size="11" aria-hidden="true" />执行记录</button>
             </span>
           </li>
         </ul>
@@ -597,6 +598,7 @@ onMounted(() => {
   padding: 1px 8px;
   cursor: pointer;
 }
+.tc-btn { display: inline-flex; align-items: center; gap: 3px; }
 .tc-btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
 .tc-btn:disabled { color: var(--text-muted); cursor: default; opacity: 0.7; }
 .tc-btn.ghost { border-color: transparent; }

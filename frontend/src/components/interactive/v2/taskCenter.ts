@@ -266,6 +266,13 @@ export function taskEmptyText(section?: TaskBucket): string {
   }
 }
 
+/** #84：行内动作复用共享图标（与状态图标同一套 icons.ts）。 */
+export function taskActionIcon(action: TaskControlAction): string {
+  if (action === "pause") return "pause";
+  if (action === "resume") return "play";
+  return "stop";
+}
+
 /** 控制按钮的进行中 / 默认文案（按钮上必须看得出正在处理）。 */
 export function taskControlLabel(action: TaskControlAction, busy: boolean): string {
   if (action === "pause") return busy ? "暂停中…" : "暂停任务";
