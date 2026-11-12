@@ -58,7 +58,10 @@ function onSubmitPanelOpen(): void {
 watch(
   () => store.tasksOpen,
   (open) => {
-    if (open && panelSpace.value === "switch") toolbarRef.value?.closeSubmitDetails();
+    if (!open || panelSpace.value !== "switch") return;
+    // 测试替身 / 旧版本工具栏可能没有这个方法：只在真实实现上调用，不抛错。
+    const toolbar = toolbarRef.value;
+    if (toolbar && typeof toolbar.closeSubmitDetails === "function") toolbar.closeSubmitDetails();
   },
 );
 
@@ -649,13 +652,19 @@ const boardSize = computed(() => {
   max-width: 860px;
   margin-bottom: var(--sp-2);
 }
-/* 工具栏不再是一整条底板：每个功能是独立按钮，悬在输入框上方。 */
+/*
+ * #76：工具区是一整条**连续、轻量**的承载面（一枚胶囊），不是散落在板面上的按钮：
+ * 卡片文字与连线只会从这条面的后方经过，不会从按钮之间的空隙穿出来；
+ * 留白由这条面的内边距 + 按钮间距共同保证，按钮本身退回透明表面。
+ */
 .im-floating-chat :deep(.ic-toolbar .board-toolbar) {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  padding: 2px var(--sp-2);
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 70%, transparent);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.04);
+  backdrop-filter: blur(10px) saturate(1.04);
+  box-shadow: var(--shadow-1);
 }
 .im-floating-chat :deep(.ic-toolbar .tb-sep) {
   display: none;
@@ -664,8 +673,13 @@ const boardSize = computed(() => {
   height: 32px;
   padding: 0 var(--sp-3);
   border-radius: var(--r-pill);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-1);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.im-floating-chat :deep(.ic-toolbar .tb-btn:hover:not(:disabled)) {
+  background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
+  border-color: var(--border-subtle);
 }
 .im-floating-chat :deep(.ic-toolbar .tb-icon-btn) {
   min-width: 32px;

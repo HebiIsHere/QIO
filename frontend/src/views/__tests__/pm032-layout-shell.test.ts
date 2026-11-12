@@ -49,7 +49,7 @@ describe("#05/#71 面板空间规则：宽窗并排、窄窗明确切换", () =>
   it("页面壳窄窗时任务面板与提交详情互相明确切换（各自状态仍由自己保留）", () => {
     expect(view).toContain("onSubmitPanelOpen");
     expect(view).toContain("store.closeTaskCenter()");
-    expect(view).toContain("toolbarRef.value?.closeSubmitDetails()");
+    expect(view).toContain("toolbar.closeSubmitDetails()");
     expect(view).toContain(":data-im-panel-space");
     expect(toolbar).toContain("closeSubmitDetails");
     expect(submit).toContain("closePanel");
@@ -256,6 +256,17 @@ describe("#03/#13/#80/#81 提交区主状态与门禁（数据由 i-state 提供
       submit.indexOf('data-im="submit-duplicate"'),
     );
     expect(unknownBlock).not.toContain("submit-unknown-refresh");
+  });
+});
+
+describe("#76 工具区连续、轻量的承载面（文字/连线不从按钮间隙穿出）", () => {
+  it("悬浮工具栏有条连续承载面，按钮退为透明表面", () => {
+    expect(view).toContain("#76");
+    expect(view).toContain(".ic-toolbar .board-toolbar");
+    expect(view).toMatch(/border-radius:\s*var\(--r-pill\)/);
+    expect(view).toContain("backdrop-filter: blur(10px)");
+    // 承载面不再是完全透明（否则卡片文字会从按钮间隙透出）
+    expect(view).not.toMatch(/\.ic-toolbar \.board-toolbar\) \{\s*padding: 0;\s*border: 0;\s*border-radius: 0;\s*background: transparent;/);
   });
 });
 

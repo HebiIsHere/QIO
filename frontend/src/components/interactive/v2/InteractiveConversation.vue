@@ -200,6 +200,11 @@ function syncEscapeLayer(open: boolean): void {
       id: "interactive-conversation",
       active: () => expandedState.value,
       onEscape: () => {
+        // 正在拖动高度时，Esc 先取消这次拖动（恢复拖动前的高度），不收起已展开的对话。
+        if (drag) {
+          onResizeCancel();
+          return true;
+        }
         collapse();
         return true;
       },

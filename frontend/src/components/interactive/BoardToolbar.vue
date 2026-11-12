@@ -91,10 +91,10 @@ const submitRef = ref<InstanceType<typeof SubmitCluster> | null>(null);
 /** 页面壳（#05 窄窗切换 / #40 Esc 层级）用：只关提交面板，不改任何数据。 */
 defineExpose({
   closeSubmitDetails(): void {
-    submitRef.value?.closePanel();
+    submitRef.value?.closePanel?.();
   },
   submitDetailsOpen(): boolean {
-    return Boolean(submitRef.value?.isPanelOpen());
+    return typeof submitRef.value?.isPanelOpen === "function" ? Boolean(submitRef.value.isPanelOpen()) : false;
   },
 });
 
