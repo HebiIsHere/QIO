@@ -6,7 +6,8 @@
 - 本分支提交：
   - `81e04c9d` fix(interactive-material): 提交轮次只读 A 版快照，材料/读卡/附件同一授权
   - `c33392d6` fix(interactive-material): 三态参与入口与提交版本关系的统一口径
-  - （本报告提交随附）
+  - `63499e73` docs(i-material): 交付报告（材料/三态/提交版本读取）
+  - `73c6d9bf` fix(interactive-material): 附件服务不可用时不做假变化判定
 - 环境：backend/.venv、frontend/node_modules 为 Junction；未改 docs/、未改 schema 迁移、未新增依赖、未 push。
 
 ## 1. 改动文件
@@ -46,6 +47,7 @@ $env:QIO_DISABLE_DB_CHECK='1'
 | `tests/pm_qio032_material_scope_test.py` | **15 passed** |
 | 既有回归 A：`test_p3_b_tools / test_p3_b_service / test_p3_d_tools_registry / test_p3_d_static_boundaries / test_p3_d_frozen_surface / test_p3_d_authorization_scope / test_interactive_materials / test_attachment_tools` | **111 passed** |
 | 既有回归 B：`test_interactive_board / test_p2_d_participation_endpoints_display_version / test_p3_b_tools / test_p3_b_service / test_p3_d_tools_registry / test_p3_d_static_boundaries / test_interactive_materials` | **162 passed** |
+| 既有回归 C：`test_p3_a_submission_flow / test_p3_a_turn_binding / test_p3_d_submission_resume / test_interactive_submission` | **66 passed** |
 
 未跑全量 pytest（按 CONTRACT 由 Lead 统一跑）；未跑前端（无前端改动）。
 
