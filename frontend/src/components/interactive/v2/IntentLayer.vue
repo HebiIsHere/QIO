@@ -24,12 +24,17 @@ import {
   clampIntentDisplay,
   confirmBlockReason,
   confirmBlockText,
+  cardBlockText,
   displayEquals,
   dragIntentDisplay,
   isNeedsUpdate,
   intentDisplayMap,
+  intentProgressText,
+  authorizationNotice,
+  partialConfirmView,
   recoveryFacts,
   recoveryResultText,
+  selectedConfirmIds,
   summarizeConfirm,
   type ConfirmSummary,
   type IntentDisplayPoint,
@@ -127,9 +132,16 @@ interface RenderedIntent {
   persisted: boolean;
   tone: string;
   blockReason: ReturnType<typeof confirmBlockReason>;
+  /** 卡片上常态显示的拦截原因：只对真的需要先处理的状态（needs_update / 未知 / 缺身份） */
   blockText: string;
   selectable: boolean;
   recoverable: boolean;
+  /** #27：授权状态（首次未授权=待确认 / 原授权失效=需重新确认） */
+  auth: ReturnType<typeof authorizationNotice>;
+  /** #14：已确认意图的真实进度（来自 operations_summary） */
+  progressText: string;
+  /** 卡片状态标签：授权需重新确认时用它自己的准确措辞 */
+  statusText: string;
 }
 
 const rendered = computed<RenderedIntent[]>(() =>
@@ -144,15 +156,19 @@ const rendered = computed<RenderedIntent[]>(() =>
           dragPoint.value[view.intent_id],
       );
       const blockReason = confirmBlockReason(view);
+      const auth = authorizationNotice(view);
       return {
         view,
         display,
         persisted,
         tone: statusTone(view.status),
         blockReason,
-        blockText: confirmBlockText(view),
+        blockText: cardBlockText(view),
         selectable: blockReason === null,
         recoverable: canRecover(view),
+        auth,
+        progressText: intentProgressText(view),
+        statusText: auth.state === "reconfirm" ? auth.label : statusLabel(view.status),
       };
     }),
 );
@@ -179,6 +195,12 @@ function canReject(view: IntentViewWithDisplay | null | undefined): boolean {
 const batch = computed(() => batchConfirmState(props.views, checkedIds.value));
 const selectedView = computed(() => rendered.value.find((item) => item.view.intent_id === selected.value) ?? null);
 const selectedRows = computed(() => (selectedView.value ? capabilityRows(selectedView.value.view) : []));
+/** #74：零个可处理待确认项时批量区收起（批量条不常驻空白）。 */
+const selectableCount = computed(() => rendered.value.filter((item) => item.selectable).length);
+/** 文案 10：部分完成的标题 / 成功项 / 失败项 / 重试入口。 */
+const partialView = computed(() => partialConfirmView(summary.value));
+/** 重试只针对显式失败、且当前仍可确认的项（状态变了的交给最新事实处理）。 */
+const retryFailedIds = computed(() => selectedConfirmIds(props.views, partialView.value.retryable));
 const canAct = computed(() => Boolean(props.boardId) && !props.disabled);
 
 function errorMessage(cause: unknown): string {
@@ -364,6 +386,50 @@ async function confirmBatch(): Promise<void> {
   }
 }
 
+/**
+ * 文案 10：部分完成后的「重试失败项」——只对显式失败的 id 再确认一次。
+ * 状态已变化 / 不再可确认的项不重试（交给最新事实），一次点击一次提交，不自动重放。
+ */
+async function retryFailedConfirm(): Promise<void> {
+  error.value = "";
+  notice.value = "";
+  if (props.factsStale) {
+    error.value = staleText();
+    return;
+  }
+  const ids = retryFailedIds.value;
+  if (!ids.length) {
+    error.value = "没有可重试的失败项：这些意图的状态已经变化，请按最新状态处理。";
+    return;
+  }
+  if (!canAct.value) {
+    error.value = "没有板面身份或正在处理：不能重试确认（不会伪造结果）。";
+    return;
+  }
+  if (busy.value) return;
+  busy.value = "retry-failed";
+  try {
+    const response =
+      ids.length === 1
+        ? await confirmSingleIntent(ids[0], props.boardId)
+        : await batchConfirmIntents(props.boardId, ids);
+    const result = summarizeConfirm(response, ids, { batch: ids.length > 1 });
+    summary.value = result;
+    if (result.startFailed) {
+      notice.value = "";
+      error.value = result.notice;
+    } else {
+      notice.value = result.notice;
+    }
+    emit("confirmed", result);
+    emit("refresh");
+  } catch (cause) {
+    error.value = "重试确认没有完成：" + errorMessage(cause);
+  } finally {
+    busy.value = "";
+  }
+}
+
 /* ---- 恢复入口（旧工作台能力迁移；只回到可继续状态，不自动执行） ---- */
 async function openRecovery(view: IntentViewWithDisplay): Promise<void> {
   if (!canRecover(view)) return;
@@ -467,7 +533,8 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
       <button class="btn" type="button" data-im="intent-stale-retry" @click="emit('refresh')">重试读取意图清单</button>
     </p>
 
-    <div class="batch-bar" data-im="intent-batch-bar">
+    <!-- #74：批量区只在存在可处理待确认项时出现；零项收起（不占一块空白） -->
+    <div v-if="selectableCount > 0" class="batch-bar" data-im="intent-batch-bar">
       <span class="batch-hint" data-im="intent-batch-hint">{{ batch.hint }}</span>
       <button
         class="btn primary"
@@ -501,7 +568,12 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
         <header class="vi-head">
           <span class="vi-badge">虚拟</span>
           <span class="vi-title">{{ item.view.title || "待确认意图" }}</span>
-          <span class="vi-status" :class="item.tone" data-im="virtual-intent-status">{{ statusLabel(item.view.status) }}</span>
+          <span
+            class="vi-status"
+            :class="item.tone"
+            data-im="virtual-intent-status"
+            :data-auth-state="item.auth.state"
+          >{{ item.statusText }}</span>
           <label v-if="item.selectable" class="vi-check" @pointerdown.stop>
             <input
               type="checkbox"
@@ -512,8 +584,8 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
             选择
           </label>
         </header>
-        <p v-if="item.blockReason" class="vi-block" data-im="intent-block">{{ item.blockText }}</p>
-        <p v-else class="vi-note" data-im="intent-virtual-note">确认前不执行；确认后由服务端续作（本轮不代表已完成）。</p>
+        <p v-if="item.blockText" class="vi-block" data-im="intent-block">{{ item.blockText }}</p>
+        <p v-else-if="!item.progressText" class="vi-note" data-im="intent-virtual-note">确认前不执行；确认后由服务端续作（本轮不代表已完成）。</p>
         <p
           v-if="displayStateOf(item.view.intent_id)?.phase === 'pending'"
           class="vi-meta mono"
@@ -524,6 +596,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
           class="vi-meta warn"
           data-im="intent-display-failed"
         >位置保存失败：{{ displayStateOf(item.view.intent_id)?.error }}</p>
+        <p v-if="item.progressText" class="vi-meta mono" data-im="intent-progress">{{ item.progressText }}</p>
         <p v-if="item.view.operations_summary" class="vi-meta mono" data-im="intent-operations-summary">
           操作：已完成 {{ item.view.operations_summary.applied ?? 0 }} · 执行中 {{ item.view.operations_summary.running ?? 0 }} ·
           未开始 {{ item.view.operations_summary.pending ?? 0 }} · 失败 {{ item.view.operations_summary.failed ?? 0 }}
@@ -552,8 +625,21 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
         :data-im="'intent-row:' + row.key"
       ><span class="label">{{ row.label }}</span>{{ row.text }}</p>
 
-      <p v-if="selectedView.blockReason" class="warn" data-im="intent-needs-update">{{ selectedView.blockText }}</p>
-      <p v-else-if="isConfirmable(selectedView.view)" class="hint" data-im="intent-confirm-hint">
+      <p v-if="selectedView.blockText" class="warn" data-im="intent-needs-update">{{ selectedView.blockText }}</p>
+      <!-- #27：只有在原授权确实失效时才在前方给出真实变更（首次未授权不冒充「需重新确认」） -->
+      <p
+        v-if="selectedView.auth.state === 'reconfirm'"
+        class="warn"
+        role="status"
+        data-im="intent-reauth-change"
+      >{{ selectedView.auth.reason }}</p>
+      <p
+        v-else-if="selectedView.auth.state === 'pending'"
+        class="hint"
+        data-im="intent-auth-pending"
+      >{{ selectedView.auth.reason }}</p>
+      <p v-if="selectedView.progressText" class="row mono" data-im="intent-detail-progress">{{ selectedView.progressText }}</p>
+      <p v-if="!selectedView.blockText && isConfirmable(selectedView.view)" class="hint" data-im="intent-confirm-hint">
         确认只提交这一条（显式 id），确认后以服务端返回的执行轮次与状态为准；已确认不等于已完成。
       </p>
 
@@ -606,7 +692,18 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
     </aside>
 
     <div v-if="summary" class="summary" data-im="intent-confirm-summary">
+      <!-- 文案 10：部分完成 = 标题 + 成功项 + 失败项 + 重试入口 -->
+      <p
+        v-if="partialView.title"
+        class="row summary-title"
+        data-im="intent-confirm-partial-title"
+      >{{ partialView.title }}</p>
       <p class="row" data-im="intent-confirm-notice">{{ summary.notice }}</p>
+      <p
+        v-if="partialView.succeeded.length"
+        class="row ok"
+        data-im="intent-confirm-succeeded"
+      >成功项：{{ partialView.succeeded.join("、") }}</p>
       <ul class="rows" data-im="intent-confirm-rows">
         <li
           v-for="row in summary.rows"
@@ -623,8 +720,17 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
         <span v-if="summary.startCode">（{{ summary.startCode }}）</span>
       </p>
       <p v-if="summary.failedIds.length" class="warn" data-im="intent-confirm-partial">
-        部分失败：{{ summary.failedIds.join("、") }}
+        失败项：{{ summary.failedIds.join("、") }}
       </p>
+      <button
+        v-if="partialView.failed.length"
+        class="btn"
+        type="button"
+        data-im="intent-confirm-retry-failed"
+        :disabled="!retryFailedIds.length || !canAct || Boolean(busy) || props.factsStale"
+        :title="retryFailedIds.length ? '只重试这些失败项的显式 id，不重复提交已成功的项' : '失败项状态已变化，不能按旧结果重试'"
+        @click="retryFailedConfirm"
+      >{{ busy === "retry-failed" ? "重试中…" : "重试失败项（" + retryFailedIds.length + "）" }}</button>
       <p v-if="summary.startedUnknownIds.length" class="warn" data-im="intent-confirm-started-unknown">
         没有返回执行轮次：{{ summary.startedUnknownIds.join("、") }}（不能认为已经开始执行）
       </p>
@@ -789,6 +895,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   border-radius: var(--r-lg);
   background: var(--bg-elevated);
 }
+.summary-title { font-size: var(--fs-sm); color: var(--text-strong); }
 .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .rows li { font-size: var(--fs-xs); color: var(--text-secondary); }
 .btn {

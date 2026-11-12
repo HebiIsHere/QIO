@@ -256,6 +256,181 @@ export function batchConfirmState(
   return { ids, count, enabled, hint };
 }
 
+// --- #27 授权状态：首次未授权（待确认）vs 原授权确实失效（需重新确认）+ 真实变更 ---
+
+export type AuthorizationStateKind = "ok" | "pending" | "reconfirm";
+
+export interface AuthorizationNotice {
+  state: AuthorizationStateKind;
+  /** 卡片 / 详情上的状态标签：待确认 / 需重新确认（ok 时为空串） */
+  label: string;
+  /** 一句人话（含真实变更；拿不到变更时如实说明，不编造） */
+  reason: string;
+  /** 逐条真实变更（服务端事实；空数组 = 服务端没给变更明细） */
+  changes: string[];
+}
+
+function asRecordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function scopeCounts(scope: unknown): Record<string, number> {
+  const record = asRecordOrNull(scope);
+  if (!record) return {};
+  const count = (value: unknown): number => (Array.isArray(value) ? value.length : 0);
+  return {
+    读取: count(record.read_card_ids),
+    修改: count(record.write_card_ids),
+    组: count(record.group_ids),
+    动作: count(record.allowed_actions),
+  };
+}
+
+function scopeDiffText(before: unknown, after: unknown): string {
+  const left = scopeCounts(before);
+  const right = scopeCounts(after);
+  const parts: string[] = [];
+  for (const key of ["读取", "修改", "组", "动作"]) {
+    const from = left[key] ?? 0;
+    const to = right[key] ?? 0;
+    if (from !== to) parts.push(key + " " + from + " → " + to);
+  }
+  return parts.join("；");
+}
+
+/** 读取服务端给的授权变更明细：只认字符串 / {text|label|field,from,to}，不认识的不猜。 */
+function readAuthorizationChanges(view: IntentViewWithDisplay): string[] {
+  const raw = (view as { authorization_changes?: unknown }).authorization_changes;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item === "string" && item.trim()) {
+      out.push(item.trim());
+      continue;
+    }
+    const record = asRecordOrNull(item);
+    if (!record) continue;
+    const direct = record.text ?? record.label ?? record.message;
+    if (typeof direct === "string" && direct.trim()) {
+      out.push(direct.trim());
+      continue;
+    }
+    const field = typeof record.field === "string" ? record.field : "";
+    if (field) {
+      const from = record.from === undefined ? "未记录" : String(record.from);
+      const to = record.to === undefined ? "未记录" : String(record.to);
+      out.push(field + "：" + from + " → " + to);
+    }
+  }
+  return out;
+}
+
+/**
+ * #27：授权的真实状态。
+ *
+ * - authorization_valid !== false → ok（不显示授权提示）；
+ * - 首次未授权（proposed / 没有任何授权快照）→ pending「待确认」；
+ * - 原授权确实失效（服务端 authorization_invalidated=true，或曾进入过执行状态、
+ *   只剩版本不符的旧快照）→ reconfirm「需重新确认」，并带上真实变更；
+ * - 不能证明「曾经授权过」时按 pending 处理 —— 只说事实，不夸大。
+ */
+export function authorizationNotice(view: IntentViewWithDisplay | null | undefined): AuthorizationNotice {
+  const ok: AuthorizationNotice = { state: "ok", label: "", reason: "", changes: [] };
+  if (!view || view.authorization_valid !== false) return ok;
+  const status = String(view.status ?? "");
+  const authorization = asRecordOrNull(view.authorization);
+  const snapshotVersion = authorization ? Number(authorization.version) : Number.NaN;
+  const versionMismatch =
+    Boolean(authorization) &&
+    Number.isFinite(snapshotVersion) &&
+    Number.isFinite(Number(view.version)) &&
+    snapshotVersion !== Number(view.version);
+  const invalidatedFlag = (view as { authorization_invalidated?: unknown }).authorization_invalidated === true;
+  const everExecuted = ["approved", "running", "paused", "partially_completed", "failed"].includes(status);
+  const reconfirm = invalidatedFlag || everExecuted || versionMismatch;
+  const changes = readAuthorizationChanges(view);
+  if (!reconfirm) {
+    return {
+      state: "pending",
+      label: "待确认",
+      reason: "还没有确认过这次操作（首次未授权）：确认后才会执行，现在不会自动开始。",
+      changes: [],
+    };
+  }
+  const derived: string[] = [];
+  if (versionMismatch) derived.push("授权版本 v" + snapshotVersion + " → 当前 v" + Number(view.version));
+  // 没有授权快照就没有可比较的「变更」：绝不拿空值拼一段看起来像事实的差异
+  if (authorization) {
+    const diff = scopeDiffText(authorization.scope, view.scope);
+    if (diff) derived.push("范围：" + diff);
+  }
+  const merged = changes.length ? changes : derived;
+  const reason = merged.length
+    ? "旧授权已失效（需重新确认）：" + merged.join("；") + "。"
+    : "旧授权已失效（需重新确认）：服务端未返回具体变更，不能猜测，请按当前目标与范围重新确认。";
+  return { state: "reconfirm", label: "需重新确认", reason, changes: merged };
+}
+
+// --- #14 / 文案 10/14：已确认的意图显示实际进度；部分完成分开列成功 / 失败项 ----------
+
+/** 确认过的意图当前的真实进度（只来自 operations_summary；没有事实就不显示）。 */
+export function intentProgressText(view: IntentViewWithDisplay | null | undefined): string {
+  if (!view) return "";
+  if (!["approved", "running", "paused", "partially_completed", "failed"].includes(String(view.status ?? ""))) return "";
+  const summary = view.operations_summary;
+  if (!summary) return "";
+  const applied = Number(summary.applied ?? 0) || 0;
+  const running = Number(summary.running ?? 0) || 0;
+  const pending = Number(summary.pending ?? 0) || 0;
+  const failed = Number(summary.failed ?? 0) || 0;
+  const conflict = Number(summary.conflict ?? 0) || 0;
+  const total = applied + running + pending + failed + conflict;
+  if (total <= 0) return "进度：尚未开始操作（0 项）";
+  const parts = ["进度：已完成 " + applied + " / 共 " + total + " 项"];
+  if (running) parts.push("执行中 " + running);
+  if (failed) parts.push("失败 " + failed);
+  if (pending) parts.push("未开始 " + pending);
+  return parts.join(" · ");
+}
+
+/**
+ * #14：卡片上的拦截说明只在「这条意图当前状态确实需要用户知道原因」时出现。
+ * 已开始 / 已结束的重复确认原因**不常态显示** —— 只有真的点了确认被拦住时才在错误行说明。
+ */
+export function cardBlockText(view: IntentViewWithDisplay | null | undefined): string {
+  const reason = confirmBlockReason(view);
+  if (reason === "needs_update" || reason === "unknown_status" || reason === "missing_id") {
+    return confirmBlockText(view);
+  }
+  return "";
+}
+
+export interface PartialConfirmView {
+  /** 真正的「部分完成」：既有成功项，也有失败项 */
+  partial: boolean;
+  /** 全部失败（没有成功项） */
+  allFailed: boolean;
+  title: string;
+  succeeded: string[];
+  failed: string[];
+  retryable: string[];
+}
+
+/** #文案 10：部分完成 = 标题 + 成功项 + 失败项 + 重试入口（重试交给调用方按显式 id 执行）。 */
+export function partialConfirmView(summary: ConfirmSummary | null | undefined): PartialConfirmView {
+  const empty: PartialConfirmView = { partial: false, allFailed: false, title: "", succeeded: [], failed: [], retryable: [] };
+  if (!summary) return empty;
+  const succeeded = [...(summary.succeededIds ?? [])];
+  const failed = [...(summary.failedIds ?? [])];
+  if (!failed.length) return { ...empty, succeeded };
+  if (!succeeded.length) {
+    return { partial: false, allFailed: true, title: "确认未完成", succeeded, failed, retryable: failed };
+  }
+  return { partial: true, allFailed: false, title: "部分完成", succeeded, failed, retryable: failed };
+}
+
 // --- 确认结果：显式 ids / 部分失败分别可见 / 真实 turnId ----------------------
 
 export type ConfirmItemWithTurn = ConfirmItemResult & {
@@ -484,8 +659,13 @@ export function capabilityRows(view: IntentViewWithDisplay): CapabilityRow[] {
   if (dependency) rows.push({ key: "dependencies", label: "依赖 / 冲突", text: dependency, tone: "waiting" });
   const operations = operationsSummaryText(view);
   if (operations) rows.push({ key: "operations", label: "操作账本", text: operations, tone: "active" });
-  if (view.authorization_valid === false) {
-    rows.push({ key: "authorization", label: "授权", text: "旧授权已失效：需要重新确认当前目标与影响范围。", tone: "problem" });
+  const auth = authorizationNotice(view);
+  if (auth.state === "pending") {
+    // #27：首次未授权 = 待确认（不是「需重新确认」）
+    rows.push({ key: "authorization", label: "授权", text: auth.reason, tone: "waiting" });
+  } else if (auth.state === "reconfirm") {
+    // #27：只有原授权确实失效才说「需重新确认」，并给出真实变更（拿不到变更就不编造）
+    rows.push({ key: "authorization", label: "授权", text: auth.reason, tone: "problem" });
   }
   if (canRecover(view)) {
     rows.push({ key: "recovery", label: "恢复", text: "可进入恢复（只把意图放回可继续状态，不自动执行操作）。", tone: "waiting" });
