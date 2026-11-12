@@ -186,8 +186,22 @@ const baseline = ref<{ content: string; version: number | null }>({ content: "",
 const saveError = ref("");
 /** 冲突：保留用户输入，把服务端当前版本也摆出来，由用户决定下一步。 */
 const conflict = ref<{ message: string; remoteContent: string; remoteVersion: number | null } | null>(null);
-/** 返回时的未保存修改确认层（沿用 QConfirm 的确认层语义与按钮层级）。 */
-const pendingLeave = ref(false);
+/**
+ * 离开确认：列表点击 / 页面内返回 / 外部 requestOpenKnowledge 共用的**唯一**检查。
+ *
+ * 三条路径都先过 {@link requestNavigate}：没有未保存修改就直接跳；有就挂起本次目标，
+ * 等用户明确选择（继续编辑 / 保存并打开 / 放弃并打开）。确认期间再次请求另一个目标时，
+ * 只更新目标、旧的 Promise 以 false 结束 —— 最终只跳转最后一次明确选择。
+ */
+type NavTarget = { kind: "open"; id: string } | { kind: "back" };
+
+const pendingNav = ref<NavTarget | null>(null);
+let navResolvers: Array<(ok: boolean) => void> = [];
+/** 确认层的键盘焦点管理：打开时移入，继续编辑后回到草稿输入框。 */
+const guardRef = ref<HTMLElement | null>(null);
+const draftAreaRef = ref<HTMLTextAreaElement | null>(null);
+const detailRegionRef = ref<HTMLElement | null>(null);
+const listRegionRef = ref<HTMLElement | null>(null);
 
 const dirty = computed(
   () => editing.value && draft.value.trim() !== baseline.value.content.trim(),
@@ -198,7 +212,6 @@ function resetDraftState() {
   draft.value = "";
   saveError.value = "";
   conflict.value = null;
-  pendingLeave.value = false;
 }
 
 function scrollRootTo(top: number) {
@@ -207,7 +220,47 @@ function scrollRootTo(top: number) {
   root.scrollTop = Math.max(0, top);
 }
 
-function openDetail(id: string) {
+/** 结束所有挂起的离开请求：ok=true 表示导航已发生（或承诺会发生），false 表示没有跳转。 */
+function settlePendingNav(ok: boolean) {
+  const resolvers = navResolvers;
+  navResolvers = [];
+  pendingNav.value = null;
+  for (const resolve of resolvers) resolve(ok);
+}
+
+/** 真正执行导航（调用前必须已经确定没有未保存修改，或用户已明确选择放弃/保存）。 */
+function applyNavigation(target: NavTarget) {
+  if (target.kind === "back") leaveDetail();
+  else openDetailNow(target.id);
+}
+
+/**
+ * 统一的离开检查：无草稿 → 直接导航并 resolve true；有草稿 → 打开同一确认层并挂起，
+ * 用户明确选择后才 resolve（保存失败/继续编辑为 false）。
+ */
+async function requestNavigate(target: NavTarget): Promise<boolean> {
+  if (target.kind === "open" && view.value === "detail" && activeId.value === target.id) {
+    // 已经在这条上：不构成离开，也不需要确认。
+    return true;
+  }
+  if (!dirty.value) {
+    applyNavigation(target);
+    return true;
+  }
+  // 确认期间又点了另一个目标：更新目标，旧请求按「未跳转」结束。
+  settlePendingNav(false);
+  pendingNav.value = target;
+  return new Promise<boolean>((resolve) => {
+    navResolvers.push(resolve);
+  });
+}
+
+/** 列表点击（视图内路径）：与搜索/返回走同一检查。 */
+async function openDetail(id: string) {
+  await requestNavigate({ kind: "open", id });
+}
+
+function openDetailNow(id: string) {
   if (view.value === "detail" && activeId.value === id) return;
   if (view.value === "list") listScrollTop = rootRef.value?.scrollTop ?? 0;
   resetDraftState();
@@ -226,18 +279,94 @@ function leaveDetail() {
   void nextTick(() => scrollRootTo(top));
 }
 
-function requestBack() {
-  if (dirty.value) {
-    pendingLeave.value = true;
-    return;
-  }
-  leaveDetail();
+/** 页面内返回：与列表点击、搜索跳转共用同一离开检查。 */
+async function requestBack() {
+  await requestNavigate({ kind: "back" });
 }
 
-function discardAndLeave() {
-  pendingLeave.value = false;
-  leaveDetail();
+/**
+ * 导航后的焦点落点：打开详情落在详情区，返回列表落回刚才那一条（键盘用户不丢位置）。
+ */
+async function focusAfterNavigation(target: NavTarget, previousId: string | null) {
+  await nextTick();
+  if (target.kind === "open") {
+    detailRegionRef.value?.focus();
+    return;
+  }
+  const root = rootRef.value;
+  const item = previousId && root
+    ? root.querySelector<HTMLElement>(`[data-k-id="${previousId}"]`)
+    : null;
+  (item ?? listRegionRef.value)?.focus();
 }
+
+// -- 离开确认层的三个明确动作 ------------------------------------------------
+
+function resolveKeepEditing() {
+  settlePendingNav(false);
+  void nextTick(() => draftAreaRef.value?.focus());
+}
+
+async function resolveDiscardAndGo() {
+  const target = pendingNav.value;
+  if (!target) return;
+  const previousId = activeId.value;
+  settlePendingNav(true);
+  applyNavigation(target);
+  await focusAfterNavigation(target, previousId);
+}
+
+async function resolveSaveAndGo() {
+  const target = pendingNav.value;
+  if (!target) return;
+  const previousId = activeId.value;
+  if (!activeItem.value) {
+    saveError.value = "这条知识已经不在当前列表里，无法保存。可以放弃修改后继续。";
+    settlePendingNav(false);
+    return;
+  }
+  const saved = await saveDraftCore();
+  if (!saved) {
+    // 停在原条目：草稿、编辑态与真实失败原因都还在（409 走冲突面板）。
+    settlePendingNav(false);
+    return;
+  }
+  applyNavigation(target);
+  settlePendingNav(true);
+  await focusAfterNavigation(target, previousId);
+}
+
+/** Esc 先退这一层确认（并阻止冒泡到 PlanetView，避免顺手收起整个管理区）。 */
+function onGuardKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    resolveKeepEditing();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const root = guardRef.value;
+  if (!root) return;
+  const buttons = Array.from(root.querySelectorAll<HTMLElement>("button:not([disabled])"));
+  if (!buttons.length) return;
+  const first = buttons[0];
+  const last = buttons[buttons.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (event.shiftKey && (active === first || active === root)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+/** 确认层出现时把焦点移进去（可读屏、可 Esc、Tab 在三个动作之间循环）。 */
+watch(pendingNav, async (target) => {
+  if (!target) return;
+  await nextTick();
+  guardRef.value?.focus();
+});
 
 // -- 读取 -------------------------------------------------------------------
 
@@ -299,6 +428,14 @@ const scopeOptions = computed(() => [
 function scopeValueOf(k: KnowledgeItem): string {
   return k.topic_id ? "topic:" + k.topic_id : "global";
 }
+/**
+ * 适用范围只在现有下拉控件里显示一次。仅当当前值不在下拉选项里
+ * （例如关联话题已经从话题列表消失）才补一行原文，避免信息丢失而不是重复打印。
+ */
+function scopeNeedsHint(k: KnowledgeItem | null): boolean {
+  if (!k) return false;
+  return !scopeOptions.value.some((option) => option.value === scopeValueOf(k));
+}
 async function changeScope(k: KnowledgeItem, value: string) {
   await feedback.run(fbKey(k), async () => {
     if (value.startsWith("topic:")) {
@@ -346,6 +483,7 @@ function startEdit(k: KnowledgeItem) {
 }
 
 function cancelEdit() {
+  settlePendingNav(false);
   editing.value = false;
   draft.value = "";
   saveError.value = "";
@@ -380,13 +518,17 @@ async function onConflict(error: unknown) {
   };
 }
 
-async function saveDraft() {
+/**
+ * 保存草稿的唯一实现（普通「保存」与「保存并打开」共用）。
+ * 返回是否真的写入了新版本；失败时草稿、编辑态与真实原因都保留。
+ */
+async function saveDraftCore(): Promise<boolean> {
   const item = activeItem.value;
-  if (!item || saving.value) return;
+  if (!item || saving.value) return false;
   const content = draft.value.trim();
   if (!content) {
     saveError.value = "内容不能为空。";
-    return;
+    return false;
   }
   saving.value = true;
   saveError.value = "";
@@ -403,6 +545,7 @@ async function saveDraft() {
       activeId.value = result.knowledge_id;
     }
     announce("已保存新版本。");
+    return true;
   } catch (e) {
     if (isVersionConflict(e)) {
       await onConflict(e);
@@ -410,9 +553,14 @@ async function saveDraft() {
       // 失败保留草稿与错误：用户改完可以直接重试。
       saveError.value = "保存没有成功：" + (e as Error).message + "。草稿还在，可以重试。";
     }
+    return false;
   } finally {
     saving.value = false;
   }
+}
+
+async function saveDraft() {
+  await saveDraftCore();
 }
 
 /**
@@ -462,28 +610,68 @@ async function submitCreate() {
   }, { okText: "已创建并生效", failText: "创建没有成功" });
 }
 
+// -- 对外接口（供 ManagementArea 的搜索结果 / 外部落点调用） -----------------
+
+/**
+ * 有没有未保存的修改：调用方据此决定是否需要先切换到知识标签页
+ * （面板被 v-show 保活时，确认层可能不在当前视野里）。
+ */
+function hasUnsavedDraft(): boolean {
+  return dirty.value;
+}
+
+/**
+ * 打开一条知识（外部入口：搜索结果 / 深链）。**必须**与列表点击、页面内返回
+ * 走同一离开检查：
+ * - 没有未保存修改：直接打开并 resolve true；
+ * - 有未保存修改：显示同一个确认层，用户选择后才 resolve（继续编辑 / 保存失败为 false）。
+ *
+ * 确认期间又请求另一条时，只更新目标；旧的 Promise 以 false 结束。
+ */
+async function requestOpenKnowledge(id: string): Promise<boolean> {
+  const targetId = String(id ?? "").trim();
+  if (!targetId) return false;
+  if (view.value === "detail" && activeId.value === targetId) return true;
+  if (!items.value.some((k) => k.id === targetId)) {
+    // 外部可能在首次加载完成前就要求定位：等这一次真实读取，而不是直接说「找不到」。
+    if (bootstrapLoad) await bootstrapLoad;
+    if (!items.value.some((k) => k.id === targetId)) await load();
+    if (!items.value.some((k) => k.id === targetId)) {
+      announce("这条知识暂时不在当前列表里，可能已被修订成新版本。");
+      return false;
+    }
+  }
+  return requestNavigate({ kind: "open", id: targetId });
+}
+
+defineExpose({ hasUnsavedDraft, requestOpenKnowledge });
+
 // -- 生命周期 ---------------------------------------------------------------
 
-function openFocusId() {
+let bootstrapLoad: Promise<void> | null = null;
+
+/** 聚焦 prop（搜索结果 / 深链）也走 requestOpenKnowledge，不绕开离开检查。 */
+async function openFocusId() {
   const id = String(props.focusId || "");
   if (!id) return;
   if (!items.value.some((k) => k.id === id)) return;
-  openDetail(id);
+  await requestOpenKnowledge(id);
 }
 
 watch(
   () => props.focusId,
   (id) => {
-    if (id) openFocusId();
+    if (id) void openFocusId();
   },
 );
 watch(
   () => items.value.length,
-  () => openFocusId(),
+  () => void openFocusId(),
 );
 
 async function bootstrap() {
-  await Promise.all([load(), loadTopics()]);
+  bootstrapLoad = Promise.all([load(), loadTopics()]).then(() => {});
+  await bootstrapLoad;
   openFocusId();
   refreshPendingCount();
 }
@@ -492,6 +680,8 @@ void bootstrap();
 
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer);
+  // 组件销毁时不再跳转：挂起的请求以 false 结束（不让调用方永远等）。
+  settlePendingNav(false);
 });
 </script>
 
@@ -504,7 +694,7 @@ onBeforeUnmount(() => {
     data-scroll="knowledge-list"
   >
     <!-- 列表（v-show 保活：返回时搜索、筛选与滚动位置都还在） -->
-    <div v-show="view === 'list'" class="k-list-view" data-k-list>
+    <div v-show="view === 'list'" ref="listRegionRef" class="k-list-view" data-k-list tabindex="-1">
       <div class="k-toolbar">
         <QInput v-model="q" placeholder="搜索知识…" class="grow" data-k-search />
         <button class="qio-btn mini k-create-open" type="button" @click="openCreate">
@@ -585,12 +775,11 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 详情 -->
-    <div v-show="view === 'detail'" class="k-detail" data-k-detail>
+    <div v-show="view === 'detail'" ref="detailRegionRef" class="k-detail" data-k-detail tabindex="-1">
       <div class="k-detail-head">
         <button class="qio-btn mini quiet k-back" type="button" data-k-back @click="requestBack">
           <QIcon name="chevron-left" :size="12" /> 返回
         </button>
-        <span class="k-detail-title serif">知识详情</span>
         <span class="spacer"></span>
         <button
           v-if="activeItem && !editing"
@@ -603,17 +792,58 @@ onBeforeUnmount(() => {
 
       <p v-if="notice" class="k-notice" role="status">{{ notice }}</p>
 
+      <!--
+        统一离开确认层（列表点击 / 页面内返回 / 外部 requestOpenKnowledge 共用）：
+        标题只说一次，动作就是真实的三条路 —— 不再重复解释「返回会丢修改」。
+      -->
+      <div
+        v-if="pendingNav"
+        ref="guardRef"
+        class="k-guard"
+        data-unsaved-guard
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="k-guard-title"
+        tabindex="-1"
+        @keydown="onGuardKeydown"
+      >
+        <p id="k-guard-title" class="k-guard-title">还有未保存的修改</p>
+        <div class="row k-guard-actions">
+          <button class="qio-btn mini" type="button" data-unsaved-keep @click="resolveKeepEditing">继续编辑</button>
+          <button
+            class="qio-btn mini primary"
+            type="button"
+            data-unsaved-save-open
+            :disabled="saving"
+            :aria-busy="saving ? 'true' : undefined"
+            @click="resolveSaveAndGo"
+          >
+            {{ saving ? "保存中…" : pendingNav.kind === "open" ? "保存并打开" : "保存并返回" }}
+          </button>
+          <button
+            class="qio-btn mini danger-solid"
+            type="button"
+            data-unsaved-discard
+            :disabled="saving"
+            @click="resolveDiscardAndGo"
+          >
+            {{ pendingNav.kind === "open" ? "放弃并打开" : "放弃并返回" }}
+          </button>
+        </div>
+      </div>
+
       <!-- 详情开着但这条已经不在当前列表（例如被合成新版本）：如实说明，并保留草稿。 -->
       <div v-if="!activeItem" class="k-card-content">
         <p class="hint k-missing">这条知识已经不在当前列表里（可能被修订成了新的当前版本，或被归档后筛掉了）。</p>
         <div v-if="editing" class="k-draft" data-k-draft>
           <label class="k-label" for="k-draft-missing">你的修改（草稿）</label>
-          <textarea id="k-draft-missing" v-model="draft" class="qio-input" rows="4"></textarea>
+          <textarea id="k-draft-missing" ref="draftAreaRef" v-model="draft" class="qio-input" rows="4"></textarea>
           <div class="row">
             <button class="qio-btn mini" type="button" data-k-cancel @click="cancelEdit">丢弃草稿</button>
           </div>
+          <p v-if="saveError" class="k-feedback err" role="alert">{{ saveError }}</p>
         </div>
-        <button class="qio-btn mini primary" type="button" @click="leaveDetail">返回列表</button>
+        <button class="qio-btn mini primary" type="button" @click="requestBack">返回列表</button>
       </div>
 
       <div v-else class="k-card qio-card">
@@ -632,7 +862,7 @@ onBeforeUnmount(() => {
         <template v-if="editing">
           <div class="k-draft" data-k-draft>
             <label class="k-label" for="k-draft">内容（保存后才写入新版本）</label>
-            <textarea id="k-draft" v-model="draft" class="qio-input k-edit" rows="5"></textarea>
+            <textarea id="k-draft" ref="draftAreaRef" v-model="draft" class="qio-input k-edit" rows="5"></textarea>
             <p class="hint k-draft-hint">
               保存会在服务端生成一个新的当前版本；取消丢弃这次修改，原内容不变。
             </p>
@@ -669,18 +899,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 未保存修改确认层（返回列表前；不悄悄丢） -->
-        <div v-if="pendingLeave" class="k-guard" data-unsaved-guard role="alertdialog" aria-label="未保存的修改">
-          <p class="k-guard-title">还有未保存的修改</p>
-          <p class="k-guard-detail">返回列表会丢弃这次修改；已保存的内容不受影响。</p>
-          <div class="row k-guard-actions">
-            <button class="qio-btn mini" type="button" data-unsaved-keep @click="pendingLeave = false">继续编辑</button>
-            <button class="qio-btn mini danger-solid" type="button" data-unsaved-discard @click="discardAndLeave">
-              放弃修改并返回
-            </button>
-          </div>
-        </div>
-
         <!-- 详情元数据：来源/分类/状态/适用范围/关联话题/依据数/修订与归档 -->
         <dl class="k-meta">
           <div class="k-meta-row">
@@ -705,7 +923,8 @@ onBeforeUnmount(() => {
                 :busy="feedback.stateOf(fbKey(activeItem)) === 'busy'"
                 @update:model-value="(v: string) => changeScope(activeItem!, v)"
               />
-              <span class="hint">{{ activeItem.scope }}</span>
+              <!-- 只在现有下拉控件里显示一次；仅当下拉无法表示当前值时才补原文。 -->
+              <span v-if="scopeNeedsHint(activeItem)" class="hint k-scope-detail">{{ activeItem.scope }}</span>
             </dd>
           </div>
           <div class="k-meta-row">
@@ -738,17 +957,31 @@ onBeforeUnmount(() => {
               <span v-if="activeItem.supersedes_id" class="hint">（由上一版修订而来）</span>
             </dd>
           </div>
-          <div class="k-meta-row">
-            <dt>时间</dt>
-            <dd class="mono k-times">
-              创建 {{ activeItem.created_at || "未记录" }} · 更新 {{ activeItem.updated_at || "未记录" }}
-            </dd>
-          </div>
-          <div v-if="activeItem.ended_at" class="k-meta-row">
-            <dt>结束于</dt>
-            <dd class="mono">{{ activeItem.ended_at }}</dd>
-          </div>
         </dl>
+
+        <!--
+          用户查证需要的详情留在默认可见层（来源/分类/状态/范围/话题/依据/修订）；
+          内部编号与原始时间戳放进按需展开区，默认不铺开 —— 不是删掉。
+        -->
+        <details class="k-more" data-k-more>
+          <summary class="k-more-summary">更多信息</summary>
+          <dl class="k-meta k-more-list">
+            <div class="k-meta-row">
+              <dt>时间</dt>
+              <dd class="mono k-times">
+                创建 {{ activeItem.created_at || "未记录" }} · 更新 {{ activeItem.updated_at || "未记录" }}
+              </dd>
+            </div>
+            <div v-if="activeItem.ended_at" class="k-meta-row">
+              <dt>结束于</dt>
+              <dd class="mono">{{ activeItem.ended_at }}</dd>
+            </div>
+            <div class="k-meta-row">
+              <dt>编号</dt>
+              <dd class="mono k-id">{{ activeItem.id }}</dd>
+            </div>
+          </dl>
+        </details>
 
         <!-- 管理动作（阅读态才出现；编辑中只留保存/取消） -->
         <div v-if="!editing" class="row k-actions open">
@@ -801,9 +1034,6 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div v-if="activeItem" class="k-detail-foot">
-        <span class="k-id mono">{{ activeItem.id }}</span>
-      </div>
     </div>
   </div>
 </template>
@@ -816,6 +1046,8 @@ onBeforeUnmount(() => {
   overflow-y: auto; overflow-x: clip; overscroll-behavior: contain;
 }
 .k-list-view { display: flex; flex-direction: column; gap: 8px; }
+/* 焦点落点用 tabindex="-1" 的区域承接（返回列表 / 打开详情后），不显示成可交互控件。 */
+.k-list-view:focus, .k-detail:focus, .k-guard:focus { outline: none; }
 .k-toolbar { display: flex; align-items: center; gap: 8px; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; }
@@ -858,7 +1090,6 @@ onBeforeUnmount(() => {
 .k-detail { display: flex; flex-direction: column; gap: 10px; }
 .k-detail-head { display: flex; align-items: center; gap: 8px; }
 .k-detail-head .spacer { flex: 1; }
-.k-detail-title { font-size: 14px; color: var(--text-secondary); letter-spacing: 0.02em; }
 .k-card { display: flex; flex-direction: column; gap: 10px; padding: var(--sp-4); }
 .k-card-content { display: flex; flex-direction: column; gap: 8px; }
 .k-detail-content { margin: 0; font-size: 14px; line-height: 1.75; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -868,6 +1099,14 @@ onBeforeUnmount(() => {
 .k-draft-hint { margin: 0; }
 .k-actions { margin-top: 2px; }
 .k-meta { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 10px 0 0; border-top: 1px solid var(--border-subtle); }
+/* 「更多信息」：默认收起，展开后仍是同一套元数据排版（不新增第二套视觉）。 */
+.k-more { border-top: 1px solid var(--border-subtle); padding-top: 8px; }
+.k-more-summary {
+  cursor: pointer; font-size: 11.5px; color: var(--text-secondary);
+  letter-spacing: 0.03em; user-select: none;
+}
+.k-more-summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.k-more-list { border-top: none; padding-top: 6px; }
 .k-meta-row { display: flex; gap: 10px; align-items: flex-start; }
 .k-meta-row dt { flex: none; width: 64px; font-size: 11px; color: var(--text-secondary); }
 .k-meta-row dd { margin: 0; min-width: 0; font-size: 12.5px; color: var(--text-primary); display: flex; flex-direction: column; gap: 4px; }
@@ -889,12 +1128,10 @@ onBeforeUnmount(() => {
   background: var(--bg-inset);
 }
 .k-guard-title { margin: 0; font-family: var(--serif); font-size: 14px; color: var(--text-strong); }
-.k-guard-detail { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--text-secondary); }
 .k-guard-actions { justify-content: flex-end; }
 .k-feedback { font-size: 11.5px; }
 .k-feedback.ok { color: var(--success); }
 .k-feedback.err { margin: 4px 0 0; color: var(--danger); }
-.k-detail-foot { display: flex; justify-content: flex-end; }
 .k-id { font-size: 10.5px; color: var(--text-faint); }
 /* 状态底色由 .qio-state 的语义档提供，这里只保留状态名类供脚本/测试辨认 */
 @media (hover: none) {
