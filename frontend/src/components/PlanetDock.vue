@@ -11,7 +11,7 @@
  */
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
-import { vQioTip } from "../composables/useQioTip";
+import { suppressTip, vQioTip } from "../composables/useQioTip";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
 import { FLOAT_AVOID_SELECTORS } from "../composables/floatingState";
 import { planetContinuum } from "../composables/planetContinuum";
@@ -65,8 +65,43 @@ watch(
   },
 );
 
+/**
+ * 入口用途说明在「进入星球 / 退出星球」时的清理（#37）。
+ *
+ * 进入星球：入口开始交棒（.handed 透明且不接收指针），说明浮层必须立刻收起，
+ * 并把进入前排队/触发的迟到定时器一起清掉 —— 否则 500ms 后会有一条说明
+ * 凭空出现在星球界面上（指向一个已经不可见的控件）。
+ * 退出星球：本轮关闭的焦点归还是同步事件，先保持停用一小段宽限，等归还结束后再解除；
+ * 解除后也不主动显示，等用户下一次真实悬停/聚焦。
+ */
+const TIP_RESUME_GRACE_MS = 250;
+let tipResumeTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => planetContinuum.phase,
+  (phase) => {
+    const entry = elRef.value;
+    if (tipResumeTimer !== null) {
+      window.clearTimeout(tipResumeTimer);
+      tipResumeTimer = null;
+    }
+    if (!entry) return;
+    if (phase !== "idle") {
+      suppressTip(entry, true);
+      return;
+    }
+    tipResumeTimer = window.setTimeout(() => {
+      tipResumeTimer = null;
+      suppressTip(entry, false);
+    }, TIP_RESUME_GRACE_MS);
+  },
+);
+
 onBeforeUnmount(() => {
   window.clearTimeout(receiveTimer);
+  if (tipResumeTimer !== null) {
+    window.clearTimeout(tipResumeTimer);
+    tipResumeTimer = null;
+  }
 });
 
 const float = anchored.value

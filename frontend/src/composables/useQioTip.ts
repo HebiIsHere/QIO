@@ -163,6 +163,12 @@ interface TipRecord {
   text: string;
   delay: number;
   timer: number | null;
+  /**
+   * 临时停用（#37）：入口被激活进入另一个界面期间，说明浮层既不能停在旧位置，
+   * 也不能因为进入前排队/触发的事件而迟到弹出来。停用期间清掉定时器并忽略触发；
+   * 解除停用**不会**立刻显示，等下一次真实悬停/聚焦。
+   */
+  suppressed: boolean;
   handlers: {
     enter: () => void;
     leave: () => void;
@@ -199,6 +205,7 @@ function attachTip(el: HTMLElement, binding: TipBinding | undefined | null): voi
     text,
     delay,
     timer: null,
+    suppressed: false,
     handlers: {
       enter: () => undefined,
       leave: () => undefined,
@@ -216,6 +223,7 @@ function attachTip(el: HTMLElement, binding: TipBinding | undefined | null): voi
   };
   record.handlers.enter = () => {
     lastPointerDownAt = 0;
+    if (record.suppressed) return;
     schedule(record.delay);
   };
   record.handlers.leave = () => {
@@ -225,10 +233,12 @@ function attachTip(el: HTMLElement, binding: TipBinding | undefined | null): voi
   record.handlers.down = () => {
     lastPointerDownAt = Date.now();
     clearRecordTimer(record);
+    if (record.suppressed) return;
     // 触控长按：按住 500ms 也能看到用途（不依赖 :hover）
     schedule(record.delay);
   };
   record.handlers.focusIn = () => {
+    if (record.suppressed) return;
     // 键盘/程序聚焦立即出现；指针刚落下的聚焦延迟到 500ms，避免点按就弹说明
     if (Date.now() - lastPointerDownAt < POINTER_FOCUS_GRACE_MS) schedule(record.delay);
     else showTip(record.text, el);
@@ -276,6 +286,23 @@ export const vQioTip: ObjectDirective<HTMLElement, TipBinding> = {
     detachTip(el);
   },
 };
+
+/**
+ * 临时停用/恢复某个锚点的用途说明（#37：入口被激活进入星球等界面期间）。
+ *
+ * 停用：清掉已排队的迟到定时器，并收起正停在该锚点上的浮层 —— 说明不能停在
+ * 已经被隐藏/交棒的控件旁边，也不能在进入另一个界面后迟到弹出来。
+ * 恢复：只解除停用，**不**立刻显示；等用户下一次真实悬停/聚焦再出现。
+ */
+export function suppressTip(el: HTMLElement | null | undefined, suppressed: boolean): void {
+  if (!el) return;
+  const record = RECORDS.get(el);
+  if (!record) return;
+  record.suppressed = suppressed;
+  if (!suppressed) return;
+  clearRecordTimer(record);
+  if (tipState.anchor === el) hideTip();
+}
 
 /** 仅供测试/调试读取当前记录（不参与生产逻辑） */
 export function hasTipRecord(el: HTMLElement): boolean {
