@@ -126,10 +126,10 @@ describe("F06 意图读取失败：保留旧内容 + 明确提示 + 重试", () 
     await byIm(wrapper, "intent-read-retry")[0].trigger("click");
     await flushPromises();
     expect(byIm(wrapper, "intent-read-error").length).toBe(0);
-    // 成功返回空集合才是真的空：任务面板据此显示空态
+    // 成功返回空集合才是真的空：任务面板据此显示空态（#18 文案「暂无任务」）
     await byIm(wrapper, "tasks-entry")[0].trigger("click");
     await flushPromises();
-    expect(textOf(wrapper, "task-empty")).toContain("没有");
+    expect(textOf(wrapper, "task-empty")).toBe("暂无任务");
     wrapper.unmount();
   });
 

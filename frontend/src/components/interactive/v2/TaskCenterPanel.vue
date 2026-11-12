@@ -18,13 +18,21 @@
 import { vQioTip } from "../../../composables/useQioTip";
 import { computed, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../../stores/interactive";
+import { useApprovalResultsStore } from "../../../stores/approvalResults";
 import ApprovalResultsPanel from "../../approval/ApprovalResultsPanel.vue";
+import QIcon from "../../ui/QIcon.vue";
+import QIconButton from "../../ui/QIconButton.vue";
 import {
+  batchAreaVisible,
   batchDecideIds,
   taskControlHint,
   taskControlLabel,
+  taskCountsSummary,
   taskEmptyText,
+  taskReadFailures,
+  taskStatusIcon,
   type TaskControlAction,
+  type TaskReadFailure,
   type TaskRow,
 } from "./taskCenter";
 
@@ -43,6 +51,8 @@ const emit = defineEmits<{
 }>();
 
 const store = useInteractiveStore();
+/** #56：审批历史分区的刷新与计数都走历史查询自己的 store（不借任务读取的状态）。 */
+const approvalResults = useApprovalResultsStore();
 const busy = ref("");
 const notice = ref("");
 const selected = ref<string[]>([]);
@@ -60,16 +70,54 @@ const waitingRows = computed(() => rows.value.filter((row) => row.bucket === "wa
 const finishedRows = computed(() => rows.value.filter((row) => row.bucket === "finished"));
 /** 旧链存储里的待处理行：批准 / 拒绝接口对它们有效（拒绝能力在这里保留） */
 const legacyPending = computed(() => waitingRows.value.filter((row) => row.rejectable && !row.fromView));
-const servicePending = computed(() => waitingRows.value.filter((row) => row.fromView));
 const batchIds = computed(() => batchDecideIds(rows.value, selected.value));
-const counts = computed(() => store.taskCounts);
 
-const emptyText = computed(() => {
-  if (props.focus === "pending" && legacyPending.value.length === 0 && servicePending.value.length === 0) {
-    return taskEmptyText("waiting");
-  }
-  return taskEmptyText();
+const counts = computed(() => store.taskCounts);
+/** #18：有任务时只显示有内容的组及计数（全零由空态一句话表达）。 */
+const countsSummary = computed(() => taskCountsSummary(counts.value));
+/**
+ * #74：批量区只在「进入批量选择」（批量入口打开，focus="pending"）且存在
+ * 可处理的待确认项时出现；零项收起，不在普通任务视图里常驻。
+ */
+const batchMode = computed(() => props.focus === "pending");
+const batchEligible = computed(() => legacyPending.value);
+const showBatch = computed(() => batchAreaVisible(props.focus, batchEligible.value.length));
+/**
+ * #07：同一次任务读取失败只给一处可重试错误；已有数据标「上次结果」，
+ * 首次失败标「读取失败」；任务清单 / 旧任务记录 / 执行状态各自独立保留。
+ *
+ * executions 的读取状态优先用 store 的 executionsLoadState（i-state 本轮新增）；
+ * 尚未合并时退回既有 executionError + 是否有历史执行记录。
+ */
+const readFailures = computed<TaskReadFailure[]>(() => {
+  const storeFacts = store as unknown as {
+    executionsLoadState?: "idle" | "loading" | "ok" | "error";
+    executionsLoadedOnce?: boolean;
+    executionsLoadError?: string | null;
+  };
+  const execError = storeFacts.executionsLoadError ?? store.executionError ?? null;
+  const execHasData = storeFacts.executionsLoadedOnce === true || (store.executions?.length ?? 0) > 0;
+  return taskReadFailures({
+    views: {
+      state: store.intentViewsLoadState,
+      loadedOnce: store.intentViewsLoadedOnce,
+      error: store.intentViewsLoadError,
+    },
+    legacy: {
+      state: store.intentsLoadState,
+      loadedOnce: store.intentsLoadedOnce,
+      error: store.intentsLoadError,
+    },
+    executions: { error: execError, hasData: execHasData },
+  });
 });
+/** 视图读取失败时不显示「暂无任务」：读不到不等于没有任务。 */
+const emptyVisible = computed(
+  () => !rows.value.length && !readFailures.value.some((failure) => failure.key === "views"),
+);
+
+/** #18：空任务只有一句话「暂无任务」（分区入口决定看哪一类，不用不同空态文案区分）。 */
+const emptyText = computed(() => taskEmptyText());
 
 function toggleSelected(intentId: string): void {
   selected.value = selected.value.includes(intentId)
@@ -77,9 +125,33 @@ function toggleSelected(intentId: string): void {
     : [...selected.value, intentId];
 }
 
+/** #56：刷新**当前分区**——任务分区刷新任务事实，审批历史分区刷新历史查询。 */
 async function refresh(): Promise<void> {
+  if (tab.value === "approval-results") {
+    await approvalResults.loadHistory();
+    return;
+  }
   await store.refreshAfterIntentAction();
 }
+
+/** #07：只重试失败的那一条读取（不连带其它动作，不清旧数据）。 */
+async function retryRead(failure: TaskReadFailure): Promise<void> {
+  if (busy.value) return;
+  busy.value = "read:" + failure.key;
+  notice.value = "";
+  try {
+    if (failure.key === "views") await store.loadIntentViews();
+    else if (failure.key === "legacy") await store.loadIntents();
+    else await store.loadExecutions();
+  } finally {
+    busy.value = "";
+  }
+}
+
+/** #56：分区标签上的刷新文案只描述这一分区在做的事。 */
+const refreshLabel = computed(() =>
+  tab.value === "approval-results" ? "刷新审批历史" : "刷新任务清单",
+);
 
 async function runControl(row: TaskRow, action: TaskControlAction): Promise<void> {
   const key = row.intentId + ":" + action;
@@ -180,11 +252,25 @@ onMounted(() => {
   >
     <header class="tc-head">
       <h2 class="tc-title">互动任务</h2>
-      <span class="tc-counts mono" data-im="task-counts">
-        执行中 {{ counts.live }} · 已暂停 {{ counts.paused }} · 待处理 {{ counts.waiting }} · 已结束 {{ counts.finished }}
-      </span>
-      <button class="tc-btn" type="button" data-im="task-refresh" @click="refresh">刷新</button>
-      <button class="tc-btn" type="button" data-im="task-close" aria-label="关闭任务面板" @click="emit('close')">×</button>
+      <!-- #18：只报有内容的组；全零由下方空态一句话表达 -->
+      <span v-if="countsSummary" class="tc-counts mono" data-im="task-counts">{{ countsSummary }}</span>
+      <!-- #84：刷新 / 关闭复用全站唯一的共享图标按钮 -->
+      <QIconButton
+        icon="refresh"
+        :label="refreshLabel"
+        size="sm"
+        tone="quiet"
+        data-im="task-refresh"
+        @click="refresh"
+      />
+      <QIconButton
+        icon="close"
+        label="关闭任务面板"
+        size="sm"
+        tone="quiet"
+        data-im="task-close"
+        @click="emit('close')"
+      />
     </header>
 
     <!-- 分区：任务（可操作） / 审批结果与历史（只读）。两者不混在同一列操作里。 -->
@@ -224,14 +310,34 @@ onMounted(() => {
     </div>
 
     <template v-if="tab === 'tasks'">
-    <p v-if="store.intentViewsLoadState === 'error'" class="tc-warn" role="alert" data-im="task-read-error">
-      任务清单更新失败：{{ store.intentViewsLoadError || "原因未知" }}（当前显示上次读到的任务，不代表没有任务）
-      <button class="tc-link" type="button" data-im="task-read-retry" @click="refresh">重试读取</button>
-    </p>
+    <!-- #07：每条独立失败只在任务面板给一处可重试错误；已有数据标「上次结果」，首次失败标「读取失败」。 -->
+    <div
+      v-for="failure in readFailures"
+      :key="failure.key"
+      class="tc-warn tc-read-error"
+      role="alert"
+      data-im="task-read-error"
+      :data-failure="failure.key"
+      :data-marker="failure.marker"
+    >
+      <span class="tc-read-head">
+        <QIcon :name="failure.firstFailure ? 'warning' : 'info'" :size="12" aria-hidden="true" />
+        <strong data-im="task-read-marker">{{ failure.marker }}</strong>
+        <span>{{ failure.title }}：{{ failure.detail }}</span>
+      </span>
+      <button
+        class="tc-link"
+        type="button"
+        data-im="task-read-retry"
+        :data-failure="failure.key"
+        :disabled="Boolean(busy)"
+        @click="retryRead(failure)"
+      >{{ failure.retryLabel }}</button>
+    </div>
 
     <p v-if="notice" class="tc-notice" role="status" data-im="task-notice">{{ notice }}</p>
 
-    <p v-if="!rows.length" class="tc-empty" data-im="task-empty">{{ emptyText }}</p>
+    <p v-if="emptyVisible" class="tc-empty" data-im="task-empty">{{ emptyText }}</p>
 
     <template v-else>
       <section v-if="liveRows.length" class="tc-block" data-im="task-live">
@@ -247,8 +353,11 @@ onMounted(() => {
             :data-execution="row.executionStatus"
           >
             <span class="tc-name">{{ row.title }}</span>
-            <span class="tc-status mono" :data-tone="row.tone">{{ row.statusText }}</span>
-            <span class="tc-actions">
+            <span class="tc-status mono" :data-tone="row.tone" data-im="task-status">
+              <QIcon :name="taskStatusIcon(row)" :size="12" aria-hidden="true" />
+              {{ row.statusText }}
+            </span>
+            <span class="tc-actions" data-im="task-actions">
               <button
                 v-for="action in row.actions"
                 :key="action"
@@ -279,8 +388,11 @@ onMounted(() => {
             :data-execution="row.executionStatus"
           >
             <span class="tc-name">{{ row.title }}</span>
-            <span class="tc-status mono" :data-tone="row.tone">{{ row.statusText }}</span>
-            <span class="tc-actions">
+            <span class="tc-status mono" :data-tone="row.tone" data-im="task-status">
+              <QIcon :name="taskStatusIcon(row)" :size="12" aria-hidden="true" />
+              {{ row.statusText }}
+            </span>
+            <span class="tc-actions" data-im="task-actions">
               <button
                 v-for="action in row.actions"
                 :key="action"
@@ -309,16 +421,20 @@ onMounted(() => {
             :data-intent-id="row.intentId"
             :data-status="row.status"
           >
-            <label v-if="!row.fromView" class="tc-check">
+            <label v-if="batchMode && !row.fromView" class="tc-check">
               <input
                 type="checkbox"
+                data-im="task-select"
                 :checked="selected.includes(row.intentId)"
                 @change="toggleSelected(row.intentId)"
               />
             </label>
             <span class="tc-name">{{ row.title }}</span>
-            <span class="tc-status mono" :data-tone="row.tone">{{ row.statusText }}</span>
-            <span class="tc-actions">
+            <span class="tc-status mono" :data-tone="row.tone" data-im="task-status">
+              <QIcon :name="taskStatusIcon(row)" :size="12" aria-hidden="true" />
+              {{ row.statusText }}
+            </span>
+            <span class="tc-actions" data-im="task-actions">
               <template v-if="!row.fromView">
                 <button
                   class="tc-btn"
@@ -341,8 +457,8 @@ onMounted(() => {
             </span>
           </li>
         </ul>
-        <div v-if="legacyPending.length >= 2" class="tc-batch">
-          <span class="tc-hint">已选 {{ batchIds.length }} 条（同批至少 2 条）</span>
+        <div v-if="showBatch" class="tc-batch" data-im="task-batch">
+          <span class="tc-hint" data-im="task-batch-hint">已选 {{ batchIds.length }} 条（同批至少 2 条）</span>
           <button
             class="tc-btn"
             type="button"
@@ -373,8 +489,11 @@ onMounted(() => {
             :data-execution="row.executionStatus"
           >
             <span class="tc-name">{{ row.title }}</span>
-            <span class="tc-status mono" :data-tone="row.tone">{{ row.statusText }}</span>
-            <span class="tc-actions">
+            <span class="tc-status mono" :data-tone="row.tone" data-im="task-status">
+              <QIcon :name="taskStatusIcon(row)" :size="12" aria-hidden="true" />
+              {{ row.statusText }}
+            </span>
+            <span class="tc-actions" data-im="task-actions">
               <button
                 v-if="row.recoverable"
                 class="tc-btn"
@@ -448,7 +567,21 @@ onMounted(() => {
   background: var(--bg-inset);
 }
 .tc-name { flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--text-primary); overflow-wrap: anywhere; }
-.tc-status { flex: none; font-size: 10.5px; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-radius: var(--r-pill); padding: 0 6px; }
+/* #84：任务名是主信息（衬线、略大），状态是次信息（带共享图标的小胶囊），操作最轻（次级按钮）。 */
+.tc-name { font-size: var(--fs-base); }
+.tc-status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  padding: 0 6px;
+}
+.tc-status .qio-icon { flex: none; }
+.tc-status[data-tone="active"] .qio-icon { color: var(--accent); }
 .tc-status[data-tone="active"] { color: var(--accent); border-color: var(--accent); }
 .tc-status[data-tone="waiting"] { color: var(--warning); border-color: var(--warning); }
 .tc-status[data-tone="problem"] { color: var(--danger); border-color: var(--danger); }
@@ -478,6 +611,10 @@ onMounted(() => {
 }
 .tc-warn, .tc-notice, .tc-empty, .tc-hint { margin: 0; font-size: var(--fs-xs); line-height: 1.6; overflow-wrap: anywhere; }
 .tc-warn { color: var(--warning); }
+/* #07：每一条独立读取失败是一块错误（可重试），不是一行混在一起的通知。 */
+.tc-read-error { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-2); }
+.tc-read-head { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px; flex: 1 1 240px; min-width: 0; }
+.tc-read-head strong { font-weight: 600; }
 .tc-notice { color: var(--text-secondary); }
 .tc-empty { color: var(--text-muted); }
 .tc-hint { color: var(--text-muted); font-size: 10.5px; }

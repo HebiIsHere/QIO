@@ -261,7 +261,8 @@ export function taskEmptyText(section?: TaskBucket): string {
     case "finished":
       return "还没有已结束的互动任务。";
     default:
-      return "现在没有互动任务（确认意图之后才会开始执行）。";
+    // #18：空任务只显示「暂无任务」（不附加解释；审批历史仍在面板另一分区可达）
+    return "暂无任务";
   }
 }
 
@@ -277,6 +278,114 @@ export function taskControlHint(action: TaskControlAction): string {
   if (action === "pause") return "暂停这条互动任务（不影响聊天）";
   if (action === "resume") return "继续这条互动任务（按当前材料，不自动重试）";
   return "取消这条互动任务（与停止当前聊天不是同一件事）";
+}
+
+/**
+ * #18：有任务时只显示**有内容的组及计数**。
+ *
+ * 输入是真实计数；输出是一句只包含非零分组的摘要（如「执行中 1 · 待处理 2」）。
+ * 全为零时返回空串 —— 由空态说「暂无任务」，计数行不重复报零。
+ */
+export function taskCountsSummary(counts: TaskCounts | null | undefined): string {
+  if (!counts) return "";
+  const parts: string[] = [];
+  if (counts.live > 0) parts.push("执行中 " + counts.live);
+  if (counts.paused > 0) parts.push("已暂停 " + counts.paused);
+  if (counts.waiting > 0) parts.push("待处理 " + counts.waiting);
+  if (counts.finished > 0) parts.push("已结束 " + counts.finished);
+  return parts.join(" · ");
+}
+
+/** #07：任务读取失败的种类（真正互相独立的读取各自一条，不合并）。 */
+export type TaskReadFailureKey = "views" | "legacy" | "executions";
+
+export interface TaskReadFailure {
+  key: TaskReadFailureKey;
+  /** 这次失败影响的分区（1 条失败只在它自己的分区说一次） */
+  title: string;
+  /** 首次失败说「读取失败」；已有数据说「上次结果」——措辞本身就是状态 */
+  marker: "读取失败" | "上次结果";
+  /** 真实原因原文（服务端 / 网络错误；不编造） */
+  detail: string;
+  /** 首次失败 = 界面没有可用数据；false = 仍有上次结果可看（只读展示） */
+  firstFailure: boolean;
+  /** 重试这一条失败（只重试对应读取，不连带其它动作） */
+  retryLabel: string;
+}
+
+export interface TaskReadFailureInput {
+  /** store.intentViewsLoadState / intentViewsLoadedOnce / intentViewsLoadError */
+  views: { state: "idle" | "loading" | "ok" | "error"; loadedOnce: boolean; error: string | null };
+  /** store.intentsLoadState / intentsLoadedOnce / intentsLoadError */
+  legacy?: { state: "idle" | "loading" | "ok" | "error"; loadedOnce: boolean; error: string | null } | null;
+  /** store.executionError + 是否已有执行记录数据（历史结果可看） */
+  executions?: { error: string | null; hasData: boolean } | null;
+}
+
+/**
+ * #07：同一次任务读取失败只在任务面板给**一处**可重试错误；
+ * 已有数据标「上次结果」，首次失败显示「读取失败」；多个真正独立的失败分别保留。
+ *
+ * 只读真实状态，不猜：读取成功 / 尚未读取都不是失败。
+ */
+export function taskReadFailures(input: TaskReadFailureInput | null | undefined): TaskReadFailure[] {
+  if (!input) return [];
+  const out: TaskReadFailure[] = [];
+  const views = input.views;
+  if (views?.state === "error") {
+    out.push({
+      key: "views",
+      title: "任务清单",
+      marker: views.loadedOnce ? "上次结果" : "读取失败",
+      detail: String(views.error ?? "") || "原因未知",
+      firstFailure: !views.loadedOnce,
+      retryLabel: "重试读取任务",
+    });
+  }
+  const legacy = input.legacy;
+  if (legacy?.state === "error") {
+    out.push({
+      key: "legacy",
+      title: "旧任务记录",
+      marker: legacy.loadedOnce ? "上次结果" : "读取失败",
+      detail: String(legacy.error ?? "") || "原因未知",
+      firstFailure: !legacy.loadedOnce,
+      retryLabel: "重试读取旧任务",
+    });
+  }
+  const executions = input.executions;
+  if (executions?.error) {
+    out.push({
+      key: "executions",
+      title: "执行状态",
+      marker: executions.hasData ? "上次结果" : "读取失败",
+      detail: String(executions.error),
+      firstFailure: !executions.hasData,
+      retryLabel: "重试读取执行状态",
+    });
+  }
+  return out;
+}
+
+/**
+ * #74：批量区只在「进入批量选择」且存在**可处理待确认项**时出现；零项收起。
+ *
+ * 批量选择 = 从批量入口打开任务面板（focus="pending"）；可处理项 = 还能批准 / 拒绝的行。
+ */
+export function batchAreaVisible(focus: "tasks" | "pending", eligibleCount: number): boolean {
+  if (focus !== "pending") return false;
+  return Number.isFinite(eligibleCount) && eligibleCount > 0;
+}
+
+/** #84：共享图标映射（状态 → components/ui/icons.ts 里的名字；未知状态不加图标）。 */
+export function taskStatusIcon(row: Pick<TaskRow, "status" | "executionStatus">): string {
+  const exec = row.executionStatus;
+  if (exec === "running" || exec === "queued" || row.status === "running") return "play";
+  if (exec === "paused" || row.status === "paused") return "pause";
+  if (exec === "done" || row.status === "completed") return "check";
+  if (exec === "failed" || exec === "cancelled" || row.status === "failed" || row.status === "cancelled") return "warning";
+  if (row.status === "partially_completed") return "warning";
+  return "clock";
 }
 
 /** 批量操作是否可用：只对显式选中的、还能处理的旧链意图。 */
