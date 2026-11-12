@@ -1,35 +1,30 @@
-# PM-QIO032 E2E 实测证据（Lead 运行，2026-11-13 00:04–00:11）
+# PM-QIO032 E2E 实测证据（真实界面入口 + fake provider；Lead/验收组运行）
 
 ## 运行方式
-`powershell -ExecutionPolicy Bypass -File scripts/verify-pm-qio032/run.ps1`
-（正常界面入口：对话页模式切换进入互动板面；后端 uvicorn + vite + 本机假厂商 SSE 端点
-`scripts/verify_stream_provider.py`；浏览器=系统 Edge + CDP；provider 只扮演厂商，不证明真实厂商行为。）
+`powershell -ExecutionPolicy Bypass -File scripts/verify-pm-qio032/run.ps1 [-Only s1|s3|s4|s5|s6]`
+后端 uvicorn（8734）+ vite（5199）+ 本机假厂商 SSE（8807）；浏览器=系统 Edge + CDP；
+「正常界面入口」= 对话页模式切换进入互动板面；fake provider 只扮演厂商，不证明真实厂商/Tauri/原生拖放。
 
-原始输出：`lead-final-run.log`（① 与整轮）、`console.log` + `summary-s4.json`（④ 场景 8/8 PASS 的完整台账）、`provider-log.json`、`shots/*.png`、`backend.log`、`vite.log`。
+## 台账（多种证据放在本目录）
+- `summary-merged.json`：一次全场景 run + 一次 s4 单独复跑合并后的**最终合并台账**（31/34 PASS）。
+- `summary.json` / `console.log` / `provider-log.json`：s1 单独复跑 **12/12 PASS**（含首轮模型请求捕获）。
+- `lead-final-run.log`、`lead-run-s1*.log`、`shots/*.png`、`backend.log`、`vite.log`：过程与截图。
 
-## 本轮结果（PASS 8 / FAIL 6；失败均为脚本未跑通/断言未捕获，不是产品代码编译错误）
-| 场景 | 结果 | 证据 |
+## 合并结果（31 / 34 PASS）
+| 场景 | 结果 | 证据要点 |
 | --- | --- | --- |
-| ①-0 正常入口进入互动板面 | PASS | 对话页 → #/interactive，模式切换按钮真实点击 |
-| ①-1 文字卡写入唯一标记 | PASS | 卡片正文含唯一 runId 标记 |
-| ①-2 正常「添加 → 文件」上传 TXT 文件卡 | PASS | 卡片数 +1 |
-| ①-3 正常「添加 → 文件」上传 PNG 文件卡 | PASS | 卡片数 +1 |
-| ①-4 三态：TXT「显示但不参与」 | PASS | data-visibility: included → displayed_excluded |
-| ①-4a 隐藏后恢复显示默认只回「显示但不参与」 | PASS | hidden_excluded → displayed_excluded |
-| ①-5 PNG「隐藏且不参与」 | FAIL（脚本选择器） | 封面式图片卡的三态菜单点击在 CDP 侧不可见；后续已改为卡片内 DOM 点击，未及复跑 |
-| ①-6..①-10 首轮模型请求内容（参与项交付 / 排除隐藏不泄漏 / PNG / 未提交材料） | 未捕获（UNVERIFIED） | 本轮 provider 只记录到凭据验证请求；提交后的聊天请求未在等待窗口内出现（前一轮曾出现 3 个 chat 请求，但断言时机与归因不足）。#01 的编排级证据见后端单测 `backend/tests/pm_qio032_submit_first_round_materials.py`（fake adapter 捕获首轮请求：TXT 正文、PNG image 块、无视觉能力不交付字节）。 |
-| ③ 重复提交/幂等 | 未跑完 | s1 中断后页面状态未回正，s3 进入互动板面等待超时（脚本恢复问题） |
-| ④-0 800×600 窄窗按实际可用宽度切换 | PASS | innerWidth=800、rootWidth=744、space=switch |
-| ④-1 800×600 单开提交详情：完整、中心命中、不遮提交按钮 | PASS | details{bounds} 命中自身；submit 可命中、无重叠 |
-| ④-2/④-4 800×600 组合开：任务与详情明确切换、同一时间只留最近打开的一块 | PASS | 任务打开→详情收起；详情打开→任务收起 |
-| ④-3 800×600 任务面板不遮提交按钮、中心命中自己 | PASS | overlapSubmit=false、submitHit=true |
-| ④-5 800×600 Esc 收起最上层非模态面板 | PASS | detailsOpen=false、taskOpen=false |
-| ④-6/④-7 1120/1121 实际边界与两侧中心/命中 | PASS | 1176(inner)=switch、1177(inner)=side-by-side；两块面板/提交按钮互不遮挡、中心命中一致 |
-| ⑤ 六件拖放/首件失败/路由往返 | 未跑完 | 脚本进入互动板面超时 |
-| ⑥ 主题/Tab/Esc/IME | 未跑完 | 主题注入时 localStorage 安全异常（CDP/Edge 文档限制） |
+| ① 首轮交付 / 三态 / 不泄漏 | **12/12 PASS**（s1 单独复跑） | 正常入口进入；文字卡/TXT/PNG 上传；「显示但不参与」「隐藏且不参与」、隐藏后恢复只回「显示但不参与」；provider 台账 chatRequests=3、含参与项正文标记；排除/隐藏/未提交内容均不出现。PNG 字节交付：本机模型 capability 未声明视觉 → 如实 image_unsupported（UNVERIFIED，不伪造）。 |
+| ③ 重复提交/延迟回执/迟到事件/草稿清理失败 | 3/4 PASS | ① ③-1 双击只执行一次（provider 命中 1、提交记录 9→10）PASS；③-2 主状态停在真实受理态 PASS；③-4 延迟回执先「正在提交…」后受理态 PASS；③-5 重复/迟到事件不倒退、不重复卡 PASS；③-6 保存成功但本机草稿清理失败：保留原文 + 可操作入口 PASS。**③-3 已知缺口**：第二次提交仍新建受理记录（10→11），#80「重复提交显示已提交过、不再次执行」未完全达成。 |
+| ④ 800×600 / 1120 / 1121 空间 | **8/8 PASS** | 800×600 单开详情完整、中心命中、不遮提交按钮；任务/详情组合开互相切换、同一时间只留最近一块；Esc 收最上层；1120/1121 实际边界（1176 inner=switch / 1177 inner=side-by-side）两侧中心与命中一致、两块面板与提交按钮互不遮挡。 |
+| ⑤ 路由往返 / 六件拖放 / 首件失败 | 1/3 PASS | ⑤-1 互动 ↔ 对话 ↔ 互动往返后卡片与内容仍在 PASS。**⑤-2 已知缺口**：6 件拖放全部落卡（1→6），没有「只接收 5 件 + 第 6 件未接收可重导」提示（#44 UI 未完成）。**⑤-3 已知缺口**：首件上传失败没有可见失败原因与重试入口（#45/#11 UI 未完成）。 |
+| ⑥ 主题 / Tab / Esc / IME | **5/5 PASS** | 净白/暗紫晶真实生效并截图；工具栏连续 Tab 焦点真实移动且可见；焦点在聊天输入框时 Esc 收提交详情且不清草稿；中文输入法组合态 Esc 不抢输入法、组合结束后中文正常落字；组合结束后 Esc 正常收起详情。 |
 
-## 诚实边界
-- 假厂商只证明「QIO 自己的链路」；不证明真实厂商、Tauri 原生窗口或 Windows 原生拖放。
-- 本轮未复跑 ①-5 之后的脚本修复；①-6..①-10 的浏览器级首轮交付仍 UNVERIFIED，不宣称通过。
-- 800×600 单开证据是真实浏览器实测；1121/1120 边界由组件/纯函数测试覆盖（`pm032-layout-shell.test.ts`），本机浏览器实测未跑。
-- 所有截图与 JSON 均在本目录，可复跑 `run.ps1 -Only s1` 单场景。
+## 未取证（UNVERIFIED，不宣称通过）
+- ② 提交 A 后保存 B 的板面/读卡/读文件三路一致：浏览器级未实现取证；后端有冻结快照与材料单测（`pm_qio032_material_scope_test.py`）。
+- ⑤ 旧卡迁移（需旧 schema 板面 fixture）、隐藏成员、撤销连线（画布手势未纳入本轮脚本）。
+- ① PNG 字节交付：本机链路模型 capability 未声明视觉，只有真实出现 image_url 才算交付。
+- Windows 原生拖放：本机无环境，单列待验。
+- 1121/1120 的窗口边界以「窗口 innerWidth 1177/1176 ↔ rootWidth 1121/1120」实测；与任务书措辞的换算关系已如实记录。
+
+## 模拟标注
+③-4 延迟回执（CDP Fetch 延迟）、③-5 重复/迟到事件（/api/events/test 注入）、③-6 草稿清理失败（Storage.removeItem 抛错）、⑤-3 首件上传失败（CDP Fetch abort 首个上传）、⑥-4 中文输入法组合态（CompositionEvent 模拟）。

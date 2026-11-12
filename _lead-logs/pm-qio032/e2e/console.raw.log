@@ -1,22 +1,35 @@
-﻿== PM-QIO032 E2E ==  base=http://127.0.0.1:5199 api=http://127.0.0.1:8734 provider=http://127.0.0.1:8807 runId=20261112163230
+﻿== PM-QIO032 E2E ==  base=http://127.0.0.1:5199 api=http://127.0.0.1:8734 provider=http://127.0.0.1:8807 runId=20261112163434
 
----- s4 ④ 800×600 布局与命中 ----
-      · 板面已重置：{"ok":true,"status":200,"seq":145,"detail":null}
-[PASS] ④-0 800×600 进入窄窗 switch 规则（按实际可用宽度） :: {"innerWidth":800,"rootWidth":744,"space":"switch"}
-[PASS] ④-1 800×600 单开提交详情：面板完整、中心命中自己、不遮提交按钮 :: {"details":{"x":63,"y":265,"w":674,"h":122},"detailsHit":true,"submitHit":true,"overlapSubmit":false}
-[PASS] ④-2 800×600 组合开：任务打开时提交详情收起（switch，不重叠） :: {"space":"switch","task":{"x":271,"y":197,"w":480,"h":115},"taskHit":true,"detailsOpen":false,"submitHit":true}
-[PASS] ④-3 800×600 任务面板不遮提交按钮、中心命中自己 :: {"overlapSubmit":false,"submitHit":true}
-[PASS] ④-4 800×600 反向组合：详情打开时任务收起（同一时间只留最近打开的一块） :: {"detailsOpen":true,"taskOpen":false,"detailsHit":true}
-[PASS] ④-5 800×600 Esc 收起最上层非模态面板（提交详情） :: {"detailsOpen":false,"taskOpen":false}
-[PASS] ④-6 1120/1121 实际边界：边界-1 为 switch，边界为 side-by-side :: {"measuredInset":56,"boundaryWindow":1177,"at":{"1176":{"inner":1176,"rootWidth":1120,"space":"switch","details":null,"task":480,"detailsHit":null,"taskHit":true,"submitHit":true,"overlapSubmit":false,"detailsOpen":false,"taskOpen":true},"1177":{"inner":1177,"rootWidth":1121,"space":"side-by-side","details":832,"task":480,"detailsHit":true,"taskHit":true,"submitHit":true,"overlapSubmit":false,"detailsOpen":true,"taskOpen":true}}}
-[PASS] ④-7 边界两侧中心与命中一致，且两块面板/提交按钮互不遮挡 :: {"sideBySide":{"inner":1177,"rootWidth":1121,"space":"side-by-side","details":832,"task":480,"detailsHit":true,"taskHit":true,"submitHit":true,"overlapSubmit":false,"detailsOpen":true,"taskOpen":true},"switch":{"inner":1176,"rootWidth":1120,"space":"switch","details":null,"task":480,"detailsHit":null,"taskHit":true,"submitHit":true,"overlapSubmit":false,"detailsOpen":false,"taskOpen":true}}
+---- s1 ① 首轮交付 / 三态参与 / 不泄漏 ----
+      · 板面已重置：{"ok":true,"status":200,"seq":146,"detail":null}
+[PASS] ①-0 正常入口：对话页模式切换进入互动板面 :: {"before":"conversation","after":"interactive","hash":"#/interactive"}
+[PASS] ①-1 文字卡写入唯一标记 :: {"ok":true,"body":"M1-20261112163434 参与项文字","stillEditing":false}
+      · 文件选择器已注入：{"frameId":"88E2B4D19D9295D952C71B1E97F1F76E","mode":"selectSingle","backendNodeId":2466}
+[PASS] ①-2 上传 TXT 文件卡（正常「添加 → 文件」入口） :: {"before":1,"after":2,"status":""}
+      · 文件选择器已注入：{"frameId":"88E2B4D19D9295D952C71B1E97F1F76E","mode":"selectSingle","backendNodeId":2562}
+[PASS] ①-3 上传 PNG 文件卡 :: {"before":2,"after":3}
+      · 卡片序号 txt=1 png=2 总卡数=3
+[PASS] ①-4a 隐藏后恢复显示默认只回「显示但不参与」 :: {"hiddenOn":{"before":"card selected","after":"card selected hidden","visibilityBefore":"included","visibilityAfter":"hidden_excluded","textBefore":"文字注释 显示并参与 参与 TXT-HIDDEN-20261112163434-隐藏项正文 11-13 00:35","textAfter":"文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261112163434-隐藏项正文 已隐藏：退出讨论范围 1","hiddenNow":true},"restored":{"before":"hidden_excluded","after":"displayed_excluded","menuOpened":1}}
+[PASS] ①-4 三态之一：TXT 卡「显示但不参与」 :: {"before":"included","after":"displayed_excluded","menuOpened":1}
+[PASS] ①-5 三态之一：PNG 卡「隐藏且不参与」 :: {"before":"card is-cover","after":"card hidden is-cover","visibilityBefore":"included","visibilityAfter":"hidden_excluded","textBefore":"查看原图 图片 png-20261112163434.png 显示并参与 参与 11-13 00:34","textAfter":"查看原图 图片 png-20261112163434.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11-13 0","hiddenNow":true}
+      · 保存状态：
+      · 轮次空闲=true
+[PASS] ①-6 提交后首个互动轮次模型请求携带参与项正文 :: {"chatRequests":3,"requestsWithTextMarker":1,"provider_log_requests":3}
+[PASS] ①-7 排除项（显示但不参与）正文不出现在模型请求里 :: {"excludedMarkerPresent":false}
+[PASS] ①-8 隐藏项正文不出现在模型请求里 :: {"hiddenMarkerPresent":false}
+[PASS] ①-9 PNG 图片字节交付 UNVERIFIED（本机无视觉链路，如实记 image_unsupported，不伪造） :: {"verified":false,"kind":"image_unsupported","pngNameSeen":false,"note":"本机链路的模型 capability 未声明视觉，请求里没有 image_url：如实记为 image_unsupported，不伪造字节交付","submitLabel":"提交给 QIO","settled":{"text":"本次提交：已提交，排队中\n\n已受理\nQIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。\n\n刷新理解状态\n\n已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。\n\n提交给 QIO","label":"提交给 QIO"}}
+[PASS] ①-10 提交后新建的未提交材料不进入本次请求 :: {"unsubmittedPresent":false,"saveStatusAfter":""}
 
-== 结果：PASS 8 / 8 ==
-PASS  ④-0 800×600 进入窄窗 switch 规则（按实际可用宽度）
-PASS  ④-1 800×600 单开提交详情：面板完整、中心命中自己、不遮提交按钮
-PASS  ④-2 800×600 组合开：任务打开时提交详情收起（switch，不重叠）
-PASS  ④-3 800×600 任务面板不遮提交按钮、中心命中自己
-PASS  ④-4 800×600 反向组合：详情打开时任务收起（同一时间只留最近打开的一块）
-PASS  ④-5 800×600 Esc 收起最上层非模态面板（提交详情）
-PASS  ④-6 1120/1121 实际边界：边界-1 为 switch，边界为 side-by-side
-PASS  ④-7 边界两侧中心与命中一致，且两块面板/提交按钮互不遮挡
+== 结果：PASS 12 / 12 ==
+PASS  ①-0 正常入口：对话页模式切换进入互动板面
+PASS  ①-1 文字卡写入唯一标记
+PASS  ①-2 上传 TXT 文件卡（正常「添加 → 文件」入口）
+PASS  ①-3 上传 PNG 文件卡
+PASS  ①-4a 隐藏后恢复显示默认只回「显示但不参与」
+PASS  ①-4 三态之一：TXT 卡「显示但不参与」
+PASS  ①-5 三态之一：PNG 卡「隐藏且不参与」
+PASS  ①-6 提交后首个互动轮次模型请求携带参与项正文
+PASS  ①-7 排除项（显示但不参与）正文不出现在模型请求里
+PASS  ①-8 隐藏项正文不出现在模型请求里
+PASS  ①-9 PNG 图片字节交付 UNVERIFIED（本机无视觉链路，如实记 image_unsupported，不伪造）
+PASS  ①-10 提交后新建的未提交材料不进入本次请求

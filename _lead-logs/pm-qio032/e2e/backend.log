@@ -1,1 +1,2 @@
 local API authentication is DISABLED (QIO_DEV_INSECURE=1): any local process can call the QIO API. Development only.
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回 JSON 对象

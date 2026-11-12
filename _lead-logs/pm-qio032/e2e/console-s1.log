@@ -1,0 +1,12 @@
+[PASS] ①-0 正常入口：对话页模式切换进入互动板面 :: {"before":"conversation","after":"interactive","hash":"#/interactive"}
+[PASS] ①-1 文字卡写入唯一标记 :: {"ok":true,"body":"M1-20261112163434 参与项文字","stillEditing":false}
+[PASS] ①-2 上传 TXT 文件卡（正常「添加 → 文件」入口） :: {"before":1,"after":2,"status":""}
+[PASS] ①-3 上传 PNG 文件卡 :: {"before":2,"after":3}
+[PASS] ①-4a 隐藏后恢复显示默认只回「显示但不参与」 :: {"hiddenOn":{"before":"card selected","after":"card selected hidden","visibilityBefore":"included","visibilityAfter":"hidden_excluded","textBefore":"文字注释 显示并参与 参与 TXT-HIDDEN-20261112163434-隐藏项正文 11-13 00:35","textAfter":"文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261112163434-隐藏项正文 已隐藏：退出讨论范围 1","hiddenNow":true},"restored":{"before":"hidden_excluded","after":"displayed_excluded","menuOpened":1}}
+[PASS] ①-4 三态之一：TXT 卡「显示但不参与」 :: {"before":"included","after":"displayed_excluded","menuOpened":1}
+[PASS] ①-5 三态之一：PNG 卡「隐藏且不参与」 :: {"before":"card is-cover","after":"card hidden is-cover","visibilityBefore":"included","visibilityAfter":"hidden_excluded","textBefore":"查看原图 图片 png-20261112163434.png 显示并参与 参与 11-13 00:34","textAfter":"查看原图 图片 png-20261112163434.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11-13 0","hiddenNow":true}
+[PASS] ①-6 提交后首个互动轮次模型请求携带参与项正文 :: {"chatRequests":3,"requestsWithTextMarker":1,"provider_log_requests":3}
+[PASS] ①-7 排除项（显示但不参与）正文不出现在模型请求里 :: {"excludedMarkerPresent":false}
+[PASS] ①-8 隐藏项正文不出现在模型请求里 :: {"hiddenMarkerPresent":false}
+[PASS] ①-9 PNG 图片字节交付 UNVERIFIED（本机无视觉链路，如实记 image_unsupported，不伪造） :: {"verified":false,"kind":"image_unsupported","pngNameSeen":false,"note":"本机链路的模型 capability 未声明视觉，请求里没有 image_url：如实记为 image_unsupported，不伪造字节交付","submitLabel":"提交给 QIO","settled":{"text":"本次提交：已提交，排队中\n\n已受理\nQIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。\n\n刷新理解状态\n\n已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。\n\n提交给 QIO","label":"提交给 QIO"}}
+[PASS] ①-10 提交后新建的未提交材料不进入本次请求 :: {"unsubmittedPresent":false,"saveStatusAfter":""}
