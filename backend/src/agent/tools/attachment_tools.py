@@ -39,7 +39,7 @@ from typing import Any, Callable, Iterable, Iterator
 from xml.etree import ElementTree
 
 from agent import prompts
-from agent.trace.redact import redact_text
+from agent.trace.redact import redact_text, sanitize_error_text
 from agent.services import attachment_access, media
 from agent.services.attachments import (
     COPY_LABEL,
@@ -89,6 +89,43 @@ TEXT_ENCODINGS = ("utf-8", "gbk", "utf-16", "cp1252")
 
 #: read_attachment 对视频一次抽几帧（上限仍由 media.MAX_SAMPLE_FRAMES 兜底）
 VIDEO_SAMPLE_FRAMES = 6
+
+#: 文件**实际读取失败**的稳定机器代码（#12）：路径不可用 / 损坏 ZIP / OSError
+#: 三种真实失败统一用它；界面只认这个程序字段，不从错误正文猜。它只是增量事实，
+#: ToolResult.error/content（给模型的正文）保持原样。
+FILE_READ_FAILED_CODE = "file_read_failed"
+#: 用户可读的文件读取事实键（与 core/tool_feedback.py / core/turn_facts.py 同名）。
+FILE_READ_FACT_KEY = "file_read"
+
+#: diagnostic 只作展开查看的技术细节，限长避免把异常栈/长路径带进事件。
+FILE_READ_DIAGNOSTIC_LIMIT = 300
+
+
+def _file_read_fact(
+    att: Attachment,
+    *,
+    reason: str,
+    next_step: str,
+    diagnostic: str | None = None,
+) -> dict[str, Any]:
+    """构造「文件实际读取失败」的用户可读事实（#12）。
+
+    reason / next_step 是**给用户看的**：只描述发生了什么、需要什么样的下一步，
+    绝不复制 ToolResult.error 里面向模型的内部指令（「可以让用户…」
+    「可以先不传 attachment_id…」）。模型可见正文仍由 error 原样提供，一个字不改。
+    diagnostic 是可选的技术细节，经 agent.trace.redact 脱敏 + 限长，默认折叠。
+    """
+    fact: dict[str, Any] = {
+        "attachment_id": str(att.id),
+        "name": redact_text(str(att.original_name or "")),
+        "reason": redact_text(reason),
+        "next_step": redact_text(next_step),
+    }
+    if diagnostic:
+        fact["diagnostic"] = sanitize_error_text(
+            diagnostic, limit=FILE_READ_DIAGNOSTIC_LIMIT
+        )
+    return fact
 
 
 def _media_work_dir() -> Path:
@@ -577,6 +614,13 @@ class ReadAttachmentTool(Tool):
             )
         path, origin = self._resolve_read_path(att)
         if path is None:
+            # 真实读取失败路径 1/3：登记的位置已经不可用。用户可读事实只说明
+            # 「没读到 + 需要重新指定位置」；给模型的「可以让用户…」仍只在 error 里。
+            reason = (
+                "文件已经不在原来保存的位置（可能被移动或删除），这次没有读到内容。"
+                if att.state == "missing"
+                else "文件当前不可用，这次没有读到内容。"
+            )
             return ToolResult(
                 ok=False,
                 error=(
@@ -586,6 +630,14 @@ class ReadAttachmentTool(Tool):
                 ),
                 category="unavailable",
                 recoverable=True,
+                code=FILE_READ_FAILED_CODE,
+                facts={
+                    FILE_READ_FACT_KEY: _file_read_fact(
+                        att,
+                        reason=reason,
+                        next_step="重新指定文件位置后才能继续读取。",
+                    )
+                },
             )
         # 统一授权：读取是一次 READ effect，必须经 agent.security 的网关（契约 §3.1）。
         # 权限判定不在本工具；网关未接入时 READ 降级放行（只读读取本身不改变事实），
@@ -783,6 +835,7 @@ class ReadAttachmentTool(Tool):
                 ),
             )
         except zipfile.BadZipFile:
+            # 真实读取失败路径 2/3：压缩结构损坏或被改名（实际尝试解析过文件）。
             return ToolResult(
                 ok=False,
                 error=(
@@ -791,8 +844,20 @@ class ReadAttachmentTool(Tool):
                 ),
                 category="invalid_data",
                 recoverable=False,
+                code=FILE_READ_FAILED_CODE,
+                facts={
+                    FILE_READ_FACT_KEY: _file_read_fact(
+                        att,
+                        reason=(
+                            f"文件看起来不是有效的 {label}"
+                            "（压缩结构损坏或被改名），这次没有读到内容。"
+                        ),
+                        next_step="确认文件没有损坏，或者用原应用重新导出后再试。",
+                    )
+                },
             )
         except OSError as exc:
+            # 真实读取失败路径 3/3：文件系统错误（真实尝试读了文件内容）。
             # 新增输出路径一律过 redact：错误文本会进工具结果/事件/日志
             return ToolResult(
                 ok=False,
@@ -802,6 +867,15 @@ class ReadAttachmentTool(Tool):
                 ),
                 category="io_error",
                 recoverable=True,
+                code=FILE_READ_FAILED_CODE,
+                facts={
+                    FILE_READ_FACT_KEY: _file_read_fact(
+                        att,
+                        reason="读取文件时出错，这次没有读到内容。",
+                        next_step="确认文件还在、没有被其它程序占用后再试。",
+                        diagnostic=f"{type(exc).__name__}: {exc}",
+                    )
+                },
             )
         content.notes = notes + content.notes
         return ToolResult(ok=True, content=_json(self._content_payload(att, content)))

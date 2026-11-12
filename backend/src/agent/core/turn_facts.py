@@ -42,6 +42,13 @@ _KNOWLEDGE_STATES = frozenset(
     {KNOWLEDGE_FAILED, KNOWLEDGE_REJECTED, KNOWLEDGE_AWAITING_APPROVAL, KNOWLEDGE_ACTIVE}
 )
 
+# 文件实际读取失败（read_attachment）的结构化事实（#12）：
+# ToolResult.facts["file_read"] = {attachment_id, name, reason, next_step, diagnostic?}，
+# 其中 reason / next_step 是用户可读事实（工具侧保证不含模型指令）。台账按
+# attachment_id（缺失时按文件名）逐文件记账：同一附件后续事实覆盖前一条。
+FILE_READ_KEY = "file_read"
+READ_ATTACHMENT_TOOL = "read_attachment"
+
 # 稳定错误码 → 可读说明（只认程序字段，不从中文错误文本猜）。
 _KNOWLEDGE_FAILURE_LABELS = {
     "evidence_not_found": "引用依据未通过核对",
@@ -82,6 +89,18 @@ def _redact_and_limit(text: str, limit: int) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[:limit] + "\n…[核对说明已截断]"
+
+
+def _file_read_line(record: dict[str, Any]) -> str:
+    """把一个受影响文件的读取失败事实压成一条用户可读的单行事实（无模型指令）。"""
+    name = str(record.get("name") or "").strip()
+    reason = str(record.get("reason") or "").strip()
+    next_step = str(record.get("next_step") or "").strip()
+    label = f"文件「{name}」" if name else "有文件"
+    line = f"{label}这次没读到：{reason}"
+    if next_step:
+        line += f" {next_step}"
+    return _one_line(line)
 
 
 @dataclass(frozen=True)
@@ -138,6 +157,13 @@ class TurnFacts:
         # 同一身份（fingerprint / knowledge_id）的后续结局更新这一项；没有身份的
         # 多次提交各自保留，绝不用最后一次覆盖前一次。
         self._knowledge_proposals: list[dict[str, Any]] = []
+        # 本轮文件实际读取失败的用户可读事实：按受影响文件（attachment_id，缺失时
+        # 退回文件名）身份去重，同一附件后续事实覆盖前一条（#12）。
+        self._file_read_failures: dict[str, dict[str, Any]] = {}
+        # 最近一次 read_attachment 终态是否已由结构化 file_read 事实解释：record_tool
+        # 先复位，紧接的 record_facts（同一次 _record_turn_facts）带事实才置位 ——
+        # 用来抑制「工具名 + 技术原文」的重复条目，同时不藏掉权限等其它失败。
+        self._read_attachment_explained = False
 
     # -- 记账 -------------------------------------------------------------
 
@@ -162,6 +188,10 @@ class TurnFacts:
             "category": category,
             "error": _one_line(error),
         }
+        if name == READ_ATTACHMENT_TOOL:
+            # 同一次工具结果会紧接着调用 record_facts：先按「没有结构化解释」记，
+            # 由 record_facts 在确有 file_read 事实时置位（顺序由 core/loop.py 保证）。
+            self._read_attachment_explained = False
 
     def record_dev_task(self, fact: DevTaskFact) -> None:
         """记一个开发任务的最新事实（同一任务后写覆盖先写）。"""
@@ -191,6 +221,36 @@ class TurnFacts:
                 knowledge_id=proposal.get("knowledge_id"),
                 fingerprint=proposal.get("fingerprint"),
             )
+        file_read = facts.get(FILE_READ_KEY)
+        if isinstance(file_read, dict) and self.record_file_read(file_read):
+            self._read_attachment_explained = True
+
+    def record_file_read(self, payload: Any) -> bool:
+        """记一条「文件实际读取失败」的用户可读事实；形状不对就忽略（不猜、不编）。
+
+        身份 = attachment_id（缺失时退回文件名）：同一附件后续事实**覆盖**前一条，
+        不同附件各自保留。只收结构化 payload：reason 必须非空才记 —— 绝不从错误
+        文本里拼原因，也不把没有事实的工具失败归成文件读取（#12）。
+        """
+        if not isinstance(payload, dict):
+            return False
+        attachment_id = _one_line(payload.get("attachment_id"))
+        name = _one_line(payload.get("name"))
+        identity = attachment_id or name
+        reason = _one_line(payload.get("reason"))
+        if not identity or not reason:
+            return False
+        record: dict[str, Any] = {
+            "attachment_id": attachment_id,
+            "name": name,
+            "reason": reason,
+            "next_step": _one_line(payload.get("next_step")),
+        }
+        diagnostic = payload.get("diagnostic")
+        if isinstance(diagnostic, str) and diagnostic.strip():
+            record["diagnostic"] = _one_line(diagnostic)
+        self._file_read_failures[identity] = record
+        return True
 
     def record_knowledge_proposal(
         self,
@@ -261,6 +321,11 @@ class TurnFacts:
         return dict(self._knowledge_proposals[-1])
 
     @property
+    def file_read_failures(self) -> list[dict]:
+        """本轮文件实际读取失败的用户可读事实（按受影响文件去重；只读）。"""
+        return [dict(record) for record in self._file_read_failures.values()]
+
+    @property
     def declaration_accepted(self) -> bool:
         return bool(self._declaration and self._declaration.get("accepted"))
 
@@ -274,9 +339,13 @@ class TurnFacts:
         record.setdefault("claims", [])
         return record
 
-    def unresolved(self) -> list[str]:
-        """本轮「没有通过验证」的事实，一条一行（已压成单行）。"""
-        items: list[str] = []
+    def _unresolved_entries(self) -> list[tuple[str, str]]:
+        """本轮「没有通过验证」的事实条目：(所属类别, 单行文本)。
+
+        类别用于答案注记的分层：文件实际读取失败（file_read）已经在轮内工具卡
+        就地显示一次，答案注记不再重复；其余类别照旧进注记。
+        """
+        entries: list[tuple[str, str]] = []
         # 每一项未解决的知识提交单独列出：不同提交不能互相覆盖（同一身份的失败
         # 若已被后续成功更新，记录本身已经不是 failed，自然不会再出现在这里）。
         knowledge_failures = [
@@ -287,37 +356,63 @@ class TurnFacts:
         for record in knowledge_failures:
             # 知识提交失败：说人话，不把技术错误原文当结论（原文在工具卡展开详情里）。
             label = _KNOWLEDGE_FAILURE_LABELS.get(str(record.get("code") or ""))
-            items.append(f"知识提交未成功，{label}" if label else "知识提交未成功")
+            item = f"知识提交未成功，{label}" if label else "知识提交未成功"
+            entries.append(("knowledge", item))
+        # 文件实际读取失败：每个受影响文件只出 1 条用户可读事实（name + reason +
+        # next_step）；reason / next_step 来自工具的结构化事实，不含模型指令。
+        for record in self._file_read_failures.values():
+            entries.append((FILE_READ_KEY, _file_read_line(record)))
         for name, record in self._tools.items():
             if record.get("status") != STATUS_FAILED:
                 continue
             # 同一失败已经有可读的结构化说明时，不再重复一遍技术原文。
             if name == "propose_knowledge" and knowledge_failures:
                 continue
+            if name == READ_ATTACHMENT_TOOL and self._read_attachment_explained:
+                # 文件读取失败已由结构化事实逐文件说清：不再重复一条「工具名 +
+                # 技术原文」。权限/审批等没有 file_read 事实的失败仍会走到下面。
+                continue
             reason = record.get("error") or "（没有给出失败原因）"
-            items.append(f"{name} 执行失败：{reason}")
+            entries.append(("tool", f"{name} 执行失败：{reason}"))
         for fact in self._dev_tasks.values():
             label = f"任务 {fact.task_id}"
             if fact.test_state == DEV_TEST_STALE:
-                items.append(
-                    f"{label} 的测试证据已失效：通过之后内容又改过，需重跑"
-                    if fact.test_passed
-                    else f"{label} 的测试失败且内容已变更，需重跑"
+                entries.append(
+                    (
+                        "dev_task",
+                        (
+                            f"{label} 的测试证据已失效：通过之后内容又改过，需重跑"
+                            if fact.test_passed
+                            else f"{label} 的测试失败且内容已变更，需重跑"
+                        ),
+                    )
                 )
             elif fact.test_state == DEV_TEST_CURRENT and fact.test_passed is False:
-                items.append(
-                    f"{label} 的测试失败：{fact.test_summary or '没有给出摘要'}"
+                entries.append(
+                    (
+                        "dev_task",
+                        f"{label} 的测试失败：{fact.test_summary or '没有给出摘要'}",
+                    )
                 )
             elif fact.requires_tests and fact.test_state == DEV_TEST_NONE:
-                items.append(f"{label} 还没有测试证据")
-        return items
+                entries.append(("dev_task", f"{label} 还没有测试证据"))
+        return entries
+
+    def unresolved(self) -> list[str]:
+        """本轮「没有通过验证」的事实，一条一行（已压成单行）。"""
+        return [item for _kind, item in self._unresolved_entries()]
 
     def annotation(self, limit: int = DEFAULT_ANNOTATION_LIMIT) -> str | None:
         """要追加到最终答复末尾的事实注记；None = 什么都不加。"""
         # 已经按后端账本声明过结论的轮次不再重复念一遍。
         if self.declaration_accepted:
             return None
-        items = self.unresolved()
+        # 文件实际读取失败**不在这里重复**：轮内工具卡已经就地在受影响的文件旁显示
+        # 一次（TOOL_END.file_read），答案注记再念一遍就是同一失败的第三次呈现。
+        # 事实本身仍留在台账（file_read_failures）里供诊断 / 展开查看，绝不隐藏。
+        items = [
+            item for kind, item in self._unresolved_entries() if kind != FILE_READ_KEY
+        ]
         if not items:
             return None
         shown = items[:MAX_ANNOTATION_ITEMS]

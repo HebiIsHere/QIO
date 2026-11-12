@@ -173,6 +173,7 @@ def facts(result: ToolResult) -> dict[str, Any]:
         knowledge_key = str(
             proposal.get("fingerprint") or proposal.get("knowledge_id") or ""
         ).strip()
+    result_facts = result.facts if isinstance(result.facts, dict) else {}
     return {
         "status": status_of(result),
         "ok": bool(result.ok),
@@ -182,6 +183,9 @@ def facts(result: ToolResult) -> dict[str, Any]:
         "code": result.code,
         "result_status": result.status,
         "knowledge_key": knowledge_key or None,
+        # 文件实际读取失败的用户可读事实（#12）：只做只读透传，缺失如实为 None。
+        # 界面据此在受影响的文件旁显示一次提示；模型可见正文不读这个字段。
+        "file_read": result_facts.get("file_read"),
         "reason": (result.error or "").strip() or None,
     }
 
