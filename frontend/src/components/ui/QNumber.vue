@@ -3,6 +3,15 @@
  * QNumber —— 自定义数字步进器（设计系统 v2）：
  * 隐藏原生 spinner，提供 − / + 按钮 + 数值输入；步进按 step、clamp min/max。
  * emit：update:modelValue(number|null)、change（Enter/失焦提交，透传给父级保存）。
+ *
+ * 必填语义（设置页的保留天数 / 间隔 / 条数 / 预算都是必填数字）：
+ * - 清空只是编辑过程，**不会** emit null（父级也就不会把空值当 0 保存）；
+ *   离开输入框时提示「必填」并把显示恢复为当前值；
+ * - 非数字（"abc" / "1e"）与低于下限（"-1"）不提交、不覆盖父级值，显示可读提示；
+ * - 高于上限仍按既有步进器契约收口到上限后提交；
+ * - 显式的 0 是合法值（min<=0 时），必须原样提交，而不是被当成「空」。
+ * 可选语义（required=false，审批预算 / 凭据用量上限用）：保持旧契约 —— 空 = null，
+ * 由调用方决定「不限」，其它调用方的行为不变。
  */
 import { ref, watch } from "vue";
 import QIcon from "./QIcon.vue";
@@ -19,10 +28,16 @@ const props = withDefaults(
     disabled?: boolean;
     /** 数值单位（如「小时」）。显示在数值右侧，让用户不必回头找标题里的单位 */
     unit?: string;
+    /** 必填：空值不提交、非法输入不提交，显示可读提示（默认 false＝旧契约） */
+    required?: boolean;
   }>(),
-  { min: -Infinity, max: Infinity, step: 1, placeholder: "", mono: false, label: "", disabled: false, unit: "" },
+  { min: -Infinity, max: Infinity, step: 1, placeholder: "", mono: false, label: "", disabled: false, unit: "", required: false },
 );
 const emit = defineEmits<{ "update:modelValue": [value: number | null]; change: [] }>();
+
+let hintUid = 0;
+const hintId = "q-number-hint-" + (hintUid += 1) + "-" + Math.random().toString(36).slice(2, 7);
+const hint = ref("");
 
 const draft = ref(props.modelValue == null ? "" : String(props.modelValue));
 /**
@@ -58,16 +73,81 @@ function toStep(v: number): number {
   const r = Math.round(v / s) * s;
   return Number(r.toFixed(10)); // 去浮点误差（0.30000000000000004）
 }
+function parseDraft(): { kind: "empty" } | { kind: "invalid" } | { kind: "number"; value: number } {
+  const raw = draft.value.trim();
+  if (raw === "") return { kind: "empty" };
+  // Number("1e") 是 NaN、Number("0x10") 是 16：只接受普通的十进制写法，
+  // 避免把用户看不懂的「科学计数/十六进制」悄悄当成合法值保存。
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(raw)) return { kind: "invalid" };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { kind: "invalid" };
+  return { kind: "number", value: n };
+}
+
+/** 把当前值写回输入框（父级拒绝这次输入时的「最近值」显示） */
+function restoreCurrent(): void {
+  draft.value = props.modelValue == null ? "" : String(props.modelValue);
+  if (draft.value === "") {
+    // 父级当前没有值（尚未读取）：保持空白，不伪造一个 0
+    draft.value = "";
+  }
+}
+
 /** 把当前 draft 收口成提交值（空 → null；非法 → null；否则 step + clamp） */
 function normalize(): number | null {
-  const raw = draft.value.trim();
-  if (raw === "") return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? clamp(toStep(n)) : null;
+  const parsed = parseDraft();
+  if (parsed.kind !== "number") return null;
+  return clamp(toStep(parsed.value));
 }
+
 function commit() {
+  const parsed = parseDraft();
+  if (parsed.kind === "empty") {
+    if (props.required) {
+      // 清空只是编辑过程：离开时提示必填，并回显当前值（不是 0，也不写库）
+      hint.value = "这项必填，已恢复为当前值";
+      restoreCurrent();
+      return;
+    }
+    const next: null = null;
+    draft.value = "";
+    if (next === committed) return;
+    committed = next;
+    echoed = undefined;
+    hint.value = "";
+    emit("update:modelValue", next);
+    emit("change");
+    return;
+  }
+  if (parsed.kind === "invalid") {
+    if (props.required) {
+      hint.value = "只能填写数字，已恢复为当前值";
+      restoreCurrent();
+      return;
+    }
+    // 旧契约：非法文本按「清空」处理（审批预算等调用方自己兜底）
+    const next: null = null;
+    draft.value = "";
+    if (next === committed) return;
+    committed = next;
+    echoed = undefined;
+    hint.value = "";
+    emit("update:modelValue", next);
+    emit("change");
+    return;
+  }
+  if (parsed.value < props.min) {
+    if (props.required) {
+      // 低于下限不按「收口到下限」提交：把 -1 天存成 0（永久保留）会改变语义，
+      // 用户并没有表达这个意思。提示范围并回显当前值。
+      hint.value = "不能小于 " + props.min + "，已恢复为当前值";
+      restoreCurrent();
+      return;
+    }
+  }
   const next = normalize();
   draft.value = next == null ? "" : String(next);
+  hint.value = "";
   if (next === committed) return;
   committed = next;
   echoed = undefined;
@@ -81,6 +161,7 @@ function stepBy(dir: 1 | -1) {
   const base = stepBase();
   const next = clamp(toStep(base + dir * props.step));
   draft.value = String(next);
+  hint.value = "";
   echoed = undefined;
   emit("update:modelValue", next);
   // +/- 与 Enter/blur 用同一套 commit 语义：确实变化才算一次提交
@@ -90,58 +171,73 @@ function stepBy(dir: 1 | -1) {
   }
 }
 function stepBase(): number {
-  const raw = draft.value.trim();
-  const n = Number(raw);
-  if (raw !== "" && Number.isFinite(n)) return n;
+  const parsed = parseDraft();
+  if (parsed.kind === "number") return parsed.value;
   if (props.modelValue != null) return props.modelValue;
   return Number.isFinite(props.min) ? props.min : 0;
 }
 function onInput(e: Event) {
   draft.value = (e.target as HTMLInputElement).value;
-  const raw = draft.value.trim();
-  if (raw === "") {
-    echoed = null;
-    emit("update:modelValue", null);
-  }
-  else {
-    const n = Number(raw);
-    if (Number.isFinite(n)) {
-      echoed = n;
-      emit("update:modelValue", n); // 输入过程不 clamp，失焦/change 再收口
+  hint.value = "";
+  const parsed = parseDraft();
+  if (parsed.kind === "empty") {
+    if (!props.required) {
+      echoed = null;
+      emit("update:modelValue", null);
     }
+    return;
   }
+  if (parsed.kind === "invalid") return;
+  // 必填模式下不把「低于下限」的中间输入交给父级：否则父级会先拿到 -1，
+  // 失焦时回显的「当前值」就变成了 -1，界面会短暂显示一个未被接受的数字。
+  if (props.required && parsed.value < props.min) return;
+  echoed = parsed.value;
+  emit("update:modelValue", parsed.value); // 输入过程不 clamp，失焦/change 再收口
 }
 </script>
 
 <template>
-  <div class="q-number" :class="{ mono }" data-qio-fit>
-    <input
-      class="q-number-input"
-      :value="draft"
-      inputmode="numeric"
-      :placeholder="placeholder"
-      :disabled="disabled"
-      :aria-label="label"
-      @input="onInput"
-      @keydown.up.prevent="stepBy(1)"
-      @keydown.down.prevent="stepBy(-1)"
-      @keydown.enter.prevent="commit"
-      @blur="commit"
-      @change="commit"
-    />
-    <span v-if="unit" class="q-number-unit">{{ unit }}</span>
-    <div class="q-number-steps">
-      <button type="button" class="step up" :disabled="disabled" aria-label="增加" @click="stepBy(1)">
-        <QIcon name="plus" :size="12" />
-      </button>
-      <button type="button" class="step down" :disabled="disabled" aria-label="减少" @click="stepBy(-1)">
-        <QIcon name="minus" :size="12" />
-      </button>
+  <div class="q-number-field">
+    <div class="q-number" :class="{ mono }" data-qio-fit>
+      <input
+        class="q-number-input"
+        :value="draft"
+        inputmode="numeric"
+        :placeholder="placeholder"
+        :disabled="disabled"
+        :aria-label="label"
+        :aria-invalid="hint ? 'true' : undefined"
+        :aria-describedby="hint ? hintId : undefined"
+        @input="onInput"
+        @keydown.up.prevent="stepBy(1)"
+        @keydown.down.prevent="stepBy(-1)"
+        @keydown.enter.prevent="commit"
+        @blur="commit"
+        @change="commit"
+      />
+      <span v-if="unit" class="q-number-unit">{{ unit }}</span>
+      <div class="q-number-steps">
+        <button type="button" class="step up" :disabled="disabled" aria-label="增加" @click="stepBy(1)">
+          <QIcon name="plus" :size="12" />
+        </button>
+        <button type="button" class="step down" :disabled="disabled" aria-label="减少" @click="stepBy(-1)">
+          <QIcon name="minus" :size="12" />
+        </button>
+      </div>
     </div>
+    <p v-if="hint" :id="hintId" class="q-number-hint" role="alert">{{ hint }}</p>
   </div>
 </template>
 
 <style scoped>
+/* 外层只负责「输入框 + 可读提示」的纵向排布；输入框本身仍是同一套尺寸与令牌。 */
+.q-number-field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
 .q-number {
   display: inline-flex;
   align-items: stretch;
@@ -180,6 +276,17 @@ function onInput(e: Event) {
 }
 .q-number-input:disabled {
   opacity: 0.5;
+}
+/* 非法输入：边框只做可读性提示，提示文字同时用语义色与文字说明（不只靠颜色） */
+.q-number-field:has(.q-number-input[aria-invalid="true"]) .q-number {
+  border-color: var(--warning);
+}
+.q-number-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warning);
+  overflow-wrap: anywhere;
 }
 .q-number-steps {
   display: flex;
