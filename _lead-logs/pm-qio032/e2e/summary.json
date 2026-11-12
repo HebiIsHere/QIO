@@ -4,7 +4,7 @@
   "api": "http://127.0.0.1:8734",
   "provider": "http://127.0.0.1:8807",
   "pass": 31,
-  "total": 34,
+  "total": 35,
   "results": [
     {
       "name": "①-0 正常入口：对话页模式切换进入互动板面",
@@ -20,7 +20,7 @@
       "ok": true,
       "detail": {
         "ok": true,
-        "body": "M1-20261112162607 参与项文字",
+        "body": "M1-20261112163820 参与项文字",
         "stillEditing": false
       }
     },
@@ -50,8 +50,8 @@
           "after": "card selected hidden",
           "visibilityBefore": "included",
           "visibilityAfter": "hidden_excluded",
-          "textBefore": "文字注释 显示并参与 参与 TXT-HIDDEN-20261112162607-隐藏项正文 11-13 00:26",
-          "textAfter": "文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261112162607-隐藏项正文 已隐藏：退出讨论范围 1",
+          "textBefore": "文字注释 显示并参与 参与 TXT-HIDDEN-20261112163820-隐藏项正文 11-13 00:38",
+          "textAfter": "文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261112163820-隐藏项正文 已隐藏：退出讨论范围 1",
           "hiddenNow": true
         },
         "restored": {
@@ -78,8 +78,8 @@
         "after": "card hidden is-cover",
         "visibilityBefore": "included",
         "visibilityAfter": "hidden_excluded",
-        "textBefore": "查看原图 图片 png-20261112162607.png 显示并参与 参与 11-13 00:26",
-        "textAfter": "查看原图 图片 png-20261112162607.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11-13 0",
+        "textBefore": "查看原图 图片 png-20261112163820.png 显示并参与 参与 11-13 00:38",
+        "textAfter": "查看原图 图片 png-20261112163820.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11-13 0",
         "hiddenNow": true
       }
     },
@@ -90,6 +90,15 @@
         "chatRequests": 3,
         "requestsWithTextMarker": 1,
         "provider_log_requests": 3
+      }
+    },
+    {
+      "name": "①-6b 参与项 TXT 文件的可读正文交付（同一正式提交入口）",
+      "ok": false,
+      "detail": {
+        "kind": "txt_file_body_not_delivered",
+        "txtMarkerSeen": false,
+        "note": "请求的 materials 只含文字卡 inline，TXT 文件正文未出现在请求里；等待 i-material/i-submit 接线后再验，不伪造"
       }
     },
     {
@@ -449,7 +458,7 @@
   ],
   "consoleErrors": [],
   "shotsDir": "D:\\qio-dev\\pm032-interactive\\_lead-logs\\pm-qio032\\e2e\\shots",
-  "note": "浏览器层=系统 Edge + CDP（本机没有 Playwright 包，见 README）；s4 结果来自单独复跑，其余来自同一全场景 run",
+  "note": "浏览器层=系统 Edge + CDP（本机没有 Playwright 包，见 README）；合并自全场景 + s4/s1 单独复跑",
   "simulated": [
     "③-4 延迟回执（CDP Fetch 延迟 1.5s）",
     "③-5 重复/迟到事件（/api/events/test 注入）",
@@ -461,18 +470,31 @@
     "② 提交 A 后保存 B 的三路一致（板面/读卡/读文件）：依赖已提交轮次的工具读取链路，本轮未实现取证",
     "⑤ 旧卡迁移（需要旧 schema 板面 fixture）",
     "⑤ 隐藏成员/撤销连线（画布连线手势与组成员未纳入本轮）",
-    "① PNG 字节交付：本机模型 capability 未声明视觉；只有出现真实 image_url 才算交付"
+    "① PNG 字节交付：本机模型 capability 未声明视觉；只有出现真实 image_url 才算交付",
+    "①-6b TXT 文件正文交付：请求 materials 只含文字卡 inline，TXT 正文未进入首轮请求；等待 i-material/i-submit 接线后复跑"
   ],
   "mergedRuns": [
     {
       "kind": "full",
       "runId": "20261112162607",
-      "note": "全场景；s4 在 s3 后因面板状态残留中断"
+      "note": "s1/s3/s5/s6 来自全场景 run；s4 因面板状态残留中断，后单独复跑替换"
     },
     {
       "kind": "s4-only",
       "runId": "20261112163230",
-      "note": "s4 单独复跑（清空 fixture）8/8，替换全场景中的 s4 中断项"
+      "note": "s4 清空 fixture 后 8/8"
+    },
+    {
+      "kind": "s1-only",
+      "runId": "20261112163820",
+      "note": "补充 ①-6b TXT 文件正文交付断言；s1 13 项"
     }
+  ],
+  "defects": [
+    "#05 提交详情面板高度未钳制：800×600、5 项改动时面板高 305px，覆盖提交按钮并挡住任务入口（清空 fixture 时 122px 通过）",
+    "#80 重复提交未识别：不改内容再次提交，submissions 10→11 新增受理，界面无「已提交过/没有新的改动」",
+    "#44/#45 六件拖放静默丢第 6 件：原有 1 张 + 接收 5 张 = 6 张；无批次已接收/未接收清单，无第 6 件重导入口",
+    "#45/#11 首件上传失败无可见原因/重试入口：[模拟] 首请求 abort 后两张卡都在，file-card-error/card-attach-retry 均为 0",
+    "#01 首轮 TXT 文件正文未交付：等待 i-material/i-submit 接线（阻塞项，不是最终产品结论）"
   ]
 }

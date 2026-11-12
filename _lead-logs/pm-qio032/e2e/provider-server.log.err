@@ -1,5 +1,5 @@
 ----------------------------------------
-Exception occurred during processing of request from ('127.0.0.1', 49321)
+Exception occurred during processing of request from ('127.0.0.1', 65230)
 Traceback (most recent call last):
   File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\socketserver.py", line 691, in process_request_thread
     self.finish_request(request, client_address)
@@ -18,7 +18,7 @@ Traceback (most recent call last):
 ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。
 ----------------------------------------
 ----------------------------------------
-Exception occurred during processing of request from ('127.0.0.1', 63990)
+Exception occurred during processing of request from ('127.0.0.1', 50650)
 Traceback (most recent call last):
   File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\socketserver.py", line 691, in process_request_thread
     self.finish_request(request, client_address)

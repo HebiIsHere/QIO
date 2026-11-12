@@ -7,31 +7,31 @@ e2e 服务已停止，两个端口都不再响应（真实探测确认）。
 
 
 == 2. 假厂商端点（真 SSE + /__log 台账） ==
-provider_ready=True pid=64272
+provider_ready=True pid=9268
 
 == 3. 后端 + 前端 dev server（scripts/e2e_up.py，隔离 QIO_DATA_DIR） ==
-backend=51568 vite=53664 (python=D:\qio-dev\pm032-interactive\backend\.venv\Scripts\python.exe)
+backend=78292 vite=75960 (python=D:\qio-dev\pm032-interactive\backend\.venv\Scripts\python.exe)
 backend_ready=True vite_ready=True backend_alive=True vite_alive=True
 
 backend_ready_long_wait=True vite_ready=True
 
 == 4. 建凭据（假 Key，只指向本机 fake provider） ==
-credential key_id=key_cab7974328f9 verify_ok=True mode=native
+credential key_id=key_41905562b096 verify_ok=True mode=native
 
 == 4b. 完成首次引导（干净数据域下模式切换会被「初始设置尚未完成」拦住） ==
 onboarding done=True has_credential=True
 
 == 5. E2E（正常界面入口 + provider 台账断言） ==
-e2e_exit=0
+e2e_exit=1
 
 == 6. 归档 provider 台账 + 后端/前端日志 ==
 provider requests=3
 
 == 7. 收尾（e2e_down + 杀 provider） ==
-stop backend (51568): ok — 端口 8734 已确认不再响应（真实探测，预算 5.0s）
-stop vite (53664): ok — 端口 5199 已确认不再响应（真实探测，预算 5.0s）
+stop backend (78292): ok — 端口 8734 已确认不再响应（真实探测，预算 5.0s）
+stop vite (75960): ok — 端口 5199 已确认不再响应（真实探测，预算 5.0s）
 e2e 服务已停止，两个端口都不再响应（真实探测确认）。
 
 
 == 结论 ==
-  [OK] 全流程完成，E2E 全部通过
+  [FAIL] E2E 有失败项（见 summary.json / console.log）

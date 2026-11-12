@@ -391,6 +391,12 @@ async function s1Delivery() {
   };
   writeFileSync(join(OUT, "provider-log.json"), JSON.stringify({ runId: RUN_ID, requests: log, s1: { hits: hits.length, firstBodyHead: firstText.slice(0, 4000) } }, null, 2), "utf8");
   record("①-6 提交后首个互动轮次模型请求携带参与项正文", hits.length > 0, delivery);
+  const txtDelivered = hits.some((r) => bodyText(r).includes(txtBody));
+  record("①-6b 参与项 TXT 文件的可读正文交付（同一正式提交入口）", txtDelivered, {
+    kind: txtDelivered ? "txt_file_body_delivered" : "txt_file_body_not_delivered",
+    txtMarkerSeen: txtDelivered,
+    note: txtDelivered ? "模型请求里出现 TXT 文件正文" : "请求的 materials 只含文字卡 inline，TXT 文件正文未出现在请求里；等待 i-material/i-submit 接线后再验，不伪造",
+  });
   record("①-7 排除项（显示但不参与）正文不出现在模型请求里", hits.length > 0 && !hits.some((r) => bodyText(r).includes(txtBody)), {
     excludedMarkerPresent: hits.some((r) => bodyText(r).includes(txtBody)),
   });

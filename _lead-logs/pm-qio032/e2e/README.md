@@ -46,7 +46,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-pm-qio032/run
 
 ## 产物
 
-- `summary.json`：逐条断言（ok/detail）、`simulated`、`unverified`
+- `summary.json`：逐条断言（ok/detail）、`simulated`、`unverified`；本轮最终 **31/35**（4 项失败：①-6b、③-3、⑤-2、⑤-3）
+- `summary-s1.json` / `summary-s4.json` / `summary-merged.json`：单场景与合并中间件
+- `provider-log-s1.json`：① 的请求台账（含 body，TXT 正文缺失的直接证据）
+- `console-s1.log`：s1 原始结构化输出
 - `console.log` / `console.raw.log` / `run.log`
 - `provider-log.json`：fake provider 请求台账（含请求 body，用于材料交付断言）
 - `backend.log` / `vite.log`：本轮服务日志
@@ -56,7 +59,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-pm-qio032/run
 
 | 场景 | 结论 | 说明 |
 |---|---|---|
-| ① 首轮材料交付/不泄漏 | **12/12 PASS**（①-9 UNVERIFIED） | 参与项正文进入模型请求；排除/隐藏/未提交项均未出现；PNG 按本机能力记 image_unsupported，不伪造 |
+| ① 首轮材料交付/不泄漏 | **12/13 PASS**（①-9 UNVERIFIED） | 文字卡正文进入模型请求；排除/隐藏/未提交项均未出现；**TXT 文件正文未进入请求（①-6b，等待 i-material/i-submit 接线）**；PNG 按本机能力记 image_unsupported |
 | ② A/B 三路一致 | **UNVERIFIED** | 依赖已提交轮次的工具读取链路，本轮未取证；不伪造结论 |
 | ③ 重复提交/延迟回执/迟到事件/草稿清理 | **5/6 PASS** | 双击只执行一次、延迟回执、迟到事件、清理失败（[模拟]）通过；③-3 重复提交失败（缺陷 #2） |
 | ④ 800×600 / 1120-1121 边界 | **8/8 PASS**（清空 fixture） | 窄窗 switch、宽窗双开、中心/命中均通过；有改动内容时详情面板可盖住提交按钮（缺陷 #1，压力场景） |
@@ -84,6 +87,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-pm-qio032/run
 5. **① 本机无视觉链路**：fake provider/模型 capability 未声明视觉，请求里没有 `image_url`；
    按真实能力记 `image_unsupported`，PNG 字节交付 **UNVERIFIED**，不伪报。
 
+5. **①-6b 参与项 TXT 文件正文未进入首轮请求（等待接线，非最终结论）**：
+   同一正式提交入口上传 TXT 文件卡后，请求的 \`materials\` 只有文字卡 inline 条目，
+   TXT 文件正文/文件名均未出现；需 i-material/i-submit 的「提交轮次材料读取」接线合入后复跑。
+   同时 PNG 无 image_url（本机无视觉链路），按 UNVERIFIED 记录。证据：\`provider-log-s1.json\`、summary ①-6b。
+
 ## 未验项（如实列出）
 
 - ② 提交 A、保存 B 后板面/读卡/读文件三路一致：需要已提交轮次的工具读取链路与 A/B 快照
@@ -93,6 +101,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-pm-qio032/run
 - ⑤ 首件失败重试：已实现 [模拟] 首请求 abort 的断言，但需最终 s5 结果确认。
 - 原生 Tauri 窗口拖放（真实路径 `dropped_path`）：浏览器层只能测字节拖放，
   Windows 原生拖放缺环境时单列待验。
+
+> 口径更正：⑤-2 的「1→6」是**原有 1 张 + 本批接收 5 张**，第 6 件被静默丢弃；
+> 不是「6 件全部落卡」。以 `summary.json` 的 `cardsBefore/cardsAfter` 为准。
 
 ## 边界（结论能读到哪）
 

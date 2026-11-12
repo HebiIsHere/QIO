@@ -1,10 +1,10 @@
 {
-  "runId": "20261112163434",
+  "runId": "20261112163820",
   "base": "http://127.0.0.1:5199",
   "api": "http://127.0.0.1:8734",
   "provider": "http://127.0.0.1:8807",
   "pass": 12,
-  "total": 12,
+  "total": 13,
   "results": [
     {
       "name": "①-0 正常入口：对话页模式切换进入互动板面",
@@ -20,7 +20,7 @@
       "ok": true,
       "detail": {
         "ok": true,
-        "body": "M1-20261112163434 参与项文字",
+        "body": "M1-20261112163820 参与项文字",
         "stillEditing": false
       }
     },
@@ -50,8 +50,8 @@
           "after": "card selected hidden",
           "visibilityBefore": "included",
           "visibilityAfter": "hidden_excluded",
-          "textBefore": "文字注释 显示并参与 参与 TXT-HIDDEN-20261112163434-隐藏项正文 11-13 00:35",
-          "textAfter": "文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261112163434-隐藏项正文 已隐藏：退出讨论范围 1",
+          "textBefore": "文字注释 显示并参与 参与 TXT-HIDDEN-20261112163820-隐藏项正文 11-13 00:38",
+          "textAfter": "文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261112163820-隐藏项正文 已隐藏：退出讨论范围 1",
           "hiddenNow": true
         },
         "restored": {
@@ -78,8 +78,8 @@
         "after": "card hidden is-cover",
         "visibilityBefore": "included",
         "visibilityAfter": "hidden_excluded",
-        "textBefore": "查看原图 图片 png-20261112163434.png 显示并参与 参与 11-13 00:34",
-        "textAfter": "查看原图 图片 png-20261112163434.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11-13 0",
+        "textBefore": "查看原图 图片 png-20261112163820.png 显示并参与 参与 11-13 00:38",
+        "textAfter": "查看原图 图片 png-20261112163820.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11-13 0",
         "hiddenNow": true
       }
     },
@@ -90,6 +90,15 @@
         "chatRequests": 3,
         "requestsWithTextMarker": 1,
         "provider_log_requests": 3
+      }
+    },
+    {
+      "name": "①-6b 参与项 TXT 文件的可读正文交付（同一正式提交入口）",
+      "ok": false,
+      "detail": {
+        "kind": "txt_file_body_not_delivered",
+        "txtMarkerSeen": false,
+        "note": "请求的 materials 只含文字卡 inline，TXT 文件正文未出现在请求里；等待 i-material/i-submit 接线后再验，不伪造"
       }
     },
     {
