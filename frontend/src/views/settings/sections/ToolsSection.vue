@@ -211,7 +211,18 @@ function modelConnectionLabel(info: {
   return info.connectionName || info.providerName || info.credentialId || "";
 }
 
+/** 嵌入不是「未配置的用途」，而是「用当前内置配置」：显示名与状态都与普通用途不同（文案 1）。 */
+function isEmbeddingUsage(usage: (typeof modelFacts.usages)[number]): boolean {
+  return usage.usageKey === "embedding";
+}
+function usageDisplayLabel(usage: (typeof modelFacts.usages)[number]): string {
+  return isEmbeddingUsage(usage) ? "嵌入模型" : usage.label;
+}
+
 function usageFactLine(usage: (typeof modelFacts.usages)[number]): string {
+  // 嵌入模型用的是 QIO 当前内置配置，不写成「沿用现有处理方式 / 未接通」这类会让人误判的措辞。
+  // 限制说明只在「模型与服务 → 用途分配」里集中写一次，这里只给结论。
+  if (isEmbeddingUsage(usage)) return "使用当前配置";
   // 跟随默认的用途以 resolved（后端解析后的真实目标）为准；显式分配的用自身字段
   const target =
     usage.followsDefault && usage.resolved
@@ -401,21 +412,11 @@ onMounted(() => {
 
     <dl v-if="modelFacts.usages.length" class="set-raw" data-settings-key="tools.effective.usages">
       <template v-for="usage in modelFacts.usages" :key="usage.usageKey">
-        <dt>{{ usage.label }}</dt>
+        <dt>{{ usageDisplayLabel(usage) }}</dt>
+        <!-- 只显示一次结论：usageFactLine 已经给出「实际模型 / 沿用现有处理方式 / 未接通」，
+             不再在行尾补一句同样的括注（文案 9：同一句不在同一行说两遍）。 -->
         <dd>
-          {{ usageFactLine(usage) }}
-          <span
-            v-if="usage.status === 'unsupported'"
-            class="set-hint-inline mono"
-            data-usage-status="unsupported"
-            >（未接通）</span
-          >
-          <span
-            v-else-if="usage.status === 'existing'"
-            class="set-hint-inline mono"
-            data-usage-status="existing"
-            >（沿用现有处理方式）</span
-          >
+          <span :data-usage-status="usage.status">{{ usageFactLine(usage) }}</span>
         </dd>
       </template>
     </dl>

@@ -162,6 +162,50 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     w.unmount();
   });
 
+  it("文案 1 / 9：当前生效参数里嵌入写「嵌入模型 · 使用当前配置」，不生效用途不重复同一句话", async () => {
+    const { setModelFacts, resetModelFacts } = await import("../modelFacts");
+    const w = await mountSettings();
+    // SettingsView 挂载时会重建只读事实表：必须挂载后再注入，否则会被 reset 掉。
+    setModelFacts({
+      defaultModel: null,
+      usages: [
+        {
+          usageKey: "main-chat",
+          label: "主对话",
+          followsDefault: true,
+          resolved: { credentialId: "c1", modelId: "m1" },
+          connectionName: "主力连接",
+          status: "follow",
+        },
+        { usageKey: "video", label: "视频", followsDefault: false, status: "existing", note: "沿用现有处理方式" },
+        { usageKey: "research", label: "研究", followsDefault: false, status: "unsupported", note: "未接通独立调用路径" },
+        {
+          usageKey: "embedding",
+          label: "向量与嵌入",
+          followsDefault: false,
+          status: "existing",
+          note: "沿用现有处理方式",
+        },
+      ],
+    });
+    await nextTick();
+    await openCategory(w, "tools");
+    await nextTick();
+    const usages = sectionById(w, "tools").find('[data-settings-key="tools.effective.usages"]');
+    expect(usages.exists()).toBe(true);
+    const text = usages.text();
+    // 嵌入：显示名与结论都按「使用当前配置」，不写成内部用途名或无配置态
+    expect(text).toContain("嵌入模型");
+    expect(text).toContain("使用当前配置");
+    expect(text).not.toContain("向量与嵌入");
+    // 同一行不再把同一句话写两遍（旧实现是「沿用现有处理方式 （沿用现有处理方式）」）
+    expect(text).not.toContain("（沿用现有处理方式）");
+    expect(text).not.toContain("（未接通）");
+    expect(text.split("沿用现有处理方式").length - 1).toBe(1);
+    resetModelFacts();
+    w.unmount();
+  });
+
   it("只读生效参数不显示草稿：改了记忆分段但没保存，工具分区仍是旧值", async () => {
     const w = await mountSettings();
     await openCategory(w, "memory");

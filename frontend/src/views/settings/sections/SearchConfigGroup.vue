@@ -110,6 +110,8 @@ const channelViews = computed(() => {
       name: "免密钥通道",
       configured: keyless.value,
       configText: keyless.value ? "已开启" : "已关闭",
+      // 文案 7：配置状态只写「已开启 / 已关闭」；检查状态是**另一段**（「尚未检查 / 检查通过」），
+      // 不混进配置状态里，也不伪装成「已验证」。开关本身保留。
       checkText: keyless.value ? checkText(checks.keyless) : "",
       tone: !keyless.value ? "off" : checks.keyless.checked ? (checks.keyless.ok ? "ok" : "err") : "warn",
       checkTone: checkTone(checks.keyless),

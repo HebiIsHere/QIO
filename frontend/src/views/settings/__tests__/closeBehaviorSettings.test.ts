@@ -91,12 +91,22 @@ describe("关闭行为设置入口：显示与实际生效值一致", () => {
     await chooseSelectLabel(regular, "直接退出");
     await flushFrames();
 
-    const notice = regular.find(".set-notice").text();
-    expect(notice).toContain("保存关闭行为失败");
-    expect(notice).toContain("后端不可用");
+    // #65：正文只给一句短话；失败原因进「技术详情」按需展开；提示可关闭
+    const noticeBox = regular.find("[data-settings-notice='regular']");
+    const short = noticeBox.find(".set-notice").text();
+    expect(short).toContain("保存关闭行为失败");
+    expect(short).not.toContain("后端不可用");
+    const detail = noticeBox.find("details").text();
+    expect(detail).toContain("技术详情");
+    expect(detail).toContain("后端不可用");
+    const dismiss = noticeBox.find('button[aria-label="关闭这项提示"]');
+    expect(dismiss.exists()).toBe(true);
     // 控件停在「看起来改了、其实没保存」的值上是不可接受的
     expect(pressedLabels(regular)).toEqual(before);
     expect(pressedLabels(regular)).toContain("每次询问");
+    await dismiss.trigger("click");
+    await flushFrames();
+    expect(regular.find("[data-settings-notice='regular']").exists()).toBe(false);
     w.unmount();
   });
 });
