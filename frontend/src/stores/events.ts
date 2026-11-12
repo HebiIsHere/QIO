@@ -10,6 +10,7 @@ import {
   useSessionStore,
   type RuntimeAnchorSnapshot,
   type ToolExecutionSnapshot,
+  type ToolFileReadFact,
   type ToolPresentation,
   type ToolStatus,
 } from "./session";
@@ -66,6 +67,32 @@ function systemAnnotationOf(d: Record<string, unknown>): string | null {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
+}
+
+/**
+ * TOOL_END 的 file_read 事实（真实读取失败时后端才给）：
+ * 后端字段是 snake_case；这里只做形状归一，缺失内容不推断、不编造。
+ */
+function fileReadFactOf(value: unknown): ToolFileReadFact | null {
+  if (!value || typeof value !== "object") return null;
+  const d = value as Record<string, unknown>;
+  const fact: ToolFileReadFact = {
+    attachmentId: String(d.attachment_id ?? "").trim(),
+    name: String(d.name ?? "").trim(),
+    reason: String(d.reason ?? "").trim(),
+    nextStep: String(d.next_step ?? "").trim(),
+    diagnostic: String(d.diagnostic ?? "").trim(),
+  };
+  if (
+    !fact.attachmentId &&
+    !fact.name &&
+    !fact.reason &&
+    !fact.nextStep &&
+    !fact.diagnostic
+  ) {
+    return null;
+  }
+  return fact;
 }
 
 /**
@@ -655,6 +682,8 @@ export const useEventStore = defineStore("events", {
               resultStatus: stringOrNull(d.result_status ?? d.tool_result_status),
               // 知识提交的稳定身份（同一条知识重试成功时据此更新该项，见问题 3）
               knowledgeKey: stringOrNull(d.knowledge_key),
+              // 真实读取失败的用户安全事实（哪个附件 / 为什么 / 下一步）：只做形状归一。
+              fileRead: fileReadFactOf(d.file_read),
             },
           );
           if (session.turnRunning) {

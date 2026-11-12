@@ -1573,6 +1573,21 @@ function orphanedTurnToRecord(turn: InterruptedTurn): RecoveryRecordView {
 }
 
 
+/**
+ * 一次附件读取失败时的**用户安全事实**（后端 TOOL_END 的 file_read 字段）。
+ *
+ * 只放可以直接展示给用户的内容：哪个附件、为什么没读到、下一步可以怎么做、
+ * 以及按需展开的诊断。模型内部指令不进这里，也绝不作为默认文案。
+ * 旧事件 / 旧记录没有这个对象（undefined），界面按 code/category 回退。
+ */
+export interface ToolFileReadFact {
+  attachmentId: string;
+  name: string;
+  reason: string;
+  nextStep: string;
+  diagnostic: string;
+}
+
 export interface StreamMessage {
   id: string;
   /**
@@ -1629,6 +1644,12 @@ export interface StreamMessage {
    * 但尚未生效，不能被 ok=true 吞掉。
    */
   toolResultStatus?: string | null;
+  /**
+   * TOOL_END 的 file_read 事实（真实读取失败时后端才给）：
+   * 界面据此渲染「这次没读到文件内容」以及真实原因 / 下一步，不用 toolError 猜。
+   * 旧事件 / 历史预览没有这个对象（null/undefined = 没有结构化事实，按 code/category 回退）。
+   */
+  toolFileRead?: ToolFileReadFact | null;
   /**
    * 知识提交的稳定身份（后端 fingerprint / knowledge_id，见 tools/knowledge_propose.py）。
    * 只有同一条知识的明确重试才共用这个 key；旧数据没有（undefined = 不做重试归并）。
@@ -7076,6 +7097,8 @@ const sessionStoreDefinition = defineStore("session", {
         resultStatus?: string | null;
         /** 知识提交的稳定身份（同一条知识重试配对用；缺省不归并）。 */
         knowledgeKey?: string | null;
+        /** 真实读取失败时的用户安全事实（file_read）；旧事件没有。 */
+        fileRead?: ToolFileReadFact | null;
       } | null,
     ) {
       const key = callId || toolName;
@@ -7090,6 +7113,7 @@ const sessionStoreDefinition = defineStore("session", {
         }
         if (structured.resultStatus) message.toolResultStatus = structured.resultStatus;
         if (structured.knowledgeKey) message.toolKnowledgeKey = structured.knowledgeKey;
+        if (structured.fileRead) message.toolFileRead = structured.fileRead;
       };
       // 折叠掉的创建流程调用：失败要写回创建卡，不能让用户看不到原因
       if (TOOL_CREATION_TOOLS.has(toolName) || this._suppressedToolCalls.includes(key)) {
@@ -7150,6 +7174,7 @@ const sessionStoreDefinition = defineStore("session", {
           : {}),
         ...(structured?.resultStatus ? { toolResultStatus: structured.resultStatus } : {}),
         ...(structured?.knowledgeKey ? { toolKnowledgeKey: structured.knowledgeKey } : {}),
+        ...(structured?.fileRead ? { toolFileRead: structured.fileRead } : {}),
       });
       this.attachCallToStage(null, stageId, key);
     },
@@ -7484,6 +7509,12 @@ const sessionStoreDefinition = defineStore("session", {
         toolTruncated: r.truncated,
         toolOutputMissing: r.output_missing,
         toolMissingReason: r.missing_reason,
+        // 结构化事实（刷新后仍要能识别「文件没读到」等失败，不靠错误文本猜）。
+        // 旧后端 / 旧记录没有这些字段 → 不写，保持「没有结构化事实」。
+        ...(r.code ? { toolCode: r.code } : {}),
+        ...(r.category ? { toolCategory: r.category } : {}),
+        ...(typeof r.recoverable === "boolean" ? { toolRecoverable: r.recoverable } : {}),
+        ...(r.result_status ? { toolResultStatus: r.result_status } : {}),
         presentation: { title: r.title, tool: r.tool_name },
       };
     },
