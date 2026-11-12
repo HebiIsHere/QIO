@@ -10,6 +10,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createPinia, setActivePinia } from "pinia";
 import QConfirm from "../QConfirm.vue";
 import { useModalArbiterStore } from "../../../stores/modalArbiter";
@@ -25,24 +26,28 @@ import { useModalArbiterStore } from "../../../stores/modalArbiter";
  * ui-catalog 的 Playwright 截图脚本里用真实 DOM rect 复核（见证据文件）。
  */
 describe("QConfirm 对称布局与共享弹窗骨架", () => {
-  it("layer 档：三列等宽标题栏、标题居中、左槽只占位", () => {
-    const w = mount(QConfirm, { props: { open: true, title: "删除这项凭据？", variant: "layer" } });
-    const head = w.find(".qio-modal-head");
-    expect(head.exists()).toBe(true);
-    expect(head.element.children.length).toBe(3);
-    const [left, middle, right] = [...head.element.children] as HTMLElement[];
+  it("layer 档：三列等宽标题栏、标题居中、左槽只占位", async () => {
+    const w = mount(QConfirm, {
+      props: { open: true, title: "删除这项凭据？", variant: "layer" },
+      attachTo: document.body,
+    });
+    await nextTick();
+    const head = document.querySelector(".qio-modal-head");
+    expect(head).not.toBeNull();
+    expect(head!.children.length).toBe(3);
+    const [left, middle, right] = [...head!.children] as HTMLElement[];
     expect(left.classList.contains("qio-modal-head__slot")).toBe(true);
     expect(left.getAttribute("aria-hidden")).toBe("true");
     expect(left.querySelectorAll("button, a, input, [tabindex]").length).toBe(0);
-    expect(middle.contains(w.find(".qio-modal-title").element)).toBe(true);
-    expect(w.find("#qio-confirm-title").text()).toBe("删除这项凭据？");
+    expect(middle.contains(document.querySelector(".qio-modal-title"))).toBe(true);
+    expect(document.getElementById("qio-confirm-title")?.textContent?.trim()).toBe("删除这项凭据？");
     // 关闭按钮视觉在右上，但 DOM 顺序在动作按钮之后（保证既有调用方的按钮顺序不变）；
     // 右槽因此只承担等宽占位，不承载可聚焦控件。
     expect(right.querySelector("button")).toBeNull();
     expect(right.getAttribute("aria-hidden")).toBe("true");
-    const close = w.find("[data-qio-confirm-close]");
-    expect(close.exists()).toBe(true);
-    expect(close.attributes("aria-label")).toBeTruthy();
+    const close = document.querySelector("[data-qio-confirm-close]");
+    expect(close).not.toBeNull();
+    expect(close!.getAttribute("aria-label")).toBeTruthy();
     w.unmount();
   });
 
@@ -59,11 +64,15 @@ describe("QConfirm 对称布局与共享弹窗骨架", () => {
   });
 
   it("layer 档关闭按钮走“取消”语义（不是执行）", async () => {
-    const w = mount(QConfirm, { props: { open: true, title: "删除？", variant: "layer" } });
-    const close = w.find("[data-qio-confirm-close]");
-    expect(close.exists()).toBe(true);
-    expect(close.attributes("title")).toBeUndefined();
-    await close.trigger("click");
+    const w = mount(QConfirm, {
+      props: { open: true, title: "删除？", variant: "layer" },
+      attachTo: document.body,
+    });
+    await nextTick();
+    const close = document.querySelector("[data-qio-confirm-close]") as HTMLElement | null;
+    expect(close).not.toBeNull();
+    expect(close!.getAttribute("title")).toBeNull();
+    close!.click();
     expect(w.emitted("cancel")).toHaveLength(1);
     expect(w.emitted("confirm")).toBeUndefined();
     w.unmount();
@@ -149,16 +158,76 @@ describe("QConfirm 三档形态", () => {
     expect(w.find(".qio-confirm-scrim").exists()).toBe(false);
   });
 
-  it("layer 档是模态对话层：role/aria 齐全、有遮罩", () => {
+  it("layer 档是模态对话层：role/aria 齐全、有遮罩", async () => {
     const w = mount(QConfirm, {
       props: { open: true, title: "删除凭据？", variant: "layer", titleId: "del-title" },
+      attachTo: document.body,
     });
-    const dialog = w.find('[role="dialog"]');
-    expect(dialog.exists()).toBe(true);
-    expect(dialog.attributes("aria-modal")).toBe("true");
-    expect(dialog.attributes("aria-labelledby")).toBe("del-title");
-    expect(w.find("#del-title").text()).toBe("删除凭据？");
-    expect(w.find(".qio-confirm-scrim").exists()).toBe(true);
+    await nextTick();
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.getAttribute("aria-modal")).toBe("true");
+    expect(dialog!.getAttribute("aria-labelledby")).toBe("del-title");
+    expect(document.getElementById("del-title")?.textContent?.trim()).toBe("删除凭据？");
+    expect(document.querySelector(".qio-confirm-scrim")).not.toBeNull();
+    w.unmount();
+  });
+});
+
+/**
+ * #82 / #87：设置页窗口级确认框。
+ *
+ * 根因（基线 7445170d 实测）：设置页 .set-main 有 backdrop-filter，会为 position:fixed
+ * 后代创建包含块 + stacking context；layer 档就地渲染时遮罩 rect 变成 y=-1169 / height=2847，
+ * 800x600 下确认框标题与关闭按钮落到 z-index 240 的 WindowChrome 下面（elementFromPoint
+ * 命中 .drag-surface）。修法：layer 档 Teleport 到 body，与 QModal 一致；遮罩继续用
+ * --window-frame-inset 定位到内容视口，面板高度上限取遮罩内容盒（max-height: 100%）。
+ */
+describe("QConfirm 窗口层（#82 / #87）", () => {
+  it("layer 档 Teleport 到 body，面板/遮罩带窗口层钩子类", async () => {
+    const w = mount(QConfirm, {
+      props: { open: true, title: "删除凭据？", variant: "layer" },
+      attachTo: document.body,
+    });
+    await nextTick();
+    const scrim = document.querySelector(".qio-confirm-scrim") as HTMLElement | null;
+    const panel = document.querySelector(".qio-confirm--layer") as HTMLElement | null;
+    expect(scrim).not.toBeNull();
+    expect(panel).not.toBeNull();
+    // 脱离设置页的 backdrop-filter 包含块：Teleport 目标就是 body（VTU 的 Transition
+    // stub 可能再包一层，因此用 body.contains 而不是直接比较 parentElement）
+    expect(document.body.contains(scrim!)).toBe(true);
+    expect(scrim!.closest("body")).toBe(document.body);
+    expect(panel!.parentElement).toBe(scrim);
+    expect(scrim!.getAttribute("data-qio-confirm-layer")).toBe("window");
+    expect(panel!.getAttribute("data-qio-confirm-layer")).toBe("window");
+    w.unmount();
+  });
+
+  it("inline / popover 仍就地渲染，不进入窗口层", async () => {
+    for (const variant of ["inline", "popover"] as const) {
+      const w = mount(QConfirm, { props: { open: true, title: "标题", variant } });
+      const root = w.find(".qio-confirm");
+      expect(root.exists(), variant).toBe(true);
+      expect(root.attributes("data-qio-confirm-layer"), variant).toBeUndefined();
+      expect(document.querySelector(".qio-confirm-scrim"), variant).toBeNull();
+      w.unmount();
+    }
+  });
+
+  it("危险确认按钮用真实危险令牌实心，且选择器不靠 !important 压过设置页普通按钮规则", () => {
+    // 说明：这里要读源码本身（jsdom 不应用 SFC scoped 样式），因此按测试进程的 cwd 定位。
+    const sourcePath = join(process.cwd(), "src", "components", "ui", "QConfirm.vue");
+    const source = readFileSync(sourcePath, "utf8");
+    // 危险态：既有令牌 + 明确类名 + data 钩子，选择器层级高于 .qio-settings .qio-btn.qio-btn
+    expect(source).toMatch(
+      /\.qio-confirm--layer\[data-qio-confirm-layer="window"\] \[data-qio-confirm-action="confirm"\]\.danger-solid\s*\{[^}]*background:\s*var\(--danger\)/,
+    );
+    // 注释里可以提到「不依赖 !important」；这里守的是没有任何一条声明真的用到它
+    expect(source).not.toMatch(/!important\s*;/);
+    // 高度上限相对内容视口（遮罩内容盒），不是写死 top/100vh 魔法数字
+    expect(source).toMatch(/\.qio-confirm--layer\s*\{[^}]*max-height:\s*100%/);
+    expect(source).not.toMatch(/max-height:\s*calc\(100vh/);
   });
 });
 

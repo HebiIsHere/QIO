@@ -373,3 +373,94 @@ describe("首次引导向导 v2", () => {
     expect(w.emitted("done")).toHaveLength(1);
   });
 });
+
+/** #14 / #15 / #20：追问、核对页与欢迎页的文案，以及关闭前的草稿提示。 */
+describe("首次引导文案与关闭保护（#14 / #15 / #20）", () => {
+  it("#20 欢迎页只说明个人资料「何时保存」", async () => {
+    const w = mountWizard();
+    await flushPromises();
+    expect(w.find(".welcome .hint").text()).toBe("你的个人资料只会在最后核对确认后才保存。");
+    // 不再在欢迎页正文里重复解释「中途关掉等于没填」（真正要丢内容时在关闭动作上提示）
+    expect(w.find(".welcome").text()).not.toContain("中途关掉");
+  });
+
+  it("#14 追问保留「跳过」与「可以留空」，去掉重复解释", async () => {
+    const w = mountWizard({ has_content: true, has_credential: true });
+    vi.spyOn(api, "suggestFollowUps").mockResolvedValue({ questions: ["你最想先解决什么？"] });
+    await flushPromises();
+    await toProfile(w);
+    const inputs = w.findAll("input.qio-input");
+    await inputs[0].setValue("祠莎");
+    await inputs[1].setValue("开发 QIO");
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 偏好
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 目标
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 追问
+    await flushPromises();
+
+    const hint = w.find(".panel .hint").text();
+    expect(hint).toBe("这些问题根据你前面写的内容现问。");
+    expect(hint).not.toContain("可以跳过");
+    // 两个出口都还在：底部的「跳过」按钮、输入框占位「可以留空」
+    expect(w.find(".onboarding-actions .skip-followup").exists()).toBe(true);
+    expect(w.find('input[placeholder="可以留空"]').exists()).toBe(true);
+  });
+
+  it("#15 核对页用「以下内容将在完成设置后保存」，逐项动作靠按钮表达", async () => {
+    const w = mountWizard({ has_content: true, has_credential: true });
+    await flushPromises();
+    await toProfile(w);
+    await w.find("input.qio-input").setValue("祠莎");
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 偏好
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 目标
+    await w.find(".onboarding-actions .primary").trigger("click"); // → 追问
+    await flushPromises();
+    await w.find(".onboarding-actions .skip-followup").trigger("click"); // → 核对并完成
+
+    expect(w.find(".panel .hint").text()).toBe("以下内容将在完成设置后保存。");
+    const row = w.find(".review-item");
+    expect(row.text()).toContain("修改");
+    expect(row.text()).toContain("删除");
+    // 不再写「可以逐条修改或删除；删除的不会写进去」这一长串说明
+    expect(w.find(".panel .hint").text()).not.toContain("逐条修改");
+  });
+
+  it("#20 填过资料再关闭：先提示草稿会丢失，确认后才关闭；没填过则直接关闭", async () => {
+    const w = mountWizard({ has_content: true, has_credential: true });
+    await flushPromises();
+    await toProfile(w);
+    await w.find("input.qio-input").setValue("祠莎");
+
+    await w.find(".onboarding-close").trigger("click");
+    await flushPromises();
+    expect(w.emitted("done")).toBeUndefined();
+    expect(w.find(".onboarding-close-ask").exists()).toBe(true);
+    expect(w.find(".onboarding-close-ask").text()).toContain("已填写的内容不会保存");
+
+    // 取消 = 继续填写：引导还在，草稿也还在
+    const keep = w.findAll("button").find((item) => item.text() === "继续填写");
+    expect(keep).toBeTruthy();
+    await keep!.trigger("click");
+    await flushPromises();
+    expect(w.find(".onboarding-close-ask").exists()).toBe(false);
+    expect((w.find("input.qio-input").element as HTMLInputElement).value).toBe("祠莎");
+    expect(w.emitted("done")).toBeUndefined();
+
+    // 再次关闭并确认丢弃：才真的关闭
+    await w.find(".onboarding-close").trigger("click");
+    await flushPromises();
+    const discard = w.findAll("button").find((item) => item.text() === "关闭并丢弃");
+    expect(discard).toBeTruthy();
+    await discard!.trigger("click");
+    await flushPromises();
+    expect(w.emitted("done")).toHaveLength(1);
+  });
+
+  it("#20 没填过任何内容时关闭不额外拦一道", async () => {
+    const w = mountWizard({ has_content: true, has_credential: true });
+    await flushPromises();
+    await w.find(".onboarding-close").trigger("click");
+    await flushPromises();
+    expect(w.find(".onboarding-close-ask").exists()).toBe(false);
+    expect(w.emitted("done")).toHaveLength(1);
+  });
+});

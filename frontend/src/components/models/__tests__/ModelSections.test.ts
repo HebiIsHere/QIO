@@ -385,8 +385,11 @@ describe("Key 管理 · 删除引用保护", () => {
       draftRefs: [],
     });
     await openManageAndDelete(wrapper);
-    expect(wrapper.find(".qio-confirm").text()).toContain("还被用途引用");
-    expect(wrapper.find(".qio-confirm").text()).toContain("看图 / 视觉");
+    // layer 档确认框是窗口层（Teleport 到 body），按文档查。
+    const blocked = document.querySelector(".qio-confirm");
+    expect(blocked).not.toBeNull();
+    expect(blocked!.textContent).toContain("还被用途引用");
+    expect(blocked!.textContent).toContain("看图 / 视觉");
     expect(api.deleteCredential).not.toHaveBeenCalled();
   });
 
@@ -399,7 +402,7 @@ describe("Key 管理 · 删除引用保护", () => {
       draftRefs: ["key_a"],
     });
     await openManageAndDelete(wrapper);
-    expect(wrapper.find(".qio-confirm").text()).toContain("尚未保存的用途改动");
+    expect(document.querySelector(".qio-confirm")?.textContent).toContain("尚未保存的用途改动");
     expect(api.deleteCredential).not.toHaveBeenCalled();
   });
 
@@ -413,9 +416,10 @@ describe("Key 管理 · 删除引用保护", () => {
       draftRefs: [],
     });
     await openManageAndDelete(wrapper);
-    const confirm = wrapper.find(".qio-confirm");
-    expect(confirm.text()).toContain("删除这条连接");
-    await confirm.find('[data-qio-confirm-action="confirm"]').trigger("click");
+    const confirm = document.querySelector(".qio-confirm");
+    expect(confirm).not.toBeNull();
+    expect(confirm!.textContent).toContain("删除这条连接");
+    (confirm!.querySelector('[data-qio-confirm-action="confirm"]') as HTMLElement).click();
     await flushPromises();
     expect(api.deleteCredential).toHaveBeenCalledWith("key_a");
     expect(wrapper.emitted("changed")).toBeTruthy();

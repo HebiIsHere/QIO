@@ -345,7 +345,7 @@ async function save() {
       <QCombo
         :options="providers.map((item) => ({ value: item.id, label: item.name, hint: item.category_label }))"
         :model-value="form.providerId"
-        placeholder="选择服务商（或下面的自定义服务地址）"
+        placeholder="选择服务商"
         search-placeholder="搜索服务商…"
         empty-text="没有匹配的服务商"
         :busy="busy"
@@ -359,6 +359,10 @@ async function save() {
       </p>
       <p v-if="provider?.entry_types?.length" class="field__hint">
         接入类型：{{ provider.entry_types.join(" / ") }}。这里只覆盖一种；其它接入方式请用高级选项填写。
+      </p>
+      <!-- 自定义服务没有预设地址：这里只指路，不把地址类字段重新堆回正常流程 -->
+      <p v-if="provider?.category === 'custom'" class="field__hint">
+        自定义服务地址、连接协议与模型名称都在下面的「高级选项」里填写。
       </p>
     </div>
 
@@ -455,8 +459,10 @@ async function save() {
         <QInput id="key-note" :model-value="form.note" placeholder="例如「工作用 DeepSeek」" aria-label="显示名称" @update:model-value="form.note = $event" />
       </div>
       <div class="field">
-        <label class="field__label">累计用量上限（token，留空 = 不限）</label>
+        <!-- 单位已经显示在数字框里；标题不再重复 token。「留空不限」只写一次，放在输入框下方。 -->
+        <label class="field__label">累计用量上限</label>
         <QNumber :model-value="form.budget" :min="0" :step="1000" unit="token" label="累计用量上限" @update:model-value="form.budget = $event" />
+        <p class="field__hint">留空表示不限。</p>
       </div>
       <div class="field">
         <label class="field__label">历史自定义用途标签</label>
@@ -500,7 +506,9 @@ async function save() {
     <p v-if="error" class="qio-feedback err" role="alert">{{ error }}</p>
     <p v-if="notice" class="qio-feedback ok" role="status">{{ notice }}</p>
 
-    <div class="actions">
+    <!-- 底部动作走共享 .qio-modal-actions：等宽、同高、整体居中、窄窗纵排；
+         主次颜色仍由 .qio-btn / .qio-btn.primary 表达（KeyForm 只收口尺寸与居中）。 -->
+    <div class="actions qio-modal-actions">
       <button type="button" class="qio-btn" :disabled="busy" @click="emit('cancel')">取消</button>
       <button type="submit" class="qio-btn primary" :disabled="busy" :aria-busy="busy">
         {{ busy ? "保存中…" : title }}
@@ -677,5 +685,29 @@ async function save() {
 }
 .confirm__box.is-on { background: var(--warning); border-color: var(--warning); }
 .target-note { font-size: 10.5px; color: var(--text-muted); display: flex; gap: 6px; flex-wrap: wrap; }
-.actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
+/* 底部动作组：容器用共享 .qio-modal-actions（居中 / 等宽 / 同高 / 窄窗纵排），
+   这里只把 KeyForm 自己的按钮视觉套回共享尺寸，避免 32px 与 36px 混排。
+   选择器刻意写成「容器 + 重复类名」（0-5-0）：它要压过上面 .key-form :deep(.qio-btn.primary)
+   的 0-4-0（scoped + :deep + .primary 各算一级），但不引入 !important。 */
+.actions.qio-modal-actions { padding-top: 0; }
+.actions.qio-modal-actions .qio-btn.qio-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 200px;
+  height: 36px;
+  padding: 0 12px;
+}
+.actions.qio-modal-actions .qio-btn.qio-btn.primary { padding: 0 12px; }
+/* 窄窗（≤480）：共享规则换成纵排 + 撑满。上面 0-4-0 的尺寸规则会压过 base.css 里
+   .qio-modal-actions > * 的 0-1-0，所以这里必须把纵排下的宽度/上限显式改回来，
+   否则两个按钮会缩成内容宽、贴左排，看起来像没居中（dialogs 实测 480 宽 leftGap=1/rightGap=143）。 */
+@media (max-width: 480px) {
+  .actions.qio-modal-actions { flex-direction: column; }
+  .actions.qio-modal-actions .qio-btn.qio-btn {
+    flex: 0 0 auto;
+    max-width: none;
+    width: 100%;
+    height: 36px;
+  }
+}
 </style>
