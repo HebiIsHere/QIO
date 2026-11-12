@@ -594,14 +594,32 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
         return;
       }
       if (kind === "open_recovery") {
+        /**
+         * #78：任务栏「去处理」→ 恢复窗口滚动并聚焦同一条。
+         *
+         * 跨分支口径（共同契约 §4.1）：只发 `qio:open-recovery`，detail 带 recordId；
+         * 打开窗口与聚焦由对话页负责。目标已经不在清单里时**这里**给真实反馈，
+         * 而不是发一个注定定位不到的事件、让用户以为点了没反应。
+         * 文案 8：成功不再写「去中央处理」这类背景说明；只有失败才提示。
+         */
+        const session = useSessionStore();
+        const recordId = String(target ?? "").trim();
+        const known = Boolean(
+          recordId && session.recoveryRecords.some((record) => record.record_id === recordId),
+        );
+        if (!recordId || !known) {
+          this.setNotice(
+            item.id,
+            "没能定位这条未完成事项：它已经不在清单里（可能已经被处理，或后端已经清理；刷新任务列表后再看）。",
+          );
+          return;
+        }
+        this.setNotice(item.id, "");
         if (typeof window !== "undefined") {
           window.dispatchEvent(
-            new CustomEvent(OPEN_RECOVERY_EVENT, {
-              detail: { taskId: item.id, recordId: target ?? "" },
-            }),
+            new CustomEvent(OPEN_RECOVERY_EVENT, { detail: { recordId } }),
           );
         }
-        this.setNotice(item.id, "恢复事项在中央对话区的恢复提示里处理；这里保留它的记录。");
         return;
       }
       if (kind === "ack") {

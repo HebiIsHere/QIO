@@ -12,6 +12,8 @@ import { api } from "../services/api";
 
 const session = useSessionStore();
 const busy = ref(false);
+/** 正在提交哪一个决定（按钮保留原位，只把被点的那个写成「提交中…」） */
+const deciding = ref<"" | "approved" | "rejected">("");
 /** 提交失败原因：失败比成功更值得停留，所以保留到下次尝试 */
 const error = ref("");
 
@@ -57,14 +59,23 @@ async function decide(decision: "approved" | "rejected") {
   const pending = session.pendingContinue;
   if (!pending || busy.value) return;
   busy.value = true;
+  deciding.value = decision;
   error.value = "";
   try {
     await api.respondApproval(pending.id, decision);
-    session.pendingContinue = null;
+    /**
+     * 文案 12：只收口**自己提交的那一条**。
+     *
+     * 等待回执期间可能又出现了新的暂停（另一轮预算耗尽）：旧回执成功时如果把
+     * pendingContinue 无条件清空，新的暂停原因与按钮就被静默抹掉了。
+     */
+    if (session.pendingContinue?.id === pending.id) session.pendingContinue = null;
   } catch (e) {
+    // 失败保留真实暂停原因与两个按钮（只补一句可重试的真实原因，不收起操作条）
     error.value = `提交没有成功：${(e as Error).message}（可以重试）`;
   } finally {
     busy.value = false;
+    deciding.value = "";
   }
 }
 </script>
@@ -84,10 +95,10 @@ async function decide(decision: "approved" | "rejected") {
       <span class="msg">{{ detail }}</span>
       <span class="spacer"></span>
       <button class="qio-btn primary" type="button" :disabled="busy" @click="decide('approved')">
-        {{ busy ? "提交中…" : "继续" }}
+        {{ busy && deciding === "approved" ? "提交中…" : "继续" }}
       </button>
       <button class="qio-btn quiet" type="button" :disabled="busy" @click="decide('rejected')">
-        停止
+        {{ busy && deciding === "rejected" ? "提交中…" : "停止" }}
       </button>
     </div>
     <p v-if="error" class="qio-feedback err" role="alert" data-qio-fit>{{ error }}</p>

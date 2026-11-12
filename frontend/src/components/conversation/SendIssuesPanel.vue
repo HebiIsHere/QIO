@@ -60,6 +60,16 @@ function canCancel(record: { id: string; state: string }): boolean {
   const current = confirmFor(record.id);
   return current ? current.accepted : record.state === "accepted";
 }
+
+/** 文案 3：这条的取消请求正在飞（中间状态只说「正在取消」，收到回执才更新结果）。 */
+function cancelBusy(id: string): boolean {
+  return busy.value === `cancel:${id}`;
+}
+
+/** 输入框里是否已有新内容（决定「找回原文」还是「交换草稿」）。 */
+function draftHasText(): boolean {
+  return session.draft.trim().length > 0;
+}
 const displaced = computed(() => session.displacedDraftsForTopic(session.currentTopicId));
 const interrupted = computed(() => session.interruptedTurns);
 const interruptedNotice = computed(() => session.interruptedNotice);
@@ -320,7 +330,8 @@ const counts = computed(() => ({
             >
               {{ pendingNotice(record) }}
             </span>
-            <span v-if="confirmFor(record.id)?.busy" class="why">正在确认…</span>
+            <span v-if="cancelBusy(record.id)" class="why">正在取消…</span>
+            <span v-else-if="confirmFor(record.id)?.busy" class="why">正在确认…</span>
             <span v-else-if="record.lastError && confirmFor(record.id)" class="why">{{ record.lastError }}</span>
           </p>
           <div class="actions">
@@ -443,7 +454,7 @@ const counts = computed(() => ({
               :disabled="Boolean(busy)"
               @click="swapFailed(record.id, index)"
             >
-              与当前文字互换
+              {{ draftHasText() ? "交换草稿" : "与当前文字互换" }}
             </button>
             <button
               class="qio-btn mini quiet"
@@ -471,7 +482,7 @@ const counts = computed(() => ({
       <h4 class="head">
         被让位的旧草稿<span class="count mono">{{ displaced.length }}</span>
       </h4>
-      <p class="lead">这个话题原本还有一份草稿。取回会与当前文字互换，两份都保留，不会自动发送。</p>
+      <p class="lead">这个话题原本还有一份草稿。取回会与当前草稿互换：两份都保留，不会自动发送。</p>
       <ul class="list">
         <li
           v-for="record in displaced"
@@ -491,7 +502,7 @@ const counts = computed(() => ({
               :disabled="Boolean(busy)"
               @click="restoreDisplaced(record.id)"
             >
-              取回（与当前文字互换）
+              {{ draftHasText() ? "交换草稿" : "取回这份草稿" }}
             </button>
             <button
               class="qio-btn mini quiet"

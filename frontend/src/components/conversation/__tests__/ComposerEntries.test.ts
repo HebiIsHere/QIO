@@ -266,7 +266,8 @@ describe("排队入口：真实数据与取消", () => {
     await cancelButtons[0].trigger("click");
     await flushPromises();
     expect(mocks.cancelTurn).toHaveBeenCalledWith("q1");
-    expect(w.find(".panel").text()).toContain("以后端确认为准");
+    // 文案 11：取消回执用实际状态（mock 回执 cancelled=true → 已取消）
+    expect(w.find(".panel").text()).toContain("已取消");
     w.unmount();
   });
 
