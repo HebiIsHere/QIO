@@ -78,3 +78,12 @@ InteractiveOldEntriesGone>
 3. **#84 做了结构与 token 层面的层级/图标统一，未做真实应用截图复核**（子分支时间盒内未起应用）；建议 Lead 合并后在净白/暗紫晶、800×600 各看一眼任务面板。
 4. **文案 10 的解释**：按「确认结果部分完成」实现（标题/成功项/失败项/重试入口都在确认结果面板）；RecoveryPanel 的 partially_completed 仍保留原「部分完成：以服务端账本为准」+ 恢复入口，未改成成功/失败分列（真实成功/失败项要从账本接口取，本分支不新增数据源）。若 Lead 认为文案 10 指的是恢复面板，需要 i-submit 提供账本逐项事实后再补。
 5. `i2v2-a-intent-read-failure` 中 InteractiveView 的 `intent-read-error` 相关断言依赖 i-layout 去重改动；他们改完后该文件 1 条断言可能需再对齐（不是本分支文件）。
+
+## 7) 合并注意（与 i-layout 的唯一文件重叠）
+
+- 两分支都改了 `frontend/src/views/__tests__/i2v2-a-intent-read-failure.test.ts`：
+  - i-layout 改的是「入口标记一次 + 不重复横幅」口径（并移除 InteractiveView 的 intent-read-error）；
+  - 本分支只改一条空态文案断言（成功读到空集合后打开任务面板：`task-empty` 为「暂无任务」，BRIEF #18）。
+  - 解决冲突时两边都保留：入口侧断言用 i-layout 版本，任务面板空态断言用本分支的「暂无任务」。
+- i-layout 已确认 #07 入口标记（data-im="tasks-entry-error" / aria-invalid / title「互动任务（读取失败）」）与 Esc 层（id: interactive-task-center）落地；本分支 TaskCenterPanel 不注册 Esc，不会双层。
+- 本分支其余文件与 i-layout / i-state / i-submit / i-canvas 无重叠。
