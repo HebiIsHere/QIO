@@ -114,7 +114,11 @@ describe("从输入区向上展开 / 收起", () => {
     expect(w.find('[data-stub="composer"]').exists()).toBe(true);
     expect(w.find('[data-stub="entries"]').exists()).toBe(true);
     expect(w.get('[data-ic-toggle]').attributes("aria-expanded")).toBe("false");
-    expect(w.get('[data-ic-status]').text()).toContain("点开继续对话");
+    // 文案 4 / 13：没有真实状态时状态行安静；入口只写「展开对话」，不再写「点开继续对话」。
+    expect(w.find('[data-ic-status]').exists()).toBe(false);
+    expect(w.get('[data-ic-toggle]').text()).toContain("展开对话");
+    expect(w.get('[data-ic-toggle]').text()).not.toContain("点开继续对话");
+    expect(w.get('[data-ic-toggle]').attributes("aria-label")).toBe("展开对话");
   });
 
   it("展开后会话流出现在输入区上方，分隔条与无障碍状态齐全", async () => {
@@ -135,14 +139,18 @@ describe("从输入区向上展开 / 收起", () => {
     expect(w.get('[data-ic-toggle]').attributes("aria-controls")).toBe(stream.attributes("id"));
   });
 
-  it("点击/聚焦输入区自动展开，右上角圆形按钮收起", async () => {
+  it("点击/聚焦输入区自动展开；#86 只保留输入区旁同一个开合入口，消息区上方不再叠关闭按钮", async () => {
     const { wrapper: w } = mountConversation();
     await w.get(".ic-composer").trigger("focusin");
     await nextTick();
     expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("true");
-    expect(w.find('[data-ic-close]').exists()).toBe(true);
-    await w.get('[data-ic-close]').trigger("click");
+    // #86：消息滚动区上方重叠的关闭按钮已移除；唯一入口是输入区旁的 data-ic-toggle。
+    expect(w.find('[data-ic-close]').exists()).toBe(false);
+    expect(w.findAll('[data-ic-toggle]').length).toBe(1);
+    await w.get('[data-ic-toggle]').trigger("click");
     expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("false");
+    expect(w.get('[data-ic-toggle]').text()).toContain("展开对话");
+    expect(w.get('[data-ic-toggle]').text()).not.toContain("点开继续对话");
   });
 
   it("展开后再次收起：会话流隐藏但不卸载（阅读位置与已渲染内容保留）", async () => {

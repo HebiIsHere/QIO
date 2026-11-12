@@ -10,7 +10,10 @@
 <script setup lang="ts">
 import { vQioTip } from "../composables/useQioTip";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useInteractiveStore } from "../stores/interactive";
+import { registerEscapeLayer } from "../composables/useEscapeLayer";
+import { panelSpaceMode } from "../components/interactive/v2/layout";
 import { contentViewport } from "../utils/windowFrame";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
@@ -38,6 +41,95 @@ import { saveIntentDisplay } from "../services/interactive";
 import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
+const router = useRouter();
+
+/* ------------------------------------------------------------------
+ * #05 / #71：面板空间规则（纯函数在 v2/layout.ts，按实际可用宽度分档）
+ * 宽窗允许任务面板与提交详情并排；窄窗明确切换（同一时间只显示最近打开的那一块）。
+ * 聊天开合不受影响（唯一入口在输入区旁）；执行记录层级更高，不会被它们遮住。
+ * ------------------------------------------------------------------ */
+const viewportWidth = ref(typeof window === "undefined" ? 0 : window.innerWidth);
+const panelSpace = computed(() => panelSpaceMode(viewportWidth.value));
+const toolbarRef = ref<InstanceType<typeof BoardToolbar> | null>(null);
+/** 提交详情 / 上次结果 / 过程面板被打开：窄窗时明确切走任务面板（不销毁任何状态）。 */
+function onSubmitPanelOpen(): void {
+  if (panelSpace.value === "switch") store.closeTaskCenter();
+}
+watch(
+  () => store.tasksOpen,
+  (open) => {
+    if (open && panelSpace.value === "switch") toolbarRef.value?.closeSubmitDetails();
+  },
+);
+
+/* #40：任务面板打开时注册一层 Esc（非模态面板；关闭只收面板，不改任务状态）。 */
+let disposeTaskEscape: (() => void) | null = null;
+watch(
+  () => store.tasksOpen,
+  (open) => {
+    if (open && !disposeTaskEscape) {
+      disposeTaskEscape = registerEscapeLayer({
+        id: "interactive-task-center",
+        active: () => store.tasksOpen,
+        onEscape: () => {
+          store.closeTaskCenter();
+          return true;
+        },
+      });
+    } else if (!open && disposeTaskEscape) {
+      disposeTaskEscape();
+      disposeTaskEscape = null;
+    }
+  },
+  { immediate: true },
+);
+
+/* ------------------------------------------------------------------
+ * #20：整板读取失败的门禁与页面壳
+ *
+ * 事实来源由 store 统一提供（i-state）：boardLoadedOnce / boardReadOnly /
+ * boardEditBlockedReason / retryBoardLoad；基线版本还没有这些字段时用
+ * loadError + board 退回同一语义（有上次成功数据 = 只读展示；没有 = 首次失败）。
+ * 失败期间编辑与提交由 store 拦截，页面再把画布 / 工具栏置 inert。
+ * ------------------------------------------------------------------ */
+interface BoardLoadExtras {
+  boardLoadedOnce?: boolean;
+  boardReadOnly?: boolean;
+  boardEditBlockedReason?: string | null;
+  retryBoardLoad?: () => Promise<boolean>;
+}
+const boardLoad = computed(() => store as unknown as BoardLoadExtras);
+const boardReadOnly = computed(() => {
+  const extra = boardLoad.value.boardReadOnly;
+  if (typeof extra === "boolean") return extra;
+  return Boolean(store.loadError) && Boolean(store.board);
+});
+const boardFirstLoadFailed = computed(
+  () => Boolean(store.loadError) && !store.board && boardLoad.value.boardLoadedOnce !== true,
+);
+const boardBlockedReason = computed(
+  () => boardLoad.value.boardEditBlockedReason || store.loadError || "",
+);
+const boardRetrying = ref(false);
+async function retryBoardLoad(): Promise<void> {
+  if (boardRetrying.value) return;
+  boardRetrying.value = true;
+  try {
+    const retry = boardLoad.value.retryBoardLoad;
+    if (typeof retry === "function") await retry();
+    else await store.load();
+  } finally {
+    boardRetrying.value = false;
+  }
+}
+function backToConversation(): void {
+  if (router?.push) void router.push("/");
+}
+
+/* #07：任务读取失败只在任务入口标记（消息区不再重复同一条失败）。 */
+const tasksEntryError = computed(() => store.intentViewsLoadState === "error");
+const tasksEntryTip = computed(() => (tasksEntryError.value ? "互动任务（读取失败）" : "互动任务"));
+
 /** 执行记录：唯一的新入口，查看确认材料、范围、操作、结果、失败与重试事实。 */
 const recordIntent = ref<IntentView | null>(null);
 /** 书签栏纯查看状态；由工具栏切换，不写板面、不产生意图。 */
@@ -50,6 +142,8 @@ const conversationMaxHeight = ref(
 );
 function syncConversationMaxHeight(): void {
   if (typeof window === "undefined") return;
+  // #05 / #71：面板空间规则量的是实际可用宽度（内容视口），不是 window 外框。
+  viewportWidth.value = contentViewport().width;
   // 对话浮在板面上：最多长到仍露出约 220px 板面（70 全局栏 + 220 板面 + 16 边距）。
   conversationMaxHeight.value = Math.max(280, Math.min(720, contentViewport().height - 306));
 }
@@ -62,22 +156,10 @@ function syncConversationMaxHeight(): void {
  * ------------------------------------------------------------------ */
 const intentViews = computed(() => store.intentViews);
 const intentReadFailed = computed(() => store.intentViewsLoadState === "error");
-const intentReadErrorText = computed(() => {
-  const reason = store.intentViewsLoadError || "原因未知";
-  return store.intentViewsLoadedOnce
-    ? "更新失败，当前显示上次读取的内容（" + reason + "）"
-    : "意图读取失败（还没成功读到过，" + reason + "）：当前不能判定为空，请重试。";
-});
-const intentReadBusy = ref(false);
-async function retryIntentRead(): Promise<void> {
-  if (intentReadBusy.value) return;
-  intentReadBusy.value = true;
-  try {
-    await store.refreshIntentFacts();
-  } finally {
-    intentReadBusy.value = false;
-  }
-}
+/*
+ * #07：同一次任务读取失败只在任务入口标记，并在任务面板提供一处可重试错误。
+ * 这里不再渲染重复的 intent-read-error 横幅（同一失败出现在两处会像两件事）。
+ */
 
 /** 意图层确认 / 恢复 / 拒绝之后的统一刷新入口（意图状态 + 执行记录一起更新）。 */
 const intentRefreshBusy = ref(false);
@@ -308,7 +390,7 @@ const boardSize = computed(() => {
 </script>
 
 <template>
-  <div class="interactive">
+  <div class="interactive" :data-im-panel-space="panelSpace">
     <!-- 互动页的搜索 + 唯一保存状态：Teleport 到 WindowChrome 的挂载点。 -->
     <InteractiveChromeTools />
     <!-- 统一审批：互动页恰好一套；入口由输入区事项行第⑤项提供，不再另挂浮动入口。 -->
@@ -319,7 +401,7 @@ const boardSize = computed(() => {
     <InteractiveWorkspace :bookmarks-open="bookmarksOpen">
       <template #board>
         <div class="im-board-stage" data-im="interactive-stage">
-          <BoardCanvas>
+          <BoardCanvas :inert="boardReadOnly || undefined">
             <template #overlay="{ scale, width, height }">
               <IntentLayer
                 v-if="intentViews.length"
@@ -397,9 +479,15 @@ const boardSize = computed(() => {
               type="button"
               data-im="tasks-entry"
               :aria-expanded="store.tasksOpen"
-              v-qio-tip="'互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）'"
+              :aria-invalid="tasksEntryError ? 'true' : undefined"
+              :title="tasksEntryError ? '互动任务（读取失败）' : '互动任务'"
+              v-qio-tip="tasksEntryTip"
               @click="store.tasksOpen ? store.closeTaskCenter() : store.openTaskCenter('tasks')"
-            >任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}</button>
+            >
+              任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}
+              <!-- #07：同一次任务读取失败只在这里标记一次；可重试错误在任务面板内。 -->
+              <span v-if="tasksEntryError" class="im-entry-err" data-im="tasks-entry-error" aria-hidden="true">!</span>
+            </button>
           </div>
 
           <ExecutionRecordPanel
@@ -434,9 +522,12 @@ const boardSize = computed(() => {
                 </template>
                 <template #toolbar>
                   <BoardToolbar
+                    ref="toolbarRef"
                     floating
+                    :inert="boardReadOnly || undefined"
                     :bookmarks-open="bookmarksOpen"
                     @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
+                    @panel-open="onSubmitPanelOpen"
                   />
                 </template>
                 <template #extra-panel="{ id }">
@@ -455,19 +546,34 @@ const boardSize = computed(() => {
 
           <!-- 新链有 IntentView 时由 IntentLayer 接管；旧托盘只服务于旧链兼容记录。 -->
 
+          <!-- #20：首次读取失败（没有上次成功数据）：整页明确失败，给「重试」「返回对话」。 -->
+          <div
+            v-if="boardFirstLoadFailed"
+            class="im-load-failed"
+            data-im="board-load-failed"
+            role="alert"
+          >
+            <p class="im-load-failed-title serif">板面没有读取出来</p>
+            <p class="im-load-failed-text">首次读取失败：这不代表板面是空的。失败期间不会对旧板面发起编辑或提交。</p>
+            <div class="im-load-failed-actions">
+              <button class="im-chip" type="button" data-im="board-load-retry" :disabled="boardRetrying" @click="retryBoardLoad">
+                {{ boardRetrying ? "重试中…" : "重试" }}
+              </button>
+              <button class="im-chip" type="button" data-im="board-load-back" @click="backToConversation">返回对话</button>
+            </div>
+          </div>
+
           <!-- 页面级说明：多个失败可能同时成立，这里纵向堆叠，不能互相遮挡 / 抢点击。 -->
           <div class="im-notices" data-im="board-notices">
-            <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
-              板面读取失败：{{ store.loadError }}
-              <button class="im-link" type="button" data-im="board-retry" @click="store.load()">重试</button>
-            </p>
-            <!-- F06：意图读取失败保留旧内容 + 明确区分「更新失败」与「从来没读到过」 -->
-            <p v-if="intentReadFailed" class="im-notice warn" role="alert" data-im="intent-read-error">
-              {{ intentReadErrorText }}
-              <button class="im-link" type="button" data-im="intent-read-retry" :disabled="intentReadBusy" @click="retryIntentRead">
-                {{ intentReadBusy ? "读取中…" : "重试读取" }}
+            <!-- #20：有上次成功数据 → 只读展示 + 重试；失败期间编辑与提交被停用。 -->
+            <p v-if="boardReadOnly" class="im-notice err" role="alert" data-im="load-error">
+              板面读取失败，当前只读展示上次成功读取的内容{{ boardBlockedReason ? "（" + boardBlockedReason + "）" : "" }}
+              <button class="im-link" type="button" data-im="board-retry" :disabled="boardRetrying" @click="retryBoardLoad">
+                {{ boardRetrying ? "重试中…" : "重试" }}
               </button>
             </p>
+            <!-- F06 / #07：意图读取失败保留旧内容；同一次失败只在任务入口 + 任务面板各出现一次，
+                 这里不再重复一条横幅（重试入口在任务面板内）。 -->
             <p v-if="recoveryReadError" class="im-notice warn" role="status" data-im="recovery-read-error">
               恢复事项读取失败：{{ recoveryReadError }}（这不代表没有事项）
               <button class="im-link" type="button" data-im="recovery-retry" :disabled="recoveryReadBusy" @click="retryRecoveryRead">
@@ -512,7 +618,8 @@ const boardSize = computed(() => {
   transform: translateX(-50%);
   /* 浮在板面卡片工具栏之上；审批对话框仍由统一层/Teleport 处理。 */
   z-index: calc(var(--im-z-dialog) + 20);
-  width: min(calc(100% - 24px), 980px);
+  /* #88：宽窗给输入区与模式入口更多横向空间；实际切换仍按组件实测宽度。 */
+  width: min(calc(100% - 24px), 1180px);
   min-width: 0;
   pointer-events: none;
 }
@@ -611,6 +718,42 @@ const boardSize = computed(() => {
   flex: none;
   padding-bottom: 8px;
 }
+/* #07：任务入口的读取失败标记（只加一个小点，不改按钮宽度与排列）。 */
+.im-entry-err {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: var(--bg-base);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* #20：首次读取失败的整页提示（居中浮层，不遮住任务入口与聊天输入）。 */
+.im-load-failed {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: calc(var(--im-z-dialog) + 5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  width: min(420px, calc(100% - 32px));
+  padding: var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--qio-ui-radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
+  pointer-events: auto;
+}
+.im-load-failed-title { margin: 0; font-size: var(--fs-base); color: var(--text-strong); }
+.im-load-failed-text { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.7; }
+.im-load-failed-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 @media (max-width: 700px) {
   .im-mode-switch { padding-bottom: 6px; }
 }

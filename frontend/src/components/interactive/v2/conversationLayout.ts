@@ -42,7 +42,8 @@ function positive(value: unknown, fallback: number): number {
  * - 回复进行中：说明回复没有被收起打断；
  * - 有排队：给出真实条数；
  * - 有草稿：草稿仍保留（收起不等于清空）；
- * - 都没有：安静的一句「点开继续对话」。
+ * - 都没有：不写任何提示句（展开入口本身只写「展开对话」，不再加「点开继续对话」
+ *   和展开方向说明；没有真实状态时保持安静，不编造未读）。
  */
 export function conversationStatusText(input: {
   turnRunning?: boolean;
@@ -53,7 +54,7 @@ export function conversationStatusText(input: {
   if (input.turnRunning) return queued > 0 ? `正在回复 · 已排队 ${queued} 条` : "正在回复…";
   if (queued > 0) return `已排队 ${queued} 条`;
   if (input.hasDraft) return "草稿已保留";
-  return "点开继续对话";
+  return "";
 }
 
 /** 发送用的互动绑定（可信 props 投影）：只保留会话层认识的字段，绝不拼进用户原文。 */
@@ -91,6 +92,22 @@ export function conversationBindingForSend(
 
 function cleanId(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * 输入区模式入口的布局（#88）：按对话区**实际可用宽度**提前切换，而不是看视口宽度。
+ *
+ * inline  = 模式入口在输入框左侧的第一列：输入列（≤860）+ 两侧模式入口（约 92px）
+ *           + 列间距都放得下时才用；stacked = 模式入口移到输入框上方、与输入框同一条
+ *           860 列，圆点永远不会被侧列裁掉。
+ * jsdom / 首帧量不到宽度（0）时返回 stacked：先保证入口完整可见，量到真实宽度后重算。
+ */
+export const CONVERSATION_INLINE_MIN_WIDTH = 1108;
+
+export function conversationComposerLayout(availableWidth: number): "inline" | "stacked" {
+  const width = Number(availableWidth);
+  if (!Number.isFinite(width) || width <= 0) return "stacked";
+  return width >= CONVERSATION_INLINE_MIN_WIDTH ? "inline" : "stacked";
 }
 
 /** 读取本机保存的面板高度（损坏 / 越界一律忽略，返回 null 让调用方用默认值）。 */

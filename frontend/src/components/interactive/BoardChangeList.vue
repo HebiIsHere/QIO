@@ -29,12 +29,31 @@ const props = withDefaults(
 );
 
 const summary = computed(() => summarizeChanges(props.expressions));
+
+/** 文案 2：标题统一用「本次改动 · N 项」。 */
+const heading = computed(() => "本次改动 · " + summary.value.total + " 项");
+
+/**
+ * 文案 2：每行只出现一次改动类别。
+ * 服务端 summary 有时会在正文里再重复一次类别名（如「新增关系：…」），
+ * 行首已经用类别标签说了一次，这里只保留后面的具体内容。
+ */
+function rowSummary(expression: Expression): string {
+  const label = changeKindLabel(expression.kind);
+  const text = String(expression.summary ?? "").trim();
+  if (!text) return label;
+  if (text.startsWith(label)) {
+    const rest = text.slice(label.length).replace(/^[：:\s·\-—]+/, "").trim();
+    return rest || label;
+  }
+  return text;
+}
 </script>
 
 <template>
   <section class="changes" aria-label="本次有效改动" data-qio-fit>
     <header class="changes-head">
-      <h3 class="changes-title">{{ title }}</h3>
+      <h3 class="changes-title">{{ heading }}</h3>
       <p class="changes-headline" data-im="change-summary">{{ summary.headline }}</p>
     </header>
     <ul
@@ -51,8 +70,8 @@ const summary = computed(() => summarizeChanges(props.expressions));
         :data-change-kind="item.kind"
         :data-intent-bearing="item.intentBearing ? 'true' : 'false'"
       >
-        <span class="change-kind">{{ changeKindLabel(item.kind) }}</span>
-        <span class="change-summary">{{ item.summary }}</span>
+        <span class="change-kind" data-im="change-kind">{{ changeKindLabel(item.kind) }}</span>
+        <span class="change-summary">{{ rowSummary(item) }}</span>
         <span class="change-bearing" :class="{ faint: !item.intentBearing }">
           {{ changeBearingText(item) }}
         </span>
