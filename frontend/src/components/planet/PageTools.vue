@@ -6,7 +6,7 @@
  * 「管理」按钮上的数量角标必须来自真实未处理数（父级从 B 的 planetPending store 读），
  * 没有未处理事项就完全不出现角标（不摆一个 0 当装饰）。
  */
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import QIcon from "../ui/QIcon.vue";
 import QIconButton from "../ui/QIconButton.vue";
 
@@ -21,6 +21,13 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ search: []; "toggle-manage": [] }>();
 
+/** 真实搜索入口按钮：Esc 退出搜索后由 PlanetView 把焦点交回这里（不伪造焦点） */
+const searchRef = ref<{ $el?: HTMLButtonElement } | null>(null);
+function focusSearch(): void {
+  searchRef.value?.$el?.focus?.();
+}
+defineExpose({ focusSearch });
+
 const showBadge = computed(() => props.pendingCount > 0);
 const badgeText = computed(() => (props.pendingCount > 99 ? "99+" : String(props.pendingCount)));
 const manageLabel = computed(() =>
@@ -30,10 +37,11 @@ const manageLabel = computed(() =>
 
 <template>
   <div class="page-tools qio-glass" role="group" aria-label="页面工具">
+    <!-- 悬停只说「全局搜索」；搜索范围只留在输入框 placeholder，不在这里重复 -->
     <QIconButton
+      ref="searchRef"
       icon="search"
-      label="搜索话题、知识、实体"
-      description="在话题、知识、实体里一起搜索"
+      label="全局搜索"
       size="sm"
       data-mp-search-open
       @click="emit('search')"

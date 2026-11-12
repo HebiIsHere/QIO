@@ -60,7 +60,36 @@ const searchStub = defineComponent({
   setup: () => () => null,
 });
 
-function mountArea(props: Record<string, unknown> = {}) {
+/**
+ * 知识面板替身（带跨分支接口）：hasUnsavedDraft / requestOpenKnowledge 由 knowledge 分支
+ * 用 defineExpose 提供；管理区把它们写成可选调用，这里替身用于验证接线顺序。
+ */
+const knowledgeApi = {
+  hasUnsavedDraft: vi.fn((): boolean => false),
+  requestOpenKnowledge: vi.fn(async (_id: string): Promise<boolean> => true),
+};
+const knowledgeApiStub = defineComponent({
+  name: "KnowledgePanel",
+  props: { focusId: { type: String, default: null } },
+  emits: ["focus-topic", "changed"],
+  setup(_props, { expose }) {
+    expose({
+      hasUnsavedDraft: () => knowledgeApi.hasUnsavedDraft(),
+      requestOpenKnowledge: (id: string) => knowledgeApi.requestOpenKnowledge(id),
+    });
+    return () => null;
+  },
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+function mountArea(props: Record<string, unknown> = {}, stubOverrides: Record<string, unknown> = {}) {
   const pinia = createPinia();
   setActivePinia(pinia);
   return mount(ManagementArea, {
@@ -73,6 +102,7 @@ function mountArea(props: Record<string, unknown> = {}) {
         PendingItems: pendingStub,
         MaintenanceRecords: recordsStub,
         GlobalSearchPanel: searchStub,
+        ...stubOverrides,
       },
     },
   });
@@ -81,6 +111,8 @@ function mountArea(props: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   knowledgeMounts.length = 0;
+  knowledgeApi.hasUnsavedDraft.mockReset().mockReturnValue(false);
+  knowledgeApi.requestOpenKnowledge.mockReset().mockResolvedValue(true);
   mocks.apiMock.listTopics.mockResolvedValue({ topics: [] });
   mocks.apiMock.listMemoryPending.mockResolvedValue({ items: [], total: 3, truncated: false, maintenance_available: true });
 });
@@ -232,5 +264,110 @@ describe("管理区：外部落点（深链 / 记忆提醒）", () => {
     await flushPromises();
     expect(w.attributes("data-view")).toBe("tabs");
     expect(w.attributes("data-tab")).toBe("memory");
+  });
+});
+
+/**
+ * #29 搜索/记忆页 → 知识条目的统一离开检查接线。
+ *
+ * 有未保存草稿时管理区**不直接**改 focusId（那会绕过面板的确认层），
+ * 而是先切到知识标签页、等一帧，再把目标交给面板自己处理。
+ */
+describe("管理区：知识条目打开前的离开检查（#29 接线）", () => {
+  const HIT = { kind: "knowledge", id: "k1", title: "知识", note: "" };
+
+  async function mountWithKnowledgeMounted(dirty: boolean) {
+    knowledgeApi.hasUnsavedDraft.mockReturnValue(dirty);
+    const w = mountArea({}, { KnowledgePanel: knowledgeApiStub });
+    await flushPromises();
+    // 先激活知识标签页让面板挂载（之后 v-show 保活）
+    await w.find('[data-mp-tab="knowledge"]').trigger("click");
+    await flushPromises();
+    await w.setProps({ searchTicket: 1 });
+    await flushPromises();
+    expect(w.attributes("data-view")).toBe("search");
+    return w;
+  }
+
+  it("有草稿：先切到知识标签页，再委托面板 requestOpenKnowledge（不直接改 focusId）", async () => {
+    const w = await mountWithKnowledgeMounted(true);
+    w.findComponent(searchStub).vm.$emit("open", HIT);
+    await flushPromises();
+
+    expect(knowledgeApi.hasUnsavedDraft).toHaveBeenCalled();
+    expect(knowledgeApi.requestOpenKnowledge).toHaveBeenCalledWith("k1");
+    expect(w.attributes("data-view")).toBe("tabs");
+    expect(w.attributes("data-tab")).toBe("knowledge");
+    // 面板内部完成跳转；管理区不补一次 focusId 定位（否则会绕过确认层）
+    expect(w.findComponent(knowledgeApiStub).props("focusId")).toBeNull();
+  });
+
+  it("面板返回 false（继续编辑 / 保存失败）：什么都不做，不补跳旧目标", async () => {
+    knowledgeApi.requestOpenKnowledge.mockResolvedValue(false);
+    const w = await mountWithKnowledgeMounted(true);
+    w.findComponent(searchStub).vm.$emit("open", HIT);
+    await flushPromises();
+
+    expect(knowledgeApi.requestOpenKnowledge).toHaveBeenCalledWith("k1");
+    expect(w.findComponent(knowledgeApiStub).props("focusId")).toBeNull();
+    expect(w.attributes("data-tab")).toBe("knowledge");
+  });
+
+  it("确认期间再点另一个知识目标：只转发两次，旧 Promise 返回后不补跳", async () => {
+    const first = deferred<boolean>();
+    knowledgeApi.requestOpenKnowledge.mockImplementationOnce(() => first.promise).mockResolvedValueOnce(true);
+    const w = await mountWithKnowledgeMounted(true);
+
+    w.findComponent(searchStub).vm.$emit("open", { ...HIT, id: "k1" });
+    await flushPromises();
+    w.findComponent(searchStub).vm.$emit("open", { ...HIT, id: "k2" });
+    await flushPromises();
+
+    expect(knowledgeApi.requestOpenKnowledge).toHaveBeenNthCalledWith(1, "k1");
+    expect(knowledgeApi.requestOpenKnowledge).toHaveBeenNthCalledWith(2, "k2");
+    // 旧确认（k1）此刻才返回 false：管理区不能据此再补一次旧目标
+    first.resolve(false);
+    await flushPromises();
+    expect(w.findComponent(knowledgeApiStub).props("focusId")).toBeNull();
+    expect(knowledgeApi.requestOpenKnowledge).toHaveBeenCalledTimes(2);
+  });
+
+  it("无草稿：直接走 focusKnowledge（focusId 定位真实条目）", async () => {
+    const w = await mountWithKnowledgeMounted(false);
+    w.findComponent(searchStub).vm.$emit("open", HIT);
+    await flushPromises();
+
+    expect(knowledgeApi.hasUnsavedDraft).toHaveBeenCalled();
+    expect(knowledgeApi.requestOpenKnowledge).not.toHaveBeenCalled();
+    expect(w.findComponent(knowledgeApiStub).props("focusId")).toBe("k1");
+  });
+
+  it("面板未挂载：走 focusKnowledge（挂载后带 focusId 定位）", async () => {
+    const w = mountArea({ searchTicket: 1 }, { KnowledgePanel: knowledgeApiStub });
+    await flushPromises();
+    expect(w.findComponent(knowledgeApiStub).exists()).toBe(false);
+
+    w.findComponent(searchStub).vm.$emit("open", HIT);
+    await flushPromises();
+
+    expect(knowledgeApi.hasUnsavedDraft).not.toHaveBeenCalled();
+    expect(knowledgeApi.requestOpenKnowledge).not.toHaveBeenCalled();
+    expect(w.findComponent(knowledgeApiStub).props("focusId")).toBe("k1");
+  });
+
+  it("记忆页关联知识链接走同一离开检查", async () => {
+    knowledgeApi.hasUnsavedDraft.mockReturnValue(true);
+    const w = mountArea({}, { KnowledgePanel: knowledgeApiStub });
+    await flushPromises();
+    await w.find('[data-mp-tab="knowledge"]').trigger("click");
+    await flushPromises();
+    await w.find('[data-mp-tab="memory"]').trigger("click");
+    await flushPromises();
+
+    w.findComponent({ name: "MemoryTab" }).vm.$emit("focus-knowledge", "kn_1");
+    await flushPromises();
+
+    expect(knowledgeApi.requestOpenKnowledge).toHaveBeenCalledWith("kn_1");
+    expect(w.attributes("data-tab")).toBe("knowledge");
   });
 });
