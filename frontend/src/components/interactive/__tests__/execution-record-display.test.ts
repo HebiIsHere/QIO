@@ -34,14 +34,16 @@ describe("操作与状态的可读名称", () => {
     expect(actionLabel("move_card")).toBe("移动卡片");
   });
 
-  it("未知 / 缺失 / 非字符串的操作值给可读回退，不编造也不出现 [object Object]", () => {
-    expect(actionLabel("legacy_weird")).toBe("未登记操作（legacy_weird）");
+  it("未知 / 缺失 / 非字符串的操作值只给纯可读回退，原始枚举/ID 只进诊断", () => {
+    const unknown = actionLabel("legacy_weird");
+    expect(unknown).toBe("其他操作");
+    expect(unknown).not.toContain("legacy_weird");
     expect(actionLabel("")).toBe("操作未记录");
     expect(actionLabel(undefined)).toBe("操作未记录");
     expect(actionLabel(null)).toBe("操作未记录");
-    const fromObject = actionLabel({ name: "未知动作" });
-    expect(fromObject).not.toContain("[object Object]");
-    expect(fromObject).toContain("未知动作");
+    expect(actionLabel({ name: "未知动作" })).toBe("其他操作");
+    // 原始内部枚举 / ID 绝不内嵌在主文本里，只能在诊断 JSON 里查到。
+    expect(diagnosticJson({ action: "legacy_weird" })).toContain("legacy_weird");
   });
 
   it("账本操作状态映射成中文；未知回退原文，缺失不冒充状态", () => {
@@ -50,7 +52,8 @@ describe("操作与状态的可读名称", () => {
     expect(operationStatusLabel("pending")).toBe("未开始");
     expect(operationStatusLabel("failed")).toBe("失败");
     expect(operationStatusLabel("conflict")).toBe("冲突");
-    expect(operationStatusLabel("weird_status")).toBe("未登记状态（weird_status）");
+    expect(operationStatusLabel("weird_status")).toBe("状态未记录");
+    expect(operationStatusLabel("weird_status")).not.toContain("weird_status");
     expect(operationStatusLabel("")).toBe("状态未记录");
   });
 
@@ -60,7 +63,8 @@ describe("操作与状态的可读名称", () => {
     expect(retryStatusLabel("stopped")).toBe("重试已停止");
     expect(retryStatusLabel("exhausted")).toBe("重试次数已用尽");
     expect(retryStatusLabel("completed")).toBe("重试已完成");
-    expect(retryStatusLabel("odd")).toBe("未登记重试状态（odd）");
+    expect(retryStatusLabel("odd")).toBe("重试状态未记录");
+    expect(retryStatusLabel("odd")).not.toContain("odd");
     expect(retryStatusLabel("")).toBe("重试状态未记录");
   });
 
@@ -68,7 +72,8 @@ describe("操作与状态的可读名称", () => {
     expect(resultKindLabel("reply")).toBe("回复卡片");
     expect(resultKindLabel("text")).toBe("文字卡片");
     expect(resultKindLabel("file")).toBe("文件卡片");
-    expect(resultKindLabel("mystery")).toBe("未登记类型（mystery）");
+    expect(resultKindLabel("mystery")).toBe("其他类型");
+    expect(resultKindLabel("mystery")).not.toContain("mystery");
     expect(resultKindLabel("")).toBe("结果");
   });
 });
@@ -90,7 +95,8 @@ describe("确认材料的可读摘要", () => {
     expect(basisRoleLabel("source")).toBe("来源");
     expect(basisRoleLabel("target")).toBe("目标");
     expect(basisRoleLabel("context")).toBe("上下文");
-    expect(basisRoleLabel("other")).toBe("未登记用途（other）");
+    expect(basisRoleLabel("other")).toBe("其他用途");
+    expect(basisRoleLabel("other")).not.toContain("other");
     expect(basisSummaryLine([])).toBe("没有记录确认材料。");
     expect(basisSummaryLine(undefined)).toBe("没有记录确认材料。");
   });
@@ -169,8 +175,14 @@ describe("授权范围的可读摘要", () => {
     expect(valueOf(lines, "互斥")).toBe("0 项");
     const text = lines.map((line) => line.value).join(" ");
     expect(text).not.toContain("[object Object]");
-    expect(authorizationLines({ confirmed_by: { robot: true } }).map((line) => line.value).join(" "))
-      .not.toContain("[object Object]");
+    const unknownAuth = authorizationLines({ confirmed_by: { robot: true }, source: "mystery_source" });
+    const unknownText = unknownAuth.map((line) => line.value).join(" ");
+    expect(unknownText).not.toContain("[object Object]");
+    expect(unknownText).not.toContain("robot");
+    expect(unknownText).not.toContain("mystery_source");
+    expect(unknownText).toContain("其他确认方式");
+    expect(unknownText).toContain("其他来源");
+    expect(diagnosticJson({ confirmed_by: "机器人", source: "mystery_source" })).toContain("mystery_source");
     expect(authorizationLines(undefined)).toEqual([{ label: "授权快照", value: "未记录" }]);
     // 原始授权结构（含 scope.allowed_actions）只在诊断 JSON 里。
     expect(diagnosticJson({ version: 3, scope })).toContain("allowed_actions");
@@ -212,6 +224,11 @@ describe("结果正文的对象值", () => {
     for (const value of values) {
       expect(readableValue(value)).not.toContain("[object Object]");
     }
+    // 结构数据只给可读摘要；原始 JSON / ID 不内嵌进主文本。
+    expect(readableValue({ nested: { deep: [1, 2] } })).toBe("结构化数据（1 个字段）");
+    expect(readableValue([1, 2, 3])).toBe("共 3 项");
+    expect(readableValue({ title: { weird: true } })).toBe("结构化数据（1 个字段）");
+    expect(readableValue(Object.create(null))).toBe("结构化数据");
     expect(readableValue(undefined)).toBe("");
     expect(readableValue("文字")).toBe("文字");
   });

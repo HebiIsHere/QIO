@@ -95,9 +95,14 @@ const AUTHORIZATION_SOURCE_LABELS: Readonly<Record<string, string>> = {
 const SUMMARY_KEYS = ["title", "name", "label", "summary", "text", "content"] as const;
 const BODY_KEYS = ["text", "content", "summary", "body", "description"] as const;
 
-function rawText(value: unknown): string {
-  if (typeof value === "string") return value.trim();
-  return readableValue(value).trim();
+/** 只把字符串当作内部枚举键；非字符串一律按「未登记」处理（不把对象内容当枚举）。 */
+function enumKey(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** 缺失（null / undefined / 空白字符串）与「有值但未登记」是两种诚实口径。 */
+function isMissingValue(value: unknown): boolean {
+  return value === null || value === undefined || (typeof value === "string" && !value.trim());
 }
 
 /**
@@ -122,50 +127,49 @@ export function readableValue(value: unknown): string {
     const candidate = record[key];
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
-  try {
-    const json = JSON.stringify(value);
-    if (typeof json === "string" && json && json !== "{}") {
-      return json.length > 200 ? json.slice(0, 200) + "…" : json;
-    }
-  } catch {
-    // 循环引用等：下面给可读回退，绝不把对象直接插值。
-  }
-  return "结构化数据";
+  // 结构数据不内嵌进主文本（原始结构只进诊断）：给可读摘要，绝不 [object Object]。
+  const fields = Object.keys(record).length;
+  return fields ? "结构化数据（" + fields + " 个字段）" : "结构化数据";
 }
 
 /** 操作名：内部枚举 → 中文；未登记保留原文；缺失说「操作未记录」。 */
 export function actionLabel(action: unknown): string {
-  const raw = rawText(action);
-  if (!raw) return "操作未记录";
-  return ACTION_LABELS[raw] ?? "未登记操作（" + raw + "）";
+  if (isMissingValue(action)) return "操作未记录";
+  const raw = enumKey(action);
+  if (!raw) return "其他操作";
+  return ACTION_LABELS[raw] ?? "其他操作";
 }
 
 /** 账本操作状态：内部枚举 → 中文；未登记保留原文；缺失不冒充状态。 */
 export function operationStatusLabel(status: unknown): string {
-  const raw = rawText(status);
+  if (isMissingValue(status)) return "状态未记录";
+  const raw = enumKey(status);
   if (!raw) return "状态未记录";
-  return OPERATION_STATUS_LABELS[raw] ?? "未登记状态（" + raw + "）";
+  return OPERATION_STATUS_LABELS[raw] ?? "状态未记录";
 }
 
 /** 重试系列状态 → 中文；未登记保留原文。 */
 export function retryStatusLabel(status: unknown): string {
-  const raw = rawText(status);
+  if (isMissingValue(status)) return "重试状态未记录";
+  const raw = enumKey(status);
   if (!raw) return "重试状态未记录";
-  return RETRY_STATUS_LABELS[raw] ?? "未登记重试状态（" + raw + "）";
+  return RETRY_STATUS_LABELS[raw] ?? "重试状态未记录";
 }
 
 /** 确认材料用途 → 中文；未登记保留原文。 */
 export function basisRoleLabel(role: unknown): string {
-  const raw = rawText(role);
-  if (!raw) return "用途未记录";
-  return BASIS_ROLE_LABELS[raw] ?? "未登记用途（" + raw + "）";
+  if (isMissingValue(role)) return "用途未记录";
+  const raw = enumKey(role);
+  if (!raw) return "其他用途";
+  return BASIS_ROLE_LABELS[raw] ?? "其他用途";
 }
 
 /** 结果卡类型 → 中文；未登记保留原文。 */
 export function resultKindLabel(kind: unknown): string {
-  const raw = rawText(kind);
-  if (!raw) return "结果";
-  return RESULT_KIND_LABELS[raw] ?? "未登记类型（" + raw + "）";
+  if (isMissingValue(kind)) return "结果";
+  const raw = enumKey(kind);
+  if (!raw) return "其他类型";
+  return RESULT_KIND_LABELS[raw] ?? "其他类型";
 }
 
 /**
@@ -259,20 +263,24 @@ export function authorizationLines(authorization: unknown): ReadableLine[] {
     lines.push({ label: "授权版本", value: readableValue(record.version) || "未记录" });
   }
   if ("confirmed_by" in record) {
-    const raw = rawText(record.confirmed_by);
+    const raw = enumKey(record.confirmed_by);
     lines.push({
       label: "确认方式",
-      value: raw ? CONFIRMED_BY_LABELS[raw] ?? raw : "未记录",
+      value: isMissingValue(record.confirmed_by)
+        ? "未记录"
+        : CONFIRMED_BY_LABELS[raw] ?? "其他确认方式",
     });
   }
   if ("confirmed_at" in record) {
     lines.push({ label: "确认时间", value: readableValue(record.confirmed_at) || "未记录" });
   }
   if ("source" in record) {
-    const raw = rawText(record.source);
+    const raw = enumKey(record.source);
     lines.push({
       label: "授权来源",
-      value: raw ? AUTHORIZATION_SOURCE_LABELS[raw] ?? raw : "未记录",
+      value: isMissingValue(record.source)
+        ? "未记录"
+        : AUTHORIZATION_SOURCE_LABELS[raw] ?? "其他来源",
     });
   }
   if (Array.isArray(record.depends_on)) {
