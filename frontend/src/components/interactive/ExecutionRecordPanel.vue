@@ -446,6 +446,8 @@ onBeforeUnmount(() => {
       <h2>执行记录</h2>
       <button class="erp-close" type="button" data-im="execution-record-close" aria-label="关闭执行记录" @click="requestClose">×</button>
     </header>
+    <!-- #91：标题栏与关闭按钮留在顶部，只有这段正文滚动（见样式 .erp / .erp-body）。 -->
+    <div class="erp-body" data-im="execution-record-body">
     <p class="erp-title">{{ readableValue(intent.title) }}</p>
     <p class="erp-status" :data-status="intent.status" data-im="execution-record-status">状态：{{ intentStatusText }}</p>
     <p v-if="intent.goal" class="erp-line"><strong>目标：</strong>{{ readableValue(intent.goal) }}</p>
@@ -535,6 +537,7 @@ onBeforeUnmount(() => {
         <dt>重试原文</dt><dd><pre>{{ diagnosticJson(retry) }}</pre></dd>
       </dl>
     </details>
+    </div>
   </section>
 </template>
 
@@ -549,12 +552,19 @@ onBeforeUnmount(() => {
   z-index: calc(var(--im-z-dialog) + 24);
   background: transparent;
 }
+/*
+  #91：浮层本身不滚动。标题栏（含关闭按钮）固定在顶部，标题下面的正文
+  在自己的滚动容器里 —— 滚到记录底部时关闭按钮仍在原处可点。
+*/
 .erp {
   position: absolute;
   inset: 5% 10%;
   z-index: calc(var(--im-z-dialog) + 25);
-  overflow: auto;
-  padding: var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
@@ -563,11 +573,24 @@ onBeforeUnmount(() => {
   font-family: var(--sans);
 }
 .erp:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* 固定的标题栏：flex-shrink:0，不参与正文滚动 */
 .erp-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-5) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+/* 唯一滚动容器：正文可以很长，但标题栏不跟着走 */
+.erp-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--sp-5) var(--sp-5);
 }
 .erp-head h2 { margin: 0; font-family: var(--serif); font-size: var(--fs-lg); }
 .erp-close {
@@ -629,6 +652,8 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
 }
 @media (max-width: 720px) {
-  .erp { inset: 3% 3%; padding: var(--sp-3); }
+  .erp { inset: 3% 3%; }
+  .erp-head { padding: var(--sp-3) var(--sp-3) var(--sp-2); }
+  .erp-body { padding: 0 var(--sp-3) var(--sp-3); }
 }
 </style>
