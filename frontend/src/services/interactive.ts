@@ -16,6 +16,7 @@ import type {
   Intent,
   IntentListResponse,
   IntentPreview,
+  PendingSubmissionChanges,
   SubmissionResult,
   UnderstandingResponse,
   VisibleRange,
@@ -134,6 +135,8 @@ export interface SaveBoardStateResult {
   state: BoardState;
   /** 保存时真实暂停的任务（旧链，可选） */
   materialImpact?: { paused?: Intent[] };
+  /** 保存后服务端重算的「未提交的有效改动」（相对上次成功提交基准） */
+  pending?: PendingSubmissionChanges;
 }
 
 export function saveBoardState(

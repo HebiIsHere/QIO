@@ -349,6 +349,33 @@ describe("#44-46 批次导入数据层", () => {
     expect(retried.items[5].status).toBe("pending");
   });
 
+  it("批次汇总计数：已接收 / 失败 / 未接收 / 进行中可直接显示（跨路由恢复入口用）", () => {
+    const store = useInteractiveStore();
+    const batch = store.beginImportBatch(
+      Array.from({ length: 6 }, (_, index) => ({ name: "文件" + index + ".txt" })),
+    );
+    store.noteImportItem(batch.id, batch.items[0].key, { status: "succeeded", attachmentId: "att_0" });
+    store.noteImportItem(batch.id, batch.items[1].key, { status: "failed", error: "第一份失败" });
+    store.markImportItemUploading(batch.id, batch.items[2].key);
+    expect(store.currentImportBatchCounts).toEqual({
+      total: 6,
+      received: 1,
+      failed: 1,
+      unreceived: 1,
+      pending: 2,
+      uploading: 1,
+    });
+    expect(store.hasImportBatchInFlight).toBe(true);
+    // 全部落定后没有在途项（UI 可以收起进度、只显示明细）
+    for (const item of store.importBatchById(batch.id)!.items) {
+      if (item.status === "pending" || item.status === "uploading") {
+        store.noteImportItem(batch.id, item.key, { status: "failed", error: "取消" });
+      }
+    }
+    expect(store.hasImportBatchInFlight).toBe(false);
+    expect(store.currentImportBatchCounts.received).toBe(1);
+  });
+
   it("迟到回执不关联已删除/被替换的文件卡", async () => {
     const store = useInteractiveStore();
     await store.load();

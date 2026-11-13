@@ -244,6 +244,18 @@ export interface AcceptanceLookup {
   replayed?: boolean;
 }
 
+/**
+ * 未提交的有效改动（服务端在每次保存后重算；不调用 QIO）。
+ * `baselineSeq` = 这次求差所依据的「上次成功提交」版本；与当前 baseline 一致才可信。
+ */
+export interface PendingSubmissionChanges {
+  baselineSeq: number | null;
+  expressions: Expression[];
+  updatedAt: string | null;
+  /** 服务端重算失败时的如实原因（此时 expressions 为空，不代表没有改动） */
+  error?: string;
+}
+
 export interface BoardStateResponse {
   board: { id: string; title: string };
   state: BoardState;
@@ -259,7 +271,7 @@ export interface BoardStateResponse {
     keyVersions?: Record<string, number>;
   };
   /** 未提交的有效改动（服务端每次保存后重算；它不进 QIO） */
-  pending?: Expression[];
+  pending?: PendingSubmissionChanges;
   /** 本次互动材料的范围（服务端以已保存状态推导） */
   visibleRange?: VisibleRange;
 }

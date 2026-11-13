@@ -71,3 +71,23 @@ npx vue-tsc --noEmit
 3. **#03/#20/#41 的界面呈现**在 i-layout；store 只保证数据与门禁。若 UI 仍自行拼状态会与主状态不一致。
 4. **#27 「真实变更事实」**依赖 i-submit/i-material 的 `authorization_changes` 字段落地；store 原样透传，不做裁剪。
 5. 本分支未改后端、未改 docs/依赖/锁文件、未 push。
+
+---
+
+## 第三轮（合并父分支 + #80 重复提交 + ImportBatch 复核）
+
+- **合并父分支**：`git merge fix/pm-qio032-interactive` → fast-forward 到 `9f80b0cf`（并入 Lead 对 store #13 空提交门的调整与 E2E 台账/脚本）；工作区提交前确认无大规模 D。
+- **#80 已修复（前端数据层）**：
+  - 新增 `submissionBaseline`（服务端上次成功提交摘要）、`pendingSubmissionChanges`（服务端重算的未提交改动）、`acceptedBaseline`（按板面本机持久化的「上次成功受理 after 快照」）。
+  - `submit()` 在「已成功受理 && 相对上次成功提交基准没有有效改动」时**不发 POST**：`submitStatus="duplicate"`、`roundStatusLabel="已提交过"`、`submitNote` 说明「已提交过：这次内容与上次成功提交相同…」；原 `lastSubmission` 不被覆盖，`latestAcceptedSubmission` 供「查看原进度」。
+  - 判据只用精确事实（三选一）：① 会话内成功回执的 `after` 快照；② 刷新后本机记住、且仍是服务器最新成功提交的 `after` 快照；③ 服务端刚按当前基准算出的 `pending`（`baselineSeq === baseline.seq`）。证明不了就正常提交，不用时间/近似判断。
+  - 有真实改动正常提交；上次 failed / unknown 不判重复（允许重试）；待提升草稿视为真实改动。
+  - `replayed=true` 回执按原记录处理：`submitNote` 明确「原受理记录」、不重置理解状态为 accepted、不当成新的「已受理」。
+  - 服务端回执 empty / duplicate 时保留原受理记录（不被没有新工作的回执覆盖）。
+- **#44-46 ImportBatch 复核 + 小接口**：新增模块级纯函数 `importBatchCounts`（total/received/failed/unreceived/pending/uploading）、store `currentImportBatchCounts`、`hasImportBatchInFlight`、`markImportItemUploading`；#45「重试只重置对应项」语义不变并新增用例。
+- **定向测试**：
+  - 新增 `frontend/src/stores/__tests__/pm032-state-duplicate-submit.test.ts`（7 用例）：未改动 no POST + 已提交过 + 原记录、有改动正常、失败可重试、replayed 回执、刷新后本机快照判重、服务端 pending 判重、过期 pending 不据此判重。
+  - `pm032-state-contract.test.ts` +1（批次汇总计数）。
+  - `npx vitest run src/stores/__tests__/pm032-state-contract.test.ts src/stores/__tests__/pm032-state-duplicate-submit.test.ts` → **21/21 绿**；`npx vue-tsc --noEmit` → exit 0。
+- **新增接口**：`latestAcceptedSubmission`、`hasAcceptedSubmission`、`submissionBaseline`、`pendingSubmissionChanges`、`currentImportBatchCounts`、`hasImportBatchInFlight`、`markImportItemUploading`、`importBatchCounts()`（模块级）+ `ImportBatchCounts` 类型；`types.ts` 的 `pending` 修正为服务端真实形状 `PendingSubmissionChanges`（旧消费方读 `payload.pending.expressions` 仍兼容）。
+- **风险**：刷新后的重复识别依赖本机快照（localStorage 按板面）；本机存储不可用且服务端 pending 过期时退回服务端权威判定（不会误判重复，只会多一次服务端判定，服务端仍按 empty/duplicate 处理）。i-layout 的「已提交过 / 查看原进度」UI 已存在，store 状态现在能触发它。
