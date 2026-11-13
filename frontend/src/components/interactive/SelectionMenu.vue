@@ -31,7 +31,9 @@ import {
   removeCard,
   setGroupOrdered,
 } from "../../interactive/board";
-import type { BoardState } from "../../interactive/types";
+import type { BoardLink, BoardState } from "../../interactive/types";
+import { GROUP_ENDPOINT_PREFIX, endpointCardName } from "../../interactive/linkEndpoints";
+import QConfirm from "../ui/QConfirm.vue";
 // 整理菜单的列表滚动走统一策略：滚动能力保留，滚动条外观用 QIO 指示条（不占布局列）。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
@@ -242,19 +244,119 @@ function formGroup(): void {
   notice.value = "已把所选卡片分成一组：现在还是普通组，可以再设为有序。";
 }
 
-function joinSelected(event: Event): void {
-  const select = event.target as HTMLSelectElement;
-  const groupId = select.value;
-  select.value = "";
+/** 组名 / 成员摘要里的卡片短名（用于区分同名组）。 */
+function memberLabel(cardId: string): string {
+  const current = board.value;
+  const card = current ? cardById(current, cardId) : null;
+  if (!card) return "（已删除）";
+  const text = (card.content || String(card.meta?.name ?? card.meta?.title ?? "")).trim().split("\n")[0] ?? "";
+  return text ? (text.length > 8 ? text.slice(0, 8) + "…" : text) : "（未命名卡片）";
+}
+
+/**
+ * #62：加入组用 QIO 风格选择器（不是原生 select）。
+ * 每个选项显示组名 + 成员数 + 成员摘要；同名组靠成员数与摘要区分；
+ * 点击后按**真实组 ID** 加入（不按名字匹配）。
+ */
+const joinOpen = ref(false);
+const joinChoices = computed(() => {
+  const current = board.value;
+  if (!current) return [] as Array<{ id: string; name: string; ordered: boolean; memberCount: number; summary: string; sameName: boolean }>;
+  const nameCounts = new Map<string, number>();
+  for (const group of current.groups) {
+    if (group.deleted) continue;
+    nameCounts.set(group.name, (nameCounts.get(group.name) ?? 0) + 1);
+  }
+  return joinOptions.value.map((group) => {
+    const members = group.members.slice(0, 3).map(memberLabel).join("、");
+    const more = group.members.length > 3 ? " 等" : "";
+    return {
+      id: group.id,
+      name: group.name || "未命名组",
+      ordered: group.ordered,
+      memberCount: group.members.length,
+      summary: members + more,
+      sameName: (nameCounts.get(group.name) ?? 0) > 1,
+    };
+  });
+});
+
+function toggleJoinList(): void {
+  joinOpen.value = !joinOpen.value;
+}
+
+/** 按真实组 ID 加入（同名组也不会加错）。 */
+function joinGroupById(groupId: string): void {
   const current = board.value;
   if (!current || !groupId) return;
-  const target = joinOptions.value.find((group) => group.id === groupId) ?? board.value?.groups.find((group) => group.id === groupId);
+  joinOpen.value = false;
+  const target = current.groups.find((group) => group.id === groupId && !group.deleted);
+  if (!target) {
+    notice.value = "这个组已经不在了：没有加入任何组。";
+    return;
+  }
   let next = current;
   for (const cardId of selectedIds.value) next = joinGroup(next, cardId, groupId);
   store.commit(next, "把所选卡片加入组");
-  notice.value = target
-    ? "已加入「" + target.name + "」" + (target.ordered ? "：里面的顺序就是序号。" : "：普通组的摆放顺序不代表先后。")
-    : "已把所选卡片加入组。";
+  notice.value =
+    "已加入「" + target.name + "」" +
+    (target.ordered ? "：里面的顺序就是序号。" : "：普通组的摆放顺序不代表先后。");
+}
+
+/** #60：解除有组级连线的组之前，先列出受影响的关系并确认。 */
+const dissolveConfirmOpen = ref(false);
+const affectedGroupLinks = computed<BoardLink[]>(() => {
+  const current = board.value;
+  if (!current || !canDissolve.value) return [];
+  const groupValues = new Set(selectedGroups.value.map((group) => GROUP_ENDPOINT_PREFIX + group.id));
+  return current.links.filter(
+    (link) => !link.deleted && (groupValues.has(link.src) || groupValues.has(link.dst)),
+  );
+});
+
+function endpointName(raw: string): string {
+  const current = board.value;
+  if (!current) return "（端点）";
+  if (raw.startsWith(GROUP_ENDPOINT_PREFIX)) {
+    const group = current.groups.find(
+      (item) => item.id === raw.slice(GROUP_ENDPOINT_PREFIX.length) && !item.deleted,
+    );
+    return group ? "组「" + (group.name || "未命名组") + "」" : "（已删除的组）";
+  }
+  const card = cardById(current, raw);
+  if (!card || card.deleted) return "（已删除的卡片）";
+  return endpointCardName(card) || "（未命名卡片）";
+}
+
+function describeAffectedLink(link: BoardLink): string {
+  const meaning = link.meaning.trim() || (link.direction ? "有方向（含义待填写）" : "关联（含义待填写）");
+  return meaning + "：" + endpointName(link.src) + " ↔ " + endpointName(link.dst);
+}
+
+const dissolveConfirmDetail = computed(() => {
+  const links = affectedGroupLinks.value;
+  if (!links.length) return "";
+  return (
+    "解除这些组会连带移除 " +
+    links.length +
+    " 条组级关系：" +
+    links.map(describeAffectedLink).join("；") +
+    "。成员自己之间的线会保留；确认后仍可用撤销恢复组与这些组级关系。"
+  );
+});
+
+function requestDissolve(): void {
+  if (!canDissolve.value) return;
+  if (affectedGroupLinks.value.length) {
+    dissolveConfirmOpen.value = true;
+    return;
+  }
+  dissolveGroups();
+}
+
+function confirmDissolve(): void {
+  dissolveConfirmOpen.value = false;
+  dissolveGroups();
 }
 
 function leaveGroups(): void {
@@ -284,10 +386,15 @@ function leaveGroups(): void {
 function dissolveGroups(): void {
   const current = board.value;
   if (!current || !canDissolve.value) return;
+  // #60：先记下受影响关系数量（提交后组已不存在，computed 会变空）
+  const affected = affectedGroupLinks.value.length;
   let next = current;
   for (const group of selectedGroups.value) next = dissolveGroup(next, group.id);
+  // 一次提交里「解除组 + 移除组级关系」一起发生：撤销一次即同时恢复组与它的组级关系。
   store.commit(next, "解除组");
-  notice.value = "已解除所选卡片所在的组：成员恢复自由摆放，卡片本身不动。";
+  notice.value = affected
+    ? "已解除组：组级关系 " + affected + " 条已随组解除；成员之间的关系保留。可用撤销一并恢复。"
+    : "已解除所选卡片所在的组：成员恢复自由摆放，卡片本身不动。";
 }
 
 function setOrdered(ordered: boolean): void {
@@ -359,21 +466,44 @@ function deleteSelected(): void {
         <span class="hint">分成一个普通组，之后可以设为有序</span>
       </button>
 
-      <label v-if="canJoin" class="item select-item">
-        <span>加入组…</span>
-        <select data-im="group-join" aria-label="加入组" @change="joinSelected">
-          <option value="">选择一个组</option>
-          <option v-for="group in joinOptions" :key="group.id" :value="group.id">
-            {{ group.name }}{{ group.ordered ? "（有序）" : "" }}
-          </option>
-        </select>
-      </label>
+      <!-- #62：加入组用 QIO 风格选择器（组名 + 成员数 + 成员摘要；按真实组 ID 加入）。 -->
+      <div v-if="canJoin" class="item join-item">
+        <button
+          class="join-trigger"
+          type="button"
+          role="menuitem"
+          data-im="group-join"
+          aria-haspopup="listbox"
+          :aria-expanded="joinOpen"
+          @click="toggleJoinList"
+        >加入组…<span class="join-caret" aria-hidden="true">{{ joinOpen ? "▴" : "▾" }}</span></button>
+        <ul v-if="joinOpen" class="join-list" role="listbox" data-im="group-join-list" aria-label="可加入的组">
+          <li v-for="choice in joinChoices" :key="choice.id">
+            <button
+              type="button"
+              class="join-option"
+              role="option"
+              :aria-selected="false"
+              :data-group-id="choice.id"
+              :data-group-name="choice.name"
+              data-im="group-join-option"
+              @click="joinGroupById(choice.id)"
+            >
+              <span class="join-name" :title="choice.name">{{ choice.name }}{{ choice.ordered ? "（有序）" : "" }}</span>
+              <span class="join-meta" :data-same-name="choice.sameName ? '1' : '0'">
+                {{ choice.memberCount }} 名成员<template v-if="choice.sameName"> · 同名组</template>
+              </span>
+              <span class="join-members" :title="choice.summary">{{ choice.summary }}</span>
+            </button>
+          </li>
+        </ul>
+      </div>
 
       <button v-if="canLeave" class="item" type="button" role="menuitem" data-im="group-leave" @click="leaveGroups">
         移出组
         <span class="hint">卡片挪到组外最近的空位，空组自动消失</span>
       </button>
-      <button v-if="canDissolve" class="item" type="button" role="menuitem" data-im="group-dissolve" @click="dissolveGroups">
+      <button v-if="canDissolve" class="item" type="button" role="menuitem" data-im="group-dissolve" @click="requestDissolve">
         解除组
         <span class="hint">成员恢复自由摆放</span>
       </button>
@@ -396,6 +526,19 @@ function deleteSelected(): void {
 
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     </div>
+
+    <!-- #60：解除有组级连线的组前，列出受影响关系并确认（确认后仍可撤销恢复）。 -->
+    <QConfirm
+      :open="dissolveConfirmOpen"
+      variant="layer"
+      title="解除组会连带解除组级关系"
+      :detail="dissolveConfirmDetail"
+      confirm-text="解除组"
+      cancel-text="先不解除"
+      tone="danger"
+      @confirm="confirmDissolve"
+      @cancel="dissolveConfirmOpen = false"
+    />
   </span>
 </template>
 
@@ -468,17 +611,71 @@ function deleteSelected(): void {
 .item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .item.danger { color: var(--danger); }
 .hint { font-size: var(--fs-xs); color: var(--text-muted); overflow-wrap: anywhere; }
-.select-item { cursor: default; min-width: 0; }
-.select-item select {
+/* #62：QIO 风格加入组选择器（组名 + 成员数 + 成员摘要，按真实组 ID 加入） */
+.join-item { gap: var(--sp-1); min-width: 0; }
+.join-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
   font: inherit;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--text-primary);
   background: var(--bg-inset);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
-  padding: 1px var(--sp-1);
-  max-width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  cursor: pointer;
+  text-align: left;
   min-width: 0;
+}
+.join-trigger:hover { border-color: var(--border-strong); }
+.join-trigger:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.join-caret { color: var(--text-muted); font-size: var(--fs-xs); flex: none; }
+.join-list {
+  list-style: none;
+  margin: var(--sp-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+  min-width: 0;
+}
+.join-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  padding: var(--sp-1) var(--sp-2);
+  cursor: pointer;
+}
+.join-option:hover { border-color: var(--border-strong); }
+.join-option:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.join-name {
+  font-size: var(--fs-sm);
+  color: var(--text-strong);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.join-meta { font-size: var(--fs-xs); color: var(--text-muted); }
+.join-members {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .notice { margin: var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-tight); overflow-wrap: anywhere; }
 </style>

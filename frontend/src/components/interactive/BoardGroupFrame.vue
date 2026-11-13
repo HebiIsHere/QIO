@@ -265,6 +265,11 @@ onBeforeUnmount(() => {
 
 const nameInput = ref<HTMLInputElement | null>(null);
 /**
+ * #72：静态组名与编辑态分开。
+ * 未聚焦时显示一行省略号文本（悬停 title 读全名）；聚焦后回到输入框，可完整输入。
+ */
+const nameFocused = ref(false);
+/**
  * 「成员与顺序」面板是否展开：**只有用户点它才展开**（缺省收起）。
  * 这是纯显示状态，不进任何存储，也不改变分组 / 顺序本身。
  */
@@ -402,19 +407,32 @@ defineExpose({ focusName });
           title="拖动组标题移动整组（只改位置，不改变分组关系）"
           aria-hidden="true"
         >⠿</span>
-        <input
-          ref="nameInput"
-          class="group-name"
-          type="text"
-          :value="group.name"
-          :placeholder="nameHint"
-          data-im="group-name"
-          :data-group-id="group.id"
-          :title="group.name"
-          :aria-label="'组名：' + group.name"
-          @change="onRename"
-          @keydown.enter="onNameKeydown"
-        />
+        <span class="name-wrap">
+          <input
+            ref="nameInput"
+            class="group-name"
+            :class="{ 'is-editing': nameFocused }"
+            type="text"
+            :value="group.name"
+            :placeholder="nameHint"
+            data-im="group-name"
+            :data-group-id="group.id"
+            :title="group.name"
+            :aria-label="'组名：' + group.name"
+            @focus="nameFocused = true"
+            @blur="nameFocused = false"
+            @change="onRename"
+            @keydown.enter="onNameKeydown"
+          />
+          <!-- #72：静态态一行省略号；悬停 / 聚焦读全名（title + aria-label）。 -->
+          <span
+            v-if="!nameFocused"
+            class="group-name-static"
+            data-im="group-name-static"
+            :title="group.name"
+            aria-hidden="true"
+          >{{ group.name }}</span>
+        </span>
         <span class="count mono">成员 {{ group.members.length }}</span>
         <span class="mode" :title="group.ordered ? '有序组：序号 1..n 表示顺序' : '普通组：自由摆放不表示先后'">
           {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
@@ -780,6 +798,25 @@ defineExpose({ focusName });
 }
 .group-name:hover { border-color: var(--border-strong); }
 .group-name:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* #72：静态组名一行省略号（悬停 title 看全名），聚焦后输入框可完整输入。 */
+.name-wrap { position: relative; display: inline-flex; flex: none; min-width: 72px; max-width: 180px; }
+.name-wrap .group-name { width: 100%; min-width: 0; max-width: none; }
+.group-name:not(.is-editing) { color: transparent; caret-color: transparent; }
+.group-name-static {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-1);
+  font-family: var(--serif);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-strong);
+  pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* 说明行自己一行：可压缩、可省略，不跟按钮抢同一行的宽度 */
 .mode { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 /* 成员数量是次级信息：小、灰，但不至于看不清 */
@@ -920,6 +957,7 @@ defineExpose({ focusName });
   .head-row .mode,
   .head-row .badge.default-name { display: none; }
   .group-name { max-width: 96px; min-width: 56px; }
+  .name-wrap { max-width: 96px; min-width: 56px; }
   .btn { padding: 0 4px; }
 }
 </style>
