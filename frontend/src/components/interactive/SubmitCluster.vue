@@ -21,7 +21,7 @@
 -->
 <script setup lang="ts">
 import { vQioTip } from "../../composables/useQioTip";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from "vue";
 import { registerEscapeLayer } from "../../composables/useEscapeLayer";
 import { useInteractiveStore } from "../../stores/interactive";
 import { fetchBoardState } from "../../services/interactive";
@@ -56,6 +56,7 @@ import {
 import BoardChangeList from "./BoardChangeList.vue";
 import { humanizeFailure, scrubInternalTerms } from "./displayText";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import { placeSubmitPanel, type SubmitPanelPlacement } from "./submitPanelPlacement";
 
 const props = withDefaults(
   defineProps<{
@@ -108,7 +109,120 @@ watch(hasPanel, (open) => syncEscapeLayer(open), { immediate: true });
 watch(openPanel, (panel) => {
   if (panel) emit("panel-open");
 });
+
+/* ------------------------------------------------------------------------
+ * #05：提交详情面板的空间钳制（E2E：800×600 + 5 项改动时面板 305px 遮挡）
+ *
+ * 面板不再依赖 CSS 包含块与视口比例限高：打开时按**实测矩形**算出锚定位置与最大高度
+ * （纯函数 placeSubmitPanel），底边固定在工具栏顶边上方，顶边不越过任务入口；
+ * 内容再多也只内部滚动，不覆盖提交按钮、不挡任务入口。
+ * 触发：打开面板、窗口 resize、页面滚动、工具栏/定位祖先尺寸变化（聊天开合会改变位置）。
+ * ------------------------------------------------------------------------ */
+const clusterEl = ref<HTMLElement | null>(null);
+const panelEl = ref<HTMLElement | null>(null);
+const panelPlacement = ref<SubmitPanelPlacement | null>(null);
+
+function findToolbarEl(): HTMLElement | null {
+  const cluster = clusterEl.value;
+  const toolbar = cluster?.closest('[data-im="board-toolbar"]');
+  return (toolbar as HTMLElement | null) ?? null;
+}
+
+function measurePanelPlacement(): SubmitPanelPlacement | null {
+  if (!openPanel.value || typeof window === "undefined") return null;
+  const toolbar = findToolbarEl();
+  if (!toolbar) return null;
+  const toolbarRect = toolbar.getBoundingClientRect();
+  // 量不到真实几何（jsdom / 首帧）时不写死位置：保留 CSS 兜底，下一次触发再量。
+  if (!(toolbarRect.width > 0 && toolbarRect.height > 0)) return null;
+  const offsetParent = (panelEl.value?.offsetParent as HTMLElement | null) ?? null;
+  const containerRect =
+    offsetParent && typeof offsetParent.getBoundingClientRect === "function"
+      ? offsetParent.getBoundingClientRect()
+      : null;
+  const stage = document.querySelector('[data-im="interactive-stage"]');
+  const stageRect = stage ? stage.getBoundingClientRect() : null;
+  const taskEntry = document.querySelector('[data-im="tasks-entry"]');
+  const taskRect = taskEntry ? taskEntry.getBoundingClientRect() : null;
+  let safeTop = stageRect && stageRect.top > 0 ? stageRect.top + 8 : 8;
+  if (taskRect && taskRect.bottom > 0) safeTop = Math.max(safeTop, taskRect.bottom + 8);
+  return placeSubmitPanel({
+    toolbar: { left: toolbarRect.left, top: toolbarRect.top, width: toolbarRect.width },
+    container:
+      containerRect && containerRect.width > 0
+        ? { left: containerRect.left, top: containerRect.top, bottom: containerRect.bottom }
+        : null,
+    viewportHeight: window.innerHeight,
+    safeTop,
+  });
+}
+
+function syncPanelPlacement(): void {
+  panelPlacement.value = measurePanelPlacement();
+}
+
+const panelStyle = computed<CSSProperties | undefined>(() => {
+  const placement = panelPlacement.value;
+  if (!placement) return undefined;
+  return {
+    position: "absolute",
+    top: "auto",
+    right: "auto",
+    bottom: placement.bottom + "px",
+    left: placement.left + "px",
+    width: placement.width + "px",
+    maxHeight: placement.maxHeight + "px",
+  };
+});
+
+let panelResizeObserver: ResizeObserver | null = null;
+let panelTracking = false;
+
+function stopPanelTracking(): void {
+  if (!panelTracking) return;
+  panelTracking = false;
+  window.removeEventListener("resize", syncPanelPlacement);
+  document.removeEventListener("scroll", syncPanelPlacement, true);
+  panelResizeObserver?.disconnect();
+  panelResizeObserver = null;
+}
+
+function startPanelTracking(): void {
+  if (panelTracking || typeof window === "undefined") return;
+  panelTracking = true;
+  window.addEventListener("resize", syncPanelPlacement);
+  // 页面滚动 / 聊天展开都会移动工具栏：捕获阶段监听所有滚动容器。
+  document.addEventListener("scroll", syncPanelPlacement, true);
+  if (typeof ResizeObserver !== "undefined") {
+    panelResizeObserver = new ResizeObserver(() => syncPanelPlacement());
+    const toolbar = findToolbarEl();
+    const offsetParent = (panelEl.value?.offsetParent as HTMLElement | null) ?? null;
+    for (const target of [toolbar, offsetParent]) {
+      if (target) panelResizeObserver.observe(target);
+    }
+  }
+}
+
+watch(
+  hasPanel,
+  async (open) => {
+    if (!open) {
+      stopPanelTracking();
+      panelPlacement.value = null;
+      return;
+    }
+    // 先渲染再量：v-if 的节点这一帧才存在；下一帧再量一次（过渡 / 字体 / 布局稳定）。
+    await nextTick();
+    syncPanelPlacement();
+    startPanelTracking();
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => syncPanelPlacement());
+    }
+  },
+  { immediate: true },
+);
 onBeforeUnmount(() => {
+  stopPanelTracking();
   disposeEscape?.();
   disposeEscape = null;
 });
@@ -757,6 +871,7 @@ defineExpose({
     长说明（上次提交结果 / 本次提交范围与改动 / 上次提交过程）都进按需展开的面板。
   -->
   <div
+    ref="clusterEl"
     class="submit-cluster"
     data-im="submit-cluster"
     :data-im-failed="isFailed ? '1' : undefined"
@@ -1133,7 +1248,12 @@ defineExpose({
     <Transition name="sc-fade">
       <section
         v-if="openPanel"
+        ref="panelEl"
         class="sc-panels"
+        :class="{ 'is-placed': panelPlacement !== null }"
+        :style="panelStyle"
+        data-im="submit-panels"
+        :data-im-panel-max-height="panelPlacement ? panelPlacement.maxHeight : undefined"
         v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
         data-qio-fit
         @wheel.stop
@@ -1628,6 +1748,11 @@ defineExpose({
   - 长文本自然换行（overflow-wrap: anywhere），不用省略号隐藏正文；
   - user-select: text：面板里的说明可以选中复制（舞台层全局是 none）。
 */
+/*
+ * #05：默认仍是「工具栏上方 + 视口比例限高」的 CSS 兜底（量不到真实几何时用）；
+ * 一旦量到工具栏矩形，组件写入 inline style（left/width/bottom/max-height），
+ * 底边固定 = 工具栏顶边 - gap，顶边不越过任务入口，内容再多只内部滚动。
+ */
 .sc-panels {
   position: absolute;
   left: 0;
