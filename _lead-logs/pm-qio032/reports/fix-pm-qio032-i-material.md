@@ -137,7 +137,14 @@ $env:QIO_DISABLE_DB_CHECK='1'
 - 证据：`test_legacy_hidden_card_restore_stays_displayed_not_included`、
   既有 `test_legacy_conflicts_never_expand_reading_scope`、`test_card_access_state_maps_three_states_and_restore_defaults_to_displayed` 保持绿。
 
-### 7.5 给 i-submit 的接口（#28 精确版本核对，需 submission.py 受理处调用）
+### 7.5 给 i-submit 的接口（#28 精确版本核对）——**已接线**
+
+> 状态更新（2026-11-13）：i-submit 已在 `submission.py` 成功路径、`_record_submission` 之前对
+> `visible` / `after` 各 stamp 一次（getattr+try 包裹，附件事先从绑定宿主 AppContext 的
+> `_attachment_service` 取、拿不到按 DB 推导），提交 `690df33d`（父分支 `96eb4d5c` 已合并）。
+> 接口形状与语义见下；i-submit 用例：
+> `pm_qio032_submit_material_versions.py::test_successful_submission_freezes_material_versions_without_changing_semantics`、
+> `::test_same_size_content_replacement_is_stale_and_not_delivered`（均 green）。
 
 ```python
 # submission.py：succeeded 路径、记录 visible/after_state 之前（两处都 stamp 也可只 stamp after，
@@ -163,10 +170,13 @@ if callable(stamper):
 | `pm_qio032_submit_first_round_materials / pm_qio032_submit_authorization_facts / pm_qio032_submit_intents_event` + `test_p3_b_tools` + `test_interactive_materials` | **76 passed** |
 | `pm_qio032_submit_empty_semantics` + `test_interactive_board` + `test_p3_b_service` + `test_p3_d_frozen_surface` + `test_attachment_tools` + `test_p2_d_participation_endpoints_display_version` | **148 passed** |
 | `test_interactive_submission`（合并父分支后的提交/板面集成回归） | **45 passed** |
+| 合并父分支 `96eb4d5c`（含 i-submit stamp 接线 690df33d）后：`pm_qio032_submit_material_versions` + `pm_qio032_submit_first_round_materials` + `pm_qio032_material_scope_test` | **27 passed** |
 
 ### 7.7 未做 / 风险（第三轮）
 
-- submission.py 的 stamp 调用归 i-submit；未接线前 #28 仍只按 size 核对（现状如实提示，不静默换内容）。
+- submission.py 的 stamp 调用已由 i-submit 接线（690df33d）；此后新提交才带 `materialVersions`，
+  接线前的历史提交仍只按 size 核对（如实提示、不静默换内容）。本分支已合并父分支 `96eb4d5c`，
+  集成用例在本 worktree 复跑通过。
 - 浏览器级 E2E ①-6b（TXT 首轮交付）：i-submit 已查明根因是 **E2E 脚本自相矛盾**（TXT 卡提交前被设为「显示但不参与」，
   且同一 txtBody 同时用于 ①-6b 期望出现 / ①-7 期望不出现），不是 materials 解析问题；i-submit 用真实编排链路
   （fake adapter 捕获首轮请求）验证参与 TXT 文件正文正常交付（source=attachment_text）、排除/隐藏不交付。
