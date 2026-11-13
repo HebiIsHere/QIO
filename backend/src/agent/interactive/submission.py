@@ -2855,6 +2855,35 @@ async def submit_board(
         # 契约 §1.2 的 acceptance.baseStateVersion 就取它（四种状态都写上，便于事后查证）。
         "baseStateVersion": base_seq,
     }
+    # #28（i-submit 接线）：受理成功时把「每张可见文件卡附件的内容版本」冻结进
+    # visible / after 两个快照的顶层 materialVersions（sha256 等事实），之后材料层
+    # 才能识别「同大小内容替换」，在源内容变化时要求重新提交而不是静默换新内容。
+    # 纯增量：只加一个顶层键，卡片 / 组 / 关系 / 求差 / 指纹都不变；函数缺失
+    # （i-material 未合入）或打标失败时保持旧行为（只按 size 核对），绝不影响提交。
+    if status == "succeeded":
+        try:
+            from agent.interactive import materials as _material_versions
+
+            stamper = getattr(
+                _material_versions, "stamp_snapshot_material_versions", None
+            )
+            if callable(stamper):
+                attachments = None
+                owner = background_owner_for(conn)
+                getter = (
+                    getattr(owner, "_attachment_service", None)
+                    if owner is not None
+                    else None
+                )
+                if callable(getter):
+                    try:
+                        attachments = getter()
+                    except Exception:  # noqa: BLE001 - 拿不到服务时按 DB 位置推导
+                        attachments = None
+                visible = stamper(conn, visible, attachments=attachments)
+                after = stamper(conn, after, attachments=attachments)
+        except Exception:  # noqa: BLE001 - 打标是旁路，失败按旧快照规则
+            logger.warning("stamp submission material versions failed", exc_info=True)
     record = _record_submission(
         conn,
         submission_id=submission_id,

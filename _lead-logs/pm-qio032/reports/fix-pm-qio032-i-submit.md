@@ -96,7 +96,12 @@ $env:QIO_DATA_DIR='<wt>\.tmp-test-data'; $env:QIO_DISABLE_DB_CHECK='1'
   - #81：未知身份查证 404 + acceptance=null + 可读原因且不写任何记录；不带身份同样未知；已有提交后未知身份仍未知（不拿最近一条冒充）。
 - 回归：pm_qio032_submit_* 5 个文件 + test_interactive_submission.py / test_audit_f04_acceptance_receipt.py / test_event_protocol.py / test_events_bus.py 共 89 项全绿（含前端事件协议守卫转绿）。
 
-### 7.4 #28 可选增强（未做，待 Lead 决定）
+### 7.4 #28 材料内容版本接线（第四轮，已完成）
 
-i-material 在 materials.py 提供 stamp_snapshot_material_versions(conn, snapshot)：给提交快照加顶层 materialVersions（sha256 等），用于补齐「提交后源文件同大小内容替换」检测。按约定需在 submission.py 的成功提交流程、_record_submission 之前对 visible/after 各调一次（纯增量；不接线时行为不变）。本轮优先级在 ①-6b/#80/#81 复核，未接；如需要可 5 分钟内补上并加定向用例。
+- 合并：父分支 f2716e57（含 i-material 第三轮 facb8a84）fast-forward 进本分支，无冲突。
+- 接线位置：backend/src/agent/interactive/submission.py 的 submit_board 成功路径、_record_submission 之前（约 2858 行前）：status==succeeded 时调用 materials.stamp_snapshot_material_versions 对 visible / after 各打一次顶层 materialVersions（附件服务从绑定的宿主 AppContext 取，拿不到时由材料层按 DB 位置推导）；getattr + try 包裹 —— 函数缺失或打标失败保持旧行为（只按 size 核对），不影响提交。只加一个顶层键，cards/groups/links/selection 不改，diff/content_fingerprint 不受影响。
+- 新增测试 tests/pm_qio032_submit_material_versions.py（2 项，先红后绿）：
+  1) 正常提交：after_state / visible 顶层都有 materialVersions（cardId→{attachmentId,...,sha256 64 位}），去掉该键后 content_fingerprint 与带键完全一致；同内容再提交仍 duplicate（证明指纹/重复判定不变）。
+  2) 同大小内容替换：提交后把已保存内容写回同样大小不同字节 → submission_materials 的 stale 命中并含「重新提交」与内容哈希不一致说明，materials 条目 read=false、正文不含新内容；submission_attachment_scope 同样把该附件标 stale（读授权范围也按内容版本核对）。
+- 该行为在接线前用例为红（无 materialVersions → 只按 size 核对，同大小替换识别不到），接线后转绿，证明缺口真实存在。
 
