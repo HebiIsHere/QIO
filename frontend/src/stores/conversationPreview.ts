@@ -25,7 +25,7 @@ import {
 import type { PreviewEnvelope } from "../services/attachments";
 import { useConversationShellStore } from "./conversationShell";
 import type { PreviewPosition, PreviewTabState, PreviewTarget } from "../conversation/previewTypes";
-import { attachmentPreviewId } from "../conversation/previewTypes";
+import { attachmentPreviewId, replyCodePreviewId } from "../conversation/previewTypes";
 import {
   FILE_UPDATE_MAX_FAILURES,
   activePreviewTab,
@@ -94,6 +94,14 @@ const guards = new Map<string, PreviewVersionGuard>();
 const controllers = new Map<string, AbortController>();
 const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let disposed = false;
+/**
+ * 运行时世代：dispose() / resume() 各推进一次。
+ *
+ * 卸载时中止的在途请求可能晚一步才落地（abort 与响应赛跑）；重新挂载后
+ * `disposed` 已经复位，光靠它挡不住这些迟到响应。请求发起时记下世代，
+ * 落地时世代变了就按「旧请求」丢弃 —— 旧内容不得覆盖重新挂载后的新内容。
+ */
+let epoch = 0;
 
 function guardFor(tabId: string): PreviewVersionGuard {
   let guard = guards.get(tabId);
@@ -102,6 +110,23 @@ function guardFor(tabId: string): PreviewVersionGuard {
     guards.set(tabId, guard);
   }
   return guard;
+}
+
+/**
+ * 取一条助手消息里第 index 个围栏代码块的正文（与 MessageItem 的解析口径一致）。
+ *
+ * 只用于「临时消息 id → 持久化消息 id」的身份交接：正文逐字相同才算同一条消息，
+ * 不做任何模糊匹配。
+ */
+function codeBlockText(content: string, index: number): string | null {
+  const fence = /(?:^|\n)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\1/g;
+  let match: RegExpExecArray | null;
+  let at = 0;
+  while ((match = fence.exec(content)) !== null) {
+    if (at === index) return match[3];
+    at += 1;
+  }
+  return null;
 }
 
 function messageOf(error: unknown): string {
@@ -337,12 +362,22 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
 
     // -- 内容加载与更新 ---------------------------------------------------
 
-    /** 确保这个标签的运行时内容已开始加载（幂等；已有内容/失败态不重复拉取）。 */
+    /**
+     * 确保这个标签的运行时内容已开始加载（幂等；已有内容/失败态不重复拉取）。
+     *
+     * 「停在 loading 但没有在途请求」是**残影**（上次卸载/中止留下的），不是正在读：
+     * 以前这里直接 return，重新挂载后阅读器就永远停在「正在读取这个文件…」。
+     * 现在把它当成「还没开始」重新发起 —— 有在途请求时仍然幂等，不重复拉取。
+     */
     ensureLoaded(tabId: string): void {
       if (this._disposed || disposed) return;
       const tab = this.tabs.find((item) => item.id === tabId);
       if (!tab) return;
-      if (this.runtime[tabId]) return;
+      const existing = this.runtime[tabId];
+      if (existing) {
+        if (existing.phase !== "loading" || controllers.has(tabId)) return;
+        delete this.runtime[tabId];
+      }
       if (tab.target.attachmentId) {
         if (tab.target.kind === "audio" || tab.target.kind === "video") {
           this.runtime[tabId] = {
@@ -399,6 +434,8 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
       if (!tab || !tab.target.attachmentId) return "skipped";
       const guard = guardFor(tabId);
       const sequence = guard.begin();
+      // 发起时的运行时世代：卸载/重新挂载之后，这一代的结果一律作废（见 epoch 注释）。
+      const startedAt = epoch;
       controllers.get(tabId)?.abort();
       const controller = new AbortController();
       controllers.set(tabId, controller);
@@ -418,17 +455,20 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
           signal: controller.signal,
         });
         if (!guard.isCurrent(sequence)) return "stale";
+        if (startedAt !== epoch) return "stale";
         if (this._disposed || disposed) return "stale";
         return this.applyEnvelope(tabId, envelope, mode);
       } catch (error) {
         if (!guard.isCurrent(sequence)) return "stale";
+        if (startedAt !== epoch) return "stale";
         if (isAbort(error)) {
           // 主动中止（收起/换标签/卸载）不是失败：只有我们自己这一代才需要复原状态。
           return "aborted";
         }
         return this.applyLoadError(tabId, error, mode);
       } finally {
-        if (guard.isCurrent(sequence)) controllers.delete(tabId);
+        // 世代变了说明这一代已经被卸载作废：不能顺手删掉重新挂载后新请求的控制器。
+        if (guard.isCurrent(sequence) && startedAt === epoch) controllers.delete(tabId);
       }
     },
 
@@ -664,6 +704,50 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
       };
     },
 
+    /**
+     * 按当前消息列表核对回复代码标签的身份（临时 id → 持久化 id 的交接）。
+     *
+     * 只在**能确定是同一条消息**时迁移：标签记着的消息 id 已经不在列表里，
+     * 且列表里恰好有一条助手消息，它在同一 blockIndex 上的代码块正文与标签里
+     * 记住的正文**逐字相同**。多于一条候选（两段一模一样的代码）就不猜 ——
+     * 旧标签的正文还在内存里，仍然可读，不会变成空白。
+     *
+     * 返回迁移了几个标签（0 = 没有需要交接的）。
+     */
+    reconcileReplyCodeIdentities(
+      messages: { id: string; role: string; content: string }[],
+    ): number {
+      const live = new Set(messages.map((m) => String(m.id || "")));
+      const candidates = messages.filter((m) => m.role === "assistant" && String(m.id || ""));
+      let moved = 0;
+      for (const tab of [...this.tabs]) {
+        if (tab.target.source !== "reply_code") continue;
+        const messageId = String(tab.target.messageId ?? "");
+        if (!messageId || live.has(messageId)) continue;
+        const text = this.documents[tab.id]?.text;
+        if (typeof text !== "string") continue;
+        const blockIndex = Number(tab.target.blockIndex ?? 0);
+        const matches = candidates.filter(
+          (m) => codeBlockText(String(m.content || ""), blockIndex) === text,
+        );
+        if (matches.length !== 1) continue;
+        const nextId = replyCodePreviewId(String(matches[0].id), blockIndex);
+        if (nextId === tab.id) continue;
+        if (this.tabs.some((item) => item.id === nextId)) {
+          this.closeTab(tab.id);
+        } else {
+          this.applyTabIdentity(tab.id, {
+            ...tab.target,
+            id: nextId,
+            messageId: String(matches[0].id),
+            blockIndex,
+          });
+        }
+        moved += 1;
+      }
+      return moved;
+    },
+
     /** 记录回复代码 / 任务输出正文；已存在的旧内容按新内容替换。 */
     rememberDocument(tabId: string, document: PreviewDocumentInput): void {
       const next: PreviewDocumentInput = { ...(this.documents[tabId] ?? {}) };
@@ -750,15 +834,53 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
       noticeTimers.delete(tabId);
     },
 
-    /** 页面离开 / 组件卸载：中止全部在途请求与计时器（位置已经在 shell 里）。 */
+    /**
+     * 页面离开 / 组件卸载：中止全部在途请求与计时器（位置已经在 shell 里）。
+     *
+     * 只清理**运行时**资源：标签、当前标签、阅读位置都在 conversationShell 里，
+     * 不受影响。清理语义（在途请求全部中止、计时器全部清掉）保持不变。
+     */
     dispose(): void {
       this._disposed = true;
       disposed = true;
+      epoch += 1;
       for (const controller of controllers.values()) controller.abort();
       controllers.clear();
       for (const timer of noticeTimers.values()) clearTimeout(timer);
       noticeTimers.clear();
       guards.clear();
+    },
+
+    /**
+     * 页面重新挂载：恢复接收新的加载请求（与 dispose 成对）。
+     *
+     * 为什么必须有它：dispose() 把 `_disposed` 与模块级 `disposed` 都置 true，
+     * 而 ensureLoaded / loadAttachment / checkForUpdate 都以它们为闸门。以前没有任何
+     * 地方复位 —— 从设置页返回对话后，重新打开同一段代码时 ensureLoaded 直接 return，
+     * 阅读器永远停在「正在读取这个文件…」，只有整页刷新（模块重新求值）才恢复。
+     *
+     * 复位只做「重新接受请求」这一件事：不伪造内容、不清标签、不动阅读位置；
+     * 上一轮留下的 loading 残影由 ensureLoaded 按「没有在途请求」重新发起。
+     */
+    resume(): void {
+      if (!this._disposed && !disposed) return;
+      this._disposed = false;
+      disposed = false;
+      epoch += 1;
+      // 上一轮卸载时中止的请求可能已经落地并留下 loading 残影：清掉，交给 ensureLoaded 重发。
+      for (const [tabId, runtime] of Object.entries(this.runtime)) {
+        if (runtime?.phase === "loading") delete this.runtime[tabId];
+      }
+      /**
+       * 重新挂载后当前标签要能继续读：有正文的直接进可读态，附件重新发起一次读取。
+       *
+       * 只在预览栏真的展开时做：子组件的 onMounted 早于父组件，阅读器挂载时
+       * `_disposed` 还是 true，它的 ensureLoaded 会被闸门挡掉 —— 这里补上那一次。
+       * 栏收起时没有阅读器在等，不发起请求（不制造无谓的读取）。
+       */
+      if (!this.isOpen) return;
+      const active = this.activeTab;
+      if (active) this.ensureLoaded(active.id);
     },
 
     /** 仅供测试：把模块级状态全部清掉（生产不调用）。 */
@@ -768,6 +890,8 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
       for (const timer of noticeTimers.values()) clearTimeout(timer);
       noticeTimers.clear();
       guards.clear();
+      // 上一个用例的在途请求可能晚一步落地：推进世代，让它落不进新用例的 store。
+      epoch += 1;
       disposed = false;
       this._disposed = false;
       this.runtime = {};

@@ -84,6 +84,7 @@ let previewReturnFocus: HTMLElement | null = null;
 let recoveryReturnFocus: HTMLElement | null = null;
 let stopViewport: (() => void) | null = null;
 let stopFocusListener: (() => void) | null = null;
+let stopPreviewIdentityWatch: (() => void) | null = null;
 
 /** 记住当前真实焦点元素（body / documentElement 不算，避免把「无焦点」当触发点）。 */
 function rememberFocus(): HTMLElement | null {
@@ -503,6 +504,15 @@ watch(
 // ── 生命周期（页面切换不重复初始化） ──────────────────────────────────────
 
 onMounted(() => {
+  /**
+   * 重新挂载时恢复预览运行时（与卸载时的 preview.dispose() 成对）。
+   *
+   * dispose() 会把 store 的「已卸载」闸门置 true 并中止在途请求；以前没有任何地方
+   * 复位，从设置页返回对话后重新打开同一段代码，ensureLoaded 直接 return，
+   * 阅读器永远停在「正在读取这个文件…」（只有整页刷新才恢复）。
+   * 这里只恢复「能接收新请求」，标签与阅读位置一直在 shell 里，不受影响。
+   */
+  preview.resume();
   // 只有第一次进入才读布局偏好与历史；从设置/互动页返回时不重置现有状态。
   if (!shell.loaded) void shell.load();
   stopViewport = shell.installViewportTracking();
@@ -524,6 +534,18 @@ onMounted(() => {
   stopFocusListener = listenFocusTask((taskId) => {
     void tasks.focusTask(taskId);
   });
+  /**
+   * 回复代码标签的身份交接：刚生成的回复用本机乐观 id（`local_…`），历史快照接手后
+   * 同一条消息换成后端 id。不交接的话，同一段代码会变成两个标签（旧标签靠内存正文
+   * 还能读，再点一次却新开一个空标签）。只在能确定是同一条消息时迁移。
+   */
+  stopPreviewIdentityWatch = watch(
+    () => session.messages.map((m) => m.id).join("\u0000"),
+    () => {
+      preview.reconcileReplyCodeIdentities(session.messages);
+    },
+    { immediate: true },
+  );
   window.addEventListener("qio:open-recovery", onOpenRecoveryEvent);
 
   mountPlanetWhenIdle();
@@ -535,6 +557,8 @@ onBeforeUnmount(() => {
   stopViewport = null;
   stopFocusListener?.();
   stopFocusListener = null;
+  stopPreviewIdentityWatch?.();
+  stopPreviewIdentityWatch = null;
   document.removeEventListener("visibilitychange", onVisibilityChange);
   window.removeEventListener("qio:open-recovery", onOpenRecoveryEvent);
   registerExecutionTaskLocator(null);
