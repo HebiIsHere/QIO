@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useInteractiveStore } from "../../stores/interactive";
 import * as api from "../../services/interactive";
+import { addCard } from "../board";
 import { understandingOutcome, understandingText } from "../approval";
 import type { BoardState, Intent, SubmissionResult, Understanding } from "../types";
 
@@ -344,7 +345,9 @@ describe("受理情况不明时按请求身份精确查证（契约 §1.3）", (
     await store.submit();
     expect(store.submitStatus).toBe("succeeded");
 
-    // 第二次请求失败；这次身份在服务端**没有**记录，只有上一次 s1 的理解记录
+    // 第二次请求失败；这次身份在服务端**没有**记录，只有上一次 s1 的理解记录。
+    // PM-QIO032 #80：先做一处真实改动，它才是一次新提交（未改动重复提交判 duplicate、不发 POST）。
+    store.commit(addCard(store.board!, { kind: "text", content: "第二次提交的真实改动", checked: true }), "添加文字卡");
     vi.mocked(api.submitBoard).mockRejectedValue(new Error("网络中断，没有收到回执"));
     vi.mocked(api.fetchAcceptance).mockResolvedValue({
       acceptance: null,

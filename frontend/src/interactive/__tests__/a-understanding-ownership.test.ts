@@ -15,6 +15,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { useInteractiveStore } from "../../stores/interactive";
 import * as api from "../../services/interactive";
+import { addCard } from "../board";
 import type { BoardState, SubmissionResult, Understanding } from "../types";
 
 vi.mock("../../services/interactive", () => ({
@@ -165,7 +166,10 @@ describe("理解状态归属本次提交", () => {
     await tick();
     expect(store.understandingStatus).toBe("understood");
 
-    // 第二次提交：受理成功（s2 / u2），但之后的每一次理解查询都失败
+    // 第二次提交：受理成功（s2 / u2），但之后的每一次理解查询都失败。
+    // PM-QIO032 #80：未改动的重复提交会被判 duplicate 且不发 POST —— 这里要验证的是
+    // 「另一次真实提交」的理解归属，所以先做一处真实改动。
+    store.commit(addCard(store.board!, { kind: "text", content: "第二次提交的真实改动", checked: true }), "添加文字卡");
     vi.mocked(api.submitBoard).mockResolvedValue(secondReceipt() as never);
     vi.mocked(api.fetchUnderstanding).mockRejectedValue(new Error("查询理解状态失败"));
     await store.submit();
@@ -195,7 +199,9 @@ describe("理解状态归属本次提交", () => {
     vi.mocked(api.fetchUnderstanding).mockReturnValue(inflight.promise as never);
     await tick();
 
-    // 用户又提交了一次：本次受理成功，理解状态归位到本次的「已受理」
+    // 用户又提交了一次：本次受理成功，理解状态归位到本次的「已受理」。
+    // PM-QIO032 #80：先做一处真实改动，它才是一次新提交（未改动重复提交判 duplicate）。
+    store.commit(addCard(store.board!, { kind: "text", content: "第二次提交的真实改动", checked: true }), "添加文字卡");
     vi.mocked(api.submitBoard).mockResolvedValue(secondReceipt() as never);
     await store.submit();
     expect(store.understandingStatus).toBe("accepted");

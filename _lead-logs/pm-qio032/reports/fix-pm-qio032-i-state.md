@@ -91,3 +91,15 @@ npx vue-tsc --noEmit
   - `npx vitest run src/stores/__tests__/pm032-state-contract.test.ts src/stores/__tests__/pm032-state-duplicate-submit.test.ts` → **21/21 绿**；`npx vue-tsc --noEmit` → exit 0。
 - **新增接口**：`latestAcceptedSubmission`、`hasAcceptedSubmission`、`submissionBaseline`、`pendingSubmissionChanges`、`currentImportBatchCounts`、`hasImportBatchInFlight`、`markImportItemUploading`、`importBatchCounts()`（模块级）+ `ImportBatchCounts` 类型；`types.ts` 的 `pending` 修正为服务端真实形状 `PendingSubmissionChanges`（旧消费方读 `payload.pending.expressions` 仍兼容）。
 - **风险**：刷新后的重复识别依赖本机快照（localStorage 按板面）；本机存储不可用且服务端 pending 过期时退回服务端权威判定（不会误判重复，只会多一次服务端判定，服务端仍按 empty/duplicate 处理）。i-layout 的「已提交过 / 查看原进度」UI 已存在，store 状态现在能触发它。
+### 第三轮补充：既有用例的最小适配（需 Lead 复核，未删除/未跳过任何用例）
+
+#80 让「未改动重复提交」不再发 POST，这与两条基线用例的假设冲突（它们用「同内容再提交一次」来构造第二次提交）。适配方式：在第二次提交前加一处真实改动（addCard 文本卡），让第二次提交确实是「有改动的新提交」，用例原本要验证的理解归属 / 未知受理语义不变：
+
+- frontend/src/interactive/__tests__/a-understanding-ownership.test.ts（a、b 两例）：第二次提交前 store.commit(addCard(...))。
+- frontend/src/interactive/__tests__/irm-d-understanding-store.test.ts（「只有上一次提交留下的理解记录」一例）：同上。
+- 未删除 / 未跳过任何用例；断言与覆盖点保持原意。
+
+回归结果（148 用例全绿）：
+- 4 文件 32/32：a-understanding-ownership(3)、irm-d-understanding-store(8)、pm032-state-duplicate-submit(7)、pm032-state-contract(14)
+- 11 文件 116/116：n7/n8/n5-acceptance、f10-submit-refresh、final-lead-m1、irl-verify-permission-status、recovery-lead-state-facts、submitFailureBrief、textCardUnified、p1-closed-card-shows-promoted、pm032-layout-shell
+- npx vue-tsc --noEmit → exit 0
