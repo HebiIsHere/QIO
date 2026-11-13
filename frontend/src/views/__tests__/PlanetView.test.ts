@@ -796,3 +796,136 @@ describe("PlanetView 连续体编排（第四阶段）", () => {
     vi.useRealTimers();
   });
 });
+
+/**
+ * #32 Esc 退出搜索。
+ *
+ * 焦点在搜索输入框 / 结果列表 / 重新搜索按钮时按 Esc 都退出搜索视图，
+ * 回到进入搜索前的管理上下文，并把焦点交回页面工具行里**真实的**搜索入口；
+ * 中文输入法组字中 Esc 优先给输入法；再次打开保留关键词与结果（v-show 保活）。
+ */
+describe("PlanetView 搜索：Esc 退出与焦点返回（#32）", () => {
+  async function openSearchView(w: ReturnType<typeof mountView>): Promise<HTMLInputElement> {
+    await withReducedMotion(async () => {
+      await w.find("[data-mp-search-open]").trigger("click");
+      await flushPromises();
+    });
+    expect(w.attributes("data-view")).toBe("search");
+    return w.find("[data-mp-search-input]").element as HTMLInputElement;
+  }
+
+  /** 等过输入防抖（默认 220ms），让结果真的落到界面上 */
+  async function waitDebounce() {
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    await flushPromises();
+  }
+
+  it("搜索输入框里按 Esc：退出搜索、管理区仍在，焦点回到搜索入口按钮", async () => {
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    const input = await openSearchView(w);
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+
+    expect(w.attributes("data-view")).toBe("tabs");
+    expect(w.classes()).toContain("managing");
+    expect(document.activeElement).toBe(w.find("[data-mp-search-open]").element);
+    w.unmount();
+  });
+
+  it("结果列表里按 Esc：同样退出搜索并回到搜索入口", async () => {
+    mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    await openSearchView(w);
+    await w.find("[data-mp-search-input]").setValue("话题");
+    await waitDebounce();
+    const hit = w.find('[data-search-id="t1"]');
+    expect(hit.exists()).toBe(true);
+    (hit.element as HTMLElement).focus();
+
+    hit.element.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+
+    expect(w.attributes("data-view")).toBe("tabs");
+    expect(w.classes()).toContain("managing");
+    expect(document.activeElement).toBe(w.find("[data-mp-search-open]").element);
+    w.unmount();
+  });
+
+  it("重新搜索按钮里按 Esc：同样退出搜索并回到搜索入口", async () => {
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    await openSearchView(w);
+    await w.find("[data-mp-search-input]").setValue("话题");
+    await waitDebounce();
+    const refresh = w.find('button[aria-label="重新搜索"]');
+    expect(refresh.exists()).toBe(true);
+    (refresh.element as HTMLButtonElement).focus();
+    expect(document.activeElement).toBe(refresh.element);
+
+    refresh.element.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+
+    expect(w.attributes("data-view")).toBe("tabs");
+    expect(document.activeElement).toBe(w.find("[data-mp-search-open]").element);
+    w.unmount();
+  });
+
+  it("中文输入法组字中按 Esc（isComposing）：Esc 归输入法，不退出搜索", async () => {
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    const input = await openSearchView(w);
+    input.focus();
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }));
+    await flushPromises();
+
+    expect(w.attributes("data-view")).toBe("search");
+    expect(w.classes()).toContain("managing");
+    w.unmount();
+  });
+
+  it("中文输入法组字中按 Esc（keyCode 229）：Esc 归输入法，不退出搜索", async () => {
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    const input = await openSearchView(w);
+    input.focus();
+
+    const composing = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+    Object.defineProperty(composing, "keyCode", { value: 229 });
+    input.dispatchEvent(composing);
+    await flushPromises();
+
+    expect(w.attributes("data-view")).toBe("search");
+    expect(w.classes()).toContain("managing");
+    w.unmount();
+  });
+
+  it("Esc 退出后再次打开：关键词与结果都不重置（v-show 保活）", async () => {
+    mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    const input = await openSearchView(w);
+    await w.find("[data-mp-search-input]").setValue("话题");
+    await waitDebounce();
+    expect(w.find('[data-search-id="t1"]').exists()).toBe(true);
+    const calls = mocks.apiMock.listTopics.mock.calls.length;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(w.attributes("data-view")).toBe("tabs");
+
+    await withReducedMotion(async () => {
+      await w.find("[data-mp-search-open]").trigger("click");
+      await flushPromises();
+    });
+    expect((w.find("[data-mp-search-input]").element as HTMLInputElement).value).toBe("话题");
+    expect(w.find('[data-search-id="t1"]').exists()).toBe(true);
+    expect(mocks.apiMock.listTopics.mock.calls.length).toBe(calls); // 没有重新搜索
+    w.unmount();
+  });
+});

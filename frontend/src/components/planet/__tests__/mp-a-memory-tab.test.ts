@@ -254,7 +254,10 @@ describe("记忆标签页：完整讨论记录", () => {
     expect(w.find("[data-memory-record]").exists()).toBe(true);
     // 默认打开最新片段
     expect(mocks.apiMock.fragmentMessages).toHaveBeenCalledWith("f13", 0, 20);
-    expect(w.find("[data-memory-record] .mt-hint").text()).toContain("只读");
+    // 标题只出现一次：讨论记录（不再写「完整讨论记录」）
+    const titles = w.findAll("[data-memory-record] h2").map((n) => n.text());
+    expect(titles).toEqual(["讨论记录"]);
+    expect(w.text()).not.toContain("完整讨论记录");
 
     // 继续读取（total=3 → 第一页 2 条，还有 1 条）
     await w.find(".raw-more").trigger("click");
@@ -286,7 +289,8 @@ describe("记忆标签页：完整讨论记录", () => {
     expect(mocks.apiMock.fragmentMessages).toHaveBeenLastCalledWith("f10", 0, 20);
 
     const continueBtn = w.find("[data-memory-record] [data-memory-continue]");
-    expect(continueBtn.text()).toContain("从这里继续（历史位置）");
+    expect(continueBtn.text()).toContain("从这里继续");
+    expect(continueBtn.text()).not.toContain("（");
     await continueBtn.trigger("click");
     const emitted = w.emitted("continue")!;
     // 历史片段：historic=true（父级据此**不**先取消旧接续）

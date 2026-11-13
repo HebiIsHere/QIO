@@ -28,6 +28,7 @@ import QInput from "../ui/QInput.vue";
 import QConfirm from "../ui/QConfirm.vue";
 import QIcon from "../ui/QIcon.vue";
 import EntityCandidates from "./EntityCandidates.vue";
+import { entityKindLabel } from "../../planet/entityKind";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useActionFeedback } from "../../composables/useActionFeedback";
 import { usePlanetPendingStore } from "../../stores/planetPending";
@@ -298,6 +299,29 @@ function cancelEdit() {
 
 // -- 草稿内的本地编辑（不写后端） --------------------------------------------
 
+/**
+ * 属性置信度：**空/无法解析 = 没填**（用默认 0.8）；显式 0 必须保留成 0。
+ *
+ * 不能用 `Number(x) || 0.8`：0 是 falsy，会把用户明确输入的 0 悄悄改成 0.8 ——
+ * 添加表单、已有属性就地编辑、最终请求 payload 三处共用这一个口径。
+ */
+const DEFAULT_ATTR_CONFIDENCE = 0.8;
+
+function parseConfidence(raw: unknown): number | null {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : null;
+  }
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  const value = Number(text);
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(1, value));
+}
+
+function confidenceOrDefault(raw: unknown): number {
+  return parseConfidence(raw) ?? DEFAULT_ATTR_CONFIDENCE;
+}
+
 function addAlias() {
   const a = draft.value.aliasInput.trim();
   if (a && !draft.value.aliases.includes(a)) draft.value.aliases.push(a);
@@ -312,7 +336,7 @@ function addAttr() {
   const key = draft.value.attrKey.trim();
   const value = draft.value.attrValue.trim();
   if (!key || !value) return;
-  const conf = Math.max(0, Math.min(1, Number(draft.value.attrConf) || 0.8));
+  const conf = confidenceOrDefault(draft.value.attrConf);
   const hit = draft.value.attributes.find((a) => a.key === key);
   if (hit) {
     hit.value = value;
@@ -373,7 +397,8 @@ async function saveDraft() {
       attributes: draft.value.attributes.map((a) => ({
         key: a.key,
         value: a.value,
-        confidence: a.confidence,
+        // 与添加表单同一口径：空 → 0.8；显式 0 原样提交（刷新回显仍是 0）。
+        confidence: confidenceOrDefault(a.confidence),
       })),
       expected_revision: baseline.value.revision,
     };
@@ -547,7 +572,7 @@ onBeforeUnmount(() => {
           <div class="e-item-head">
             <span class="e-name">{{ c.name }}</span>
             <span class="e-item-spacer"></span>
-            <span v-if="c.kind" class="qio-tag e-kind">{{ c.kind }}</span>
+            <span v-if="entityKindLabel(c.kind)" class="qio-tag e-kind">{{ entityKindLabel(c.kind) }}</span>
           </div>
           <div class="e-item-meta mono">{{ c.attributes.length }} 属性 · {{ c.relations.length }} 关系</div>
         </li>
@@ -604,7 +629,6 @@ onBeforeUnmount(() => {
         <!-- 未保存修改确认层（返回列表前；不悄悄丢） -->
         <div v-if="pendingLeave" class="e-guard" data-unsaved-guard role="alertdialog" aria-label="未保存的修改">
           <p class="e-guard-title">还有未保存的修改</p>
-          <p class="e-guard-detail">返回列表会丢弃这次修改；已保存的内容不受影响。</p>
           <div class="row e-guard-actions">
             <button class="qio-btn mini" type="button" data-unsaved-keep @click="pendingLeave = false">继续编辑</button>
             <button class="qio-btn mini danger-solid" type="button" data-unsaved-discard @click="discardAndLeave">
@@ -630,9 +654,9 @@ onBeforeUnmount(() => {
         <div v-if="!editing" class="e-card qio-card">
           <p v-if="activeCard.summary" class="e-read-summary">{{ activeCard.summary }}</p>
           <p v-else class="hint">暂无摘要。</p>
-          <div v-if="activeCard.kind" class="field e-kind-field">
-            <span class="label">类别</span>
-            <p class="e-read-kind">{{ activeCard.kind }}</p>
+          <div v-if="entityKindLabel(activeCard.kind)" class="field e-kind-field">
+            <span class="label">类型</span>
+            <p class="e-read-kind">{{ entityKindLabel(activeCard.kind) }}</p>
           </div>
           <!-- Phase 1 C：身份与创建依据要可读（判断「这张卡是不是同一个对象」的依据） -->
           <div v-if="activeCard.identity" class="field e-identity-field">
@@ -673,19 +697,28 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <dl class="e-detail-meta">
-            <div class="e-meta-row">
+            <div class="e-detail-meta-row">
               <dt>修订</dt>
               <dd class="mono">v{{ activeCard.revision ?? 0 }}</dd>
             </div>
-            <div class="e-meta-row">
-              <dt>时间</dt>
-              <dd class="mono">创建 {{ activeCard.created_at || "未记录" }} · 更新 {{ activeCard.updated_at || "未记录" }}</dd>
-            </div>
-            <div class="e-meta-row">
-              <dt>节点</dt>
-              <dd class="mono">{{ activeCard.node_id || "未关联节点" }}</dd>
-            </div>
           </dl>
+          <!--
+            用户查证所需的摘要/类型/身份/创建依据/别名/属性/关系/证据数保持默认可见；
+            内部节点编号与原始时间戳放进按需展开区，默认不铺开 —— 不是删掉。
+          -->
+          <details class="e-more" data-e-more>
+            <summary class="e-more-summary">更多信息</summary>
+            <dl class="e-detail-meta e-more-list">
+              <div class="e-detail-meta-row">
+                <dt>时间</dt>
+                <dd class="mono">创建 {{ activeCard.created_at || "未记录" }} · 更新 {{ activeCard.updated_at || "未记录" }}</dd>
+              </div>
+              <div class="e-detail-meta-row">
+                <dt>节点</dt>
+                <dd class="mono e-node-id">{{ activeCard.node_id || "未关联节点" }}</dd>
+              </div>
+            </dl>
+          </details>
         </div>
 
         <!-- 草稿态：字段与关系全部在本地，保存才提交 -->
@@ -696,8 +729,13 @@ onBeforeUnmount(() => {
           <label class="field"><span class="label">摘要</span>
             <textarea v-model="draft.summary" class="qio-inline-edit e-summary"></textarea>
           </label>
-          <label class="field"><span class="label">类别</span>
+          <label class="field"><span class="label">类型</span>
             <input v-model="draft.kind" class="qio-inline-edit e-kind" />
+            <!-- 编辑的是内部值；只把可读名作为旁注，未知值不编造翻译。 -->
+            <span
+              v-if="draft.kind && entityKindLabel(draft.kind) !== draft.kind"
+              class="hint e-kind-readable"
+            >显示为「{{ entityKindLabel(draft.kind) }}」</span>
           </label>
 
           <div class="field"><span class="label">别名</span>
@@ -922,6 +960,15 @@ onBeforeUnmount(() => {
   background: var(--bg-inset); color: var(--text-secondary); font-size: 12px; line-height: 1.6;
 }
 .e-detail-meta { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 0; padding: 10px 0 0; border-top: 1px solid var(--border-subtle); }
+/* 「更多信息」：默认收起，展开后沿用同一套元数据排版（不新增第二套视觉）。 */
+.e-more { border-top: 1px solid var(--border-subtle); padding-top: 8px; }
+.e-more-summary {
+  cursor: pointer; font-size: 11.5px; color: var(--text-secondary);
+  letter-spacing: 0.03em; user-select: none;
+}
+.e-more-summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.e-more-list { border-top: none; padding-top: 6px; }
+.e-kind-readable { font-size: 11px; color: var(--text-muted); }
 .e-detail-meta-row { display: flex; gap: 10px; align-items: flex-start; }
 .e-detail-meta-row dt { flex: none; width: 48px; font-size: 11px; color: var(--text-secondary); }
 .e-detail-meta-row dd { margin: 0; min-width: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
@@ -940,7 +987,6 @@ onBeforeUnmount(() => {
   background: var(--bg-inset);
 }
 .e-guard-title { margin: 0; font-family: var(--serif); font-size: 14px; color: var(--text-strong); }
-.e-guard-detail { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--text-secondary); }
 .e-guard-actions { justify-content: flex-end; }
 /* 目标实体建议：就地浮层（替代原生 datalist） */
 .e-rel-suggest {

@@ -2,14 +2,17 @@
 /**
  * 全局搜索（契约 §3.2 / A 交付 §5）。
  *
- * 三个硬要求：
- * 1. **范围与当前标签页无关**：一次搜索同时覆盖话题 / 知识 / 实体，结果按三类分组；
- * 2. **真实数据**：话题 / 知识 / 实体都是后端全量接口，这里并行取回再按关键词匹配
+ * 三条硬要求：
+ * 1. **范围与当前标签页无关**：一次搜索覆盖话题 / 知识 / 实体，结果按来源分组；
+ * 2. **真实数据**：三个来源都是后端全量接口，各自并行取回再按关键词匹配
  *    （不构造演示数据、不前端拼假条目）；
- * 3. **旧响应不得覆盖新关键词**：每次检索自增序号，只有最新一次的结果可以落到界面。
+ * 3. **来源各自诚实**：每个来源单独维护 loading / ok / error —— 一个来源失败
+ *    只让那一个来源就地报错并可单独重试，其余来源的结果照常可用；只有全部来源
+ *    都成功且命中为 0 才是「总空态」。
  *
- * 状态区分要诚实：加载中（保留上一次结果并标记「正在搜索」）、无结果（真的没有命中）、
- * 失败（说明原因并可重试）—— 三者不能混成一个空列表。
+ * 旧响应绝不能覆盖当前关键词：每次检索自增序号，每个来源还带自己的请求序号，
+ * 落结果前做「请求序号 + 关键词 + 来源」三重校验（快速换词、单源重试、顶部刷新
+ * 都可能让旧请求晚到）。
  *
  * 结果点击只上报 hit（kind + 真实 id）：切哪个标签页、打开哪个条目由管理区决定，
  * 这样「搜索 → 打开条目 → 返回搜索结果」的上下文留在同一处。
@@ -20,14 +23,27 @@ import QInput from "../ui/QInput.vue";
 import QIconButton from "../ui/QIconButton.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import {
-  buildSearchGroups,
+  buildEntityHits,
+  buildKnowledgeHits,
+  buildTopicHits,
   SEARCH_GROUP_LIMIT,
-  type SearchGroups,
   type SearchHit,
 } from "../../planet/manageViews";
 
-/** 结果分组的键（与 SearchGroups 的三个列表同形；SearchKind 是单数，不能混用） */
-type GroupKey = "topics" | "knowledge" | "entities";
+/** 三个来源（= 结果分组的键；顺序即界面顺序） */
+type SourceKey = "topics" | "knowledge" | "entities";
+const SOURCE_KEYS: readonly SourceKey[] = ["topics", "knowledge", "entities"] as const;
+const SOURCE_TITLES: Record<SourceKey, string> = { topics: "话题", knowledge: "知识", entities: "实体" };
+
+/** 单个来源的状态：加载中 / 成功 / 失败（idle = 还没有搜索） */
+type SourceStatus = "idle" | "loading" | "ok" | "error";
+interface SourceState {
+  status: SourceStatus;
+  /** 失败原因（只在 status === "error" 时有意义） */
+  error: string;
+  /** 当前关键词下该来源的**完整**命中列表（展示层再分批，不在这里截断） */
+  hits: SearchHit[];
+}
 
 const props = withDefaults(
   defineProps<{
@@ -40,31 +56,51 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ open: [hit: SearchHit] }>();
 
-const EMPTY: SearchGroups = {
-  topics: [],
-  knowledge: [],
-  entities: [],
-  total: 0,
-  counts: { topics: 0, knowledge: 0, entities: 0 },
-};
-
 const query = ref("");
-const groups = ref<SearchGroups>(EMPTY);
-/** 已经出结果的关键词（用于文案与空状态；与输入框里的实时值区分开） */
+/** 已经出结果的关键词（与输入框里的实时值区分开） */
 const searchedFor = ref("");
-const loading = ref(false);
-const error = ref("");
+const sources = reactive<Record<SourceKey, SourceState>>({
+  topics: { status: "idle", error: "", hits: [] },
+  knowledge: { status: "idle", error: "", hits: [] },
+  entities: { status: "idle", error: "", hits: [] },
+});
 const inputRef = ref<{ $el?: HTMLInputElement } | null>(null);
 
-/** 请求序号：只接受最后一次检索的结果（旧响应一律丢弃） */
+/** 整次检索序号：换关键词 / 顶部刷新都自增，旧的一整次响应全部作废 */
 let seq = 0;
+/** 每个来源自己的请求序号：单源重试只作废这一个来源的旧响应，不影响其他来源 */
+const sourceSeq: Record<SourceKey, number> = { topics: 0, knowledge: 0, entities: 0 };
 let timer = 0;
+
+interface SourceToken {
+  /** 整次检索序号 */
+  seq: number;
+  /** 发起时的关键词 */
+  keyword: string;
+  /** 来源（三重校验的第三项） */
+  source: SourceKey;
+  /** 该来源自己的请求序号 */
+  req: number;
+}
+
+/**
+ * 三重校验：请求序号 + 关键词 + 来源（外加该来源自己的请求序号）。
+ * 任何一项对不上都说明这是旧响应 / 别的来源的响应，一律丢弃。
+ */
+function accept(key: SourceKey, token: SourceToken): boolean {
+  return (
+    token.seq === seq &&
+    token.keyword === searchedFor.value &&
+    token.source === key &&
+    token.req === sourceSeq[key]
+  );
+}
 
 /**
  * 每类当前展示到第几条（F11：分页只看展示层，命中列表与总数始终是完整的）。
  * 换关键词时重置——展开状态属于「这一次搜索」，不能带到下一次。
  */
-const shown = reactive<Record<GroupKey, number>>({
+const shown = reactive<Record<SourceKey, number>>({
   topics: SEARCH_GROUP_LIMIT,
   knowledge: SEARCH_GROUP_LIMIT,
   entities: SEARCH_GROUP_LIMIT,
@@ -77,76 +113,99 @@ function resetShown(): void {
 }
 
 /** 某一类再展开一批（每次一批，直到最后一条也可见、可点）。 */
-function showMore(kind: GroupKey): void {
-  const all = groups.value[kind];
+function showMore(kind: SourceKey): void {
+  const all = sources[kind].hits;
   shown[kind] = Math.min(all.length, shown[kind] + SEARCH_GROUP_LIMIT);
 }
 
-const visibleGroups = computed(() =>
-  (
-    [
-      { key: "topics" as const, title: "话题" },
-      { key: "knowledge" as const, title: "知识" },
-      { key: "entities" as const, title: "实体" },
-    ] as { key: GroupKey; title: string }[]
-  )
-    .filter((group) => groups.value[group.key].length > 0)
-    .map((group) => {
-      const all = groups.value[group.key];
-      const limit = Math.min(shown[group.key], all.length);
-      return {
-        key: group.key,
-        title: group.title,
-        total: groups.value.counts[group.key],
-        hits: all.slice(0, limit),
-        remaining: all.length - limit,
-      };
-    }),
-);
 const hasQuery = computed(() => query.value.trim().length > 0);
+/** 只要还有来源在加载就说明这次检索没跑完（顶部刷新按钮据此显示 busy） */
+const loading = computed(() => SOURCE_KEYS.some((key) => sources[key].status === "loading"));
+/** 当前关键词下**成功来源**的真实命中总数（失败来源不贡献数字） */
+const totalHits = computed(() => SOURCE_KEYS.reduce((sum, key) => sum + sources[key].hits.length, 0));
+const allSucceeded = computed(() => SOURCE_KEYS.every((key) => sources[key].status === "ok"));
+/** 总空态只在「全部来源都成功且命中为 0」时出现：失败不能冒充没有结果 */
 const showEmpty = computed(
-  () => !loading.value && !error.value && searchedFor.value !== "" && groups.value.total === 0,
+  () => !loading.value && searchedFor.value !== "" && allSucceeded.value && totalHits.value === 0,
 );
 
-async function runSearch(raw: string) {
-  const keyword = raw.trim();
-  const mySeq = ++seq;
-  if (!keyword) {
-    loading.value = false;
-    error.value = "";
-    groups.value = EMPTY;
-    searchedFor.value = "";
-    resetShown();
-    return;
-  }
-  loading.value = true;
-  error.value = "";
-  try {
-    // 三个接口都是全量数据源：并行取回，关键词在本地匹配（不等串行）
-    const [topics, knowledge, entities] = await Promise.all([
-      api.listTopics(),
-      api.listKnowledge(),
-      api.listEntities(),
-    ]);
-    if (mySeq !== seq) return; // 旧响应：新的关键词已经发起，丢弃这一次
-    const next = buildSearchGroups(
-      { topics: topics.topics, knowledge: knowledge.knowledge, entities: entities.entities },
-      keyword,
-    );
-    // 换关键词 = 新一代搜索：结果与展开状态一起重置（旧关键词的展开位置没有意义）。
-    if (keyword !== searchedFor.value) resetShown();
-    groups.value = next;
-    searchedFor.value = keyword;
-  } catch (e) {
-    if (mySeq !== seq) return;
-    // 失败不冒充「没有结果」：上一次结果保留，同时说清原因
-    error.value = `搜索失败：${(e as Error).message}`;
-  } finally {
-    if (mySeq === seq) loading.value = false;
+/** 按来源顺序给出「就地」块：失败来源显示错误与重试，成功来源显示分组结果 */
+const blocks = computed(() =>
+  SOURCE_KEYS.map((key) => {
+    const state = sources[key];
+    const all = state.hits;
+    const limit = Math.min(shown[key], all.length);
+    return {
+      key,
+      title: SOURCE_TITLES[key],
+      status: state.status,
+      error: state.error,
+      total: all.length,
+      hits: all.slice(0, limit),
+      remaining: all.length - limit,
+    };
+  }),
+);
+
+/** 取回单个来源并按当前关键词本地匹配（三个接口都是全量数据源） */
+async function loadSource(key: SourceKey, keyword: string): Promise<SearchHit[]> {
+  switch (key) {
+    case "topics":
+      return buildTopicHits((await api.listTopics()).topics, keyword);
+    case "knowledge":
+      return buildKnowledgeHits((await api.listKnowledge()).knowledge, keyword);
+    case "entities":
+      return buildEntityHits((await api.listEntities()).entities, keyword);
   }
 }
 
-function scheduleSearch(raw: string) {
+/**
+ * 跑单个来源：只有通过三重校验的响应才允许落到界面。
+ * 失败时清掉该来源的旧命中（旧关键词的结果不能挂在失败状态下面冒充当前结果）。
+ */
+async function runSource(key: SourceKey, keyword: string, options: { resetHits: boolean }): Promise<void> {
+  const req = ++sourceSeq[key];
+  const token: SourceToken = { seq, keyword, source: key, req };
+  const state = sources[key];
+  if (options.resetHits) state.hits = [];
+  state.status = "loading";
+  state.error = "";
+  try {
+    const hits = await loadSource(key, keyword);
+    if (!accept(key, token)) return;
+    state.hits = hits;
+    state.status = "ok";
+  } catch (e) {
+    if (!accept(key, token)) return;
+    state.hits = [];
+    state.status = "error";
+    state.error = (e as Error).message || "未知错误";
+  }
+}
+
+/** 整次检索：三个来源并行跑，各自落各自的成功 / 失败状态 */
+async function runSearch(raw: string): Promise<void> {
+  const keyword = raw.trim();
+  seq += 1;
+  if (!keyword) {
+    searchedFor.value = "";
+    for (const key of SOURCE_KEYS) {
+      sourceSeq[key] += 1;
+      sources[key].status = "idle";
+      sources[key].error = "";
+      sources[key].hits = [];
+    }
+    resetShown();
+    return;
+  }
+  // 换关键词 = 新一代搜索：上一关键词的结果与展开状态都不能留在界面上
+  const keywordChanged = keyword !== searchedFor.value;
+  searchedFor.value = keyword;
+  if (keywordChanged) resetShown();
+  await Promise.all(SOURCE_KEYS.map((key) => runSource(key, keyword, { resetHits: keywordChanged })));
+}
+
+function scheduleSearch(raw: string): void {
   window.clearTimeout(timer);
   const wait = Math.max(0, props.debounceMs);
   if (wait === 0) {
@@ -158,9 +217,16 @@ function scheduleSearch(raw: string) {
 
 watch(query, (value) => scheduleSearch(value));
 
-/** 重试：同一个关键词再走一遍（失败后不必重新输入） */
-function retry() {
+/** 顶部刷新：用当前关键词重跑**全部**来源（不是只补失败的那一个） */
+function retry(): void {
   void runSearch(query.value);
+}
+
+/** 单源重试：只重跑这一个来源，其余来源的结果保持原样可用 */
+function retrySource(key: SourceKey): void {
+  const keyword = searchedFor.value;
+  if (!keyword) return;
+  void runSource(key, keyword, { resetHits: true });
 }
 
 /** 切回搜索视图时把焦点放回输入框（结果与滚动位置保持原样） */
@@ -198,7 +264,6 @@ onBeforeUnmount(() => window.clearTimeout(timer));
       <QIconButton
         icon="refresh"
         label="重新搜索"
-        description="用当前关键词重新搜索一次"
         size="sm"
         :busy="loading"
         :disabled="!hasQuery"
@@ -206,24 +271,37 @@ onBeforeUnmount(() => window.clearTimeout(timer));
       />
     </div>
 
-    <p v-if="loading" class="gs-status" role="status">正在搜索「{{ query.trim() }}」…</p>
-    <div v-else-if="error" class="gs-error" role="alert">
-      <span>{{ error }}</span>
-      <button class="qio-btn mini" type="button" @click="retry">重试</button>
-    </div>
+    <p v-if="loading" class="gs-status" role="status">正在搜索「{{ searchedFor }}」…</p>
 
     <div class="gs-scroll" v-qio-scrollbar data-qio-fit data-mp-search-results data-scroll="search-results">
-      <p v-if="!hasQuery" class="gs-hint">
-        一次搜索同时覆盖话题、知识和实体，与当前标签页无关。
-      </p>
-      <template v-else-if="searchedFor && groups.total > 0">
-        <p class="gs-summary mono">「{{ searchedFor }}」共 {{ groups.total }} 项结果</p>
-        <section v-for="group in visibleGroups" :key="group.key" class="gs-group">
-          <h3 class="gs-group-title serif">
-            {{ group.title }}（{{ group.total }}）
-          </h3>
+      <p v-if="searchedFor && totalHits > 0" class="gs-summary mono">「{{ searchedFor }}」共 {{ totalHits }} 项结果</p>
+      <!-- 按来源「就地」呈现：失败来源只影响自己（错误 + 单源重试），其余结果照常可点 -->
+      <template v-for="block in blocks" :key="block.key">
+        <div
+          v-if="block.status === 'error'"
+          class="gs-source-error"
+          role="alert"
+          :data-search-source-error="block.key"
+        >
+          <span class="gs-source-error-text">{{ block.title }}搜索失败：{{ block.error }}</span>
+          <button
+            class="qio-btn mini"
+            type="button"
+            :data-search-source-retry="block.key"
+            @click="retrySource(block.key)"
+          >
+            重试
+          </button>
+        </div>
+        <section
+          v-else-if="block.hits.length > 0"
+          class="gs-group"
+          :data-search-source="block.key"
+          :data-source-status="block.status"
+        >
+          <h3 class="gs-group-title serif">{{ block.title }}（{{ block.total }}）</h3>
           <ul class="gs-list">
-            <li v-for="hit in group.hits" :key="`${hit.kind}:${hit.id}`">
+            <li v-for="hit in block.hits" :key="`${hit.kind}:${hit.id}`">
               <button
                 class="gs-hit"
                 type="button"
@@ -237,17 +315,17 @@ onBeforeUnmount(() => window.clearTimeout(timer));
             </li>
           </ul>
           <button
-            v-if="group.remaining > 0"
+            v-if="block.remaining > 0"
             class="qio-btn mini gs-more"
             type="button"
-            :data-search-more="group.key"
-            @click="showMore(group.key)"
+            :data-search-more="block.key"
+            @click="showMore(block.key)"
           >
-            查看更多（还剩 {{ group.remaining }} 条）
+            查看更多（还剩 {{ block.remaining }} 条）
           </button>
         </section>
       </template>
-      <p v-else-if="showEmpty" class="gs-hint">
+      <p v-if="showEmpty" class="gs-hint">
         「{{ searchedFor }}」没有匹配的话题、知识或实体。换个说法试试。
       </p>
     </div>
@@ -269,19 +347,29 @@ onBeforeUnmount(() => window.clearTimeout(timer));
   gap: var(--sp-2);
   flex: none;
 }
-.gs-status,
-.gs-error {
+.gs-status {
   flex: none;
   font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text-muted);
 }
-.gs-error {
+/* 单来源失败：就在这个来源该出现的位置说明原因，并给出只重试它自己的按钮 */
+.gs-source-error {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+  padding: 8px 10px;
+  border: 1px solid var(--border-danger);
+  border-radius: var(--qio-ui-radius);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
   color: var(--danger);
+}
+.gs-source-error-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .gs-scroll {
   flex: 1 1 auto;

@@ -18,7 +18,7 @@
  *   带 expected_*，409 就刷新真实状态并说明，**绝不**先确认原文再改；
  * - 动作只在详情里出现，列表只负责「有什么在等我决定」。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { getActivePinia } from "pinia";
 import { api, type PendingKnowledgeRef, type PendingItemView } from "../../services/api";
 import {
@@ -88,16 +88,41 @@ const EPISTEMIC_LABELS: Record<string, string> = {
   qio_inference: "QIO 推测",
 };
 
-// -- 读取 -------------------------------------------------------------------
+// -- 读取（按来源分别维护 loading / error / empty / success） -----------------
+
+type SourceKey = "memory" | "candidates";
+type SourceStatus = "idle" | "loading" | "success" | "error";
+interface SourceState {
+  status: SourceStatus;
+  /** 最近一次读取失败的真实原因：同一来源每次刷新整条替换，不叠加 */
+  error: string;
+  /** 服务端附带的警告：同一来源每次刷新整组替换，不叠加 */
+  warnings: string[];
+  /** 维护事项存储不可用时后端如实返回 false（只有记忆待确认来源有这个概念） */
+  available: boolean;
+}
+
+const SOURCE_ORDER: SourceKey[] = ["memory", "candidates"];
+const SOURCE_LABELS: Record<SourceKey, string> = {
+  memory: "记忆待确认",
+  candidates: "实体更新候选",
+};
+
+/** 每个来源各自的真实状态：一个来源失败不影响另一来源展示与状态。 */
+const sources = reactive<Record<SourceKey, SourceState>>({
+  memory: { status: "idle", error: "", warnings: [], available: true },
+  candidates: { status: "idle", error: "", warnings: [], available: true },
+});
+/** 每个来源各自的数据：读取失败只清空该来源，成功来源的数据照常展示。 */
+const memoryItems = ref<PendingItemView[]>([]);
+const candidateItems = ref<EntityCandidateView[]>([]);
+/** 请求代号：只有最后一次读取能落地，重复刷新不会互相覆盖或叠加错误。 */
+const sourceToken: Record<SourceKey, number> = { memory: 0, candidates: 0 };
 
 const rows = ref<PendingRow[]>([]);
-const loading = ref(false);
-const loadError = ref("");
-const warnings = ref<string[]>([]);
 const memoryTotal = ref(0);
 const candidateTotal = ref(0);
 const truncated = ref(false);
-const maintenanceAvailable = ref(true);
 const feedback = useActionFeedback();
 const pendingStore = getActivePinia() ? usePlanetPendingStore() : null;
 function refreshPendingCount() {
@@ -149,6 +174,40 @@ function clearFilters() {
 const totalCount = computed(() => memoryTotal.value + candidateTotal.value);
 const hiddenCount = computed(() => Math.max(0, rows.value.length - filtered.value.length));
 
+/** 是否有来源正在读取（按钮「刷新中」与初次「加载中」都用它）。 */
+const loading = computed(() => SOURCE_ORDER.some((key) => sources[key].status === "loading"));
+/** 读取失败的来源（一处状态说明失败范围，而不是把局部失败当总空态）。 */
+const failedSources = computed(() =>
+  SOURCE_ORDER.filter((key) => sources[key].status === "error").map((key) => ({
+    key,
+    label: SOURCE_LABELS[key],
+    error: sources[key].error,
+  })),
+);
+const allSourcesFailed = computed(() => failedSources.value.length === SOURCE_ORDER.length);
+/** 只有全部来源都成功读取，才允许说「总空态」。 */
+const allSourcesSucceeded = computed(() =>
+  SOURCE_ORDER.every((key) => sources[key].status === "success"),
+);
+/** 维护事项存储不可用（后端如实返回 available=false）：跟着记忆来源一起显示。 */
+const maintenanceAvailable = computed(() => sources.memory.available);
+/** 服务端警告：按来源整组替换后平铺展示，重复刷新不会叠加旧警告。 */
+const sourceWarnings = computed(() => {
+  const out: string[] = [];
+  for (const key of SOURCE_ORDER) {
+    const source = sources[key];
+    if (source.status !== "success") continue;
+    if (key === "memory" && !source.available) {
+      out.push(
+        source.warnings[0] || "维护事项存储不可用：后台维护问题暂无数据可读（不伪造数据）。",
+      );
+      continue;
+    }
+    out.push(...source.warnings);
+  }
+  return out;
+});
+
 function shortText(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -197,58 +256,81 @@ function rowOfCandidate(c: EntityCandidateView): PendingRow {
   };
 }
 
-async function load() {
-  loading.value = true;
-  loadError.value = "";
-  try {
-    const [memoryResult, candidateResult] = await Promise.allSettled([
-      (async () => api.listMemoryPending({ limit: 500 }))(),
-      (async () => listAllCandidates(true, 500))(),
-    ]);
-    const problems: string[] = [];
-    let memoryOk = false;
-    let candidatesOk = false;
-    if (memoryResult.status === "fulfilled") {
-      memoryOk = true;
-      const listing = memoryResult.value;
-      memoryTotal.value = Number.isFinite(listing.total) ? listing.total : listing.items.length;
-      maintenanceAvailable.value = listing.maintenance_available !== false;
-      truncated.value = Boolean(listing.truncated);
-      warnings.value = listing.warnings || [];
-    } else {
-      problems.push("读取记忆待确认失败：" + ((memoryResult.reason as Error)?.message || "未知原因"));
-    }
-    if (candidateResult.status === "fulfilled") {
-      candidatesOk = true;
-      const listing = candidateResult.value;
-      candidateTotal.value = Number.isFinite(listing.total) ? listing.total : listing.candidates.length;
-    } else {
-      problems.push(
-        "读取实体更新候选失败：" + ((candidateResult.reason as Error)?.message || "未知原因"),
-      );
-    }
-    if (!memoryOk && !candidatesOk) {
-      loadError.value = problems.join(" ");
-      return;
-    }
-    if (problems.length) warnings.value = [...warnings.value, ...problems];
-    const nextRows: PendingRow[] = [];
-    if (memoryResult.status === "fulfilled") {
-      for (const item of memoryResult.value.items) nextRows.push(rowOfMemory(item));
-    }
-    if (candidateResult.status === "fulfilled") {
-      for (const candidate of candidateResult.value.candidates) nextRows.push(rowOfCandidate(candidate));
-    }
-    nextRows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
-    rows.value = nextRows;
-    if (view.value === "detail" && activeKey.value && !nextRows.some((r) => r.key === activeKey.value)) {
-      activeKey.value = null;
-    }
-  } catch (error) {
-    loadError.value = "加载待处理事项失败：" + ((error as Error).message || "未知原因");
-  } finally {
-    loading.value = false;
+function failureReason(error: unknown): string {
+  return (error as Error)?.message || "未知原因";
+}
+
+/** 用两个来源各自的权威数据重建列表（失败来源不保留旧数据，避免把过期内容当现状）。 */
+function rebuildRows() {
+  const nextRows: PendingRow[] = [
+    ...memoryItems.value.map(rowOfMemory),
+    ...candidateItems.value.map(rowOfCandidate),
+  ];
+  nextRows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  rows.value = nextRows;
+  if (view.value === "detail" && activeKey.value && !nextRows.some((r) => r.key === activeKey.value)) {
+    activeKey.value = null;
   }
+}
+
+async function loadMemorySource() {
+  const token = ++sourceToken.memory;
+  sources.memory.status = "loading";
+  sources.memory.error = "";
+  sources.memory.warnings = [];
+  try {
+    const listing = await api.listMemoryPending({ limit: 500 });
+    if (token !== sourceToken.memory) return;
+    memoryItems.value = listing.items;
+    memoryTotal.value = Number.isFinite(listing.total) ? listing.total : listing.items.length;
+    sources.memory.available = listing.maintenance_available !== false;
+    sources.memory.warnings = listing.warnings || [];
+    truncated.value = Boolean(listing.truncated);
+    sources.memory.status = "success";
+  } catch (error) {
+    if (token !== sourceToken.memory) return;
+    memoryItems.value = [];
+    sources.memory.warnings = [];
+    truncated.value = false;
+    sources.memory.status = "error";
+    sources.memory.error =
+      "暂时读不到待处理事项（" + SOURCE_LABELS.memory + "）：" + failureReason(error);
+  } finally {
+    if (token === sourceToken.memory) {
+      if (sources.memory.status === "loading") sources.memory.status = "error";
+      rebuildRows();
+    }
+  }
+}
+
+async function loadCandidateSource() {
+  const token = ++sourceToken.candidates;
+  sources.candidates.status = "loading";
+  sources.candidates.error = "";
+  sources.candidates.warnings = [];
+  try {
+    const listing = await listAllCandidates(true, 500);
+    if (token !== sourceToken.candidates) return;
+    candidateItems.value = listing.candidates;
+    candidateTotal.value = Number.isFinite(listing.total) ? listing.total : listing.candidates.length;
+    sources.candidates.status = "success";
+  } catch (error) {
+    if (token !== sourceToken.candidates) return;
+    candidateItems.value = [];
+    sources.candidates.status = "error";
+    sources.candidates.error =
+      "暂时读不到待处理事项（" + SOURCE_LABELS.candidates + "）：" + failureReason(error);
+  } finally {
+    if (token === sourceToken.candidates) {
+      if (sources.candidates.status === "loading") sources.candidates.status = "error";
+      rebuildRows();
+    }
+  }
+}
+
+/** 两个来源并发读取、各自落地：一个失败不影响另一个的成功数据。 */
+async function load() {
+  await Promise.all([loadMemorySource(), loadCandidateSource()]);
 }
 
 // -- 列表 ↔ 详情 -------------------------------------------------------------
@@ -602,17 +684,30 @@ onBeforeUnmount(() => {
       </div>
 
       <p v-if="notice" class="p-notice" role="status">{{ notice }}</p>
-      <p v-if="!maintenanceAvailable" class="p-warn" role="status">
-        {{ warnings[0] || "维护事项存储不可用：后台维护问题暂无数据可读（不伪造数据）。" }}
-      </p>
-      <p v-else-if="warnings.length" class="p-warn" role="status">{{ warnings.join(" ") }}</p>
+      <!-- 失败范围集中在这一处：逐来源说明「暂时读不到」，成功来源的数据照常留在下面。 -->
+      <div
+        v-if="failedSources.length"
+        class="p-source-status"
+        :class="{ 'p-error': allSourcesFailed }"
+        role="alert"
+        data-pending-source-status
+      >
+        <p
+          v-for="source in failedSources"
+          :key="source.key"
+          class="p-source-failure"
+          :data-pending-source="source.key"
+        >
+          {{ source.error }}
+        </p>
+        <button class="qio-btn mini p-retry" type="button" :disabled="loading" @click="load">
+          {{ loading ? "重试中…" : "重试" }}
+        </button>
+      </div>
+      <p v-if="sourceWarnings.length" class="p-warn" role="status">{{ sourceWarnings.join(" ") }}</p>
       <p v-if="truncated" class="hint">服务端一次只返回一部分，列表可能不是全部。</p>
 
-      <div v-if="loading && !rows.length" class="hint">加载中…</div>
-      <div v-else-if="loadError" class="p-error" role="alert">
-        <span>{{ loadError }}</span>
-        <button class="qio-btn mini" type="button" @click="load">重试</button>
-      </div>
+      <div v-if="loading && !rows.length && !failedSources.length" class="hint">加载中…</div>
       <template v-else>
         <ul class="p-list">
           <li
@@ -643,12 +738,13 @@ onBeforeUnmount(() => {
               <span class="p-value candidate">{{ formatValue(row.candidate.candidate_value) }}</span>
             </p>
           </li>
-          <li v-if="!filtered.length" class="hint p-empty">
+          <li v-if="!filtered.length" class="hint p-empty" data-pending-empty>
             <template v-if="rows.length && hasFilters">
               没有匹配当前筛选的待处理事项。
               <button class="link p-clear-filters" type="button" @click="clearFilters">清除筛选</button>
             </template>
-            <template v-else>暂无待处理事项。</template>
+            <!-- 只有全部来源都成功读到、且确实为空，才说总空态。 -->
+            <template v-else-if="allSourcesSucceeded">暂无待处理事项。</template>
           </li>
         </ul>
         <p v-if="hiddenCount > 0" class="hint p-hidden">当前筛选隐藏了 {{ hiddenCount }} 项。</p>
@@ -917,6 +1013,13 @@ onBeforeUnmount(() => {
 .link:hover { text-decoration: underline; }
 .p-notice { margin: 0; font-size: 12px; color: var(--text-secondary); }
 .p-warn { margin: 0; font-size: 12px; line-height: 1.6; color: var(--warning); }
+.p-source-status {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: var(--qio-ui-radius); font-size: 12px;
+  border: 1px solid var(--warning); background: var(--bg-inset); color: var(--warning);
+}
+.p-source-status.p-error { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.p-source-failure { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
 .p-hidden { margin: 0; }
 .p-card { display: flex; flex-direction: column; gap: 10px; padding: var(--sp-4); }
 .p-empty-detail { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }

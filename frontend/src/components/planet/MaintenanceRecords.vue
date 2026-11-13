@@ -151,7 +151,7 @@ async function loadBatches() {
     listLoaded.value = true;
   } catch (error) {
     console.error("[maintenance-records] batches failed:", error);
-    listError.value = "加载整理记录失败：" + ((error as Error).message || "未知原因");
+    listError.value = "暂时读不到整理记录：" + ((error as Error).message || "未知原因");
   } finally {
     listLoading.value = false;
   }
@@ -305,6 +305,12 @@ const maintenanceItems = computed(() => {
 
 const restoreArbiter = useModalArbiterStore();
 const restoreDialogOpen = ref(false);
+/**
+ * 弹窗的稳定身份：打开时确定，关闭过程中**不能**跟着 restoreTarget 一起变空。
+ * 否则 dialog 关闭时按空 id 去仲裁器注销，原 id 永远留在栈里 —— 之后所有恢复弹窗都会被
+ * 「另一个中央弹窗正在处理」挡住（只读历史态关闭后复现）。
+ */
+const restoreModalId = ref("");
 const restoreTarget = ref<{ batch_id?: string; item_id?: string } | null>(null);
 const restoreTargetLabel = ref("");
 const restoreDialogTitle = ref("整批撤回这次记忆整理？");
@@ -327,9 +333,18 @@ async function previewRestore(target: { batch_id?: string; item_id?: string }) {
   previewData.value = null;
   try {
     const result = await api.previewMaintenanceRestore(target);
-    previewData.value = result.preview;
+    const preview = result.preview;
+    // 服务端明确拒绝（ok=false）：这是「读不到可信预览」，不是「确实没有可撤回的内容」。
+    if (preview && preview.ok === false) {
+      previewData.value = null;
+      previewError.value =
+        "暂时读不到可撤回的内容：" + (shortText(preview.error) || "服务端没有返回可撤回的影响预览");
+      return;
+    }
+    previewData.value = preview;
   } catch (error) {
-    previewError.value = "恢复预览失败：" + ((error as Error).message || "未知原因");
+    // 读取失败：如实说「暂时读不到」，绝不把读取失败当成「没有可撤回的内容」。
+    previewError.value = "暂时读不到可撤回的内容：" + ((error as Error).message || "未知原因");
   } finally {
     previewLoading.value = false;
   }
@@ -347,6 +362,7 @@ function openRestoreDialog(
   const modalId = target.batch_id
     ? "memory-batch-restore:" + target.batch_id
     : "memory-item-restore:" + (target.item_id || "");
+  restoreModalId.value = modalId;
   const allowed = restoreArbiter.open({ id: modalId, kind: "recovery", dismissible: true });
   if (!allowed) {
     restoreBlocked.value = "另一个中央弹窗正在处理，先完成或关闭它，再执行恢复。";
@@ -396,9 +412,10 @@ const previewItems = computed<{ label: string; tone: string; title: string; reas
       const reasons = stringList(operation.reasons);
       const product = isRecord(operation.product) ? operation.product : {};
       const productReason = shortText(product.reason);
-      const reason = (reasons.length ? reasons : productReason ? [productReason] : []).join("；");
       const action = shortText(operation.action) || "操作";
       const operationId = shortText(operation.operation_id) || "未标注操作";
+      const rawReason = (reasons.length ? reasons : productReason ? [productReason] : []).join("；");
+      const reason = humanizeRestoreReason(operationId, rawReason);
       const ids = targetIdsOf(operation.targets) || shortText(product.id);
       let label = "不可安全恢复";
       let tone = "quiet";
@@ -415,7 +432,8 @@ const previewItems = computed<{ label: string; tone: string; title: string; reas
       return {
         label,
         tone,
-        title: action + " · " + operationId + (ids ? " · " + ids : ""),
+        // 主信息是知识名称；只有预览与操作记录都拿不到内容时，才退回动作 + 内部 id。
+        title: readableOperationTitle(operationId) || action + " · " + operationId + (ids ? " · " + ids : ""),
         reason,
       };
     });
@@ -428,7 +446,8 @@ const previewItems = computed<{ label: string; tone: string; title: string; reas
     return {
       label: restorable ? "可恢复" : "不可安全恢复",
       tone: restorable ? "ok" : "quiet",
-      title: content ? id + "：" + content : id,
+      // 有内容就用内容当主信息；没有内容才退回 id（不把裸 id 当主信息）。
+      title: content || id,
       reason: shortText(entry.reason),
     };
   });
@@ -479,64 +498,270 @@ const restoreDialogItems = computed<RestoreDialogItem[]>(() => {
   });
 });
 
-/** 恢复结果的可读视图：已恢复 / 无法安全恢复（逐项原因）。 */
-const restoreOperationViews = computed(() => {
+const RESTORE_STATUS_LABELS: Record<string, string> = {
+  rolled_back: "已撤回（全部完成）",
+  restored: "恢复已完成",
+  already_rolled_back: "此前已撤回",
+  already_restored: "此前已恢复",
+  rollback_partial: "部分恢复",
+  partial: "部分恢复",
+  nothing_to_restore: "没有可撤回的内容",
+  failed: "恢复失败",
+};
+
+interface SnapshotEntry {
+  id: string;
+  content: string;
+}
+interface OperationContext {
+  action: string;
+  at: string;
+  /** 操作涉及的快照内容（用户可辨认的知识名称） */
+  names: string[];
+  /** 快照 id → 内容：把服务端原因里的裸 id 换成人能读懂的名称 */
+  byId: Map<string, string>;
+}
+interface RestoreResultEntry {
+  key: string;
+  label: string;
+  tone: string;
+  /** 主信息是知识名称（来自预览 / 批次操作记录的真实内容），不是裸 id */
+  title: string;
+  reason: string;
+  detail: {
+    operationId: string;
+    status: string;
+    restoredIds: string;
+    blockedIds: string;
+    at: string;
+  };
+}
+interface RestoreResultView {
+  label: string;
+  tone: string;
+  restoredCount: number;
+  blockedCount: number;
+  note: string;
+  entries: RestoreResultEntry[];
+}
+
+function snapshotEntriesOf(value: unknown): SnapshotEntry[] {
+  return entriesOf(value)
+    .map((entry) => ({ id: shortText(entry.id) || shortText(entry.knowledge_id), content: shortText(entry.content) }))
+    .filter((entry) => Boolean(entry.id || entry.content));
+}
+
+/** operation_id → 可读上下文：来自批次操作记录与恢复预览（都只消费服务端真实字段）。 */
+const operationContext = computed<Map<string, OperationContext>>(() => {
+  const map = new Map<string, OperationContext>();
+  const push = (operationId: string, action: string, at: string, snapshots: SnapshotEntry[]) => {
+    if (!operationId) return;
+    const existing = map.get(operationId);
+    const byId = new Map(existing?.byId || []);
+    for (const snapshot of snapshots) {
+      if (snapshot.id && snapshot.content) byId.set(snapshot.id, snapshot.content);
+    }
+    const names = [...(existing?.names || []), ...snapshots.map((snapshot) => snapshot.content)].filter(Boolean);
+    map.set(operationId, {
+      action: action || existing?.action || "",
+      at: at || existing?.at || "",
+      names: [...new Set(names)],
+      byId,
+    });
+  };
+  for (const record of detail.value?.operations || []) {
+    const before = snapshotEntriesOf(record.before);
+    const after = snapshotEntriesOf(record.after);
+    // 主信息用「恢复前的知识内容」（真正会被恢复的对象）；after 只用于把原因里的 id 换成名称。
+    push(String(record.id || ""), record.action || "", record.created_at || "", before);
+    const current = map.get(String(record.id || ""));
+    if (current) {
+      for (const snapshot of after) {
+        if (snapshot.id && snapshot.content) current.byId.set(snapshot.id, snapshot.content);
+      }
+    }
+  }
+  for (const plan of entriesOf(previewOf()?.operations)) {
+    const snapshots = entriesOf(plan.targets).flatMap((target) =>
+      snapshotEntriesOf(isRecord(target.before) ? [target.before] : []),
+    );
+    push(shortText(plan.operation_id), shortText(plan.action), "", snapshots);
+  }
+  return map;
+});
+
+/** 把服务端原因里的裸 id 换成人能读懂的知识名称（映射不到就保留原样）。 */
+function humanizeRestoreReason(operationId: string, reason: string): string {
+  const context = operationContext.value.get(operationId);
+  if (!context || !reason) return reason;
+  return reason
+    .split(/[；;]/)
+    .map((part) => {
+      const trimmed = part.trim();
+      const index = trimmed.search(/[：:]/);
+      if (index > 0) {
+        const rawId = trimmed.slice(0, index).trim();
+        const content = context.byId.get(rawId);
+        if (content) return content + trimmed.slice(index);
+      }
+      return trimmed;
+    })
+    .filter(Boolean)
+    .join("；");
+}
+
+/** 可辨认的操作标题：知识名称（来自预览 / 操作记录），拿不到才返回空串让调用方兜底。 */
+function readableOperationTitle(operationId: string): string {
+  if (!operationId) return "";
+  const names = operationContext.value.get(operationId)?.names || [];
+  const unique = [...new Set(names.filter(Boolean))];
+  if (!unique.length) return "";
+  const head = unique.slice(0, 3).join("；");
+  return unique.length > 3 ? head + " 等 " + unique.length + " 条" : head;
+}
+
+/** 结果条目主信息：知识名称，拿不到才说「未标注整理对象」（不把裸 id 当主信息）。 */
+function restoreEntryTitle(operationId: string): string {
+  return readableOperationTitle(operationId) || "未标注整理对象";
+}
+
+function stringIdList(value: unknown): string {
+  return stringList(value).join("、");
+}
+
+/**
+ * 恢复结果的可读视图：知识名称 + 已恢复数量 + 未恢复原因；
+ * 原始 id / 状态枚举 / 时间戳放进默认收起的展开详情。
+ */
+const restoreResultView = computed<RestoreResultView>(() => {
+  const view: RestoreResultView = {
+    label: "",
+    tone: "quiet",
+    restoredCount: 0,
+    blockedCount: 0,
+    note: "",
+    entries: [],
+  };
   const result = restoreResult.value;
-  const restored: { label: string; tone: string; title: string; reason: string }[] = [];
-  const blocked: { label: string; tone: string; title: string; reason: string }[] = [];
-  if (!result) return { restored, blocked };
+  if (!result) return view;
+  const status = String(result.status || "");
+  view.label = RESTORE_STATUS_LABELS[status] || (result.ok ? "恢复结果" : "恢复未完成");
+  view.tone = ["rolled_back", "restored", "already_rolled_back", "already_restored", "nothing_to_restore"].includes(status)
+    ? "ok"
+    : status
+      ? "warn"
+      : result.ok
+        ? "ok"
+        : "warn";
+  view.restoredCount = typeof result.restored === "number" ? result.restored : 0;
+  view.blockedCount = typeof result.blocked === "number" ? result.blocked : 0;
+
   const data = result.result ?? undefined;
   const topOperations = result.operations ?? data?.operations;
-  if (topOperations !== undefined) {
-    for (const operation of entriesOf(topOperations)) {
-      const status = shortText(operation.status);
-      const reasons = stringList(operation.reasons);
-      const ids = [
-        ...stringList(operation.restored_knowledge_ids),
-        ...stringList(operation.blocked_knowledge_ids),
-      ].join("、");
-      const title = (shortText(operation.operation_id) || "未标注操作") + (ids ? " · " + ids : "");
-      if (status === "restored" || status === "already_restored") {
-        restored.push({
-          label: status === "already_restored" ? "已恢复过" : "已恢复",
-          tone: "ok",
-          title,
-          reason: reasons.join("；"),
-        });
-      } else {
-        blocked.push({
-          label: status === "partial" ? "部分恢复" : "无法安全恢复",
-          tone: status === "failed" ? "warn" : "quiet",
-          title,
-          reason: reasons.join("；"),
-        });
-      }
+  const restored: RestoreResultEntry[] = [];
+  const blocked: RestoreResultEntry[] = [];
+  for (const operation of entriesOf(topOperations)) {
+    const operationId = shortText(operation.operation_id);
+    if (!operationId) continue;
+    const operationStatus = shortText(operation.status);
+    const reasons = stringList(operation.reasons).join("；");
+    const entry: RestoreResultEntry = {
+      key: operationId,
+      label: "无法安全恢复",
+      tone: "quiet",
+      title: restoreEntryTitle(operationId),
+      reason: humanizeRestoreReason(operationId, reasons),
+      detail: {
+        operationId,
+        status: operationStatus,
+        restoredIds: stringIdList(operation.restored_knowledge_ids),
+        blockedIds: stringIdList(operation.blocked_knowledge_ids),
+        at: operationContext.value.get(operationId)?.at || "",
+      },
+    };
+    if (operationStatus === "restored") {
+      restored.push({ ...entry, label: "已恢复", tone: "ok" });
+    } else if (operationStatus === "already_restored") {
+      restored.push({ ...entry, label: "此前已恢复过", tone: "ok" });
+    } else if (operationStatus === "partial") {
+      blocked.push({ ...entry, label: "部分恢复", tone: "warn" });
+    } else if (operationStatus === "failed") {
+      blocked.push({ ...entry, label: "恢复失败", tone: "warn" });
+    } else {
+      blocked.push(entry);
     }
   }
   if (!restored.length && !blocked.length) {
     for (const entry of entriesOf(result.blocked_reasons)) {
+      const operationId = shortText(entry.operation_id);
+      if (!operationId) continue;
       blocked.push({
+        key: operationId,
         label: "无法安全恢复",
         tone: "quiet",
-        title: shortText(entry.operation_id) || "未标注操作",
-        reason: stringList(entry.reasons).join("；"),
+        title: restoreEntryTitle(operationId),
+        reason: humanizeRestoreReason(operationId, stringList(entry.reasons).join("；")),
+        detail: {
+          operationId,
+          status: "blocked",
+          restoredIds: "",
+          blockedIds: "",
+          at: operationContext.value.get(operationId)?.at || "",
+        },
       });
     }
   }
-  return { restored, blocked };
+  if (!view.restoredCount) view.restoredCount = restored.length;
+  if (!view.blockedCount) view.blockedCount = blocked.length;
+  view.entries = [...restored, ...blocked];
+
+  // 区分「已撤回」「部分恢复」「失败」：一条都没恢复时不能写成部分恢复。
+  if (status === "rollback_partial" || status === "partial") {
+    if (view.restoredCount > 0) {
+      view.label = "部分恢复";
+    } else if (view.entries.some((entry) => entry.label === "恢复失败")) {
+      view.label = "恢复失败";
+    } else {
+      view.label = "未能恢复";
+    }
+  }
+
+  if (status === "already_rolled_back") {
+    view.note = "服务端确认这次整理此前已经撤回，本次没有再次执行任何撤回写入。";
+  } else if (status === "nothing_to_restore") {
+    view.note = "服务端确认没有可撤回的内容，本次没有执行任何写入。";
+  } else if (status === "rollback_partial" || status === "partial") {
+    view.note =
+      view.restoredCount > 0
+        ? "有部分内容没有恢复：下面逐项列出未恢复原因；历史不会被删除，已恢复的项已如实计入。"
+        : "本次没有任何内容被恢复：下面逐项列出真实原因；历史不会被删除，也不会覆盖你后来的修改。";
+  } else {
+    view.note = "恢复通过新的版本记录实现，历史不会被删除。";
+  }
+  return view;
 });
 
 /** 恢复是否「全部完成」：部分失败时也返回 ok=true + status=rollback_partial，必须如实说。 */
-const restoreCompleted = computed(() => {
-  const result = restoreResult.value;
-  if (!result) return false;
-  const status = String(result.status || "");
-  if (!status) return Boolean(result.ok);
-  return (
-    Boolean(result.ok) &&
-    ["restored", "rolled_back", "already_restored", "nothing_to_restore"].includes(status)
-  );
+const restoreCompleted = computed(() => restoreResultView.value.tone === "ok");
+
+/** 预览是否已经确认「没有可恢复项」：此时只展示历史结果，不提供再次执行的确认入口。 */
+const previewRestorableCount = computed(() => {
+  const data = previewOf();
+  const num = (key: string) => (typeof data?.[key] === "number" ? (data[key] as number) : 0);
+  return num("restoreable_count") + num("partial_count");
 });
+const previewHistoryOnly = computed(() => {
+  if (!previewOf() || previewLoading.value || previewError.value) return false;
+  return previewRestorableCount.value === 0;
+});
+const restoreHistoryNote = computed(() => {
+  const batchStatus = detail.value?.batch.status || "";
+  if (batchStatus === "rolled_back" || batchStatus === "rollback_partial") {
+    return "这次整理已经撤回，没有可再次恢复的内容；下面是服务端返回的历史结果，不会执行任何写入。";
+  }
+  return "服务端确认没有可再次执行恢复的内容；下面是真实结果，不会执行任何写入。";
+});
+const batchRolledBack = computed(() => detail.value?.batch.status === "rolled_back");
 
 // -- 生命周期 ---------------------------------------------------------------
 
@@ -680,9 +905,15 @@ onBeforeUnmount(() => {
               class="qio-btn mini mr-preview-batch"
               type="button"
               :disabled="restoreLoading"
-              @click="openRestoreDialog({ batch_id: detail.batch.id }, '整批撤回这次记忆整理？', '整批撤回')"
-            >整批撤回…</button>
-            <span class="hint">撤回不删除历史；整理之后又被你改过的部分会被拒绝并说明原因。</span>
+              @click="
+                openRestoreDialog(
+                  { batch_id: detail.batch.id },
+                  batchRolledBack ? '这次整理已经撤回' : '整批撤回这次记忆整理？',
+                  batchRolledBack ? '查看撤回情况' : '整批撤回',
+                )
+              "
+            >{{ batchRolledBack ? "查看撤回情况…" : "整批撤回…" }}</button>
+            <span class="hint">撤回不删除历史；整理之后又被你改过的部分会被拒绝并说明原因。已撤回且没有可恢复项时只显示历史结果。</span>
           </div>
         </section>
 
@@ -690,29 +921,54 @@ onBeforeUnmount(() => {
           <span>{{ restoreError }}</span>
         </div>
 
-        <!-- 恢复结果（可读状态，不是原始日志） -->
-        <section v-if="restoreResult" class="mr-result qio-card" aria-label="恢复结果">
+        <!-- 恢复结果（可读状态，不是原始日志）：知识名称 + 数量 + 未恢复原因，原始信息默认收起 -->
+        <section
+          v-if="restoreResult"
+          class="mr-result qio-card"
+          aria-label="恢复结果"
+          data-restore-result
+        >
           <div class="mr-head">
-            <span class="qio-state" :class="restoreCompleted ? 'ok' : 'warn'">
-              {{ restoreCompleted ? "恢复已完成" : "恢复未全部完成" }}
+            <span
+              class="qio-state"
+              :class="restoreResultView.tone"
+              data-restore-result-label
+            >
+              {{ restoreResultView.label }}
             </span>
-            <span v-if="restoreResult.status" class="mr-status-text mono">status={{ restoreResult.status }}</span>
+            <span class="mr-result-counts" data-restore-result-counts>
+              已恢复 {{ restoreResultView.restoredCount }} 条 · 未恢复 {{ restoreResultView.blockedCount }} 条
+            </span>
           </div>
-          <p class="hint">如实展示服务端逐项结果；历史不会被删除。</p>
-          <ul v-if="restoreOperationViews.restored.length" class="mr-result-list">
-            <li v-for="(entry, index) in restoreOperationViews.restored" :key="'r' + index">
-              <span class="qio-state" :class="entry.tone">{{ entry.label }}</span>
-              <span class="mono">{{ entry.title }}</span>
-              <span v-if="entry.reason" class="mr-reason">{{ entry.reason }}</span>
+          <p class="hint" data-restore-result-note>{{ restoreResultView.note }}</p>
+          <ul v-if="restoreResultView.entries.length" class="mr-result-list">
+            <li
+              v-for="entry in restoreResultView.entries"
+              :key="entry.key"
+              class="mr-result-entry"
+              :data-restore-entry="entry.key"
+            >
+              <div class="mr-result-entry-head">
+                <span class="qio-state" :class="entry.tone">{{ entry.label }}</span>
+                <span class="mr-result-title" data-restore-entry-title>{{ entry.title }}</span>
+              </div>
+              <p v-if="entry.reason" class="mr-reason mr-result-reason">{{ entry.reason }}</p>
+              <details class="mr-result-detail" data-restore-entry-detail>
+                <summary>查看原始结果</summary>
+                <div class="mr-result-detail-body">
+                  <p class="hint mono">操作 {{ entry.detail.operationId }} · 状态 {{ entry.detail.status }}</p>
+                  <p v-if="entry.detail.restoredIds" class="hint mono">
+                    已恢复对象 {{ entry.detail.restoredIds }}
+                  </p>
+                  <p v-if="entry.detail.blockedIds" class="hint mono">
+                    未恢复对象 {{ entry.detail.blockedIds }}
+                  </p>
+                  <p v-if="entry.detail.at" class="hint mono">时间（原样） {{ entry.detail.at }}</p>
+                </div>
+              </details>
             </li>
           </ul>
-          <ul v-if="restoreOperationViews.blocked.length" class="mr-result-list">
-            <li v-for="(entry, index) in restoreOperationViews.blocked" :key="'b' + index">
-              <span class="qio-state" :class="entry.tone">{{ entry.label }}</span>
-              <span class="mono">{{ entry.title }}</span>
-              <span v-if="entry.reason" class="mr-reason">{{ entry.reason }}</span>
-            </li>
-          </ul>
+          <p v-else class="hint">服务端没有返回可展示的逐项结果。</p>
         </section>
 
         <!-- 受影响条目：点开才展开修改前后对比 -->
@@ -786,11 +1042,7 @@ onBeforeUnmount(() => {
     <!-- 撤回/恢复：复用既有中央弹窗（预览 + 确认） -->
     <MaintenanceRestoreDialog
       :open="restoreDialogOpen"
-      :modal-id="
-        restoreTarget?.batch_id
-          ? 'memory-batch-restore:' + restoreTarget.batch_id
-          : 'memory-item-restore:' + (restoreTarget?.item_id || '')
-      "
+      :modal-id="restoreModalId"
       :title="restoreDialogTitle"
       :confirm-text="restoreDialogConfirmText"
       :target-label="restoreTargetLabel"
@@ -801,6 +1053,8 @@ onBeforeUnmount(() => {
       :preview-error="previewError"
       :restoring="restoreLoading"
       :restore-error="restoreError"
+      :read-only="previewHistoryOnly"
+      :read-only-note="restoreHistoryNote"
       @confirm="confirmRestore"
       @cancel="closeRestoreDialog"
       @retry-preview="restoreTarget && previewRestore(restoreTarget)"
@@ -855,7 +1109,25 @@ onBeforeUnmount(() => {
 .mr-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mr-result { display: flex; flex-direction: column; gap: 6px; padding: var(--sp-4); }
 .mr-status-text { font-size: 11px; color: var(--text-muted); }
-.mr-result-list li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-primary); }
+.mr-result-counts { font-size: 11.5px; color: var(--text-muted); }
+.mr-result-list { display: flex; flex-direction: column; gap: 8px; }
+.mr-result-entry { display: flex; flex-direction: column; gap: 3px; }
+.mr-result-entry-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mr-result-title {
+  font-size: 12.5px; line-height: 1.65; color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.mr-result-reason { overflow-wrap: anywhere; }
+.mr-result-detail {
+  font-size: 11.5px; color: var(--text-muted);
+  border-top: 1px solid var(--border-subtle); padding-top: 4px;
+}
+.mr-result-detail > summary {
+  cursor: pointer; color: var(--text-secondary); font-size: 11.5px;
+  list-style-position: inside;
+}
+.mr-result-detail > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.mr-result-detail-body { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 0 14px; }
 .mr-label { font-size: 11px; color: var(--text-secondary); letter-spacing: 0.03em; }
 .mr-affected, .mr-maintenance { display: flex; flex-direction: column; gap: 6px; }
 .mr-item {

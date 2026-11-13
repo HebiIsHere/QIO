@@ -33,6 +33,17 @@ import {
   type SearchHit,
 } from "../../planet/manageViews";
 
+/**
+ * 知识面板的跨分支接口（knowledge 分支用 defineExpose 提供，这里全部写成**可选**方法，
+ * 不产生编译期依赖）：搜索/记忆页要打开知识条目时先问它有没有未保存草稿，
+ * 有就交给面板自己做离开检查与跳转。
+ */
+interface KnowledgePanelApi {
+  hasUnsavedDraft?: () => boolean;
+  /** true = 已允许并完成跳转；false = 用户选择继续编辑 / 保存失败，未跳转 */
+  requestOpenKnowledge?: (id: string) => Promise<boolean>;
+}
+
 const props = withDefaults(
   defineProps<{
     /** 管理区是否展开（= C 的 progress 目标态）；关闭时不渲染内容焦点也不刷新数据 */
@@ -96,6 +107,8 @@ const searchReturn = ref(false);
 
 /** 定位 id：B 组件的 focusId（知识 / 实体 / 待处理各自一份，互不干扰） */
 const knowledgeFocusId = ref<string | null>(null);
+/** 已挂载的知识面板实例（面板首次激活才挂载；未挂载时 ref 为 null） */
+const knowledgePanelRef = ref<KnowledgePanelApi | null>(null);
 const entityFocusId = ref<string | null>(null);
 const entityNodeId = ref<string | null>(null);
 const pendingFocusId = ref<string | null>(null);
@@ -125,6 +138,26 @@ function selectTab(next: ManageTab) {
 async function focusKnowledge(id: string) {
   activateTab("knowledge");
   await refocus(knowledgeFocusId, id);
+}
+
+/**
+ * 打开知识条目（搜索结果 / 记忆页关联知识共用同一条离开检查路径）。
+ *
+ * 面板已挂载且有未保存草稿时：先切到知识标签页（确认层要在可见面板里），
+ * 再委托面板自己「离开检查 + 打开目标」——面板返回 false 表示用户选择继续编辑
+ * 或保存失败：这里什么都不做，**绝不在旧 Promise 之后补一次旧目标跳转**。
+ * 无草稿 / 未挂载 / 面板还没提供该接口时走既有的 focusKnowledge（真实 id 定位）。
+ */
+async function openKnowledgeHit(id: string) {
+  const panel = knowledgePanelRef.value;
+  const dirty = panel?.hasUnsavedDraft?.() === true;
+  if (dirty && panel && typeof panel.requestOpenKnowledge === "function") {
+    activateTab("knowledge");
+    await nextTick();
+    await panel.requestOpenKnowledge(id);
+    return;
+  }
+  await focusKnowledge(id);
 }
 
 async function focusEntity(id: string) {
@@ -197,7 +230,7 @@ async function openHit(hit: SearchHit) {
     return;
   }
   if (hit.kind === "knowledge") {
-    await focusKnowledge(hit.id);
+    await openKnowledgeHit(hit.id);
     return;
   }
   await focusEntity(hit.id);
@@ -396,13 +429,14 @@ defineExpose({ selectTab, escapeLayer });
           @topic-select="emit('topic-select', $event)"
           @continue="emit('continue', $event)"
           @topics-changed="emit('topics-changed')"
-          @focus-knowledge="focusKnowledge"
+          @focus-knowledge="openKnowledgeHit"
           @focus-entity="focusEntity"
         />
       </div>
       <div v-show="view === 'tabs' && tab === 'knowledge'" class="ma-view" data-view-panel="knowledge">
         <KnowledgePanel
           v-if="mountedTabs.knowledge"
+          ref="knowledgePanelRef"
           :focus-id="knowledgeFocusId"
           @focus-topic="focusMemoryTopic"
           @changed="onAuxChanged"
