@@ -39,4 +39,3 @@
 
 # 受影响既有用例复跑：pm032-canvas-import-batch + fix025-attach-notice + fix025-card-attach-notice
 #   → Test Files 3 passed (3) / Tests 44 passed (44)（见 46b-vitest-existing.log）
-

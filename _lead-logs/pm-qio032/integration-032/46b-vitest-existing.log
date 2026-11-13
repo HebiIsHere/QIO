@@ -9,10 +9,10 @@ At line:1 char:1
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     + CategoryInfo          : NotSpecified: (stderr | src/co... 的附件关联与卡片状态全部保留:String) [], RemoteException
     + FullyQualifiedErrorId : NativeCommandError
- 
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -29,14 +29,14 @@ At line:1 char:1
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片内进行中的真实进度 > 等待选择 / 上传 / 处理三段的提示都一直可
 见
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -53,14 +53,14 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片内失败提示 > 不自动消失：有原因、有关闭入口、有真的会重跑的「重新选
 择文件」
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -77,13 +77,13 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片内连续两次关联 > 旧的成功计时器不会清掉新提示
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -100,14 +100,14 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片内连续两次关联 > 旧操作的迟到结果不覆盖新提示，也不再 emit 过
 期的 patch
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -124,13 +124,13 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片卸载 > 卸载时把成功提示的计时器一起清掉
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -147,13 +147,13 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片卸载 > 卸载后迟到的结果：不复活提示、不 emit patch
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -170,14 +170,14 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片内取消选择 > 卡片没有附件：如实说「还没有关联已保存的附件，读不到正
 文」
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -194,16 +194,16 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片内取消选择 > 卡片已有附件：如实说「仍然关联着原有附件」，不许说没有
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="这是同一个文件吗？"  ... > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="这是同一个文件吗？"  ... >
   at <FileCardMaterialPanel key=4 card-id="card_attach" meta= {
   name: '原有的.pdf',
   file: { name: '原有的.pdf', attachmentId: 'att_old', size: 10 }
-}  ... > 
+}  ... >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -223,11 +223,11 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -247,13 +247,13 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
 stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts > 卡片内长文件名 > 完整名称可查看（title）且允许换行 / 断词
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
-  at <SelectionMenu open-up=false > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... >
+  at <SelectionMenu open-up=false >
   at <BoardCard card= {
   id: 'card_attach',
   kind: 'file',
@@ -270,7 +270,7 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
   deleted: false,
   createdAt: '2026-10-13T00:00:00.000Z',
   updatedAt: '2026-10-13T00:00:00.000Z'
-} selected=true highlight=false  ... > 
+} selected=true highlight=false  ... >
   at <VTUROOT>
 
  ✓ src/components/interactive/__tests__/fix025-card-attach-notice.test.ts (10 tests) 413ms
@@ -282,4 +282,3 @@ stderr | src/components/interactive/__tests__/fix025-card-attach-notice.test.ts 
       Tests  44 passed (44)
    Start at  04:20:41
    Duration  12.25s (transform 4.29s, setup 48ms, import 7.20s, tests 7.65s, environment 8.79s)
-

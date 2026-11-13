@@ -8,7 +8,7 @@ At line:1 char:1
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     + CategoryInfo          : NotSpecified: (Not implemented...vas npm package:String) [], RemoteException
     + FullyQualifiedErrorId : NativeCommandError
- 
+
  ✓ src/components/conversation/__tests__/d-preview-tabs-keyboard.test.ts (5 tests) 597ms
      ✓ ←/→ 切换时选中、当前文件与真实焦点同步；随后按 Enter 不会回到旧文件  364ms
 Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
@@ -17,10 +17,10 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
  ✓ src/components/conversation/__tests__/cv-c-preview-feedback.test.ts (5 tests) 684ms
      ✓ 提供 aria-live=polite 的状态：说出当前打开文件与「只读」  411ms
  ✓ src/components/conversation/__tests__/cv-c-preview-panel.test.ts (4 tests) 338ms
-stderr | src/components/conversation/__tests__/d-preview-esc-layers.test.ts > 全窗口预览的 Esc 层级 > 真实 QModal 作为前方弹窗时：Esc 只关 
+stderr | src/components/conversation/__tests__/d-preview-esc-layers.test.ts > 全窗口预览的 Esc 层级 > 真实 QModal 作为前方弹窗时：Esc 只关
 QModal，再按 Esc 才退出全窗口（与问题 6 同一层级栈）
-[Vue warn]: injection "Symbol(pinia)" not found. 
-  at <QModal open=true title="示例弹窗" modalId="d-test-qmodal"  ... > 
+[Vue warn]: injection "Symbol(pinia)" not found.
+  at <QModal open=true title="示例弹窗" modalId="d-test-qmodal"  ... >
   at <VTUROOT>
 
  ✓ src/components/conversation/__tests__/d-preview-52-tab-focus.test.ts (3 tests) 347ms
@@ -49,4 +49,3 @@ Not implemented: HTMLCanvasElement's getContext() method: without installing the
       Tests  110 passed (110)
    Start at  04:32:23
    Duration  13.64s (transform 23.20s, setup 318ms, import 52.52s, tests 10.14s, environment 94.64s)
-

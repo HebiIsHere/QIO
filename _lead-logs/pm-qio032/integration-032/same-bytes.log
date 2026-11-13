@@ -24,4 +24,3 @@ PM-QIO032-28-SUMMARY {"case": "first-round-missing-snapshot", "markers": {"CURRE
 
 # 返修前基线（material_scope + submit_version_basis）：30 passed；返修后：34 passed
 # 8 个 pm_qio032 文件一起跑（显式列文件名）：62 passed, 1 warning in 18.32s（见 evidence-28b-pytest.txt）
-

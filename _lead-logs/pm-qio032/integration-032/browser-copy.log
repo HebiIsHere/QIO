@@ -26,4 +26,3 @@
         {"hasDiagnostics": true, "open": false, "text": "诊断信息（原始错误 / 代理 / 日志）"}
 [PASS] c3-4 展开诊断后能看到原始错误与代理/日志路径
         {"opened": "诊断信息（原始错误 / 代理 / 日志）\n\n原始错误：Cannot read properties of undefined (reading 'invoke')\n\n代理：连不上更新源时，可在 %APPDATA%\\qio\\updater-proxy.txt 写一行代理地址。\n\n日志：排查记录在 %APPDATA%\\qio\\logs\\qio.log。"}
-
