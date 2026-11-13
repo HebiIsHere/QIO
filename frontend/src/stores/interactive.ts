@@ -14,8 +14,14 @@ import { useSessionStore } from "./session";
 import * as api from "../services/interactive";
 // 阅读位置的读写属于**预览服务**（不是板面状态）：位置按「附件 + 文件版本」归属，
 // 写它不产生表达、不改板面版本（契约 §3.3）。
-import { putBoardPreviewPosition } from "../services/attachments";
-import type { PreviewPosition } from "../services/attachments";
+import {
+  putBoardPreviewPosition,
+  registerSourceAttachment,
+  stateText,
+  uploadAttachment,
+  waitUntilSettled,
+} from "../services/attachments";
+import type { AttachmentRef, PreviewPosition } from "../services/attachments";
 import {
   batchesWithList,
   executionIsLive,
@@ -26,13 +32,18 @@ import {
 } from "../interactive/approval";
 import {
   CHECKABLE_KINDS,
+  addCard,
   applyParticipation,
   clampBoardBounds,
+  defaultCardSeed,
   participationOf,
   participationVisibleRange,
   syncLegacyParticipation,
+  updateCard,
 } from "../interactive/board";
-import { cardAttachmentIsImage } from "../interactive/materials";
+import { NEW_CARD_SIZE, planNewCardSlot } from "../interactive/cardLayout";
+import { mergeAttachmentIntoMeta } from "../interactive/fileCardRef";
+import { cardAttachmentId, cardAttachmentIsImage } from "../interactive/materials";
 import {
   cardDraftKey,
   cardIdFromDraftKey,
@@ -260,6 +271,86 @@ export function importBatchCounts(batch: ImportBatch | null | undefined): Import
     else counts.pending += 1;
   }
   return counts;
+}
+
+/**
+ * #46：导入任务的源（浏览器字节 / 桌面真实路径）。
+ *
+ * 只存在内存：页面刷新（不是路由切换）后文件句柄会丢，此时重试必须由用户重新提供文件；
+ * 路由切换 / 关闭提示 / 重新进入互动页都不会丢。
+ */
+export type ImportSourceToken =
+  | { file: File }
+  | { path: string; sourceKind: "desktop_path" | "dropped_path" };
+
+/** #46：一次导入尝试的最终结果（写回批次项 / 单卡关联的真实事实）。 */
+export interface ImportJobResult {
+  attemptId: number;
+  boardId: string;
+  cardId: string | null;
+  attachment: AttachmentRef | null;
+  ok: boolean;
+  error: string | null;
+  /** 内存里的源已经丢了：只有用户重新提供文件才能继续 */
+  needsReselect: boolean;
+  /** 回执迟到：被同一批次项 / 同一张卡上更新的尝试取代，没有写进板面 */
+  superseded: boolean;
+  supersededBy: "item" | "card" | null;
+}
+
+/** #46：导入尝试的阶段（上传 → 等附件可用 → 终态）。 */
+export type ImportJobPhase = "uploading" | "processing" | "succeeded" | "failed";
+
+/**
+ * #46：单卡附件关联的真实进度 / 结果。
+ *
+ * 生命周期长于页面组件（存在 store）：离开互动页后回执仍会完成关联；返回时按这里显示
+ * 真实进度、已完成或具体失败原因，而不是「结果未知」。
+ */
+export interface CardImportJobSnapshot {
+  attemptId: number;
+  boardId: string;
+  cardId: string;
+  fileName: string;
+  sourceKind: "browser_upload" | "desktop_path" | "dropped_path" | null;
+  phase: ImportJobPhase;
+  error: string | null;
+  attachment: AttachmentRef | null;
+  /** 终态是否已经被界面展示过（展示过就不在下次返回时重复弹出） */
+  acknowledged: boolean;
+}
+
+/** #46：单卡导入的进度 / 终态事件（组件只负责显示，执行始终在 store）。 */
+export interface ImportJobEvent {
+  attemptId: number;
+  boardId: string;
+  cardId: string | null;
+  fileName: string;
+  sourceKind: "browser_upload" | "desktop_path" | "dropped_path" | null;
+  phase: ImportJobPhase;
+  result: ImportJobResult | null;
+}
+
+/**
+ * #44-46：批次导入的一行进度文案（**唯一入口**：批次面板只显示这一句 + 逐项明细，
+ * 不再另造一个常驻通知条）。
+ */
+export function importBatchSummaryText(batch: ImportBatch | null | undefined): string {
+  if (!batch) return "";
+  const counts = importBatchCounts(batch);
+  const unreceived = counts.failed + counts.unreceived;
+  const inFlight = counts.pending + counts.uploading;
+  return (
+    "本批已接收 " +
+    counts.received +
+    " 份 / 未接收 " +
+    unreceived +
+    " 份" +
+    (inFlight > 0 ? " / 进行中 " + inFlight + " 份" : "") +
+    "（单批上限 " +
+    batch.limit +
+    " 份）"
+  );
 }
 
 /** #26：后端 INTERACTIVE_INTENTS_CHANGED 事件的负载（字段新旧两种命名都接受）。 */
@@ -5532,6 +5623,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function dismissImportBatch(batchId?: string): void {
     const id = batchId ?? latestImportBatchId.value;
     if (!id) return;
+    // 用户已经放弃这批的恢复入口：内存里的文件句柄一起释放（在飞的回执自带源，不受影响）
+    forgetImportItemSources(id);
     const next = { ...importBatches.value };
     delete next[id];
     importBatches.value = next;
@@ -5539,6 +5632,590 @@ export const useInteractiveStore = defineStore("interactive", () => {
       const remaining = Object.keys(next);
       latestImportBatchId.value = remaining.length ? remaining[remaining.length - 1] : null;
     }
+  }
+
+  /* ------------------------------------------------------------------
+   * #46：附件导入的长生命周期执行器（上传 → 等附件可用 → 最终关联）
+   *
+   * 为什么在 store（Pinia 生命周期 > 页面组件）：用户发起上传后切去设置 / 关闭提示 /
+   * 重新进入互动页，页面组件会被卸载。上传、等待与关联如果还留在组件里，成功回执就会丢、
+   * 批次项被误标「结果未知」；这里把它们放到与 Pinia 同寿命的执行器，组件只负责选文件与显示。
+   *
+   * 身份核对（回执到达时逐项核对，任何一项不成立都不写板面）：
+   * - 尝试：同一批次项 / 同一张卡上已有更新的尝试 → 旧回执丢弃，不覆盖新关联；
+   * - 板面：当前板面不是发起时的原板面 → 不写进「碰巧打开的另一张板」；
+   * - 原卡：已被删除 → 不重建；已被另一个操作换了附件 → 不覆盖；
+   * - 没有预建卡的导入（拖放批次）只在原板面、回执到达时建卡，每次尝试只建一张。
+   * ------------------------------------------------------------------ */
+  interface ImportAttemptRecord {
+    id: number;
+    boardId: string;
+    cardId: string | null;
+    expectedAttachmentId: string;
+    batchId: string | null;
+    itemKey: string | null;
+    fileName: string;
+    sourceKind: "browser_upload" | "desktop_path" | "dropped_path";
+    source: ImportSourceToken;
+  }
+
+  interface ImportAssociationOutcome {
+    ok: boolean;
+    cardId: string | null;
+    error: string | null;
+    superseded: boolean;
+    supersededBy: "item" | "card" | null;
+  }
+
+  let importAttemptSeq = 0;
+  /** 执行中的尝试（回执落定即删除，不长期保留文件句柄）。 */
+  const importAttempts = new Map<number, ImportAttemptRecord>();
+  /** 每个批次项 / 每张卡当前最新的尝试（迟到回执按它判定是否仍然有效）。 */
+  const latestImportAttemptByItem = new Map<string, number>();
+  const latestImportAttemptByCard = new Map<string, number>();
+  /** 内存里的导入源：关闭提示 / 切路由都不会丢；只有整页刷新才丢。 */
+  const importItemSources = new Map<string, ImportSourceToken>();
+  const cardImportSources = new Map<string, ImportSourceToken>();
+  const runningImportBatches = new Map<string, Promise<void>>();
+  const importJobListeners = new Set<(event: ImportJobEvent) => void>();
+  /** 单卡关联的真实进度（返回互动页时按这里显示，不再写「结果未知」）。 */
+  const cardImportJobs = ref<Record<string, CardImportJobSnapshot>>({});
+
+  function importItemMapKey(batchId: string, itemKey: string): string {
+    return batchId + "\u0000" + itemKey;
+  }
+  function importCardMapKey(targetBoardId: string, cardId: string): string {
+    return targetBoardId + "\u0000" + cardId;
+  }
+  function importNameOfSource(source: ImportSourceToken): string {
+    return "file" in source
+      ? source.file.name || "未命名材料"
+      : source.path.split(/[\\/]/).pop() || "未命名材料";
+  }
+  function importSourceKindOf(
+    source: ImportSourceToken,
+  ): "browser_upload" | "desktop_path" | "dropped_path" {
+    return "file" in source ? "browser_upload" : source.sourceKind;
+  }
+  function importErrorText(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+  /**
+   * 导入执行器写板面的唯一入口：走 store 的**公开 commit action**（与界面同一套
+   * 撤销栈 / 脏标记 / 保存调度），不另写一条写板面路径。
+   */
+  let importBoardStore: ReturnType<typeof useInteractiveStore> | null = null;
+  function commitImportBoard(next: BoardState, label: string): void {
+    const target = importBoardStore ?? (importBoardStore = useInteractiveStore());
+    target.commit(next, label);
+  }
+  function cardAttachmentIdOn(targetBoardId: string, cardId: string): string {
+    if (targetBoardId !== boardId.value) return "";
+    const card = (board.value?.cards ?? []).find((item) => item.id === cardId && !item.deleted);
+    return card ? cardAttachmentId(card.meta, "file") : "";
+  }
+
+  function emitImportJob(event: ImportJobEvent): void {
+    for (const listener of [...importJobListeners]) {
+      try {
+        listener(event);
+      } catch {
+        // 显示层的异常不许打断导入本身
+      }
+    }
+  }
+  function onImportJob(listener: (event: ImportJobEvent) => void): () => void {
+    importJobListeners.add(listener);
+    return () => {
+      importJobListeners.delete(listener);
+    };
+  }
+
+  function putCardImportJob(job: CardImportJobSnapshot): void {
+    const next = { ...cardImportJobs.value, [String(job.attemptId)]: job };
+    const keys = Object.keys(next);
+    if (keys.length > 30) {
+      // 只保留最近 30 条单卡导入事实（旧的已确认终态没有保留价值）
+      const keep = keys
+        .map((key) => next[key])
+        .sort((a, b) => a.attemptId - b.attemptId)
+        .slice(-30);
+      const trimmed: Record<string, CardImportJobSnapshot> = {};
+      for (const item of keep) trimmed[String(item.attemptId)] = item;
+      cardImportJobs.value = trimmed;
+      return;
+    }
+    cardImportJobs.value = next;
+  }
+
+  function reportCardJobPhase(attempt: ImportAttemptRecord, phase: ImportJobPhase): void {
+    const previous = cardImportJobs.value[String(attempt.id)];
+    putCardImportJob({
+      attemptId: attempt.id,
+      boardId: attempt.boardId,
+      cardId: attempt.cardId ?? previous?.cardId ?? "",
+      fileName: attempt.fileName,
+      sourceKind: attempt.sourceKind,
+      phase,
+      error: null,
+      attachment: previous?.attachment ?? null,
+      acknowledged: false,
+    });
+  }
+
+  function emitCardJobChange(
+    attempt: ImportAttemptRecord,
+    phase: ImportJobPhase,
+    result: ImportJobResult | null,
+  ): void {
+    emitImportJob({
+      attemptId: attempt.id,
+      boardId: attempt.boardId,
+      cardId: attempt.cardId,
+      fileName: attempt.fileName,
+      sourceKind: attempt.sourceKind,
+      phase,
+      result,
+    });
+  }
+
+  function beginImportAttempt(input: {
+    boardId?: string;
+    cardId?: string | null;
+    expectedAttachmentId?: string | null;
+    batchId?: string | null;
+    itemKey?: string | null;
+    fileName: string;
+    source: ImportSourceToken;
+  }): ImportAttemptRecord {
+    const targetBoard = input.boardId ?? boardId.value;
+    const attempt: ImportAttemptRecord = {
+      id: ++importAttemptSeq,
+      boardId: targetBoard,
+      cardId: input.cardId ?? null,
+      expectedAttachmentId: input.expectedAttachmentId ?? "",
+      batchId: input.batchId ?? null,
+      itemKey: input.itemKey ?? null,
+      fileName: input.fileName,
+      sourceKind: importSourceKindOf(input.source),
+      source: input.source,
+    };
+    importAttempts.set(attempt.id, attempt);
+    if (attempt.batchId && attempt.itemKey) {
+      latestImportAttemptByItem.set(importItemMapKey(attempt.batchId, attempt.itemKey), attempt.id);
+    }
+    if (attempt.cardId) {
+      latestImportAttemptByCard.set(importCardMapKey(targetBoard, attempt.cardId), attempt.id);
+    }
+    return attempt;
+  }
+
+  /** 这次尝试是否仍是它负责的批次项 / 卡片上最新的尝试。 */
+  function attemptValidity(attempt: ImportAttemptRecord): "ok" | "item" | "card" {
+    if (attempt.batchId && attempt.itemKey) {
+      const latest = latestImportAttemptByItem.get(importItemMapKey(attempt.batchId, attempt.itemKey));
+      if (latest !== attempt.id) return "item";
+    }
+    if (attempt.cardId) {
+      const latest = latestImportAttemptByCard.get(importCardMapKey(attempt.boardId, attempt.cardId));
+      if (latest !== attempt.id) return "card";
+    }
+    return "ok";
+  }
+
+  /**
+   * 在原板面建一张文件卡并把附件关联一次写进去（没有预建卡的导入：回执到达时建，
+   * 绝不在别的板面建；只产生一次板面改动 / 一次撤销记录）。
+   */
+  function createImportFileCard(name: string, settled: AttachmentRef): string | null {
+    const current = board.value;
+    if (!current) return null;
+    const seed = defaultCardSeed("file");
+    const area = readBoardArea();
+    const slot = area
+      ? planNewCardSlot({
+          size: NEW_CARD_SIZE,
+          area,
+          cards: current.cards.filter((card) => !card.deleted),
+        })
+      : null;
+    const before = new Set(current.cards.map((card) => card.id));
+    const meta = mergeAttachmentIntoMeta(
+      { ...(seed.meta ?? {}), name: name || "未命名材料" },
+      settled,
+      "file",
+    );
+    commitImportBoard(
+      addCard(current, {
+        kind: "file",
+        content: seed.content,
+        meta,
+        ...(slot ? { x: slot.x, y: slot.y, w: slot.w, h: slot.h } : {}),
+      }),
+      "添加文件：" + (name || "未命名材料"),
+    );
+    const created = board.value?.cards.find((card) => !before.has(card.id));
+    return created?.id ?? null;
+  }
+
+  /** 回执核对：尝试 / 板面 / 原卡 / 原关联目标全部仍然有效才写板面。 */
+  function applyImportAssociation(
+    attempt: ImportAttemptRecord,
+    settled: AttachmentRef,
+  ): ImportAssociationOutcome {
+    const validity = attemptValidity(attempt);
+    if (validity === "item") {
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error: "这次上传已被同一份文件更新的尝试取代，回执没有写入板面。",
+        superseded: true,
+        supersededBy: "item",
+      };
+    }
+    if (validity === "card") {
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error: "这张卡上已有更新的关联尝试，这次上传没有覆盖新的关联。",
+        superseded: true,
+        supersededBy: "card",
+      };
+    }
+    if (settled.state !== "ready") {
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error:
+          "附件「" +
+          settled.name +
+          "」当前不可用：" +
+          stateText(settled) +
+          (settled.error ? "（" + settled.error + "）" : ""),
+        superseded: false,
+        supersededBy: null,
+      };
+    }
+    // #46：回执到达时当前板面不是原板面 —— 绝不写进「碰巧打开的另一张板」
+    if (boardId.value !== attempt.boardId) {
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error:
+          "回执到达时当前板面不是发起上传时的原板面（" +
+          attempt.boardId +
+          "），这次上传没有写进板面；回到原板面后可以重试关联。",
+        superseded: false,
+        supersededBy: null,
+      };
+    }
+    const existingCard = attempt.cardId
+      ? (board.value?.cards ?? []).find((item) => item.id === attempt.cardId && !item.deleted) ?? null
+      : null;
+    if (attempt.cardId && !existingCard) {
+      // 原卡已删除：不许凭一条迟到回执重建用户删掉的卡
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error: "原文件卡已不存在（可能被删除或替换），这次上传没有关联到任何卡片。",
+        superseded: false,
+        supersededBy: null,
+      };
+    }
+    const targetBoard = board.value;
+    if (!targetBoard) {
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error: "板面已经不可用，这次上传没有关联到任何卡片。",
+        superseded: false,
+        supersededBy: null,
+      };
+    }
+    let targetCardId: string | null = null;
+    if (existingCard) {
+      const currentTarget = cardAttachmentId(existingCard.meta, "file");
+      if (currentTarget !== attempt.expectedAttachmentId) {
+        // 原关联目标已被别的操作换掉：迟到回执不覆盖新的附件
+        return {
+          ok: false,
+          cardId: existingCard.id,
+          error: "卡片上的附件已经被另一次操作替换，这次上传没有覆盖它。",
+          superseded: false,
+          supersededBy: null,
+        };
+      }
+      const meta = mergeAttachmentIntoMeta(existingCard.meta, settled, "file");
+      commitImportBoard(updateCard(targetBoard, existingCard.id, { meta }), "关联附件：" + settled.name);
+      targetCardId = existingCard.id;
+    } else {
+      // 没有预建卡：现在（回执到达时）在原板面建卡，并把关联一次性写进去
+      targetCardId = createImportFileCard(settled.name || attempt.fileName, settled);
+      if (!targetCardId) {
+        return {
+          ok: false,
+          cardId: null,
+          error: "原板面当前不能建卡（板面读取失败或只读），这次上传没有关联到任何卡片。",
+          superseded: false,
+          supersededBy: null,
+        };
+      }
+    }
+    const applied = (board.value?.cards ?? []).find((item) => item.id === targetCardId && !item.deleted);
+    if (!applied || cardAttachmentId(applied.meta, "file") !== (settled.attachmentId || settled.id)) {
+      return {
+        ok: false,
+        cardId: targetCardId,
+        error:
+          "板面当前不能编辑" +
+          (boardEditBlockedReason.value ? "：" + boardEditBlockedReason.value : "") +
+          "，这次上传没有关联到卡片。",
+        superseded: false,
+        supersededBy: null,
+      };
+    }
+    return { ok: true, cardId: targetCardId, error: null, superseded: false, supersededBy: null };
+  }
+
+  async function executeImportAttempt(
+    attempt: ImportAttemptRecord,
+    source: ImportSourceToken,
+  ): Promise<ImportJobResult> {
+    const base: ImportJobResult = {
+      attemptId: attempt.id,
+      boardId: attempt.boardId,
+      cardId: attempt.cardId,
+      attachment: null,
+      ok: false,
+      error: null,
+      needsReselect: false,
+      superseded: false,
+      supersededBy: null,
+    };
+    let settled: AttachmentRef | null = null;
+    try {
+      const created =
+        "path" in source
+          ? await registerSourceAttachment(source.path, source.sourceKind)
+          : await uploadAttachment(source.file, { sourceKind: "browser_upload" });
+      if (!attempt.batchId) {
+        // 单卡关联：上传已完成，正在等附件可用（真实进度，返回页面后也按它显示）
+        reportCardJobPhase(attempt, "processing");
+        emitCardJobChange(attempt, "processing", null);
+      }
+      settled = await waitUntilSettled(created);
+      const outcome = applyImportAssociation(attempt, settled);
+      return { ...base, ...outcome, attachment: settled };
+    } catch (error) {
+      return { ...base, attachment: settled, error: importErrorText(error) };
+    }
+  }
+
+  function finishImportAttempt(attempt: ImportAttemptRecord, result: ImportJobResult): void {
+    importAttempts.delete(attempt.id);
+    if (attempt.batchId && attempt.itemKey) {
+      const ownsItem =
+        latestImportAttemptByItem.get(importItemMapKey(attempt.batchId, attempt.itemKey)) === attempt.id;
+      if (!ownsItem) return; // 更新的尝试拥有这一项：旧回执连状态都不写
+      if (result.ok) {
+        noteImportItem(attempt.batchId, attempt.itemKey, {
+          status: "succeeded",
+          attachmentId: result.attachment?.id ?? null,
+          cardId: result.cardId,
+        });
+        importItemSources.delete(importItemMapKey(attempt.batchId, attempt.itemKey));
+      } else if (result.supersededBy !== "item") {
+        noteImportItem(attempt.batchId, attempt.itemKey, {
+          status: "failed",
+          error: result.error,
+          attachmentId: result.attachment?.id ?? null,
+          cardId: result.cardId,
+        });
+      }
+      return;
+    }
+    // 单卡关联：把真实终态留给界面（返回互动页时显示一次）并通知当前界面
+    putCardImportJob({
+      attemptId: attempt.id,
+      boardId: attempt.boardId,
+      cardId: result.cardId ?? attempt.cardId ?? "",
+      fileName: attempt.fileName,
+      sourceKind: attempt.sourceKind,
+      phase: result.ok ? "succeeded" : "failed",
+      error: result.error,
+      attachment: result.attachment,
+      acknowledged: result.superseded,
+    });
+    if (!result.superseded) {
+      emitCardJobChange(attempt, result.ok ? "succeeded" : "failed", result);
+    }
+  }
+
+  /** #46：记下批次项的文件源（关闭面板 / 切路由都不丢，重试不必重新选文件）。 */
+  function setImportItemSource(batchId: string, itemKey: string, source: ImportSourceToken): void {
+    importItemSources.set(importItemMapKey(batchId, itemKey), source);
+  }
+  function forgetImportItemSources(batchId: string): void {
+    const prefix = importItemMapKey(batchId, "");
+    for (const key of [...importItemSources.keys()]) {
+      if (key.startsWith(prefix)) importItemSources.delete(key);
+    }
+  }
+  function importItemSourceFor(batchId: string, itemKey: string): ImportSourceToken | null {
+    return importItemSources.get(importItemMapKey(batchId, itemKey)) ?? null;
+  }
+
+  /**
+   * 处理某个批次项：真实上传 → 等附件可用 → 建卡 / 关联 → 把回执写回批次事实。
+   * 只操作这一项，同批其它项的状态原样保留；执行不依赖任何组件是否还挂着。
+   */
+  async function runImportItem(
+    batchId: string,
+    itemKey: string,
+    options: { source?: ImportSourceToken } = {},
+  ): Promise<ImportJobResult> {
+    const batch = importBatches.value[batchId];
+    const item = batch?.items.find((entry) => entry.key === itemKey) ?? null;
+    const failed = (error: string, extra: Partial<ImportJobResult> = {}): ImportJobResult => ({
+      attemptId: -1,
+      boardId: batch?.boardId ?? boardId.value,
+      cardId: item?.cardId ?? null,
+      attachment: null,
+      ok: false,
+      error,
+      needsReselect: false,
+      superseded: false,
+      supersededBy: null,
+      ...extra,
+    });
+    if (!batch || !item) return failed("导入批次或文件项已经不在了。");
+    if (item.status === "succeeded") return failed("", { ok: true });
+    if (item.status === "failed" || item.status === "unreceived") {
+      // 重试只重置这一项（失败 / 未接收都允许重新导入），其它项不动
+      retryImportItem(batchId, itemKey);
+    }
+    if (options.source) setImportItemSource(batchId, itemKey, options.source);
+    const source = options.source ?? importItemSourceFor(batchId, itemKey);
+    if (!source) {
+      const error = "内存里已经没有这份文件（页面刷新过），需要重新选择这份文件才能导入。";
+      noteImportItem(batchId, itemKey, { status: "failed", error });
+      return failed(error, { needsReselect: true });
+    }
+    const targetBoard = item.boardId || batch.boardId;
+    const cardId = item.cardId ?? null;
+    const attempt = beginImportAttempt({
+      boardId: targetBoard,
+      cardId,
+      expectedAttachmentId: cardId ? cardAttachmentIdOn(targetBoard, cardId) : "",
+      batchId,
+      itemKey,
+      fileName: item.name || importNameOfSource(source),
+      source,
+    });
+    noteImportItem(batchId, itemKey, { status: "uploading" });
+    const result = await executeImportAttempt(attempt, source);
+    finishImportAttempt(attempt, result);
+    return result;
+  }
+
+  /**
+   * 顺序处理一批里仍为 pending 的项（单项失败只影响它自己，后面照常继续）。
+   * 幂等：同一批重复调用返回同一个在飞的执行，不会把同一份文件上传两次。
+   */
+  function runImportBatch(batchId: string): Promise<void> {
+    const existing = runningImportBatches.get(batchId);
+    if (existing) return existing;
+    const run = (async () => {
+      for (;;) {
+        const batch = importBatches.value[batchId];
+        if (!batch) return;
+        const next = batch.items.find((item) => item.status === "pending");
+        if (!next) return;
+        await runImportItem(batchId, next.key);
+      }
+    })();
+    const tracked = run
+      .catch(() => {
+        // 单项异常已在 runImportItem 内部落成失败事实；整批不因此中断
+      })
+      .finally(() => {
+        runningImportBatches.delete(batchId);
+      });
+    runningImportBatches.set(batchId, tracked);
+    return tracked;
+  }
+
+  /**
+   * 单卡附件关联（已有文件卡的添加 / 替换）：上传、等待与关联都在 store 里执行。
+   * 页面组件只负责选文件与显示，卸载不会让成功回执丢失。
+   */
+  function startCardAttachment(options: {
+    cardId: string;
+    source: ImportSourceToken;
+  }): { attemptId: number; done: Promise<ImportJobResult> } {
+    const targetBoard = boardId.value;
+    const cardId = options.cardId;
+    const source = options.source;
+    const attempt = beginImportAttempt({
+      boardId: targetBoard,
+      cardId,
+      expectedAttachmentId: cardAttachmentIdOn(targetBoard, cardId),
+      fileName: importNameOfSource(source),
+      source,
+    });
+    cardImportSources.set(importCardMapKey(targetBoard, cardId), source);
+    reportCardJobPhase(attempt, "uploading");
+    const done = (async () => {
+      const result = await executeImportAttempt(attempt, source);
+      finishImportAttempt(attempt, result);
+      return result;
+    })();
+    return { attemptId: attempt.id, done };
+  }
+
+  /** 返回页面后的「重试关联」：内存里还有这份文件时不需要用户重新选择。 */
+  function retryCardAttachment(cardId: string): boolean {
+    if (!cardId) return false;
+    const source = cardImportSources.get(importCardMapKey(boardId.value, cardId));
+    if (!source) return false;
+    const card = (board.value?.cards ?? []).find((item) => item.id === cardId && !item.deleted);
+    if (!card) return false;
+    startCardAttachment({ cardId, source });
+    return true;
+  }
+
+  /** 当前板面上正在上传 / 等待可用的单卡关联（返回互动页时显示真实进度）。 */
+  const activeCardImportForBoard = computed<CardImportJobSnapshot | null>(() => {
+    const jobs = Object.values(cardImportJobs.value)
+      .filter(
+        (job) =>
+          job.boardId === boardId.value && (job.phase === "uploading" || job.phase === "processing"),
+      )
+      .sort((a, b) => b.attemptId - a.attemptId);
+    return jobs[0] ?? null;
+  });
+
+  /** 离开期间已经落定、还没被界面展示过的单卡关联结果（返回时如实显示一次）。 */
+  function unacknowledgedCardImportForBoard(
+    targetBoardId: string = boardId.value,
+  ): CardImportJobSnapshot | null {
+    const jobs = Object.values(cardImportJobs.value)
+      .filter(
+        (job) =>
+          job.boardId === targetBoardId &&
+          (job.phase === "succeeded" || job.phase === "failed") &&
+          !job.acknowledged,
+      )
+      .sort((a, b) => b.attemptId - a.attemptId);
+    return jobs[0] ?? null;
+  }
+
+  /** 终态已经展示过：下次返回页面不再重复弹。 */
+  function acknowledgeCardImport(attemptId: number): void {
+    const key = String(attemptId);
+    const job = cardImportJobs.value[key];
+    if (!job || job.acknowledged) return;
+    cardImportJobs.value = { ...cardImportJobs.value, [key]: { ...job, acknowledged: true } };
   }
 
   /* ------------------------------------------------------------------
@@ -5849,5 +6526,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
     dismissImportBatch,
     currentImportBatchCounts,
     hasImportBatchInFlight,
+    // #46：导入执行器（上传 / 等待 / 关联都在 store，不随页面组件卸载）
+    setImportItemSource,
+    importItemSourceFor,
+    runImportItem,
+    runImportBatch,
+    onImportJob,
+    startCardAttachment,
+    retryCardAttachment,
+    cardImportJobs,
+    activeCardImportForBoard,
+    unacknowledgedCardImportForBoard,
+    acknowledgeCardImport,
   };
 });

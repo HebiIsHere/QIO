@@ -13,7 +13,8 @@
  *   3 失败不自动消失：简短原因 + 关闭入口 + 「重新选择文件」，点了真的重走一遍；
  *   4 连续两次添加：旧计时器清不掉新提示，旧操作的迟到结果也覆盖不了新提示
  *     （各自的附件仍然只绑到各自的卡片上）；
- *   5 卸载后没有残留计时器，迟到结果既不复活提示、也不再写板面；
+ *   5 卸载后没有残留计时器，迟到结果不复活提示；但 #46 起「已发出的上传」由 store 继续，
+ *     回执仍完成原卡关联（离开互动页不丢回执）；
  *   6 取消选择的文案按卡片当前事实区分（没有附件 / 已有附件）；
  *   7 长文件名能看完整名称（title）且允许换行 / 断词；
  *   8 提示与菜单在同一悬浮列里各占一行，且整层不吃指针事件 —— 不遮挡
@@ -396,7 +397,7 @@ describe("组件卸载", () => {
     expect(cardById(cardId).meta.file, "卸载后的迟到回调还改了板面").toBeUndefined();
   });
 
-  it("卸载后才落定的成功结果：不写板面、不复活提示", async () => {
+  it("卸载后才落定的成功结果：不复活提示，但 #46 起回执仍完成原卡关联", async () => {
     mountMenu();
     const base = vi.getTimerCount();
     const lateUpload = deferred<AttachmentRef>();
@@ -410,9 +411,15 @@ describe("组件卸载", () => {
 
     lateUpload.resolve(attachment({ id: "att_late", name: "迟到.png" }));
     await flush();
+    // 卸载后不再有提示计时器（提示不会复活），但上传 / 等待 / 关联仍由 store 继续：
+    // #46 的定稿要求「上传发出后离开页面不能让成功回执丢掉」。
     expect(vi.getTimerCount(), "迟到的成功结果又挂了计时器（提示复活）").toBe(base);
-    expect(mocks.waitUntilSettled, "卸载后还继续跟进附件状态").not.toHaveBeenCalled();
-    expect(cardById(cardId).meta.file, "卸载后的迟到结果还写了板面").toBeUndefined();
+    expect(mocks.waitUntilSettled, "卸载后不再跟进附件可用状态（回执会丢）").toHaveBeenCalled();
+    expect(
+      (cardById(cardId).meta.file as { attachmentId?: string }).attachmentId,
+      "卸载后的迟到回执没有完成原卡关联",
+    ).toBe("att_late");
+    expect(cardById(cardId).deleted).toBe(false);
   });
 });
 

@@ -19,16 +19,25 @@
   - 等待选择 / 上传 / 处理期间是**真实进度**，不会被成功计时器提前藏掉；
   - **失败不自动消失**：简短原因 + 关闭入口 + 「重新选择文件」（对同一张卡片重走关联流程）；
   - 每次开始新操作都 begin()：旧提示、旧计时器与旧 token 一起作废，迟到结果写不进来；
-  - 卸载：原语自己清计时器并作废 token，这里再用 alive 挡住「卸载后还去写板面」的迟到回调；
+  - 卸载：原语自己清计时器并作废 token；#46 起**已发出的上传 / 等待 / 关联由 store 继续**
+    （回执不会因离开互动页而丢），alive 只约束显示层与「卸载后不再发起新的上传」；
+  - 重新进入互动页：批次区显示真实进度 / 已接收 / 具体失败原因；单卡关联的终态由 store
+    保存到用户看过或关闭为止，按同一个提示入口显示一次（不新增第二个常驻通知条）；
   - 成功文案只陈述**附件本身已保存**与「板面关联还只是本地改动」，不声称服务端已保存
     （落盘 / 提交由既有机制负责，失败也由既有机制反馈，这里不另造一套）。
 -->
 <script setup lang="ts">
 import { vQioTip } from "../../composables/useQioTip";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useInteractiveStore } from "../../stores/interactive";
-import type { ImportBatchItem, ImportItemStatus } from "../../stores/interactive";
-import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
+import { useInteractiveStore, importBatchSummaryText } from "../../stores/interactive";
+import type {
+  CardImportJobSnapshot,
+  ImportBatchItem,
+  ImportItemStatus,
+  ImportJobEvent,
+  ImportSourceToken,
+} from "../../stores/interactive";
+import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed } from "../../interactive/board";
 import { cardAttachmentLinked, cardAttachmentName } from "../../interactive/materials";
 import { NEW_CARD_SIZE, planNewCardSlot, rectsOverlap } from "../../interactive/cardLayout";
 import { readBoardArea } from "../../interactive/viewport";
@@ -38,13 +47,8 @@ import {
   onPathDrop,
   pickBrowserFile,
   pickLocalSource,
-  registerSourceAttachment,
-  stateText,
-  uploadAttachment,
-  waitUntilSettled,
   type AttachmentRef,
 } from "../../services/attachments";
-import { mergeAttachmentIntoMeta } from "../../interactive/fileCardRef";
 import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { CardKind } from "../../interactive/types";
 
@@ -92,7 +96,10 @@ const ITEMS: AddItem[] = ADDABLE_CARD_KINDS.map((kind) => ({
  */
 const { notice, begin, progress, succeed, fail, dismiss } = useTransientNotice();
 
-/** 卸载后到达的迟到结果连板面都不该再改：原语负责提示，这个标志负责副作用。 */
+/**
+ * 只约束**显示层**与「上传还没发出时的选文件动作」：组件卸载后不再发起新的上传、
+ * 也不再写提示；已经发出的上传 / 等待 / 关联由 store 继续（#46，不随组件卸载丢失）。
+ */
 let alive = true;
 
 function toggle(): void {
@@ -146,6 +153,10 @@ function cancelText(kind: AttachKind, cardId: string): string {
  * 文件卡片必须关联**真实已保存的附件**（meta.file.attachmentId），
  * 否则 QIO 只能看到文件名、读不到正文（后端会如实标 unreadable）。
  *
+ * #46：本组件只负责**选文件**与**展示状态**；真正的上传、等待附件可用与最终关联
+ * 在 store 的导入执行器里（生命周期长于本组件）—— 离开互动页不会让已发出的上传丢回执，
+ * 返回时按 store 里的真实进度 / 结果展示（见 onImportJobEvent / restoreCardImportNotice）。
+ *
  * 状态一律走 useTransientNotice：每次调用 begin() 开一代新操作，
  * 之后所有写入都带这次操作的 token —— 迟到的结果不会覆盖 / 清掉别人的提示。
  */
@@ -158,20 +169,20 @@ async function attachRealFile(
 ): Promise<void> {
   const token = begin();
   progress(token, preset ? "正在登记拖放的源文件…" : "正在等待选择文件…");
-  let created: AttachmentRef | null = null;
+  let source: ImportSourceToken | null = null;
   let fileName = "";
   let fallbackNote = "";
   try {
     if (preset && "path" in preset) {
-      // 有真实路径（桌面拖放）：**只登记源引用**，不复制、不移动、不走字节上传
+      // 有真实路径（桌面拖放）：只登记源引用，不复制、不移动、不走字节上传
       fileName = preset.path.split(/[\\/]/).pop() || "未命名";
       progress(token, "正在登记拖放的源文件「" + fileName + "」…");
-      created = await registerSourceAttachment(preset.path, preset.sourceKind);
+      source = { path: preset.path, sourceKind: preset.sourceKind };
     } else if (preset && "file" in preset) {
       // 浏览器拖放：只有字节 → 首次落盘为工作区材料源文件（来源如实标注）
       fileName = preset.file.name || "未命名";
       progress(token, "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
-      created = await uploadAttachment(preset.file, { sourceKind: "browser_upload" });
+      source = { file: preset.file };
     } else if (isDesktopShell()) {
       try {
         const picked = await pickLocalSource();
@@ -182,12 +193,12 @@ async function attachRealFile(
         }
         fileName = picked.name || picked.path.split(/[\\/]/).pop() || "未命名";
         progress(token, "正在登记源文件「" + fileName + "」…");
-        created = await registerSourceAttachment(picked.path, "desktop_path");
+        source = { path: picked.path, sourceKind: "desktop_path" };
       } catch (error) {
         fallbackNote = "原生选择器不可用（" + messageOf(error) + "），改用文件上传：";
       }
     }
-    if (!created) {
+    if (!source) {
       let file: File | null;
       try {
         file = await pickBrowserFile();
@@ -195,7 +206,7 @@ async function attachRealFile(
         fail(token, "选择文件失败：" + messageOf(error), retryOf(kind, cardId));
         return;
       }
-      if (!alive) return; // 组件已卸载：迟到结果不写提示，也不写板面
+      if (!alive) return; // 组件已卸载：上传还没发出，不再发起新上传（既有契约）
       if (!file) {
         // 用户取消：如实说明（不假装读到了内容），文案按卡片当前是否已有附件区分
         fail(token, (fallbackNote ? fallbackNote + "\n" : "") + cancelText(kind, cardId), retryOf(kind, cardId));
@@ -203,43 +214,15 @@ async function attachRealFile(
       }
       fileName = file.name || "未命名";
       progress(token, fallbackNote + "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
-      created = await uploadAttachment(file, { sourceKind: "browser_upload" });
+      source = { file };
     }
     if (!alive) return;
-    // 登记/上传完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
-    progress(token, "正在处理附件「" + fileName + "」…");
-    const settled = await waitUntilSettled(created);
-    if (!alive) return;
-    if (settled.state !== "ready") {
-      throw new Error(
-        "附件「" +
-          settled.name +
-          "」当前不可用：" +
-          stateText(settled) +
-          (settled.error ? "（" + settled.error + "）" : ""),
-      );
-    }
-    const current = store.board;
-    const card = current?.cards.find((item) => item.id === cardId);
-    if (!current || !card) {
-      fail(token, "卡片已经不在了，附件没有关联上（附件本身已经保存）");
-      return;
-    }
-    const meta = mergeAttachmentIntoMeta(card.meta, settled, kind);
-    store.commit(updateCard(current, cardId, { meta }), "关联附件：" + settled.name);
-    /**
-     * 成功只陈述已确认的事实：附件本身已登记/保存，来源如实标注（引用本地源文件 /
-     * 已保存为工作区材料）；板面关联还只是**本地**改动，提交后 QIO 才可见。
-     */
-    succeed(
-      token,
-      "已关联附件「" +
-        settled.name +
-        "」：" +
-        attachmentSourceNote(settled) +
-        "；板面关联是本地改动，提交后 QIO 才可见",
-    );
+    // #46：上传一旦发出就由 store 执行器负责到底：组件卸载不会中止，也不会丢回执
+    const started = store.startCardAttachment({ cardId, source });
+    cardJobTokens.set(started.attemptId, token);
+    void started.done.catch(() => undefined);
   } catch (error) {
+    if (!alive) return;
     fail(token, "附件保存失败：" + messageOf(error), retryOf(kind, cardId));
   }
 }
@@ -247,6 +230,16 @@ async function attachRealFile(
 /** 失败提示上的「重新选择文件」：重跑的是**重新走一遍那次关联**，不是只重发一次请求。 */
 function runRetry(): void {
   notice.value?.retry?.run();
+}
+
+/**
+ * 关闭提示：如果这条提示承载的是某次单卡导入的终态，一并记为「已看过」——
+ * 下次返回互动页不再重复弹（只有用户确实关掉了才不再出现）。
+ */
+function dismissNotice(): void {
+  for (const attemptId of cardJobTokens.keys()) store.acknowledgeCardImport(attemptId);
+  cardJobTokens.clear();
+  dismiss();
 }
 
 /**
@@ -260,18 +253,16 @@ let pendingDroppedFile: File | null = null;
 /* ------------------------------------------------------------------
  * #44/#45/#46：拖放 / 多文件导入的批次反馈
  *
- * 数据全部来自 i-state 的 ImportBatch（stores/interactive.ts）：
+ * 数据与执行都在 i-state（stores/interactive.ts）：
  * - 单批 5 份上限，第 6 份起由 store 记「未接收」并保留在清单里（可重新导入）；
  * - 每个文件自己的状态（等待 / 上传中 / 已接收 / 失败 / 未接收）；
- * - 后续成功不覆盖前面的失败；重试只重置并处理对应文件；
- * - 上传绑定原板面（batch.boardId）、原文件卡（item.cardId）与任务身份；
- *   迟到回执若绑定卡已删除/替换，store 记 failed 且不关联任何卡片（这里如实展示）；
- * - 批次状态在 Pinia：打开设置再回来仍能读到真实进度（本组件挂载时按最新批次恢复）。
- * 本组件只做两件事：把真实上传回执写回 store，以及渲染这一份批次事实。
+ * - 上传、等待附件可用、建卡与关联在 store 的导入执行器里（生命周期长于本组件）：
+ *   切去设置 / 关闭提示 / 重新进入互动页都不会丢回执；迟到回执按原板面 / 原卡 /
+ *   本次尝试核对，不覆盖新关联，也不写进碰巧打开的另一张板；
+ * - 本组件只做两件事：把选到的文件交给 store，以及渲染这一份批次事实
+ *   （**唯一的进度入口**，不新增第二个常驻通知条）。
  * ------------------------------------------------------------------ */
-type DropBatchEntry =
-  | { name: string; token: { path: string; sourceKind: "desktop_path" | "dropped_path" } }
-  | { name: string; token: { file: File } };
+type DropBatchEntry = { name: string; token: ImportSourceToken };
 
 const IMPORT_STATUS_TEXT: Record<ImportItemStatus, string> = {
   pending: "等待上传",
@@ -282,133 +273,137 @@ const IMPORT_STATUS_TEXT: Record<ImportItemStatus, string> = {
 };
 
 const activeImportBatchId = ref<string | null>(null);
-const dropBatchEntries = ref<Record<string, DropBatchEntry>>({});
 const activeImportBatch = computed(() =>
   activeImportBatchId.value ? store.importBatchById(activeImportBatchId.value) : null,
 );
-/** 已接收 / 未接收明细：#44 要求明确列出两类，不能只报一个总数。 */
-const importSummary = computed(() => {
-  const batch = activeImportBatch.value;
-  if (!batch) return "";
-  const received = batch.items.filter((item) => item.status === "succeeded").length;
-  const unreceived = batch.items.filter(
-    (item) => item.status === "unreceived" || item.status === "failed",
-  ).length;
-  return "本批已接收 " + received + " 份 / 未接收 " + unreceived + " 份（单批上限 " + batch.limit + " 份）";
-});
+/** 已接收 / 未接收 / 进行中明细：#44 要求明确列出两类，不能只报一个总数（文案见 store）。 */
+const importSummary = computed(() => importBatchSummaryText(activeImportBatch.value));
 
-function batchEntryKey(batchId: string, itemKey: string): string {
-  return batchId + "\u0000" + itemKey;
+/* ------------------------------------------------------------------
+ * #46：单卡附件关联的显示（执行在 store；这里只把真实进度 / 结果画出来）
+ * ------------------------------------------------------------------ */
+const cardJobTokens = new Map<number, number>();
+
+function cardJobProgressText(
+  job: Pick<CardImportJobSnapshot, "phase" | "fileName" | "sourceKind">,
+): string {
+  if (job.phase === "processing") return "正在处理附件「" + job.fileName + "」…";
+  return job.sourceKind === "browser_upload"
+    ? "正在保存附件「" + job.fileName + "」…（首次落盘为工作区材料源文件）"
+    : "正在登记源文件「" + job.fileName + "」…";
 }
 
-/** 上传成功后才建文件卡（失败只在批次区留记录，不往板面留空卡）。 */
-function createFileCardForDrop(name: string): string | null {
-  const current = store.board;
-  if (!current) return null;
-  const seed = defaultCardSeed("file");
-  const area = readBoardArea();
-  const slot = area
-    ? planNewCardSlot({
-        size: NEW_CARD_SIZE,
-        area,
-        cards: current.cards.filter((card) => !card.deleted),
-      })
-    : null;
-  const before = new Set(current.cards.map((card) => card.id));
-  store.commit(
-    addCard(current, {
-      kind: "file",
-      content: seed.content,
-      // 文件名先落到卡片上：上传还没回来时卡片也认得出是哪一份材料
-      meta: { ...(seed.meta ?? {}), name: name || "未命名材料" },
-      ...(slot ? { x: slot.x, y: slot.y, w: slot.w, h: slot.h } : {}),
-    }),
-    "添加文件：" + (name || "未命名材料"),
+function cardJobSuccessText(ref: AttachmentRef): string {
+  return (
+    "已关联附件「" +
+    ref.name +
+    "」：" +
+    attachmentSourceNote(ref) +
+    "；板面关联是本地改动，提交后 QIO 才可见"
   );
-  return store.board?.cards.find((card) => !before.has(card.id))?.id ?? null;
 }
 
-/** 开始一批：store 负责 5 份上限与「第 6 份未接收」，这里只把真实条目记下来。 */
+/** 返回页面时按 store 里的真实状态显示：进行中 / 已完成 / 具体失败原因（各显示一次）。 */
+function showCardImportSnapshot(job: CardImportJobSnapshot): void {
+  const token = begin();
+  cardJobTokens.set(job.attemptId, token);
+  if (job.phase === "succeeded" && job.attachment) {
+    store.acknowledgeCardImport(job.attemptId);
+    succeed(token, cardJobSuccessText(job.attachment));
+    return;
+  }
+  if (job.phase === "failed") {
+    store.acknowledgeCardImport(job.attemptId);
+    fail(
+      token,
+      "附件保存失败：" + (job.error || "原因未知"),
+      // 内存里还有这份文件时不需要用户重新选；只有确实没有源时才回退到重新选择
+      {
+        label: "重试关联",
+        run: () => {
+          if (!store.retryCardAttachment(job.cardId)) void attachRealFile("file", job.cardId);
+        },
+      },
+    );
+    return;
+  }
+  progress(token, cardJobProgressText(job));
+}
+
+/** store 的导入进度 / 终态事件：只负责显示；上传与关联不在这里执行。 */
+function onImportJobEvent(event: ImportJobEvent): void {
+  if (!alive || event.boardId !== store.boardId) return;
+  if (event.phase === "processing") {
+    const token = cardJobTokens.get(event.attemptId) ?? begin();
+    cardJobTokens.set(event.attemptId, token);
+    progress(
+      token,
+      cardJobProgressText({
+        phase: "processing",
+        fileName: event.fileName,
+        sourceKind: event.sourceKind,
+      }),
+    );
+    return;
+  }
+  const result = event.result;
+  if (!result) return;
+  store.acknowledgeCardImport(event.attemptId);
+  const previousToken = cardJobTokens.get(event.attemptId);
+  cardJobTokens.delete(event.attemptId);
+  if (result.superseded) return; // 更晚的尝试拥有这张卡：迟到回执不显示成功 / 失败
+  const token = previousToken ?? begin();
+  if (result.ok && result.attachment) {
+    succeed(token, cardJobSuccessText(result.attachment));
+    return;
+  }
+  const cardId = result.cardId || event.cardId || "";
+  fail(
+    token,
+    "附件保存失败：" + (result.error || "原因未知"),
+    cardId ? retryOf("file", cardId) : undefined,
+  );
+}
+
+/**
+ * 重新进入互动页：先显示真实进度，再显示离开期间落定、还没展示过的结果。
+ * 批次导入的进度由批次区显示，这里只管单卡关联（同一份提示入口，不另造通知条）。
+ */
+function restoreCardImportNotice(): void {
+  const active = store.activeCardImportForBoard;
+  if (active) {
+    const token = begin();
+    cardJobTokens.set(active.attemptId, token);
+    progress(token, cardJobProgressText(active));
+    return;
+  }
+  const settled = store.unacknowledgedCardImportForBoard();
+  if (settled) showCardImportSnapshot(settled);
+}
+
+/** 开始一批：store 负责 5 份上限、「第 6 份未接收」与真正的上传执行。 */
 async function runDropBatch(entries: DropBatchEntry[]): Promise<void> {
   if (!entries.length) return;
   const batch = store.beginImportBatch(entries.map((entry) => ({ name: entry.name })));
   activeImportBatchId.value = batch.id;
-  const map = { ...dropBatchEntries.value };
   for (const [index, item] of batch.items.entries()) {
     const entry = entries[index];
-    if (entry) map[batchEntryKey(batch.id, item.key)] = entry;
+    // 文件源交给 store：关提示 / 切路由都不丢（重试不必重新选文件）
+    if (entry) store.setImportItemSource(batch.id, item.key, entry.token);
   }
-  dropBatchEntries.value = map;
-  await processPendingBatchItems(batch.id);
-}
-
-/** 顺序处理本批中仍为 pending 的项：单项失败只影响它自己，后面照常继续。 */
-async function processPendingBatchItems(batchId: string): Promise<void> {
-  const batch = store.importBatchById(batchId);
-  if (!batch) return;
-  for (const item of batch.items) {
-    if (!alive) return;
-    const latest = store.importBatchById(batchId)?.items.find((entry) => entry.key === item.key);
-    if (!latest || latest.status !== "pending") continue;
-    await processBatchItem(batchId, latest.key);
-  }
-}
-
-/** 处理单个文件：真实上传 → 等附件 ready → 建卡 / 关联 → 把回执写回 store。 */
-async function processBatchItem(batchId: string, itemKey: string): Promise<void> {
-  const batch = store.importBatchById(batchId);
-  const item = batch?.items.find((entry) => entry.key === itemKey);
-  const entry = dropBatchEntries.value[batchEntryKey(batchId, itemKey)];
-  if (!item || !entry) return;
-  store.noteImportItem(batchId, itemKey, { status: "uploading" });
-  try {
-    const created =
-      "path" in entry.token
-        ? await registerSourceAttachment(entry.token.path, entry.token.sourceKind)
-        : await uploadAttachment(entry.token.file, { sourceKind: "browser_upload" });
-    const settled = await waitUntilSettled(created);
-    if (!alive) return;
-    if (settled.state !== "ready") {
-      throw new Error(
-        "附件「" +
-          settled.name +
-          "」当前不可用：" +
-          stateText(settled) +
-          (settled.error ? "（" + settled.error + "）" : ""),
-      );
-    }
-    // 卡片身份：本项若已有卡就复用；否则（例如「未接收」被重新导入）现在才建卡。
-    let cardId = item.cardId;
-    if (!cardId || !store.board?.cards.some((card) => card.id === cardId && !card.deleted)) {
-      cardId = createFileCardForDrop(settled.name || item.name);
-    }
-    const current = store.board;
-    const card = current?.cards.find((candidate) => candidate.id === cardId);
-    if (!current || !card) {
-      throw new Error("原文件卡已不存在（可能被删除或替换），这次上传没有关联到任何卡片。");
-    }
-    const meta = mergeAttachmentIntoMeta(card.meta, settled, "file");
-    store.commit(updateCard(current, card.id, { meta }), "关联附件：" + settled.name);
-    store.noteImportItem(batchId, itemKey, {
-      status: "succeeded",
-      attachmentId: settled.id,
-      cardId: card.id,
-    });
-  } catch (error) {
-    if (!alive) return;
-    store.noteImportItem(batchId, itemKey, { status: "failed", error: messageOf(error) });
-  }
+  // 执行器在 store：这里 await 只是让调用方有确定的完成点，组件卸载不会中断它
+  await store.runImportBatch(batch.id);
 }
 
 /**
  * 重试只操作对应文件（失败 / 未接收）；同批其它项的状态原样保留。
- * 路由往返后内存里的 File 句柄会丢（#46）：此时让用户重新选这份文件，再按同一项继续处理。
+ * #46：文件句柄在 store（切路由不丢），只有整页刷新后才没有源 —— 那时才要求重新选择。
  */
 async function retryBatchFile(item: ImportBatchItem): Promise<void> {
   const batch = activeImportBatch.value;
   if (!batch) return;
-  let entry = dropBatchEntries.value[batchEntryKey(batch.id, item.key)];
-  if (!entry) {
+  let source = store.importItemSourceFor(batch.id, item.key);
+  if (!source) {
     let picked: File | null = null;
     try {
       picked = await pickBrowserFile();
@@ -418,14 +413,9 @@ async function retryBatchFile(item: ImportBatchItem): Promise<void> {
       return;
     }
     if (!picked || !alive) return;
-    entry = { name: picked.name || item.name || "未命名材料", token: { file: picked } };
-    dropBatchEntries.value = {
-      ...dropBatchEntries.value,
-      [batchEntryKey(batch.id, item.key)]: entry,
-    };
+    source = { file: picked };
   }
-  store.retryImportItem(batch.id, item.key);
-  await processBatchItem(batch.id, item.key);
+  await store.runImportItem(batch.id, item.key, { source });
 }
 
 function dismissBatch(): void {
@@ -560,14 +550,22 @@ async function onBrowserDrop(event: DragEvent): Promise<void> {
 }
 
 let stopPathDrop: (() => void) | null = null;
+/** store 导入事件的订阅（卸载时取消；执行本身在 store，不依赖这个订阅）。 */
+let stopImportJob: (() => void) | null = null;
 
 onMounted(async () => {
   /*
-    #46：批次事实在 Pinia（路由切换不销毁）。重新挂载时恢复最近一批的进度 / 恢复入口，
-    而不是把「打开设置再回来」变成一次静默丢失。
+    #46：批次事实与导入执行器都在 store（路由切换不销毁）。重新挂载时恢复最近一批的
+    真实进度 / 恢复入口，并把还没开始的项接上；在飞的上传由 store 继续，这里只负责显示。
   */
   const latest = store.currentImportBatch;
-  if (latest) activeImportBatchId.value = latest.id;
+  if (latest) {
+    activeImportBatchId.value = latest.id;
+    if (latest.items.some((item) => item.status === "pending")) void store.runImportBatch(latest.id);
+  }
+  // 单卡关联：离开期间的真实进度 / 已完成 / 具体失败原因（同一个提示入口，显示一次）
+  restoreCardImportNotice();
+  stopImportJob = store.onImportJob(onImportJobEvent);
   // 只有桌面壳会给出真实路径；浏览器由模板里的 drop 事件兜底（字节 → 首次落盘）
   stopPathDrop = await onPathDrop((paths) => {
     void attachDroppedPaths(paths);
@@ -576,21 +574,13 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   /*
-    #46：离开页面时仍在飞的上传，回执已经不在本组件手里 —— 如实记「失败：结果未知，可重试」，
-    返回后批次区能看到它并重新导入；不假装成功，也不留一个永远转圈的「上传中」。
+    #46：**不再**把在飞的上传标成「结果未知」—— 上传、等待附件可用与最终关联都在
+    store 的导入执行器里，组件卸载不会中止、也不会丢回执。这里只停止显示层与本地监听。
   */
-  const batch = activeImportBatch.value;
-  if (batch) {
-    for (const item of batch.items) {
-      if (item.status === "uploading") {
-        store.noteImportItem(batch.id, item.key, {
-          status: "failed",
-          error: "页面已离开：这次上传的结果未知，可重新导入这份文件。",
-        });
-      }
-    }
-  }
   alive = false;
+  stopImportJob?.();
+  stopImportJob = null;
+  cardJobTokens.clear();
   stopPathDrop?.();
   stopPathDrop = null;
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
@@ -684,7 +674,7 @@ onBeforeUnmount(() => {
           class="status-action status-close"
           data-im="add-material-dismiss"
           aria-label="关闭提示"
-          @click="dismiss()"
+          @click="dismissNotice()"
         >关闭</button>
       </p>
 
