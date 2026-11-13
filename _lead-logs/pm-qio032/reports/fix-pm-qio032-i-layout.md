@@ -1,6 +1,6 @@
 # PM-QIO032 · i-layout 报告（fix/pm-qio032-i-layout）
 
-> 子智能体：i-layout（互动页页面级接线与外壳） · 基线 7445170d · 交付第二版（2026-11-12 23:20）
+> 子智能体：i-layout（互动页页面级接线与外壳） · 基线 7445170d · 交付第三版（2026-11-13，含父分支合并与 #05 面板高度钳制）
 
 ## 1. 分支 / worktree / commits
 
@@ -11,6 +11,8 @@
   - `1a32b24f` fix(interactive-layout): 页面壳面板空间/失败门禁/单一聊天入口与提交区状态文案
   - `65e130f5` fix(interactive-layout): 工具区连续承载面、Esc 先取消拖动、任务入口失败标记与测试口径
   - `4f368cbe` fix(interactive-layout): 提交详情接入上次结果读取三态与失败重试（#41，i-state 字段可选读取）
+  - `9f80b0cf`（fast-forward）merge fix/pm-qio032-interactive：并入父分支 e2e 台账/集成收口/i-state/i-canvas/i-tasks
+  - `0f704016` fix(interactive-layout): 提交详情面板按可用空间钳制高度，避免遮挡提交按钮与任务入口（#05）
   - 报告提交：见本文件所在 commit
 
 ## 2. 改动 / 新增文件清单
@@ -35,7 +37,7 @@
 
 | # | 状态 | 证据 / 说明 |
 |---|---|---|
-| #05 | 部分（UI 闭环，端到端待 Lead） | `v2/layout.ts` 新增 `PANEL_SIDE_BY_SIDE_MIN_WIDTH=1121` / `panelSpaceMode()`；页面壳窄窗（≤1120）任务面板与提交详情互相明确关闭（`onSubmitPanelOpen` / watch `store.tasksOpen` → `closeSubmitDetails`），关闭只收面板不改各自数据；聊天草稿/回复由会话层保留。pm032 用例覆盖 1120/1121/800 边界。**800×600 与 1121/1120 真机命中待 Lead E2E** |
+| #05 | 已修复（面板高度钳制，真机复测待 Lead） | 保留 `panelSpaceMode()` 1120/1121 分档与窄窗 switch/宽窗并排。新增 `submitPanelPlacement.ts` 纯函数 + SubmitCluster 实测接线：面板底边固定 = 工具栏顶边 − 8（提交按钮永不被覆盖）、顶边 ≥ 任务入口底边 + 8（任务入口永不被遮挡）、高度 = min(420, 剩余可用空间)，内容再多只内部滚动（E2E 缺陷：800×600 + 5 改动时 305px 面板覆盖提交按钮/挡任务入口）。新增 8 用例覆盖空 fixture（内容 122px）/5 项压力（305px）/极端窄高/NaN 兜底/组件接线/量不到几何回退。**真机 800×600 五改动压力复测与 1120/1121 并排回归待 Lead（选择器与预期见 §8）** |
 | #71 | 部分/基线已满足 | 层级不变量测试：执行记录 z=+24/+25 > 聊天 +20 > 任务面板 +10，任务+聊天同时打开遮不住执行记录；纳入同一空间规则。**视觉 E2E 待 Lead** |
 | #14 | 已修复 | BoardToolbar 删除「标注（未开放）」入口、菜单、样式与状态（源码不再含 annotate/未开放）；pm032「#14」用例 |
 | #15 | 已修复（结构） | 对话卡内：工具槽一排（BoardToolbar）在输入区一排上方；板面「添加」在工具栏，随消息附件在 ComposerEntries；聊天开合仍输入区旁单入口。pm032「#15」 |
@@ -79,10 +81,12 @@ npx vitest run --reporter=dot \
   src/components/interactive/__tests__/p1b-v2-workspace.test.ts \
   src/components/interactive/__tests__/p1b-v2-visual-guards.test.ts \
   src/interactive/__tests__/irl-c-layout.test.ts \
+  src/components/interactive/__tests__/pm032-layout-submit-panel.test.ts \
+  src/views/__tests__/i2v2-a-task-entries.test.ts \
   src/views/__tests__/InteractiveViewFloating.test.ts \
-  src/views/__tests__/InteractiveOldEntriesGone.test.ts \
   src/components/__tests__/MessageStream.test.ts
-# 结果：Test Files 17 passed (17) / Tests 197 passed (197)（新增 pm032-layout-shell 31 用例）
+# 结果（合并父分支 + #05 修复后）：Test Files 14 passed (14) / Tests 167 passed (167)
+# 其中新增 pm032-layout-submit-panel 8 用例、pm032-layout-shell 31 用例
 
 npx vue-tsc --noEmit
 # 结果：exit 0（自己范围 0 错误）
@@ -106,6 +110,13 @@ npx vue-tsc --noEmit
 - `InteractiveBookmarks.vue`：Esc 层 id `interactive-bookmarks`。
 - `InteractiveView.vue`：根节点新增 `data-im-panel-space="side-by-side|switch"`；新增 `data-im="board-load-failed" | "board-load-retry" | "board-load-back" | "submit-duplicate" 等选择器；任务入口失败标记 `data-im="tasks-entry-error"`。
 - `SubmitCluster.vue`（#41）：可选读取 i-state 的 `understandingLoadState / understandingLoadError / understandingLoadedOnce`；新增选择器 `data-im="submit-last-read-error" / "submit-last-read-retry" / "submit-last-result-empty" / "submit-details-error" / "submit-details-retry"`。
+- 新增 `components/interactive/submitPanelPlacement.ts`（纯函数，可单测）：
+  `SUBMIT_PANEL_GAP / SUBMIT_PANEL_MAX_HEIGHT / placeSubmitPanel({toolbar, container?, viewportHeight, safeTop?, gap?, maxHeightCap?}) /
+  submitPanelHeight(placement, contentHeight) / submitPanelCoversToolbar(placement, contentHeight)`。
+- `SubmitCluster.vue`（#05）：详情面板新增 `data-im="submit-panels"` 与 `data-im-panel-max-height="<px>"`；
+  打开时实测工具栏矩形后写 inline style（`position/left/width/bottom/max-height`），底边 = 工具栏顶边 − 8，
+  高度夹在 [0, 420] 与任务入口以上的可用空间内；resize/滚动/工具栏与定位祖先尺寸变化时重算（聊天开合会移动工具栏）。
+  量不到真实几何（jsdom/首帧）时保留原 CSS 兜底。较旧 E2E 若依赖「面板随内容长高」的行为需按 §8 更新预期。
 - 依赖 i-state 承诺接口（可选读取，合并后自动生效）：`boardLoadedOnce / boardReadOnly / boardEditBlockedReason / retryBoardLoad / canSubmit / submitBlockedReason / roundStatusLabel / roundStatusDetail`。字段名如需微调，只改 3 处 computed 的读取即可。
 - 与 i-tasks 约定：TaskCenterPanel 内不注册 Esc（页面壳注册 tasksOpen 一层）；任务入口失败标记仅页面壳；面板内错误/重试 `task-read-error` 由 i-tasks 实现。
 
@@ -123,8 +134,26 @@ npx vue-tsc --noEmit
 ## 7. 未做 / 集成风险
 
 1. **真机 E2E 未做**（按分工由 Lead）：800×600 单开/组合开面板、1121/1120 实际边界与中心命中、Tab/Esc、净白/暗紫晶主题、中文输入法。本分支只做组件/纯函数级证据。
-2. #05/#71 的“并排”几何：本分支实现「窄窗明确切换 + 层级不遮挡」；宽窗任务面板与提交详情本身不重叠（一个右上、一个底部工具栏上方），未新增并排容器。若 Lead E2E 发现 1121+ 仍有重叠，需要 TaskCenterPanel 定位配合（i-tasks 文件）。
+2. #05：高度钳制已按纯函数 + 组件实测实现；**真机 800×600 五改动压力场景尚未复测**（本次环境未起真实前后端/浏览器）。若 E2E 仍见覆盖，优先检查面板实际 `offsetParent` 是否为聊天卡（inline left/bottom 是相对定位祖先的偏移）以及 `data-im-panel-max-height` 是否写入；选择器与预期见 §8。#71 的空间规则与层级不变量未改动。
 3. #20 首次失败与「上次结果」的区分、#03 全轮次标签、#13 门禁原因：依赖 i-state 分支（commit 103c0126）合并；本分支已按字段可选消费，合并前走基线回退。合并后请跑一次真机失败注入验证。
 4. #41：UI 三态已接，但依赖 i-state 5e7b244f 合并后字段才存在；合并前走基线回退（只显示正常内容）。合并后建议真机注入一次 understanding 读取失败，确认「读取失败 / 上次结果 / 成功为空」三态与重试。
 5. i-tasks 的 TaskCenterPanel 错误/重试 UI 与 Esc 层级、i-state 的 `acceptanceLookupNote` 文案变更需在父分支合并后联调；本分支未改它们文件。
 6. 未自造 store 状态：所有跨分支数据均以可选读取 + 基线回退消费，类型检查在本 worktree 通过（vue-tsc exit 0）。
+
+## 8. E2E 复测指引（#05，Lead 用）
+
+选择器（全部为真实 DOM）：
+- 提交详情面板内容盒：`[data-im="submit-details-box"]`；面板外壳：`[data-im="submit-panels"]`；
+- 面板钳制高度：`[data-im="submit-panels"][data-im-panel-max-height]`（例：800×600 下约 162–170，随任务入口位置变化）；
+- 提交按钮：`[data-im="submit"]`；详情入口：`[data-im="submit-details"]`；任务入口：`[data-im="tasks-entry"]`；任务面板：`[data-im="task-center"]`；
+- 空间分档：`.interactive[data-im-panel-space]`（switch / side-by-side）。
+
+800×600 + 5 项改动压力场景预期（对应 e2e.mjs s4）：
+1. ④-1 单开详情：`detailsHit=true`、`submitHit=true`、`rectOverlap(details, submit)=false`；
+   面板矩形 `bottom ≤ submit.top`（面板底边始终在工具栏顶边上方 8px）；
+2. 任务入口：`detailsRect.top ≥ tasksEntryRect.bottom`（面板顶边不高于任务入口底边 + 8）；
+   若面板内容超过可用空间，面板内部滚动（`overflow-y:auto`），整体高度不再随改动条数增长；
+3. ④-2/④-4 组合开：任务打开时详情收起、详情打开时任务收起（switch 规则不变）；
+4. ④-6/④-7 边界：窗口宽 1176/1177（可用宽度 1120/1121）仍是 switch / side-by-side；侧并排时两块面板中心命中自己、与提交按钮无重叠；
+5. 空 fixture（无改动）：`submit-details-box` 内显示「本次没有改动」；面板同样按可用空间钳制，不覆盖提交按钮。
+压力夹具：板面放 5 项改动（如 5 张文字卡写正文）后保存，打开详情即可复现原 305px 场景。
