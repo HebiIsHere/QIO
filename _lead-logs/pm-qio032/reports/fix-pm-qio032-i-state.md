@@ -103,3 +103,8 @@ npx vue-tsc --noEmit
 - 4 文件 32/32：a-understanding-ownership(3)、irm-d-understanding-store(8)、pm032-state-duplicate-submit(7)、pm032-state-contract(14)
 - 11 文件 116/116：n7/n8/n5-acceptance、f10-submit-refresh、final-lead-m1、irl-verify-permission-status、recovery-lead-state-facts、submitFailureBrief、textCardUnified、p1-closed-card-shows-promoted、pm032-layout-shell
 - npx vue-tsc --noEmit → exit 0
+### 第三轮收尾：再次合并父分支最新（含其它分支第二轮）
+
+- git merge fix/pm-qio032-interactive → fast-forward 到 d8ba9b60（包含 i-canvas #44-46 批次 UI 接线、i-layout 提交面板、i-material/i-submit #28 等）；合并前确认我的提交已被父分支包含，且 HEAD..父分支 对本人名下文件 diff 为空。
+- 集成验证（合并后）：pm032-canvas-import-batch.test.ts（i-canvas 新增，8 用例，直接消费 ImportBatch API）+ 我方 store 用例 → 29/29 绿；pm032-layout-submit-panel.test.ts（i-layout）→ 8/8 绿。说明 #44-46 UI 接线与提交面板消费我的接口正常。
+- 最终 HEAD：d8ba9b60（我的两次提交 1754b8b8 / e37cf86e 已在父分支中）；工作区干净。
