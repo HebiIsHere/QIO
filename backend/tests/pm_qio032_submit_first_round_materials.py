@@ -80,12 +80,20 @@ def _ready(service: AttachmentService, tmp_path: Path, name: str, body: bytes):
     return att
 
 
-def _file_card(state: dict, *, att, name: str) -> dict:
+def _file_card(state: dict, *, att, name: str, included: bool = True) -> dict:
     block = {"name": name, "attachmentId": att.id, "size": int(att.size_bytes)}
     state = board.add_card(state, "file", "", meta={"name": name, "file": block})
     card_id = str(state["cards"][-1]["id"])
     return board.update_card(
-        state, card_id, {"participation": models.PARTICIPATION_INCLUDED}
+        state,
+        card_id,
+        {
+            "participation": (
+                models.PARTICIPATION_INCLUDED
+                if included
+                else models.PARTICIPATION_EXCLUDED
+            )
+        },
     )
 
 
@@ -218,3 +226,73 @@ async def test_submission_attachments_join_turn_read_grants(app_ctx, monkeypatch
     assert any(wanted <= granted for granted in recorded), (
         f"提交材料附件没有进入本轮 read grants：{recorded}"
     )
+
+@pytest.mark.anyio
+async def test_first_round_delivers_only_participating_materials_with_file_body(app_ctx):
+    """E2E ①-6b 同口径：参与的文字卡正文 + 参与的 TXT 文件正文都进首轮请求；
+    排除 / 隐藏卡（含文件卡正文）一律不出现；PNG 只有在有视觉能力时交付字节。
+
+    fake adapter 捕获的是**真实编排链路**里首轮模型调用收到的消息（不是某个函数被调用过）。
+    """
+    ctx = app_ctx
+    tmp = Path(ctx.settings.data_dir).parent
+    service = ctx._test_attachment_service  # type: ignore[attr-defined]
+    txt_att = _ready(service, tmp, "参与项.txt", b"TXT-FILE-PARTICIPATING-BODY")
+    excluded_att = _ready(service, tmp, "排除项.txt", b"TXT-FILE-EXCLUDED-BODY")
+    png_att = _ready(service, tmp, "参与图.png", _PNG_BYTES)
+
+    board_store.ensure_board(ctx.conn, board_id=BOARD)
+    state = board_store.current_state(ctx.conn, BOARD)
+    state = board.add_card(state, "text", "TEXT-CARD-PARTICIPATING-BODY")
+    text_id = str(state["cards"][-1]["id"])
+    state = board.update_card(
+        state, text_id, {"participation": models.PARTICIPATION_INCLUDED}
+    )
+    # 排除的文字卡：正文绝不能被读走。
+    state = board.add_card(state, "text", "TEXT-CARD-EXCLUDED-BODY")
+    excluded_text_id = str(state["cards"][-1]["id"])
+    state = board.update_card(
+        state,
+        excluded_text_id,
+        {"participation": models.PARTICIPATION_EXCLUDED},
+    )
+    # 隐藏的文字卡：正文绝不能被读走。
+    # 注意 update_card 的键顺序：participation 与 hidden 同一次写入会互相覆盖，
+    # 这里按真实三态入口分两步写（先参与、再隐藏），模拟前端「隐藏且不参与」。
+    state = board.add_card(state, "text", "TEXT-CARD-HIDDEN-BODY")
+    hidden_text_id = str(state["cards"][-1]["id"])
+    state = board.update_card(
+        state, hidden_text_id, {"participation": models.PARTICIPATION_INCLUDED}
+    )
+    state = board.update_card(state, hidden_text_id, {"hidden": True})
+    state = _file_card(state, att=txt_att, name="参与项.txt", included=True)
+    state = _file_card(state, att=png_att, name="参与图.png", included=True)
+    state = _file_card(state, att=excluded_att, name="排除项.txt", included=False)
+    board_store.save_board(ctx.conn, BOARD, state, reason="seed-scope")
+
+    adapter = _CapturingAdapter()
+    ctx.build_adapter = lambda: _return(adapter)  # type: ignore[assignment]
+    topic = ctx.topics.nodes.create_topic("互动首轮材料范围").id
+
+    await _submit_board_turn(ctx, topic)
+
+    assert adapter.calls, "模型没有被调用"
+    for messages in adapter.calls:
+        joined = _joined(messages)
+        # 参与项：文字卡正文 + TXT 文件可读正文都真的进了首轮提示词。
+        assert "TEXT-CARD-PARTICIPATING-BODY" in joined
+        assert "TXT-FILE-PARTICIPATING-BODY" in joined, (
+            "参与项 TXT 文件正文没有交付给模型（检查 turn_orchestrator 接线 / materials 解析）"
+        )
+        assert "attachment_text" in joined, "TXT 文件材料来源必须如实标注（attachment_text）"
+        # 排除 / 隐藏项：正文与文件名都不得出现。
+        assert "TEXT-CARD-EXCLUDED-BODY" not in joined
+        assert "TEXT-CARD-HIDDEN-BODY" not in joined
+        assert "TXT-FILE-EXCLUDED-BODY" not in joined
+        assert "排除项.txt" not in joined
+        # 参与 PNG：有视觉能力 → 真实字节；且文件名在材料事实里可核对。
+        images = [part for message in messages for part in (message.images or [])]
+        assert images, "PNG 图片字节没有交付给模型"
+        assert any(part.data_url.startswith("data:image/png") for part in images)
+        assert "参与图.png" in joined
+
