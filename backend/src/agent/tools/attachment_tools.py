@@ -53,7 +53,7 @@ from agent.services.attachments import (
     requirement_binding_from_context,
 )
 from agent.tools import fs_tools
-from agent.tools.base import Tool, ToolResult
+from agent.tools.base import TOOL_RESULT_PROTOCOL_VERSION, Tool, ToolResult
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 500
@@ -608,33 +608,38 @@ class ReadAttachmentTool(Tool):
             if getattr(item, "id", None)
         }
 
-    def _board_scope_denial(self, att: Attachment) -> ToolResult | None:
+    def _submission_material_guard(
+        self, att: Attachment
+    ) -> tuple[ToolResult | None, dict]:
         """互动提交轮次：附件读取必须与提交快照（A 版）用同一授权判断。
 
         #08/#54：被排除 / 隐藏的材料不读；#28：提交后新增（B 版）的附件不读；
-        源文件已变化且旧内容不可得 → 提示重新提交，绝不读当前内容冒充旧材料。
+        源文件已变化 / 旧记录无法核对内容版本 → 提示重新提交，绝不读当前内容冒充旧材料。
         普通对话轮没有板面绑定，不经过这里。
+
+        返回 (拒绝结果 | None, 核对事实)。核对事实里的 sha256 是**提交时冻结的内容版本**：
+        调用方读完必须在交付前再核对一次同一路径的哈希，避免「核对的是 A、读到的是 B」。
         """
         try:
             from agent.interactive import materials as materials_module
             from agent.interactive import runtime as runtime_module
         except Exception:  # noqa: BLE001 - 互动模块不可用时不影响既有附件读取
-            return None
+            return None, {}
         try:
             turn = runtime_module.current_board_turn()
         except Exception:  # noqa: BLE001 - 没有绑定按普通轮处理
-            return None
+            return None, {}
         if turn is None:
-            return None
+            return None, {}
         submission_id = str(getattr(turn, "submission_id", "") or "")
         if not submission_id:
-            return None
+            return None, {}
         # 本轮消息自带的附件是用户这次新给的上下文，不受提交快照范围限制。
         if att.id in self._turn_attachment_ids(turn):
-            return None
+            return None, {}
         conn = getattr(self.attachments, "conn", None)
         if conn is None:
-            return None
+            return None, {}
         try:
             scope = materials_module.submission_attachment_scope(
                 conn,
@@ -643,56 +648,170 @@ class ReadAttachmentTool(Tool):
                 attachments=self.attachments,
             )
         except Exception as exc:  # noqa: BLE001 - 核对失败按拒绝（失败关闭）
-            return ToolResult(
-                ok=False,
-                error="核对本次提交的材料范围失败：" + type(exc).__name__,
-                category="permission",
-                recoverable=True,
-                code="material_scope_unavailable",
+            return (
+                ToolResult(
+                    ok=False,
+                    error="核对本次提交的材料范围失败：" + type(exc).__name__,
+                    category="permission",
+                    recoverable=True,
+                    code="material_scope_unavailable",
+                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+                ),
+                {},
             )
         if not scope.get("available"):
-            return ToolResult(
-                ok=False,
-                error="本轮没有可核对的提交材料范围："
-                + str(scope.get("reason") or "提交快照不可用")
-                + "；请重新提交后再读",
-                category="permission",
-                recoverable=False,
-                code="material_scope_unavailable",
+            notice = str(
+                getattr(
+                    materials_module,
+                    "SUBMISSION_READ_FAILED_NOTICE",
+                    "读不到这次提交的内容，请重新提交。",
+                )
+            )
+            return (
+                ToolResult(
+                    ok=False,
+                    error=notice
+                    + " 具体原因："
+                    + str(scope.get("reason") or "提交快照不可用")
+                    + "；请重新提交后再读",
+                    category="permission",
+                    recoverable=False,
+                    code="material_scope_unavailable",
+                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+                    data={
+                        "submission_id": submission_id,
+                        "diagnostics": {
+                            "snapshot": str(scope.get("reason") or "提交快照不可用")
+                        },
+                        "next_step": "resubmit",
+                    },
+                ),
+                {},
             )
         stale = scope.get("stale") or {}
         if att.id in stale:
-            return ToolResult(
-                ok=False,
-                error=str(stale.get(att.id)),
-                category="permission",
-                recoverable=True,
-                code="material_source_changed",
-            )
-        if att.id not in (scope.get("allowed") or {}):
-            return ToolResult(
-                ok=False,
-                error=(
-                    "这张附件不在本次提交允许的材料范围内"
-                    "（提交后新增 / 未参与 / 已隐藏的材料不会被读取）；"
-                    "请让用户重新提交后再读。"
+            return (
+                ToolResult(
+                    ok=False,
+                    error=str(stale.get(att.id)),
+                    category="permission",
+                    recoverable=True,
+                    code="material_source_changed",
+                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+                    data={
+                        "attachment_id": att.id,
+                        "submission_id": submission_id,
+                        "next_step": "resubmit",
+                    },
                 ),
-                category="permission",
-                recoverable=False,
-                code="not_in_submission_scope",
+                {},
             )
-        return None
+        allowed = scope.get("allowed") or {}
+        if att.id not in allowed:
+            return (
+                ToolResult(
+                    ok=False,
+                    error=(
+                        "这张附件不在本次提交允许的材料范围内"
+                        "（提交后新增 / 未参与 / 已隐藏的材料不会被读取）；"
+                        "请让用户重新提交后再读。"
+                    ),
+                    category="permission",
+                    recoverable=False,
+                    code="not_in_submission_scope",
+                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+                    data={
+                        "attachment_id": att.id,
+                        "submission_id": submission_id,
+                        "next_step": "resubmit",
+                    },
+                ),
+                {},
+            )
+        recorded = allowed.get(att.id) or {}
+        return None, {
+            "required": True,
+            "attachment_id": att.id,
+            "submission_id": submission_id,
+            "sha256": str(recorded.get("sha256") or ""),
+        }
+
+    def _submission_material_changed_after_read(
+        self, att: Attachment, guard: dict
+    ) -> str:
+        """#28：读完之后再核对一次内容版本；变了就不交付（绝不把另一个版本交出去）。
+
+        读取前的范围核对只说明「当时」能对上；这里保证**实际读的这段时间里**文件没有
+        被换成别的版本。核对不了（读不到）同样按「不能确认」处理。
+        """
+        if not guard.get("required"):
+            return ""
+        expected = str(guard.get("sha256") or "")
+        if not expected:
+            return "这条材料没有可核对的提交时内容版本，本次不交付读取结果；请重新提交后再读"
+        try:
+            from agent.interactive import materials as materials_module
+
+            current = materials_module.current_material_content_sha256(
+                self.attachments, att
+            )
+        except Exception as exc:  # noqa: BLE001 - 核对失败按不能确认处理（失败关闭）
+            return (
+                "读取后无法再次核对材料内容版本（"
+                + type(exc).__name__
+                + "）：本次不交付读取结果；请重新提交后再读"
+            )
+        if not current:
+            return (
+                "读取后无法再次核对材料内容版本（源文件读不到或过大）："
+                "本次不交付读取结果；请重新提交后再读"
+            )
+        if current != expected:
+            return (
+                "读取过程中这份材料的内容版本发生了变化（与提交时冻结的内容不一致）："
+                "本次不交付读取结果；请重新提交后再读"
+            )
+        return ""
 
     # -- 读取 --------------------------------------------------------------
 
     async def _read(
         self, att: Attachment, *, offset: int, limit: int, fragment_offset: int = 0
     ) -> ToolResult:
-        described = self._describe(att)
-        notes: list[str] = [f"附件来源：{described['display']}"]
-        denial = self._board_scope_denial(att)
+        """读取入口：先核对提交材料范围，读完后**再核对一次内容版本**才交付。
+
+        #28：绑定提交的一轮里，只交付「提交时冻结的那一份内容」；读取期间内容版本变了
+        （或核对不了）就整体失败并提示重新提交，绝不把另一版本交给模型。
+        """
+        denial, guard = self._submission_material_guard(att)
         if denial is not None:
             return denial
+        result = await self._read_content(
+            att, offset=offset, limit=limit, fragment_offset=fragment_offset
+        )
+        if getattr(result, "ok", False):
+            changed = self._submission_material_changed_after_read(att, guard)
+            if changed:
+                return ToolResult(
+                    ok=False,
+                    error=changed,
+                    category="unavailable",
+                    recoverable=False,
+                    code="material_source_changed",
+                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+                    data={
+                        "attachment_id": att.id,
+                        "submission_id": str(guard.get("submission_id") or ""),
+                        "next_step": "resubmit",
+                    },
+                )
+        return result
+
+    async def _read_content(
+        self, att: Attachment, *, offset: int, limit: int, fragment_offset: int = 0
+    ) -> ToolResult:
+        described = self._describe(att)
+        notes: list[str] = [f"附件来源：{described['display']}"]
         if att.state == "prepared":
             return ToolResult(
                 ok=False,

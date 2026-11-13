@@ -1319,10 +1319,22 @@ class TurnOrchestrator:
                             interactive_data["materials"] = list(
                                 delivered.get("materials") or []
                             )
-                            interactive_data["materials_available"] = bool(
-                                delivered.get("available", True)
-                            )
-                            if not delivered.get("available", True):
+                            available = bool(delivered.get("available", True))
+                            interactive_data["materials_available"] = available
+                            # #28：读不到提交当时的材料时，必须是一个**可识别的失败状态**，
+                            # 不能让模型把「没有材料」当成正常的空结果；诊断细节放 materials_reason。
+                            if available:
+                                interactive_data["materials_status"] = "available"
+                            else:
+                                notice = str(
+                                    getattr(
+                                        _interactive_materials,
+                                        "SUBMISSION_READ_FAILED_NOTICE",
+                                        "读不到这次提交的内容，请重新提交。",
+                                    )
+                                )
+                                interactive_data["materials_status"] = "unavailable"
+                                interactive_data["materials_notice"] = notice
                                 interactive_data["materials_reason"] = str(
                                     delivered.get("reason") or ""
                                 )
@@ -1344,9 +1356,42 @@ class TurnOrchestrator:
                                 )
                                 if callable(converter):
                                     media_parts.extend(converter({"imageParts": images}))
-                except Exception:  # noqa: BLE001 - 材料交付是旁路：失败时如实没有材料
+                    else:
+                        # 材料入口缺失（合并顺序问题）：如实标不可用，不当成没有材料。
+                        interactive_data["materials"] = []
+                        interactive_data["materials_available"] = False
+                        interactive_data["materials_status"] = "unavailable"
+                        interactive_data["materials_notice"] = str(
+                            getattr(
+                                _interactive_materials,
+                                "SUBMISSION_READ_FAILED_NOTICE",
+                                "读不到这次提交的内容，请重新提交。",
+                            )
+                        )
+                        interactive_data["materials_reason"] = (
+                            "提交材料入口不可用：无法读取提交当时的材料范围"
+                        )
+                except Exception as exc:  # noqa: BLE001 - 材料交付是旁路：失败时如实报不可用
                     logging.getLogger(__name__).warning(
                         "interactive submission materials failed", exc_info=True
+                    )
+                    # #28：交付失败也是「读不到这次提交的内容」，不能让模型当成空材料。
+                    try:
+                        from agent.interactive import materials as _failed_materials
+                    except Exception:  # noqa: BLE001 - 模块不可用时用固定短文案
+                        _failed_materials = None
+                    interactive_data["materials"] = []
+                    interactive_data["materials_available"] = False
+                    interactive_data["materials_status"] = "unavailable"
+                    interactive_data["materials_notice"] = str(
+                        getattr(
+                            _failed_materials,
+                            "SUBMISSION_READ_FAILED_NOTICE",
+                            "读不到这次提交的内容，请重新提交。",
+                        )
+                    )
+                    interactive_data["materials_reason"] = (
+                        "读取提交材料失败：" + type(exc).__name__
                     )
             blocks.append(ContextBlock("interactive", interactive_data))
         return _Plan(

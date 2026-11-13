@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -118,12 +119,23 @@ def _record_submission(
     submission_id: str = SUB,
     *,
     snapshot: dict | None = None,
+    svc: "AttachmentService | None" = None,
 ) -> dict:
     """落一条真实形状的提交记录：visible / after_state 都是当时允许查看的投影。
 
-    snapshot 给定时直接用它（用于提交受理时冻结了 materialVersions 的精确版本核对）。
+    真实受理路径（submission.py）会在成功时把可见文件卡的内容版本（sha256）冻结进
+    快照顶层 materialVersions；这里默认照做（svc 给定时），测试快照才与生产同形。
+    snapshot 给定时直接用它（用于精确控制 frozen 版本）；svc=None 时保持旧记录形状
+    （没有 materialVersions，用来验证「旧记录无法核对版本」的失败路径）。
     """
-    snapshot = dict(snapshot) if isinstance(snapshot, dict) else submission.project_snapshot(state)
+    if isinstance(snapshot, dict):
+        snapshot = dict(snapshot)
+    else:
+        snapshot = submission.project_snapshot(state)
+        if svc is not None:
+            snapshot = materials.stamp_snapshot_material_versions(
+                conn, snapshot, attachments=svc
+            )
     conn.execute(
         "INSERT OR REPLACE INTO board_submissions (id, board_id, seq, status,"
         " before_state, after_state, visible, expressions, baseline, delivery,"
@@ -198,7 +210,7 @@ def test_submission_materials_deliver_txt_and_png_from_submission_snapshot(
     state, png_id = _add_file_card(state, att=png)
     state, excluded_id = _add_file_card(state, att=excluded_att, included=False)
     _save(db_conn, state)
-    _record_submission(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
 
     # 提交之后保存 B 版：改正文、加新卡、把 A 版里的一张卡改成不参与。
     later = board.update_card(state, text_id, {"content": "B 版正文"})
@@ -240,7 +252,7 @@ def test_submission_materials_mark_changed_source_as_needs_resubmit(db_conn, svc
     state = _saved_state(db_conn)
     state, card_id = _add_file_card(state, att=att)
     _save(db_conn, state)
-    _record_submission(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
 
     # 真实改动已保存的 QIO 副本（用户后来改了源文件再同步/写回）：长度变化。
     target = svc.content_target(att.id)
@@ -300,12 +312,19 @@ async def test_board_inspect_and_read_cards_only_see_submission_version(db_conn)
         assert denied.code == "not_readable"
 
 
-async def test_latest_read_falls_back_to_current_when_submission_snapshot_missing(db_conn):
-    """提交记录没有可见快照（历史桩 / 旧数据）时如实标 current，不假装 A 版。"""
+async def test_bound_turn_with_missing_snapshot_fails_and_asks_resubmit(db_conn):
+    """#28：绑定提交但快照读不到 → 失败 + 建议重新提交，绝不返回当前板面（正文 / 关系）。
+
+    这是本文件原来那条「快照缺失仍成功读取当前板面」用例的反转：旧行为把提交快照故障
+    显示成一次正常读取（还带上了提交之后才保存的 B 版），正是 #28 要修的问题。
+    """
     _ensure(db_conn)
     state = _saved_state(db_conn)
     state, card_id = _add_text_card(state, "当前板面正文")
+    state, other_id = _add_text_card(state, "当前板面第二张")
+    state = board.add_link(state, card_id, other_id, False, "当前板面关系")
     _save(db_conn, state)
+    # 旧记录：提交行存在，但没有保存当时的可见范围快照（无法确认 A 版）。
     db_conn.execute(
         "INSERT OR IGNORE INTO board_submissions (id, board_id, seq, status, created_at)"
         " VALUES (?, ?, 1, 'accepted', ?)",
@@ -314,11 +333,185 @@ async def test_latest_read_falls_back_to_current_when_submission_snapshot_missin
 
     tools = _tools(db_conn)
     with _bound():
+        results = {
+            "board_inspect": await tools["board_inspect"].run(),
+            "board_read_cards(latest)": await tools["board_read_cards"].run(),
+            "board_read_cards(submission)": await tools["board_read_cards"].run(
+                source="submission"
+            ),
+        }
+
+    for label, result in results.items():
+        assert result.ok is False, (label, result)
+        assert result.status == "failed", (label, result.status)
+        assert result.recoverable is False, (label, result.recoverable)
+        assert result.error == "读不到这次提交的内容，请重新提交。", (label, result.error)
+        assert result.data["next_step"] == "resubmit", label
+        # 失败状态可识别：机器码 + basis 明确说「快照不可用」，诊断原因进详情。
+        assert result.code in {
+            "submission_snapshot_unavailable",
+            "submission_not_found",
+        }, (label, result.code)
+        assert result.data["basis"]["available"] is False, (label, result.data["basis"])
+        assert result.data["basis"]["source"] == "submission", (label, result.data["basis"])
+        assert result.data["diagnostics"]["snapshot"], label
+        # 当前板面的正文与关系一个字都不能出现（失败不等于「当前板面 / 零张卡」）。
+        dumped = json.dumps(
+            {"content": result.content, "error": result.error, "data": result.data},
+            ensure_ascii=False,
+        )
+        assert "当前板面正文" not in dumped, (label, dumped)
+        assert "当前板面第二张" not in dumped, (label, dumped)
+        assert "当前板面关系" not in dumped, (label, dumped)
+        assert "cards" not in result.data, "失败结果不能带板面卡片"
+        assert "links" not in result.data, "失败结果不能带板面关系"
+        assert "counts" not in result.data, "失败结果不能伪装成「零张卡」的正常结果"
+
+
+async def test_bound_turn_without_submission_row_never_reads_current_board(db_conn):
+    """提交行都不存在时同样失败：板面读取不给当前数据，显式读提交给出「找不到提交」。"""
+    _ensure(db_conn)
+    state = _saved_state(db_conn)
+    state, card_id = _add_text_card(state, "当前板面正文")
+    state, other_id = _add_text_card(state, "当前板面第二张")
+    state = board.add_link(state, card_id, other_id, False, "当前板面关系")
+    _save(db_conn, state)
+
+    tools = _tools(db_conn)
+    with _bound():
+        inspected = await tools["board_inspect"].run()
+        latest = await tools["board_read_cards"].run()
+        explicit = await tools["board_read_cards"].run(source="submission")
+
+    for result in (inspected, latest):
+        assert result.ok is False, result
+        assert result.code == "submission_snapshot_unavailable", result.code
+        assert result.data["basis"]["available"] is False
+    assert explicit.ok is False
+    assert explicit.code == "submission_not_found"
+    for result in (inspected, latest, explicit):
+        dumped = json.dumps(
+            {"content": result.content, "error": result.error, "data": result.data},
+            ensure_ascii=False,
+        )
+        assert result.error == "读不到这次提交的内容，请重新提交。", result.error
+        assert "当前板面正文" not in dumped
+        assert "当前板面关系" not in dumped
+
+
+def _insert_raw_submission(
+    conn: sqlite3.Connection,
+    *,
+    submission_id: str,
+    board_id: str,
+    visible: object,
+    after_state: object | None = None,
+) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO board_submissions (id, board_id, seq, status,"
+        " before_state, after_state, visible, expressions, baseline, delivery,"
+        " content_hash, error, created_at)"
+        " VALUES (?, ?, 1, 'succeeded', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            submission_id,
+            board_id,
+            models.dumps(submission._empty_projection(first_submission=True)),
+            models.dumps(after_state if after_state is not None else visible),
+            models.dumps(visible),
+            "[]",
+            "{}",
+            "{}",
+            "",
+            None,
+            models.now_iso(),
+        ),
+    )
+
+
+async def test_damaged_snapshot_is_failure_not_empty_board(db_conn):
+    """提交快照损坏（形状不对）：按失败处理，绝不当成「正常空板面 / 零张卡」。"""
+    _ensure(db_conn)
+    state = _saved_state(db_conn)
+    state, _card_id = _add_text_card(state, "当前板面正文")
+    _save(db_conn, state)
+    # cards 不是列表：JSON 还在但形状损坏，不能假装这是当时的可见范围。
+    _insert_raw_submission(
+        db_conn,
+        submission_id=SUB,
+        board_id=BOARD,
+        visible={"cards": "broken", "groups": [], "links": []},
+    )
+
+    tools = _tools(db_conn)
+    with _bound():
+        inspected = await tools["board_inspect"].run()
         read = await tools["board_read_cards"].run()
-        assert read.ok is True, read
-        assert read.data["basis"]["source"] == "current"
-        assert read.data["basis"]["fallback"]
-        assert read.data["cards"][0]["content"] == "当前板面正文"
+        explicit = await tools["board_read_cards"].run(source="submission")
+    for result in (inspected, read, explicit):
+        assert result.ok is False, result
+        assert result.code in {
+            "submission_snapshot_unavailable",
+            "submission_not_found",
+        }, result.code
+        assert "读不到这次提交的内容，请重新提交。" in (result.error or "")
+        assert "当前板面正文" not in json.dumps(result.data, ensure_ascii=False)
+        assert "cards" not in result.data, "损坏的快照不能被当成空板面"
+
+
+async def test_snapshot_from_other_board_is_recognizable_failure(db_conn):
+    """提交归属不匹配：读不到这次提交的内容 → 失败，不给当前板面数据。"""
+    _ensure(db_conn)
+    state = _saved_state(db_conn)
+    state, _card_id = _add_text_card(state, "当前板面正文")
+    _save(db_conn, state)
+    # 另一块真实存在的板面（FK 要求板面行存在）：提交属于它，不属于本轮绑定板面。
+    board_store.ensure_board(db_conn, board_id="board_other_28")
+    _insert_raw_submission(
+        db_conn,
+        submission_id=SUB,
+        board_id="board_other_28",
+        visible={"cards": [], "groups": [], "links": [], "selection": []},
+    )
+
+    tools = _tools(db_conn)
+    with _bound():
+        inspected = await tools["board_inspect"].run()
+        explicit = await tools["board_read_cards"].run(source="submission")
+    assert inspected.ok is False, inspected
+    assert inspected.code == "submission_snapshot_unavailable"
+    assert "不属于" in inspected.data["diagnostics"]["snapshot"], inspected.data
+    assert "当前板面正文" not in json.dumps(inspected.data, ensure_ascii=False)
+    assert explicit.ok is False, explicit
+    assert explicit.code == "submission_not_found"
+    assert "当前板面正文" not in json.dumps(explicit.data, ensure_ascii=False)
+
+
+async def test_legacy_snapshot_still_reads_available_history_cards(db_conn):
+    """旧提交（没有 materialVersions）仍能查看当时可见的卡片；文件材料单独提示重新提交。"""
+    _ensure(db_conn)
+    state = _saved_state(db_conn)
+    state, text_id = _add_text_card(state, "A 版正文")
+    _save(db_conn, state)
+    # 旧记录：有当时的可见范围投影，但没有 materialVersions（无法核对文件内容版本）。
+    _insert_raw_submission(
+        db_conn,
+        submission_id=SUB,
+        board_id=BOARD,
+        visible=submission.project_snapshot(state),
+    )
+    later = board.update_card(state, text_id, {"content": "B 版正文"})
+    _save(db_conn, later)
+
+    tools = _tools(db_conn)
+    with _bound():
+        read = await tools["board_read_cards"].run()
+        explicit = await tools["board_read_cards"].run(source="submission")
+    assert read.ok is True, read
+    assert read.data["basis"]["source"] == "submission"
+    by_id = {item["id"]: item for item in read.data["cards"]}
+    assert by_id[text_id]["content"] == "A 版正文", "旧提交可用的历史卡片仍要能查看"
+    assert explicit.ok is True, explicit
+    assert explicit.data["source"] == "submission"
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +530,7 @@ async def test_read_attachment_scope_matches_submission_included_materials(db_co
     state = _saved_state(db_conn)
     state, _old_id = _add_file_card(state, att=old_att)
     _save(db_conn, state)
-    _record_submission(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
     later = board.add_card(_saved_state(db_conn), "file", "", meta={"name": "新材料.txt", "file": {"name": "新材料.txt", "attachmentId": later_att.id, "size": later_att.size_bytes}})
     _save(db_conn, later)
 
@@ -657,7 +850,7 @@ def test_txt_file_card_body_is_delivered_as_attachment_text(db_conn, svc, tmp_pa
     state = _saved_state(db_conn)
     state, card_id = _add_file_card(state, att=txt, name="材料.txt")
     _save(db_conn, state)
-    _record_submission(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
 
     resolved = materials.submission_materials(
         db_conn, board_id=BOARD, submission_id=SUB, attachments=svc
@@ -682,7 +875,7 @@ def test_hidden_and_post_submission_files_are_not_delivered(db_conn, svc, tmp_pa
     state, hidden_id = _add_file_card(state, att=hidden_att, name="隐藏材料.txt")
     state = board.set_hidden(state, hidden_id, True)
     _save(db_conn, state)
-    _record_submission(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
 
     later = board.add_card(
         _saved_state(db_conn),
@@ -720,7 +913,7 @@ def test_not_ready_attachment_is_stale_never_delivered(db_conn, svc, tmp_path):
         state, att=pending, name="准备中.txt", size=len(b"pending body")
     )
     _save(db_conn, state)
-    _record_submission(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
 
     resolved = materials.submission_materials(
         db_conn, board_id=BOARD, submission_id=SUB, attachments=svc

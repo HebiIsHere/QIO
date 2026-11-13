@@ -141,15 +141,19 @@ def _submission_basis(tool: "_BoardTool", turn: "Any") -> tuple[dict[str, Any], 
     #28：正式提交的一轮只用提交当时的卡片 / 关系 / 材料版本；之后保存 B 版，
     查看板面与读卡仍返回 A 版。返回 (state, basis)：
 
-    - basis.source = "submission"：真的读到了提交快照；
-    - basis.source = "current"：没有提交绑定，或旧记录没有可用快照 ——
-      此时 basis.fallback 写明原因（不假装 A 版，也不静默替换）。
+    - 没有提交绑定（普通互动 / 未绑定提交）→ basis.source = "current"，读当前板面；
+    - 有绑定且真的读到快照 → basis.source = "submission"，available=True；
+    - 有绑定但快照不可用 → available=False + 空 state：**绝不回退到当前板面**
+      （调用方必须整体失败并提示重新提交；当前板面既不是 A 版，也不是「零张卡」）。
     """
     sid = str(getattr(turn, "submission_id", "") or "")
     basis: dict[str, Any] = {
         "source": "current",
         "submission_id": sid,
+        "available": True,
         "fallback": "",
+        "reason": "",
+        "created_at": "",
     }
     if not sid:
         return _latest_state(tool, turn), basis
@@ -162,8 +166,55 @@ def _submission_basis(tool: "_BoardTool", turn: "Any") -> tuple[dict[str, Any], 
         basis["source"] = "submission"
         basis["created_at"] = str(loaded.get("createdAt") or "")
         return dict(loaded.get("snapshot") or {}), basis
-    basis["fallback"] = str(loaded.get("reason") or "提交快照不可用")
-    return _latest_state(tool, turn), basis
+    reason = str(loaded.get("reason") or "提交快照不可用")
+    basis.update(
+        {
+            # 本轮**要求**读的是提交版本（只是读不到）：available=False 说明失败原因。
+            "source": "submission",
+            "available": False,
+            "fallback": reason,
+            "reason": reason,
+            "created_at": str(loaded.get("createdAt") or ""),
+        }
+    )
+    return {}, basis
+
+
+def _submission_unavailable_failure(
+    action: str,
+    turn: "Any",
+    basis: Mapping[str, Any],
+    *,
+    code: str = "submission_snapshot_unavailable",
+    detail: Mapping[str, Any] | None = None,
+) -> ToolResult:
+    """#28：绑定提交却读不到提交当时的内容 → 可识别的失败（不是成功、也不是空结果）。
+
+    给界面的正文只有一句短文案；数据库 / 存储等诊断细节放进 data.diagnostics，
+    并且**不带任何当前板面的卡片、关系或正文**。
+    """
+    reason = str(basis.get("reason") or basis.get("fallback") or "提交快照不可用")
+    diagnostics: dict[str, Any] = {"snapshot": reason}
+    if detail:
+        diagnostics.update(dict(detail))
+    notice = str(
+        getattr(materials_module, "SUBMISSION_READ_FAILED_NOTICE", "读不到这次提交的内容，请重新提交。")
+    )
+    return _fail(
+        action,
+        code,
+        notice,
+        status=ToolStatus.FAILED.value,
+        recoverable=False,
+        data={
+            "board_id": str(getattr(turn, "board_id", "") or ""),
+            "submission_id": str(basis.get("submission_id") or ""),
+            "basis": dict(basis),
+            "diagnostics": diagnostics,
+            "next_step": "resubmit",
+            "user_message": notice,
+        },
+    )
 
 
 def _submission_row_exists(conn: Any, turn: Any) -> bool:
@@ -606,8 +657,11 @@ class BoardInspectTool(_BoardTool):
 
     async def _run(self, turn: Any, args: Any) -> ToolResult:
         conn = _conn(self)
-        # #28：绑定提交时只看提交当时的冻结快照（A 版），不是当前保存的 B 版。
+        # #28：绑定提交时只看提交当时的冻结快照（A 版），不是当前保存的 B 版；
+        # 读不到快照就整体失败（不给当前板面数据，也不当成「零张卡」）。
         state, basis = _submission_basis(self, turn)
+        if not basis.get("available", True):
+            return _submission_unavailable_failure(self.name, turn, basis)
         visible = _visible_ids(state)
         cards = []
         for card in state.get("cards") or []:
@@ -688,22 +742,57 @@ class BoardReadCardsTool(_BoardTool):
             loaded = materials_module.load_submission_snapshot(
                 conn, board_id=str(turn.board_id or ""), submission_id=str(turn.submission_id)
             )
-            if not loaded.get("available") and not _submission_row_exists(conn, turn):
-                return _fail(self.name, "submission_not_found", "提交快照不存在或不属于当前板面")
+            if not loaded.get("available"):
+                # #28：显式读提交的路径同样不许把「快照故障」显示成成功读取或空板面。
+                if not _submission_row_exists(conn, turn):
+                    return _fail(
+                        self.name,
+                        "submission_not_found",
+                        str(
+                            getattr(
+                                materials_module,
+                                "SUBMISSION_READ_FAILED_NOTICE",
+                                "读不到这次提交的内容，请重新提交。",
+                            )
+                        ),
+                        status=ToolStatus.FAILED.value,
+                        recoverable=False,
+                        data={
+                            "board_id": str(turn.board_id or ""),
+                            "submission_id": str(turn.submission_id or ""),
+                            "diagnostics": {
+                                "snapshot": str(loaded.get("reason") or "提交快照不存在或不属于当前板面")
+                            },
+                            "next_step": "resubmit",
+                        },
+                    )
+                basis = {
+                    "source": "submission",
+                    "submission_id": str(turn.submission_id or ""),
+                    "available": False,
+                    "fallback": str(loaded.get("reason") or ""),
+                    "reason": str(loaded.get("reason") or ""),
+                    "created_at": str(loaded.get("createdAt") or ""),
+                }
+                return _submission_unavailable_failure(self.name, turn, basis)
             snapshot = dict(loaded.get("snapshot") or {})
             basis = {
-                "source": "submission" if loaded.get("available") else "current",
+                "source": "submission",
                 "submission_id": str(turn.submission_id or ""),
-                "fallback": "" if loaded.get("available") else str(loaded.get("reason") or ""),
+                "available": True,
+                "fallback": "",
+                "reason": "",
+                "created_at": str(loaded.get("createdAt") or ""),
             }
             raw_cards = snapshot.get("cards") or []
             allowed = {str(card["id"]) for card in raw_cards if isinstance(card, dict) and card.get("id")}
             cards = [dict(card) for card in raw_cards if isinstance(card, dict) and card.get("id")]
         else:
-            # #28：绑定提交的轮次里，latest 也是「本轮依据的 A 版」；
-            # 只有没有提交快照（历史记录 / 普通绑定）时才退回当前已保存板面，
-            # 并在 basis.fallback 里如实说明，不静默替换。
+            # #28：绑定提交的轮次里，latest 也是「本轮依据的 A 版」；快照读不到就失败，
+            # 绝不退回当前已保存板面（当前板面不是本轮依据，也不是「空结果」）。
             state, basis = _submission_basis(self, turn)
+            if not basis.get("available", True):
+                return _submission_unavailable_failure(self.name, turn, basis)
             allowed = _visible_ids(state)
             cards = [
                 dict(card)
@@ -753,6 +842,8 @@ class BoardReadCardsTool(_BoardTool):
             self.name,
             {
                 "board_id": turn.board_id,
+                # 本轮读的是哪一次提交（无绑定为空串）：调用方能据此核对身份。
+                "submission_id": str(turn.submission_id or ""),
                 "source": source,
                 "basis": basis,
                 "offset": offset,

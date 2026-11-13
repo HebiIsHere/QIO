@@ -237,7 +237,10 @@ def test_dissolve_group_drops_group_endpoint_links_but_keeps_card_links():
 
 def test_tool_inspect_filters_group_members_and_links(env_p3):
     conn, app = env_p3
-    with bound(board_id=BOARD):
+    # #28：绑定提交的轮次只读提交当时的快照（快照只含参与成员，组参与由成员派生）。
+    # 本用例验证的是「读工具按可信上下文过滤组 / 关系」，与提交版本无关：
+    # 用未绑定提交的互动轮（submission_id=""）读当前板面，断言一条不减。
+    with bound(board_id=BOARD, submission_id=""):
         result = asyncio.run(board_tools(app)["board_inspect"].run())
     assert result.ok is True, result.error
     groups = {group["id"]: group for group in result.data["groups"]}

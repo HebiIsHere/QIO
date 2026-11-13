@@ -7,7 +7,15 @@ import json
 
 import pytest
 
-from agent.interactive import board, board_store, intent_service, models, runtime, tool_models
+from agent.interactive import (
+    board,
+    board_store,
+    intent_service,
+    models,
+    runtime,
+    submission,
+    tool_models,
+)
 from agent.prompts import TOOL_DESCRIPTIONS
 
 from test_p3_b_support import (
@@ -84,6 +92,14 @@ async def test_normal_mode_has_no_board_tools(env):
 
 async def test_inspect_and_read_respect_visibility_and_versions(env):
     conn, _app, tools, card, hidden = env
+    # #28：绑定提交的读取只认**提交当时**的快照，不再回退到当前板面。
+    # 本用例的意图是「绑定轮次按可信上下文读板面」：给这次提交补一条真实快照
+    # （投影当前可见范围），断言一条不减，只是把「当前板面」换成「提交时的板面」。
+    snapshot_state = submission.project_snapshot(board_store.current_state(conn, BOARD))
+    conn.execute(
+        "UPDATE board_submissions SET visible = ?, after_state = ? WHERE id = ?",
+        (models.dumps(snapshot_state), models.dumps(snapshot_state), SUBMISSION),
+    )
     with bound(board_id=BOARD):
         inspected = await tools["board_inspect"].run()
         assert inspected.ok is True

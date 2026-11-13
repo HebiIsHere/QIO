@@ -31,7 +31,7 @@ import json
 import sqlite3
 import zipfile
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from agent.interactive import models, text_card
 from agent.services import attachment_access, media
@@ -97,6 +97,7 @@ def resolve_materials(
     attachments: Any = None,
     max_chars: int = DEFAULT_MAX_CHARS,
     vision: bool = False,
+    content_overrides: Mapping[str, bytes] | None = None,
 ) -> list[dict]:
     """把本次可见范围里的材料解析成条目（字段见 §14.3 与 §14.1 的来源口径）。
 
@@ -104,17 +105,25 @@ def resolve_materials(
     - `cards`：本次允许查看的卡片（dict），给 None 时退回 models.selectable_cards(state)；
     - `attachments`：AttachmentService；None 时按连接的数据库位置尽力推导一份
       （推不出来就如实把附件类材料记成 unreadable，而不是假装读到了）；
-    - `max_chars`：单条材料的字符上限，超出的部分不交付并记 truncated=true。
+    - `max_chars`：单条材料的字符上限，超出的部分不交付并记 truncated=true；
+    - `content_overrides`：调用方**已经核验过**的附件字节（#28 提交轮次）：
+      给了就只解析这一份字节，绝不再按路径读一次，避免「核对的是 A、交付的是 B」。
     """
     state = state if isinstance(state, dict) else {}
     limit_chars = _char_limit(max_chars)
     service = attachments if attachments is not None else _derive_service(conn)
     tool = attachment_tools.ReadAttachmentTool(service) if service is not None else None
+    overrides = _content_overrides(content_overrides)
 
     entries: list[dict] = []
     for card in _iter_cards(state, cards):
         entry = _resolve_card(
-            card, service=service, tool=tool, max_chars=limit_chars, vision=bool(vision)
+            card,
+            service=service,
+            tool=tool,
+            max_chars=limit_chars,
+            vision=bool(vision),
+            content_overrides=overrides,
         )
         if entry is not None:
             entries.append(entry)
@@ -128,6 +137,7 @@ def resolve_images(
     cards: Iterable[dict] | None,
     attachments: Any = None,
     max_bytes: int = MAX_IMAGE_BYTES,
+    content_overrides: Mapping[str, bytes] | None = None,
 ) -> list[dict]:
     """本次可见范围里**可以真正交给模型看**的图片（多模态交付）。
 
@@ -142,19 +152,30 @@ def resolve_images(
     - `attachmentId` / `name` / `bytes`：来自哪份已保存附件、多大；
     - `mediaType`：`image/png` 这类真实媒体类型（按扩展名，与 data URL 一致）；
     - `dataUrl`：`data:<mediaType>;base64,<…>` —— 交付给适配器的就是它。
+
+    `content_overrides`：调用方已经核验过的附件字节（#28 提交轮次）。给了就**只交付这一份
+    字节**，不再按路径重新读一次（避免核验后文件被换掉、交付出去的却是另一版本）。
     """
     limit_bytes = int(max_bytes) if int(max_bytes) > 0 else MAX_IMAGE_BYTES
     state = state if isinstance(state, dict) else {}
     service = attachments if attachments is not None else _derive_service(conn)
     if service is None:
         return []
+    overrides = _content_overrides(content_overrides)
     out: list[dict] = []
     for card in _iter_cards(state, cards):
         # 只处理**文件卡**：`_deliverable_image` 只认「可交付的图片类型」，
         # 所以对 docx / pdf 这类文件卡它天然返回 None，不会误交付。
         if str(card.get("kind") or "") != "file":
             continue
-        item = _deliverable_image(card, service=service, max_bytes=limit_bytes)
+        meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+        raw_id = _attachment_id(meta, "file")
+        item = _deliverable_image(
+            card,
+            service=service,
+            max_bytes=limit_bytes,
+            verified=overrides.get(raw_id) if raw_id else None,
+        )
         if item is not None:
             out.append(item)
     return out
@@ -172,10 +193,16 @@ _SNAPSHOT_KEYS = ("cards", "groups", "links")
 
 
 def _snapshot_shape(raw: Any) -> dict | None:
-    """把已保存的提交投影收敛成快照形状；缺键的旧记录不算快照（不假装 A 版）。"""
+    """把已保存的提交投影收敛成快照形状；缺键 / 形状损坏的旧记录不算快照（不假装 A 版）。
+
+    #28：cards / groups / links 必须是列表 —— 损坏的 JSON（值类型不对）不能被当成
+    「一个空板面」正常读取，否则就是把故障显示成零张卡。
+    """
     if not isinstance(raw, dict):
         return None
     if not all(key in raw for key in _SNAPSHOT_KEYS):
+        return None
+    if any(not isinstance(raw.get(key), list) for key in _SNAPSHOT_KEYS):
         return None
     versions = raw.get("materialVersions")
     return {
@@ -269,28 +296,21 @@ def _recorded_file_size(card: dict) -> int | None:
     return int(value) if value > 0 else None
 
 
-def _current_material_size(service: Any, att: Any) -> int | None:
-    """当前真实可读文件的大小（副本或引用原文件）；读不到返回 None。"""
-    if service is None or att is None:
-        return None
-    try:
-        path, _origin = service_for_content(service, att)
-    except Exception:  # noqa: BLE001 - 大小只用于核对变化，读不到按未知处理
-        return None
-    if path is None:
-        return None
-    try:
-        return int(Path(path).stat().st_size)
-    except OSError:
-        return None
+def _material_content_sha256(
+    service: Any, att: Any, *, respect_read_grants: bool = True
+) -> str:
+    """当前真实可读文件的内容哈希；读不到 / 超过上限时返回空串（不猜、不硬算）。
 
-
-def _material_content_sha256(service: Any, att: Any) -> str:
-    """当前真实可读文件的内容哈希；读不到 / 超过上限时返回空串（不猜、不硬算）。"""
+    `respect_read_grants=False` 只给「提交材料范围」本身的计算用：那份计算正是
+    读取授权的前置判断，不能再拿授权结果反过来把自己判死（会变成循环依赖）。
+    """
     if service is None or att is None:
         return ""
     try:
-        path, _origin = service_for_content(service, att)
+        if respect_read_grants:
+            path, _origin = service_for_content(service, att)
+        else:
+            path, _origin = _resolve_source_path(service, att)
     except Exception:  # noqa: BLE001 - 读不到按无法核对处理
         return ""
     if path is None:
@@ -302,6 +322,27 @@ def _material_content_sha256(service: Any, att: Any) -> str:
     except Exception:  # noqa: BLE001 - 哈希失败按无法核对处理
         return ""
     return str(digest or "")
+
+
+def current_material_content_sha256(service: Any, att: Any) -> str:
+    """当前真实可读内容的内容哈希（提交后再次核对用）；读不到 / 过大返回空串。"""
+    return _material_content_sha256(service, att)
+
+
+def _material_path(
+    service: Any, att: Any, *, respect_read_grants: bool = True
+) -> Path | None:
+    """这条附件当前真正可读的路径（提交材料核验与交付共用这一份解析）。"""
+    if service is None or att is None:
+        return None
+    try:
+        if respect_read_grants:
+            path, _origin = service_for_content(service, att)
+        else:
+            path, _origin = _resolve_source_path(service, att)
+    except Exception:  # noqa: BLE001 - 解析失败按读不到处理
+        return None
+    return Path(path) if path is not None else None
 
 
 def _material_version_fact(service: Any, att: Any, *, with_hash: bool = True) -> dict:
@@ -372,18 +413,28 @@ def stamp_snapshot_material_versions(
     return stamped
 
 
-def material_change_reason(
-    service: Any, att: Any, card: dict, *, recorded: dict | None = None
-) -> str:
-    """提交后材料源是否已变化（变化 = 旧内容不可得，必须提示重新提交）。
+#: #28：绑定提交的读取 / 材料失败时给界面的短文案（诊断细节放 data / 详情里）。
+SUBMISSION_READ_FAILED_NOTICE = "读不到这次提交的内容，请重新提交。"
 
-    只认**可核对的事实**，按强度从高到低：
-    1. 附件记录不存在 / 状态不是 ready；
-    2. 提交受理时冻结了 sha256 且当前能算出来 → 内容哈希不一致（同大小也能识别）；
-       冻结了 sha256 但当前算不出（读不到 / 过大）→ 如实报「无法核对」，不交付；
-    3. 提交快照登记的 size 与当前真实文件大小不一致。
-    不猜「可能改过」，也不在没变化时报警。
-    """
+#: #28：旧记录没有冻结内容哈希时的可读结论。
+#: 相同文件名、相同大小都不能证明内容没变 —— 不知道就不交付，让用户重新提交。
+SUBMISSION_MATERIAL_UNVERIFIABLE = (
+    "这条提交记录没有冻结这份材料的内容版本（旧记录只登记了文件名 / 大小）："
+    "相同文件名和相同大小都不能证明内容没有变化，本次不读取；请重新提交后再读"
+)
+
+
+def _read_grant_reason(att: Any) -> str:
+    """本轮读取授权事实：没通过授权就如实说「没读」，不冒充「源文件不可读 / 内容变了」。"""
+    if att is None:
+        return ""
+    if attachment_access.read_allowed(str(getattr(att, "id", "") or "")):
+        return ""
+    return "这条材料没有通过本轮读取授权：本次没有读取任何内容（这不是内容版本问题）"
+
+
+def _submission_material_precheck(att: Any, recorded: dict | None) -> str:
+    """提交材料核验的前置事实：返回不可交付原因，空串 = 可以继续核对内容版本。"""
     if att is None:
         return "这张材料在提交后已不可取得（附件记录不存在），旧内容无法确认；请重新提交后再读"
     state = str(getattr(att, "state", "") or "")
@@ -392,32 +443,117 @@ def material_change_reason(
             f"这张材料在提交后的状态是 {state}，旧内容不可取得；"
             "请重新提交后再让 QIO 读取"
         )
+    if not str((recorded or {}).get("sha256") or "").strip():
+        # 旧快照只有大小 / 文件名：无法确认内容是否仍是提交当时那一份。
+        return SUBMISSION_MATERIAL_UNVERIFIABLE
+    return ""
+
+
+def submission_material_verdict(
+    service: Any,
+    att: Any,
+    card: dict,
+    *,
+    recorded: dict | None = None,
+    respect_read_grants: bool = True,
+) -> str:
+    """#28：这份材料**还能不能确认属于提交当时**；空串 = 可以，否则是可读原因。
+
+    只认可核对的事实：
+    1. 附件记录不存在 / 状态不是 ready → 旧内容不可得；
+    2. 旧记录没有冻结内容哈希 → 无法核对（同名同大小不算证据），不交付；
+    3. 冻结了哈希且当前能算出来 → 哈希不一致 = 内容已变化（同大小也能识别）；
+       冻结了哈希但当前算不出（读不到 / 过大）→ 如实报无法核对，不交付。
+    不猜「可能改过」，也不在没变化时报警。
+    """
+    reason = _submission_material_precheck(att, recorded)
+    if reason:
+        return reason
+    if respect_read_grants:
+        reason = _read_grant_reason(att)
+        if reason:
+            return reason
     recorded_sha = str((recorded or {}).get("sha256") or "").strip()
-    if recorded_sha:
-        current_sha = _material_content_sha256(service, att)
-        if not current_sha:
-            return (
-                "这张材料在提交后无法核对内容版本（源文件不可读或过大）："
-                "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
-            )
-        if current_sha != recorded_sha:
-            return (
-                "这张材料在提交后内容已变化（内容哈希与提交时不一致，大小可能相同）："
-                "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
-            )
-        return ""
-    size_recorded = _recorded_file_size(card)
-    if size_recorded is None:
-        return ""
-    current = _current_material_size(service, att)
-    if current is None:
-        return "这张材料在提交后已读不到内容（源文件不可得）；请重新提交后再读"
-    if current != size_recorded:
+    current_sha = _material_content_sha256(
+        service, att, respect_read_grants=respect_read_grants
+    )
+    if not current_sha:
         return (
-            f"这张材料在提交后已变化（提交时 {size_recorded} 字节，现在是 {current} 字节）："
+            "这张材料在提交后无法核对内容版本（源文件不可读或过大）："
+            "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
+        )
+    if current_sha != recorded_sha:
+        return (
+            "这张材料在提交后内容已变化（内容哈希与提交时不一致，大小可能相同）："
             "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
         )
     return ""
+
+
+def verified_submission_material_bytes(
+    service: Any,
+    att: Any,
+    card: dict,
+    *,
+    recorded: dict | None = None,
+    respect_read_grants: bool = True,
+) -> tuple[bytes | None, str]:
+    """#28：**一次读取 + 校验**，返回的字节就是允许交给模型的那一份内容。
+
+    返回 (content, "") 表示这份字节已用提交时冻结的 sha256 核对过；否则 (None, 原因)。
+    调用方必须用返回的字节去解析 / 交付（不要再按路径读第二次），否则核对与交付
+    可能不是同一个版本。
+    """
+    reason = _submission_material_precheck(att, recorded)
+    if reason:
+        return None, reason
+    if respect_read_grants:
+        reason = _read_grant_reason(att)
+        if reason:
+            return None, reason
+    recorded_sha = str((recorded or {}).get("sha256") or "").strip()
+    path = _material_path(service, att, respect_read_grants=respect_read_grants)
+    if path is None:
+        return None, (
+            "这张材料在提交后无法核对内容版本（源文件不可读）："
+            "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
+        )
+    try:
+        size = int(path.stat().st_size)
+    except OSError:
+        size = -1
+    if size < 0:
+        return None, (
+            "这张材料在提交后无法核对内容版本（源文件不可读）："
+            "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
+        )
+    if size > MATERIAL_HASH_MAX_BYTES:
+        return None, (
+            f"这份材料超过「核对后才能交付」的大小上限（{MATERIAL_HASH_MAX_BYTES} 字节）："
+            "本次没有读取，也不能保证它还是提交当时的内容；请重新提交，或换一份更小的材料"
+        )
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return None, (
+            "这张材料在提交后无法核对内容版本（源文件不可读）："
+            "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
+        )
+    if hashlib.sha256(content).hexdigest() != recorded_sha:
+        return None, (
+            "这张材料在提交后内容已变化（内容哈希与提交时不一致，大小可能相同）："
+            "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
+        )
+    return content, ""
+
+
+def material_change_reason(
+    service: Any, att: Any, card: dict, *, recorded: dict | None = None
+) -> str:
+    """提交后材料源是否已变化（兼容入口：只回答原因，不返回内容）。"""
+    return submission_material_verdict(
+        service, att, card, recorded=recorded
+    )
 
 
 def _file_attachment_entries(
@@ -481,17 +617,25 @@ def submission_attachment_scope(
     for card, att_id in _file_attachment_entries(snapshot_cards):
         meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
         block = meta.get("file") if isinstance(meta.get("file"), dict) else {}
+        recorded = recorded_versions.get(str(card.get("id") or ""))
+        recorded_sha = ""
+        if isinstance(recorded, dict):
+            recorded_sha = str(recorded.get("sha256") or "")
         scope["allowed"][att_id] = {
             "cardId": str(card.get("id") or ""),
             "name": str(block.get("name") or meta.get("name") or ""),
             "size": _recorded_file_size(card),
+            # #28：附件的读取核对要用同一个冻结内容版本（只增字段，不改既有语义）。
+            "sha256": recorded_sha,
         }
         att = _resolve_file_attachment(service, att_id)
-        reason = material_change_reason(
+        reason = submission_material_verdict(
             service,
             att,
             card,
-            recorded=recorded_versions.get(str(card.get("id") or "")),
+            recorded=recorded if isinstance(recorded, dict) else None,
+            # 这份范围计算正是「读取授权」的前置判断，不能再被授权结果反过来判死。
+            respect_read_grants=False,
         )
         if reason:
             scope["stale"][att_id] = reason
@@ -555,15 +699,19 @@ def submission_materials(
 
     stale_cards: list[tuple[dict, str, str]] = []
     stale_ids: set[str] = set()
+    # #28：核验与交付必须是同一份字节 —— 这里一次读取 + 校验，把核验过的字节交给解析器
+    # （content_overrides），绝不在校验之后按路径再读一次。
+    verified_bytes: dict[str, bytes] = {}
     # 没有附件服务时无法核对源文件是否变化：不把「核对不了」说成「已变化」，
     # 交给 resolve_materials 如实记 unreadable（不能凭文件名推断内容）。
     for card, att_id in _file_attachment_entries(cards) if service is not None else ():
         att = _resolve_file_attachment(service, att_id)
-        reason = material_change_reason(
+        recorded = recorded_versions.get(str(card.get("id") or ""))
+        content, reason = verified_submission_material_bytes(
             service,
             att,
             card,
-            recorded=recorded_versions.get(str(card.get("id") or "")),
+            recorded=recorded if isinstance(recorded, dict) else None,
         )
         if reason:
             stale_cards.append((card, att_id, reason))
@@ -571,7 +719,9 @@ def submission_materials(
             result["stale"].append(
                 {"cardId": str(card.get("id") or ""), "attachmentId": att_id, "reason": reason}
             )
-    # 保持快照原顺序；已变化的文件卡不进正文解析（不拿新内容冒充旧内容）。
+        elif content is not None:
+            verified_bytes[att_id] = content
+    # 保持快照原顺序；已变化 / 无法核对的文件卡不进正文解析（不拿别的版本冒充旧内容）。
     ordered_cards = [card for card in cards if str(card.get("id") or "") not in stale_ids]
 
     entries = resolve_materials(
@@ -581,6 +731,7 @@ def submission_materials(
         attachments=service,
         max_chars=_char_limit(max_chars),
         vision=bool(vision),
+        content_overrides=verified_bytes,
     )
     for card, att_id, reason in stale_cards:
         entries.append(
@@ -599,7 +750,11 @@ def submission_materials(
         )
     result["materials"] = entries
     images = resolve_images(
-        conn, state=state, cards=ordered_cards, attachments=service
+        conn,
+        state=state,
+        cards=ordered_cards,
+        attachments=service,
+        content_overrides=verified_bytes,
     )
     result["images"] = [item for item in images if isinstance(item, dict)]
     attachment_ids: list[str] = []
@@ -1679,10 +1834,18 @@ def _fallback_work_dir(card: dict) -> Path:
     return Path(tempfile.mkdtemp(prefix=f"qio-media-{_safe_dir_name(card)}-"))
 
 
-def _deliverable_image(card: dict, *, service: Any, max_bytes: int) -> dict | None:
+def _deliverable_image(
+    card: dict,
+    *,
+    service: Any,
+    max_bytes: int,
+    verified: bytes | None = None,
+) -> dict | None:
     """这张卡的**图片附件**能不能真的交付字节；不能就返回 None（原因由材料条目如实说明）。
 
     只读 `meta.file`（旧 `meta.image` 回退已删除）：图片是文件卡的附件，没有独立 kind。
+    `verified` 给定时（#28 提交轮次）：**交付的就是这份核验过的字节**，不再按路径重读，
+    避免核验之后文件被换掉、交出去的却是另一版本。
     """
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
     raw_id = _attachment_id(meta, "file")
@@ -1695,21 +1858,26 @@ def _deliverable_image(card: dict, *, service: Any, max_bytes: int) -> dict | No
     media_type = _image_media_type(name)
     if not media_type:
         return None
-    path, _origin = service_for_content(service, att)
-    if path is None:
-        return None
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return None
-    if size <= 0 or size > max_bytes:
-        return None
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return None
-    if not raw:
-        return None
+    if verified is not None:
+        raw = verified
+        if not raw or len(raw) > max_bytes:
+            return None
+    else:
+        path, _origin = service_for_content(service, att)
+        if path is None:
+            return None
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        if size <= 0 or size > max_bytes:
+            return None
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        if not raw:
+            return None
     label = _label(card) or name or "（图片）"
     return {
         "cardId": card.get("id"),
@@ -1772,6 +1940,20 @@ def _char_limit(value: Any) -> int:
     return parsed
 
 
+def _content_overrides(value: Any) -> dict[str, bytes]:
+    """调用方已经核验过的附件字节（#28）：只接受 bytes，其它一律忽略（不猜）。
+
+    空 bytes 也保留：它表示「核验过，内容确实是空的」，不能因此退回按路径重读。
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    out: dict[str, bytes] = {}
+    for key, item in value.items():
+        if isinstance(item, (bytes, bytearray)):
+            out[str(key)] = bytes(item)
+    return out
+
+
 def _derive_service(conn: sqlite3.Connection) -> AttachmentService | None:
     """没有传 attachments 时，按这条连接真正打开的数据库位置推导附件服务。
 
@@ -1821,6 +2003,7 @@ def _resolve_card(
     tool: attachment_tools.ReadAttachmentTool | None,
     max_chars: int,
     vision: bool = False,
+    content_overrides: Mapping[str, bytes] | None = None,
 ) -> dict | None:
     kind = str(card.get("kind") or "")
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
@@ -1834,8 +2017,17 @@ def _resolve_card(
         # 合并成一条 inline 材料；未许可的卡在上层可见性判断里已被拦住、根本不进列表。
         return _inline_entry(card, label, max_chars=max_chars)
     if kind == "file":
+        att_id = _attachment_id(meta, "file")
+        verified = (content_overrides or {}).get(att_id) if att_id else None
         return _file_entry(
-            card, label, meta, service=service, tool=tool, max_chars=max_chars, vision=vision
+            card,
+            label,
+            meta,
+            service=service,
+            tool=tool,
+            max_chars=max_chars,
+            vision=vision,
+            verified=verified,
         )
     # 图片没有独立 kind（它是文件卡的附件）：kind="file" 在上一支里已经按附件类型分流。
     # 遗留 code / url 没有材料通道：迁移完成前整体不可见（models.visible_except_deleted）。
@@ -1902,6 +2094,7 @@ def _file_entry(
     tool: attachment_tools.ReadAttachmentTool | None,
     max_chars: int,
     vision: bool = False,
+    verified: bytes | None = None,
 ) -> dict:
     raw_id = _attachment_id(meta, "file")
     shown_name = label or str(meta.get("name") or "").strip() or "（未命名文件）"
@@ -1946,8 +2139,13 @@ def _file_entry(
             reason=f"找不到这个附件 id：{raw_id}（可能已被删除或不属于这台设备）",
         )
     entry = _attachment_entry(
-        card, att, label=label or att.original_name, tool=tool, max_chars=max_chars,
+        card,
+        att,
+        label=label or att.original_name,
+        tool=tool,
+        max_chars=max_chars,
         vision=vision,
+        verified=verified,
     )
     entry = _attach_file_ref(entry, service, att)
     return entry
@@ -1980,8 +2178,13 @@ def _attachment_entry(
     tool: attachment_tools.ReadAttachmentTool | None,
     max_chars: int,
     vision: bool = False,
+    verified: bytes | None = None,
 ) -> dict:
-    """真实读取已保存附件的正文（复用既有解析，不重写）。"""
+    """真实读取已保存附件的正文（复用既有解析，不重写）。
+
+    `verified` 给定时（#28 提交轮次）：**只解析这一份已经核验过的字节** —— 先写到本轮
+    临时目录里的同后缀副本再解析，解析完立即清理；绝不在校验之后又按路径读到另一个版本。
+    """
     mode, mode_label, mode_note = classify_readability(att.original_name)
     version = _attachment_version(att)
 
@@ -2012,96 +2215,135 @@ def _attachment_entry(
         return unreadable(f"当前不可读取：{mode_note}", bytes_=_int_bytes(att))
 
     service = service_for(tool)
-    path, origin = _content_path(service, att, tool)
-    if path is None:
-        fresh = service.get(att.id) if service is not None else None
-        current = fresh or att
-        return unreadable(
-            f"读不到附件「{current.original_name}」的正文："
-            f"{current.error or '文件不在原来登记的位置'}（状态 {current.state}）"
-        )
+    temp_dir: Path | None = None
+    origin = ""
+    if verified is not None:
+        # #28：把核验过的字节落到临时文件，再让既有解析器解析这一份（同一份字节）。
+        import tempfile
+
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix="qio-verified-material-"))
+            path = temp_dir / ("verified" + (Path(att.original_name).suffix or ".bin"))
+            path.write_bytes(verified)
+        except OSError as exc:
+            _remove_temp_dir(temp_dir)
+            return unreadable(
+                "核验过的材料内容无法交给解析器（写临时文件失败）："
+                + redact_text(str(exc)),
+                bytes_=len(verified),
+            )
+        origin = "verified"
+    else:
+        path, origin = _content_path(service, att, tool)
+        if path is None:
+            fresh = service.get(att.id) if service is not None else None
+            current = fresh or att
+            return unreadable(
+                f"读不到附件「{current.original_name}」的正文："
+                f"{current.error or '文件不在原来登记的位置'}（状态 {current.state}）"
+            )
 
     notes: list[str] = []
-    if origin == "source":
+    if origin == "verified":
+        notes.append(
+            "本次解析的就是核验过的提交材料字节：内容哈希与提交时冻结的版本一致"
+        )
+    elif origin == "source":
         notes.append(
             "读的是用户本地原文件（引用方式保存）：内容可能已经被改动；"
             "历史保留的是位置，不保证内容仍然存在"
         )
 
     try:
-        if mode in ("text", "csv"):
-            content = attachment_tools._extract_text(
-                att, path, 0, _MAX_UNITS, 0, mode_label, None
+        try:
+            if mode in ("text", "csv"):
+                content = attachment_tools._extract_text(
+                    att, path, 0, _MAX_UNITS, 0, mode_label, None
+                )
+            elif mode == "html":
+                content = attachment_tools._extract_html(att, path, 0, _MAX_UNITS, 0, None)
+            elif mode == "docx":
+                content = attachment_tools._extract_docx(att, path, 0, _MAX_UNITS, 0, None)
+            elif mode == "xlsx":
+                content = attachment_tools._extract_xlsx(att, path, 0, _MAX_UNITS, 0, None)
+            elif mode == "pptx":
+                content = attachment_tools._extract_pptx(att, path, 0, _MAX_UNITS, 0, None)
+            elif mode == "pdf":
+                # PDF 走**文字层**解析（不渲染版面）：加密 / 没有文字层 / 损坏各自给不同原因。
+                content = attachment_tools._extract_pdf(att, path, 0, _MAX_UNITS, 0, None)
+            else:  # sniff：扩展名不认识，按内容嗅探
+                content = attachment_tools._extract_unknown(att, path, 0, _MAX_UNITS, 0, None)
+        except attachment_tools.AttachmentLimitExceeded as exc:
+            return unreadable(str(exc), bytes_=_file_bytes(path, att))
+        except zipfile.BadZipFile:
+            return unreadable(
+                f"附件「{att.original_name}」看起来不是有效的 {mode_label} 文件"
+                "（压缩结构损坏或被改名），当前读不到内容",
+                bytes_=_file_bytes(path, att),
             )
-        elif mode == "html":
-            content = attachment_tools._extract_html(att, path, 0, _MAX_UNITS, 0, None)
-        elif mode == "docx":
-            content = attachment_tools._extract_docx(att, path, 0, _MAX_UNITS, 0, None)
-        elif mode == "xlsx":
-            content = attachment_tools._extract_xlsx(att, path, 0, _MAX_UNITS, 0, None)
-        elif mode == "pptx":
-            content = attachment_tools._extract_pptx(att, path, 0, _MAX_UNITS, 0, None)
-        elif mode == "pdf":
-            # PDF 走**文字层**解析（不渲染版面）：加密 / 没有文字层 / 损坏各自给不同原因。
-            content = attachment_tools._extract_pdf(att, path, 0, _MAX_UNITS, 0, None)
-        else:  # sniff：扩展名不认识，按内容嗅探
-            content = attachment_tools._extract_unknown(att, path, 0, _MAX_UNITS, 0, None)
-    except attachment_tools.AttachmentLimitExceeded as exc:
-        return unreadable(str(exc), bytes_=_file_bytes(path, att))
-    except zipfile.BadZipFile:
-        return unreadable(
-            f"附件「{att.original_name}」看起来不是有效的 {mode_label} 文件"
-            "（压缩结构损坏或被改名），当前读不到内容",
-            bytes_=_file_bytes(path, att),
-        )
-    except OSError as exc:
-        return unreadable(
-            f"读取附件「{att.original_name}」失败：{type(exc).__name__}: {redact_text(str(exc))}",
-            bytes_=_file_bytes(path, att),
-        )
-    except Exception as exc:  # noqa: BLE001 - 解析异常一律如实记成不可读，不伪装成已读
-        return unreadable(
-            f"解析附件「{att.original_name}」失败：{type(exc).__name__}: {redact_text(str(exc))}",
-            bytes_=_file_bytes(path, att),
-        )
+        except OSError as exc:
+            return unreadable(
+                f"读取附件「{att.original_name}」失败：{type(exc).__name__}: {redact_text(str(exc))}",
+                bytes_=_file_bytes(path, att),
+            )
+        except Exception as exc:  # noqa: BLE001 - 解析异常一律如实记成不可读，不伪装成已读
+            return unreadable(
+                f"解析附件「{att.original_name}」失败：{type(exc).__name__}: {redact_text(str(exc))}",
+                bytes_=_file_bytes(path, att),
+            )
 
-    if not content.readable:
-        return unreadable(
-            content.reason or "当前不可读取（解析器没有给出内容）",
-            bytes_=_file_bytes(path, att),
-            notes=list(content.notes),
-        )
+        if not content.readable:
+            return unreadable(
+                content.reason or "当前不可读取（解析器没有给出内容）",
+                bytes_=_file_bytes(path, att),
+                notes=list(content.notes),
+            )
 
-    raw_text = content.content or ""
-    delivered, cut = _cut(raw_text, max_chars)
-    parser_truncated = bool(content.truncated or content.partial) or (
-        content.next_offset is not None
-    )
-    truncated = bool(parser_truncated or cut)
-    characters = len(raw_text)
-    notes.extend(content.notes)
-    if truncated:
-        notes.append(
-            f"截断：已解析 {characters} 字符，本次只交付前 {len(delivered)} 字符"
-            f"（解析单次上限 {PARSER_CHAR_BUDGET} 字符）：没有读全，不得当作完整内容"
+        raw_text = content.content or ""
+        delivered, cut = _cut(raw_text, max_chars)
+        parser_truncated = bool(content.truncated or content.partial) or (
+            content.next_offset is not None
         )
-    # 诚实口径：只有真的读到正文才允许 attachment_text（读了但正文为空 → unreadable）
-    read = bool(delivered)
-    reason = "" if read else "附件读取成功但正文为空：这份材料没有可交付的文字，未读取到正文"
-    return _entry(
-        card,
-        source="attachment_text" if read else "unreadable",
-        label=label,
-        version=version,
-        read=read,
-        truncated=truncated,
-        bytes=_file_bytes(path, att),
-        characters=characters,
-        reason=reason,
-        attachment_id=att.id,
-        text=delivered if read else "",
-        notes=notes,
-    )
+        truncated = bool(parser_truncated or cut)
+        characters = len(raw_text)
+        notes.extend(content.notes)
+        if truncated:
+            notes.append(
+                f"截断：已解析 {characters} 字符，本次只交付前 {len(delivered)} 字符"
+                f"（解析单次上限 {PARSER_CHAR_BUDGET} 字符）：没有读全，不得当作完整内容"
+            )
+        # 诚实口径：只有真的读到正文才允许 attachment_text（读了但正文为空 → unreadable）
+        read = bool(delivered)
+        reason = "" if read else "附件读取成功但正文为空：这份材料没有可交付的文字，未读取到正文"
+        return _entry(
+            card,
+            source="attachment_text" if read else "unreadable",
+            label=label,
+            version=version,
+            read=read,
+            truncated=truncated,
+            bytes=_file_bytes(path, att),
+            characters=characters,
+            reason=reason,
+            attachment_id=att.id,
+            text=delivered if read else "",
+            notes=notes,
+        )
+    finally:
+        if origin == "verified":
+            _remove_temp_dir(temp_dir)
+
+
+def _remove_temp_dir(path: Path | None) -> None:
+    """清理「核验过的材料」临时目录（清理失败不影响材料结论，也不外泄内容）。"""
+    if path is None:
+        return
+    try:
+        import shutil
+
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:  # noqa: BLE001 - 清理是收尾动作
+        pass
 
 
 def _image_fact(

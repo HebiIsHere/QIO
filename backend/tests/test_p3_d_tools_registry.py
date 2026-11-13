@@ -179,7 +179,7 @@ def test_model_supplied_board_id_is_not_trusted(app_ctx):
 
 def test_interactive_context_reads_the_bound_board(app_ctx):
     """§13.4：互动模式下读工具只看可信上下文里的板面。"""
-    from agent.interactive import board_store, models, runtime
+    from agent.interactive import board_store, models, runtime, submission
 
     conn = app_ctx.conn
     _seed_board(conn)
@@ -187,6 +187,21 @@ def test_interactive_context_reads_the_bound_board(app_ctx):
     state = board_store.load_board(conn, BOARD)["state"]
     state["cards"] = [card]
     board_store.save_board(conn, BOARD, state, reason="seed-card")
+    # #28：绑定提交的轮次只读提交当时的快照（不再回退当前板面）。
+    # 这里给 sub_1 补一条真实快照，用例继续验证「绑定轮次只读可信上下文里的板面」。
+    snapshot = submission.project_snapshot(state)
+    conn.execute(
+        "INSERT OR REPLACE INTO board_submissions"
+        " (id, board_id, seq, status, visible, after_state, created_at)"
+        " VALUES (?, ?, 1, 'succeeded', ?, ?, ?)",
+        (
+            "sub_1",
+            BOARD,
+            models.dumps(snapshot),
+            models.dumps(snapshot),
+            models.now_iso(),
+        ),
+    )
 
     token = runtime.set_board_turn(runtime.BoardTurnContext(
         turn_id="t1", mode="interactive", board_id=BOARD, submission_id="sub_1"))
