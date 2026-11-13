@@ -549,9 +549,10 @@ export const useEventStore = defineStore("events", {
             this.credentialNotice = msg || "当前没有可用的模型凭据，请在「设置 → 凭据」里添加";
             session.warning = this.credentialNotice;
           } else if (status === "paused") {
-            this.credentialNotice = "有一项凭据已暂停：依赖它的能力暂时不可用（可在「设置 → 凭据」恢复）";
+            // 全局问题面板只显示「暂停状态 + 打开凭据设置」，这里不再重复恢复入口文案。
+            this.credentialNotice = "有一项凭据已暂停：依赖它的能力暂时不可用";
           } else if (status === "revoked" || status === "deleted") {
-            this.credentialNotice = "有一项凭据已失效：依赖它的能力暂时不可用（可在「设置 → 凭据」重新添加）";
+            this.credentialNotice = "有一项凭据已失效：依赖它的能力暂时不可用";
           } else if (status === "active") {
             // 恢复正常：不打扰，清掉旧提示
             this.credentialNotice = null;

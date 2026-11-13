@@ -141,9 +141,6 @@ onBeforeUnmount(() => {
           </button>
         </span>
       </header>
-      <p class="uf-issue-panel__lead">
-        这里只有一个入口：每项都是独立问题，恢复一项就少一项；全部恢复后入口自动消失。
-      </p>
       <div class="uf-issue-panel__body">
         <article
           v-for="issue in issues.issues"
@@ -260,14 +257,6 @@ onBeforeUnmount(() => {
 .uf-issue-panel__close:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
-}
-.uf-issue-panel__lead {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 11.5px;
-  line-height: 1.55;
-  text-align: center;
-  overflow-wrap: anywhere;
 }
 .uf-issue-panel__body {
   display: flex;

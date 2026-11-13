@@ -109,15 +109,17 @@ export function useGlobalIssueSources(): GlobalIssueSourcesHandle {
           if (!classified || classified.id !== id) issues.resolve(id);
         }
         if (!classified) return;
+        // 凭据类问题只保留「清楚的当前状态 + 打开凭据设置」：标题已经说明状态，
+        // 正文不再重复后端原文；诊断只放额外信息（不重复、不显示凭据内容）。
+        // 用户从动作直接去真实设置页，比在这里复述同一句话更短也更安全。
         issues.upsert({
           id: classified.id,
           kind: classified.kind,
           title: classified.title,
-          reason: String(text ?? "").trim(),
+          reason: "",
           actions: SETTINGS_CRED,
           diagnostics: [
             "凭据内容不会在这里显示；只能在本机设置页查看与修改。",
-            String(text ?? "").trim(),
           ],
           severity: classified.severity,
           at: Date.now(),

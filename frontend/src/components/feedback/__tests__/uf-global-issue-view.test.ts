@@ -103,6 +103,24 @@ describe("全局异常入口：数量 + 逐项 + 诊断折叠", () => {
     w.unmount();
   });
 
+  it("面板不再显示导语：标题计数、各问题与动作保留（直改文案 1）", async () => {
+    const issues = useGlobalIssuesStore();
+    issues.upsert(issue());
+    issues.openPanel();
+    const w = mount(GlobalIssuePanel, { attachTo: document.body });
+    await tick();
+
+    const text = w.text();
+    expect(text).toContain("全局问题 1 项");
+    expect(text).toContain("与后端的实时连接已断开");
+    expect(text).toContain("重新连接");
+    // 导语删除后不得以任何形式残留（同一句话只由标题计数 + 各项承担）。
+    expect(text).not.toContain("这里只有一个入口");
+    expect(text).not.toContain("恢复一项就少一项");
+    expect(text).not.toContain("全部恢复后入口自动消失");
+    w.unmount();
+  });
+
   it("有中央弹窗时面板自动收起（不与弹窗抢层）", async () => {
     const issues = useGlobalIssuesStore();
     const arbiter = useModalArbiterStore();
