@@ -228,9 +228,16 @@ describe("文案 1：标题只留一次「只读」，关标签提示用「关�
   it("就绪的文本预览里「只读」只出现一次（标题徽标），正文说明不再重复", async () => {
     seedTabs();
     const wrapper = await mountPanel();
-    const text = wrapper.text();
-    expect(text.match(/只读/g) ?? []).toHaveLength(1);
-    expect(text).toContain("文件预览");
+    // 记录组 #57 在面板里加了 .qio-sr-only 的读屏播报（「已打开「X」的只读预览」），
+    // 它只给读屏、不是视觉重复的正文说明；文案 1 管的是「用户看得见的字样只出现一次」。
+    // 所以这里按去掉读屏节点后的可见文字计数，同时断言读屏播报仍在（两组行为同时成立）。
+    const visible = wrapper.element.cloneNode(true) as HTMLElement;
+    visible.querySelectorAll(".qio-sr-only").forEach((node) => node.remove());
+    const visibleText = visible.textContent ?? "";
+    expect(visibleText.match(/只读/g) ?? []).toHaveLength(1);
+    expect(visibleText).toContain("文件预览");
+    const srText = wrapper.findAll(".qio-sr-only").map((node) => node.text()).join("");
+    expect(srText).toContain("只读预览");
     wrapper.unmount();
   });
 

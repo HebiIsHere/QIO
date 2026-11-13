@@ -257,9 +257,13 @@ describe("uf2 通知落点：失败必须说出来，不静默成功", () => {
     const ok = await openTaskNoticeTargets(["tool:ok"]);
     expect(ok.ok).toBe(true);
 
-    // 窄窗：左栏临时收起，没有页面宿主打开抽屉 → 不能声称列表可见
+    // 窄窗：左栏临时收起，没有页面宿主打开抽屉 → 不能声称列表可见。
+    // #83 之后「窄」按真实可用宽度解析（不再有固定断点）：左栏要能并排，
+    // 需要在 CENTER_MIN（460）+ 分隔条（12）之外还放得下 LEFT_MIN（232），
+    // 即可用宽度 >= 704。这里用 600 —— 旧断言里的 1000 在新规则下确实放得下，
+    // 不能再用它代表「窄窗」。
     const shell = useConversationShellStore();
-    shell.viewportWidth = 1000;
+    shell.viewportWidth = 600;
     const narrow = await openTaskNoticeTargets(["tool:ok"]);
     expect(narrow.ok).toBe(false);
     expect(narrow.reason).toBe("navigation-failed");
