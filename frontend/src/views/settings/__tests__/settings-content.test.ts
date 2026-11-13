@@ -344,7 +344,7 @@ describe("模型与服务容器", () => {
     w.unmount();
   });
 
-  it("联网搜索状态分「未配置 / 已配置，尚未检查」，不把已配置说成检查通过", async () => {
+  it("联网搜索通道行显示真实状态：已配置 + 尚未检查（按状态断言，不按长句断言）", async () => {
     const { api } = await import("../../../services/api");
     (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       searxng_url: "https://searx.example",
@@ -356,13 +356,21 @@ describe("模型与服务容器", () => {
     const w = await mountSettings();
     await openCategory(w, "models");
     const models = sectionById(w, "models");
-    expect(models.find('[data-search-channel="bocha"]').text()).toContain("已配置，尚未检查");
-    expect(models.find('[data-search-channel="searxng"]').text()).toContain("已填写地址，尚未检查");
+    // 配置状态与检查状态是两段，各自有稳定的状态标记
+    const bocha = models.find('[data-search-channel="bocha"]');
+    expect(bocha.find("[data-channel-config]").text()).toBe("已配置");
+    expect(bocha.find("[data-channel-check]").attributes("data-channel-check-state")).toBe("unchecked");
+    expect(bocha.text()).toContain("已配置，尚未检查");
+    const searxng = models.find('[data-search-channel="searxng"]');
+    expect(searxng.find("[data-channel-config]").text()).toBe("已填写地址");
+    expect(searxng.find("[data-channel-check]").attributes("data-channel-check-state")).toBe("unchecked");
     // #7：免密钥通道的状态只写「已开启 / 已关闭」，检查状态单独一段
-    expect(models.find('[data-search-channel="keyless"] [data-channel-config]').text()).toBe("已开启");
-    expect(models.find('[data-search-channel="keyless"] [data-channel-check]').text()).toBe("，尚未检查");
-    expect(models.text()).toContain("「已配置」不代表「检查通过」");
-    expect(models.text()).toContain("检查只在你主动点击");
+    const keyless = models.find('[data-search-channel="keyless"]');
+    expect(keyless.find("[data-channel-config]").text()).toBe("已开启");
+    expect(keyless.find("[data-channel-check]").attributes("data-channel-check-state")).toBe("unchecked");
+    // 常驻的判据解释已删除：状态行自己说清「已配置 / 尚未检查」
+    expect(models.text()).not.toContain("「已配置」不代表「检查通过」");
+    expect(models.text()).not.toContain("检查只在你主动点击");
     w.unmount();
   });
 
@@ -427,7 +435,9 @@ describe("模型与服务容器", () => {
     await models.find('[data-testid="settings-search-check"]').trigger("click");
     await flushFrames();
     // 只描述「这一次检查」失败；已填配置保留
-    expect(models.find('[data-search-channel="searxng"]').text()).toContain("检查失败：连接被拒绝");
+    const failedRow = models.find('[data-search-channel="searxng"]');
+    expect(failedRow.find("[data-channel-check]").attributes("data-channel-check-state")).toBe("failed");
+    expect(failedRow.text()).toContain("检查失败：连接被拒绝");
     expect(
       (models.find('input[aria-label="自建 SearXNG 地址"]').element as HTMLInputElement).value,
     ).toBe("https://searx.example");
@@ -442,8 +452,10 @@ describe("模型与服务容器", () => {
     });
     await models.find('[data-testid="settings-search-check"]').trigger("click");
     await flushFrames();
-    expect(models.find('[data-search-channel="searxng"]').text()).toContain("检查通过");
-    expect(models.find('[data-search-channel="searxng"]').text()).not.toContain("检查失败");
+    const okRow = models.find('[data-search-channel="searxng"]');
+    expect(okRow.find("[data-channel-check]").attributes("data-channel-check-state")).toBe("ok");
+    expect(okRow.text()).toContain("检查通过");
+    expect(okRow.text()).not.toContain("检查失败");
     w.unmount();
   });
 
@@ -489,15 +501,95 @@ describe("模型与服务容器", () => {
     w.unmount();
   });
 
-  it("连接检查失败只说明检查失败，不冒充通道不可用", async () => {
+  it("检查请求失败：主界面说「这次检查失败」并保留重试；配置原样保留", async () => {
     const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "https://searx.example",
+      bocha_has_key: true,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
     (api.checkSearch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network down"));
     const w = await mountSettings();
     await openCategory(w, "models");
     const models = sectionById(w, "models");
     await models.find('[data-testid="settings-search-check"]').trigger("click");
     await flushFrames();
-    expect(models.find(".set-notice.err").text()).toContain("不代表通道不可用");
+
+    const notice = models.find(".set-notice.err");
+    expect(notice.text()).toContain("这次检查失败");
+    // 失败后配置仍然保留（检查失败 ≠ 配置丢失）
+    expect(
+      (models.find('input[aria-label="自建 SearXNG 地址"]').element as HTMLInputElement).value,
+    ).toBe("https://searx.example");
+    // 重试是真实动作：再点一次会重新发起检查
+    const retry = models.find('[data-settings-action="retry"]');
+    expect(retry.exists()).toBe(true);
+    const callsBefore = (api.checkSearch as ReturnType<typeof vi.fn>).mock.calls.length;
+    (api.checkSearch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      channels: [{ channel: "searxng", configured: true, checked: true, ok: true, reason: "" }],
+    });
+    await retry.trigger("click");
+    await flushFrames();
+    expect((api.checkSearch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore + 1);
+    expect(
+      models.find('[data-search-channel="searxng"] [data-channel-check]').attributes(
+        "data-channel-check-state",
+      ),
+    ).toBe("ok");
+    w.unmount();
+  });
+
+  it("旧后端没有状态接口：只显示配置状态，并如实说明为什么没有检查状态", async () => {
+    const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "https://searx.example",
+      bocha_has_key: true,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    // 旧后端：状态端点 404
+    (api.getSearchStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("404 Not Found"),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+
+    // 降级：配置状态照常显示；检查状态只能是「尚未检查」（不把「已配置」说成「检查通过」）
+    expect(models.find('[data-search-channel="bocha"] [data-channel-config]').text()).toBe("已配置");
+    expect(
+      models.find('[data-search-channel="bocha"] [data-channel-check]').attributes(
+        "data-channel-check-state",
+      ),
+    ).toBe("unchecked");
+    expect(models.find('[data-search-channel="bocha"]').text()).not.toContain("检查通过");
+    // 只有这种降级场景才解释一次（常态不再常驻判据说明）
+    const unavailable = models.find('[data-testid="settings-search-status-unavailable"]');
+    expect(unavailable.exists()).toBe(true);
+    expect(unavailable.text()).toContain("配置状态");
+    expect(models.text()).not.toContain("「已配置」不代表「检查通过」");
+    w.unmount();
+  });
+
+  it("检查接口 404：如实说当前版本不提供检查，不冒充检查失败", async () => {
+    const { api } = await import("../../../services/api");
+    (api.checkSearch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("404 Not Found"),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    await models.find('[data-testid="settings-search-check"]').trigger("click");
+    await flushFrames();
+
+    const notice = models.find(".set-notice");
+    expect(notice.text()).toContain("当前版本暂不提供连接检查");
+    // 不是「这次检查失败」：没有检查能力 ≠ 检查没通过
+    expect(notice.text()).not.toContain("这次检查失败");
+    expect(models.find('[data-testid="settings-search-status-unavailable"]').exists()).toBe(true);
     w.unmount();
   });
 });

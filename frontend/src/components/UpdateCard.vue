@@ -15,6 +15,9 @@
  * - 2026-11-12（#19/#25）：开关文案统一为「启动时检查更新」；代理与日志路径只在失败详情里出现；
  *   「下载并安装」是唯一安装路径（没有第二个安装按钮、也没有安装前二次确认框），
  *   按钮 / 失败说明 / 结果页统一用「安装时 QIO 会关闭，安装完成后需要重新打开」描述关闭与重开。
+ * - 2026-11-14（返修）：失败主行只留「可理解的失败状态 + 实际可用的下一步」；
+ *   原始错误、代理配置与日志路径收进按需展开的「诊断信息」。恢复与否读 store 的结构化
+ *   `recovery`，不再从 message 里猜字符串。
  */
 import { computed, onMounted, watch } from "vue";
 import { useUpdaterStore } from "../stores/updater";
@@ -58,18 +61,28 @@ const progressText = computed(() => {
 });
 
 /**
- * 失败时应用是否已经恢复：`services/updater` 在安装失败路径会把后端恢复结果写进 message。
+ * 失败时应用是否已经恢复：store 的 `recovery` 是结构化事实（不再从 message 里猜字符串）。
  * - 已恢复：应用还能继续用，更新设置仍在，重试/退出都可行；
  * - 未恢复：必须完全退出再启动，不能把「重试」当成解决办法。
  */
-const backendRecovered = computed(() =>
-  updater.phase === "failed" ? updater.message.includes("后端已恢复") : false,
-);
-const backendBroken = computed(() =>
-  updater.phase === "failed"
-    ? updater.message.includes("后端未能自动恢复") || updater.message.includes("后端未能恢复")
-    : false,
-);
+const backendRecovered = computed(() => updater.phase === "failed" && updater.recovery === "restored");
+const backendBroken = computed(() => updater.phase === "failed" && updater.recovery === "unrecovered");
+
+/** 失败主行的人话：store 的 message 已经是人话，不再夹带原始错误。 */
+const failureText = computed(() => updater.message || "更新失败");
+
+/**
+ * 按需展开的诊断：原始错误 + 代理配置 + 日志路径。
+ * 主界面只留「失败状态 + 实际可用的下一步」，排查信息收在这里（默认折叠）。
+ */
+const diagnostics = computed(() => {
+  if (updater.phase !== "failed") return [] as string[];
+  const lines: string[] = [];
+  if (updater.errorDetail) lines.push("原始错误：" + updater.errorDetail);
+  lines.push("代理：连不上更新源时，可在 %APPDATA%\\qio\\updater-proxy.txt 写一行代理地址。");
+  lines.push("日志：排查记录在 %APPDATA%\\qio\\logs\\qio.log。");
+  return lines;
+});
 
 function toggleAutoCheck() {
   updater.setAutoCheck(!updater.autoCheck);
@@ -92,7 +105,8 @@ function syncUpdateIssue(): void {
       actions: [
         { label: "打开「数据与维护」重新检查更新", kind: "settings", section: "data" },
       ],
-      diagnostics: [updater.message],
+      // 全局栏的诊断区同样按需展开：原始错误进这里，不占主界面
+      diagnostics: [updater.errorDetail].filter((line) => Boolean(line)),
       severity: "error",
     });
     return;
@@ -100,7 +114,11 @@ function syncUpdateIssue(): void {
   issues.resolve(UPDATE_ISSUE_ID);
 }
 
-watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), { immediate: true });
+watch(
+  () => [updater.phase, updater.message, updater.errorDetail] as const,
+  () => syncUpdateIssue(),
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -122,23 +140,24 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
     <p v-else-if="updater.phase === 'ready'" class="line ok" role="status">
       安装已完成，重启 QIO 后生效
     </p>
-    <p v-else-if="updater.phase === 'failed'" class="line err" role="alert">
-      <span class="err-reason">{{ updater.message }}</span>
-      <span v-if="backendBroken" class="hint err-action">
+    <div v-else-if="updater.phase === 'failed'" class="line err" role="alert">
+      <span class="err-reason" data-update-failure>{{ failureText }}</span>
+      <span v-if="backendBroken" class="hint err-action" data-update-next>
         更新没有装上，且后端未能自动恢复。请完全退出 QIO 再重新启动；重启后可在设置里重新检查更新。
       </span>
-      <span v-else-if="backendRecovered" class="hint err-action">
+      <span v-else-if="backendRecovered" class="hint err-action" data-update-next>
         应用已恢复运行，可以继续使用。更新没有安装，可以点「重试」重新下载安装。
       </span>
-      <span v-else class="hint err-action">
+      <span v-else class="hint err-action" data-update-next>
         更新没有安装。可以点「重试」重新检查；若安装被中止（例如 "Can't write …qio-backend.exe"），
         请完全退出 QIO 后重试安装。
       </span>
-      <span class="hint err-diagnostics">
-        连不上更新源时，可在 <span class="mono">%APPDATA%\qio\updater-proxy.txt</span> 写一行代理地址；
-        排查记录在 <span class="mono">%APPDATA%\qio\logs\qio.log</span>。
-      </span>
-    </p>
+      <!-- 原始错误 / 代理配置 / 日志路径：按需展开，不铺在常态失败行里 -->
+      <details class="err-diagnostics" data-update-diagnostics>
+        <summary>诊断信息（原始错误 / 代理 / 日志）</summary>
+        <p v-for="line in diagnostics" :key="line" class="hint mono">{{ line }}</p>
+      </details>
+    </div>
     <p v-else-if="downloading" class="line" role="status">
       {{ stageText }}
     </p>
@@ -226,8 +245,11 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
 .strong { color: var(--text-strong); }
 .notes { display: block; margin-top: 4px; color: var(--text-secondary); }
 .err-action { display: block; line-height: 1.6; overflow-wrap: anywhere; }
-/* #19：代理与日志路径只属于失败排查信息，放在失败详情里而不是常驻卡片底部。 */
+/* #19：代理与日志路径只属于失败排查信息，放在按需展开的诊断里而不是常驻卡片底部。 */
 .err-diagnostics { display: block; line-height: 1.6; overflow-wrap: anywhere; }
+.err-diagnostics > summary { cursor: pointer; color: var(--text-muted); font-size: 12px; }
+.err-diagnostics > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.err-diagnostics p { margin: 4px 0 0; }
 .progress {
   height: 3px; border-radius: var(--r-pill); background: var(--layer-hover); overflow: hidden;
 }

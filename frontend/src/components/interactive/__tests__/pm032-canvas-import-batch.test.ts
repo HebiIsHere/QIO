@@ -408,8 +408,8 @@ describe("#46 离开互动页后继续上传和关联", () => {
     await settle();
     const status = wrapper!.find('[data-im="add-material-status-text"]');
     expect(status.exists(), "返回后没有显示这次关联的真实结果").toBe(true);
-    expect(status.text()).toContain("已关联附件");
-    expect(status.text()).toContain("单卡.txt");
+    // 跨页完成与当前页完成用**同一句**：已关联附件『文件名』
+    expect(status.text()).toBe("已关联附件「单卡.txt」");
     expect(mocks.pickBrowserFile, "回执完成后不应要求重新选文件").toHaveBeenCalledTimes(1);
   });
 
@@ -432,8 +432,9 @@ describe("#46 离开互动页后继续上传和关联", () => {
     // 回挂后按既有提示入口显示这条导入的真实终态（不是第二个常驻通知条）
     const status = wrapper!.find('[data-im="add-material-status-text"]');
     expect(status.exists(), "返回后看不到离开期间完成的导入结果").toBe(true);
-    expect(status.text()).toContain("已关联附件");
-    expect(status.text()).toContain("离开完成.txt");
+    // 与当前页完成同一句（同一份提示入口，只显示一次）
+    expect(status.text()).toBe("已关联附件「离开完成.txt」");
+    expect(wrapper!.findAll('[data-im="add-material-status-text"]').length, "成功提示显示了不止一次").toBe(1);
     const linked = store.board!.cards.find((item) => item.id === card.id)!;
     expect((linked.meta.file as { attachmentId?: string }).attachmentId).toBe("att_away_ok");
 

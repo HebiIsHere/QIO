@@ -23,8 +23,9 @@
     （回执不会因离开互动页而丢），alive 只约束显示层与「卸载后不再发起新的上传」；
   - 重新进入互动页：批次区显示真实进度 / 已接收 / 具体失败原因；单卡关联的终态由 store
     保存到用户看过或关闭为止，按同一个提示入口显示一次（不新增第二个常驻通知条）；
-  - 成功文案只陈述**附件本身已保存**与「板面关联还只是本地改动」，不声称服务端已保存
-    （落盘 / 提交由既有机制负责，失败也由既有机制反馈，这里不另造一套）。
+  - 成功文案只说「已关联附件『文件名』」这一件事：来源（浏览器上传 / 原路径登记）
+    留在文件卡的「材料详情」里按需展开，板面关联的本地性质由卡片自身的提交状态承担；
+    当前页完成与跨页完成用同一句，只显示一次。
 -->
 <script setup lang="ts">
 import { vQioTip } from "../../composables/useQioTip";
@@ -42,7 +43,6 @@ import { cardAttachmentLinked, cardAttachmentName } from "../../interactive/mate
 import { NEW_CARD_SIZE, planNewCardSlot, rectsOverlap } from "../../interactive/cardLayout";
 import { readBoardArea } from "../../interactive/viewport";
 import {
-  attachmentSourceNote,
   isDesktopShell,
   onPathDrop,
   pickBrowserFile,
@@ -181,8 +181,8 @@ async function attachRealFile(
     } else if (preset && "file" in preset) {
       // 浏览器拖放：只有字节 → 首次落盘为工作区材料源文件（来源如实标注）
       fileName = preset.file.name || "未命名";
-      // 文案：常态进度只说「正在保存附件…」；「首次落盘为工作区材料源文件」是内部附注，
-      // 由成功行里的来源说明（attachmentSourceNote）只讲一次。
+      // 文案：常态进度只说「正在保存附件…」；来源（首次落盘为工作区材料源文件）
+      // 不在提示里重复，留在文件卡的「材料详情」里按需展开。
       progress(token, "正在保存附件「" + fileName + "」…");
       source = { file: preset.file };
     } else if (isDesktopShell()) {
@@ -301,14 +301,15 @@ function attachFailText(name: string, error: string): string {
   return who ? "附件保存失败「" + who + "」：" + error : "附件保存失败：" + error;
 }
 
+/**
+ * 成功只说这一件事：附件已经关联到这张卡。
+ *
+ * 来源（浏览器上传 / 原路径登记 / 剪贴板）与「板面关联还只是本地改动」都**不在提示里重复**：
+ * 前者在文件卡的「材料详情」里按需展开（FileCardMaterialPanel 的 sourceNote），
+ * 后者由卡片自身的提交状态承担。当前页完成与跨页完成走同一个函数 —— 同一句话，只显示一次。
+ */
 function cardJobSuccessText(ref: AttachmentRef): string {
-  return (
-    "已关联附件「" +
-    ref.name +
-    "」：" +
-    attachmentSourceNote(ref) +
-    "；板面关联是本地改动，提交后 QIO 才可见"
-  );
+  return "已关联附件「" + ref.name + "」";
 }
 
 /** 返回页面时按 store 里的真实状态显示：进行中 / 已完成 / 具体失败原因（各显示一次）。 */

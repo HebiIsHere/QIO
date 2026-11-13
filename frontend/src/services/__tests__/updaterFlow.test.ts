@@ -24,7 +24,18 @@ vi.mock("@tauri-apps/plugin-updater", () => ({ check: mocks.check }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: mocks.relaunch }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: mocks.getVersion }));
 
-import { tauriUpdaterApi } from "../updater";
+import { UpdateFailureError, tauriUpdaterApi } from "../updater";
+
+/** 抓住失败的结构化事实（主界面人话 / 原始原因 / 后端恢复结果）。 */
+async function failureOf(run: Promise<unknown>): Promise<UpdateFailureError> {
+  try {
+    await run;
+  } catch (error) {
+    if (error instanceof UpdateFailureError) return error;
+    throw error;
+  }
+  throw new Error("这次操作本应失败，但它成功了");
+}
 
 const PREP_OK = {
   alreadyStopped: false,
@@ -162,7 +173,10 @@ describe("结束后端的真实结果与失败恢复", () => {
     mocks.check.mockResolvedValue(update);
 
     const api = await tauriUpdaterApi();
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(/仍有进程存活/);
+    const failure = await failureOf(api.downloadAndInstall(() => {}));
+    // 主界面人话 + 原始原因分开：原因进 detail，不铺在主行
+    expect(failure.message).toContain("更新没有安装成功");
+    expect(failure.detail).toContain("仍有进程存活");
 
     expect(update.install).not.toHaveBeenCalled();
     expect(order).toContain("qio_restore_backend");
@@ -177,7 +191,8 @@ describe("结束后端的真实结果与失败恢复", () => {
     mocks.check.mockResolvedValue(update);
 
     const api = await tauriUpdaterApi();
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(/未确认退出/);
+    const failure = await failureOf(api.downloadAndInstall(() => {}));
+    expect(failure.detail).toContain("未确认退出");
 
     expect(update.install).not.toHaveBeenCalled();
     expect(order).toContain("qio_restore_backend");
@@ -194,7 +209,11 @@ describe("结束后端的真实结果与失败恢复", () => {
     mocks.check.mockResolvedValue(update);
 
     const api = await tauriUpdaterApi();
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(/后端已恢复/);
+    const failure = await failureOf(api.downloadAndInstall(() => {}));
+    // 已恢复：主界面说「应用已恢复运行，可以重试」，原始原因进 detail
+    expect(failure.recovery).toBe("restored");
+    expect(failure.message).toContain("应用已恢复运行");
+    expect(failure.detail).toContain("ShellExecute failed");
 
     expect(order).toContain("qio_restore_backend");
   });
@@ -217,7 +236,11 @@ describe("结束后端的真实结果与失败恢复", () => {
     mocks.check.mockResolvedValue(update);
 
     const api = await tauriUpdaterApi();
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(/请完全退出 QIO 后重新启动/);
+    const failure = await failureOf(api.downloadAndInstall(() => {}));
+    // 未恢复：主界面如实说后端没恢复（下一步是「完全退出 QIO 再启动」，由卡片给出）
+    expect(failure.recovery).toBe("unrecovered");
+    expect(failure.message).toContain("后端未能自动恢复");
+    expect(failure.detail).toContain("sidecar spawn failed");
   });
 });
 

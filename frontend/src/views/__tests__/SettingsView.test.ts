@@ -152,7 +152,10 @@ describe("联网搜索：免密钥通道不是总开关", () => {
     expect(models.find('[data-search-channel="keyless"]').text()).toContain("已关闭");
     expect(models.find('[data-search-channel="bocha"]').text()).toContain("未配置");
     expect(models.find('[data-search-channel="searxng"]').text()).toContain("未配置");
-    expect(models.text()).toContain("「已配置」不代表「检查通过」");
+    // 未配置的通道不显示检查状态（没有可检查的对象），也不再有常驻判据说明
+    expect(models.find('[data-search-channel="bocha"] [data-channel-check]').exists()).toBe(false);
+    expect(models.find('[data-search-channel="searxng"] [data-channel-check]').exists()).toBe(false);
+    expect(models.text()).not.toContain("「已配置」不代表「检查通过」");
     w.unmount();
   });
 

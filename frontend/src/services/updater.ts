@@ -115,15 +115,65 @@ const ERROR_TEXT: Record<UpdateErrorKind, string> = {
   unknown: "更新失败",
 };
 
+/** 安装失败之后，本实例后端是否已经恢复（决定主界面给哪一条下一步）。 */
+export type UpdateRecovery = "none" | "restored" | "unrecovered";
+
+/**
+ * 一次更新失败的结构化事实。
+ *
+ * 主界面只用人话（message）与下一步（recovery）；**原始错误（detail）只进按需展开的诊断**，
+ * 不铺在常态失败行里 —— 但也不丢：用户排查时仍能看到真因。
+ */
+export interface UpdateFailure {
+  kind: UpdateErrorKind;
+  /** 主界面的人话（不含原始错误文本） */
+  message: string;
+  /** 原始错误（诊断区用；可能为空） */
+  detail: string;
+  /** 安装失败后本实例后端的恢复结果；检查失败 / 下载失败恒为 none */
+  recovery: UpdateRecovery;
+}
+
+/**
+ * 我们自己抛出的、已经说成人话的失败（版本变化 / 更新源没有新版本 / 安装失败）。
+ *
+ * 与插件抛出的英文原始错误分开：这类错误不再被「分类 + 拼原始信息」二次包装，
+ * 主界面直接显示 message，原始原因与恢复细节进 detail。
+ */
+export class UpdateFailureError extends Error {
+  readonly kind: UpdateErrorKind;
+  readonly detail: string;
+  readonly recovery: UpdateRecovery;
+
+  constructor(
+    message: string,
+    options: { kind?: UpdateErrorKind; detail?: string; recovery?: UpdateRecovery } = {},
+  ) {
+    super(message);
+    this.name = "UpdateFailureError";
+    this.kind = options.kind ?? "unknown";
+    this.detail = options.detail ?? "";
+    this.recovery = options.recovery ?? "none";
+  }
+}
+
 /**
  * 把插件抛出的错误分类成人话。
  *
  * 教训（2026-09-22 实测）：Tauri updater 把底层原因统一成
  * "Could not fetch a valid release JSON from the remote" —— 连不上、代理不对、
- * 清单解析失败共用这一句。所以分类只用来决定措辞，**原始文本必须一起显示**，
+ * 清单解析失败共用这一句。所以分类只用来决定措辞，**原始文本必须保留**（进 detail），
  * 否则用户看到的是我们猜的原因，而不是真实原因。
  */
-export function describeUpdateError(error: unknown): { kind: UpdateErrorKind; message: string } {
+export function describeUpdateError(error: unknown): UpdateFailure {
+  if (error instanceof UpdateFailureError) {
+    return {
+      kind: error.kind,
+      message: error.message,
+      detail: error.detail,
+      recovery: error.recovery,
+    };
+  }
   const raw = error instanceof Error ? error.message : String(error ?? "");
   const text = raw.toLowerCase();
   let kind: UpdateErrorKind = "unknown";
@@ -141,9 +191,12 @@ export function describeUpdateError(error: unknown): { kind: UpdateErrorKind; me
   } else if (text.includes("install") || text.includes("exit code") || text.includes("nsis")) {
     kind = "installer";
   }
-  const base = ERROR_TEXT[kind];
-  const detail = raw.trim().replace(/\s+/g, " ").slice(0, 200);
-  return { kind, message: detail ? `${base}（原始信息：${detail}）` : base };
+  return {
+    kind,
+    message: ERROR_TEXT[kind],
+    detail: raw.trim().replace(/\s+/g, " ").slice(0, 200),
+    recovery: "none",
+  };
 }
 
 function errorText(error: unknown): string {
@@ -224,26 +277,32 @@ async function prepareForUpdate(invoke: Invoke): Promise<UpdatePrepResult> {
   return result;
 }
 
-/** 后端被停掉之后，把它的连接信息恢复回来（幂等：本来在跑就不重复启动）。 */
-async function restoreBackend(invoke: Invoke): Promise<{ restored: boolean; suffix: string }> {
+/**
+ * 后端被停掉之后，把它的连接信息恢复回来（幂等：本来在跑就不重复启动）。
+ *
+ * 只返回**结构化事实**（是否恢复 + 诊断细节）：主界面的话术由 store / 卡片决定，
+ * 这里不再拼一句会被塞进 message 的长句。
+ */
+async function restoreBackend(
+  invoke: Invoke,
+): Promise<{ recovery: UpdateRecovery; detail: string }> {
   try {
     const result = await invoke<RestoreResult>("qio_restore_backend");
     if (result?.restored) {
       await resetBackendConnectionCache();
-      const restartNote = result.started ? "（已重新启动）" : "（未重复启动）";
       return {
-        restored: true,
-        suffix: `后端已恢复${restartNote}，聊天可以继续使用。`,
+        recovery: "restored",
+        detail: result.started ? "后端已重新启动" : "后端未重复启动（本来就在跑）",
       };
     }
     return {
-      restored: false,
-      suffix: `后端未能自动恢复${result?.detail ? `：${result.detail}` : ""}；请完全退出 QIO 后重新启动。`,
+      recovery: "unrecovered",
+      detail: result?.detail ? `后端未能自动恢复：${result.detail}` : "后端未能自动恢复",
     };
   } catch (error) {
     return {
-      restored: false,
-      suffix: `后端未能自动恢复：${errorText(error)}；请完全退出 QIO 后重新启动。`,
+      recovery: "unrecovered",
+      detail: `后端未能自动恢复：${errorText(error)}`,
     };
   }
 }
@@ -336,7 +395,9 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
       const proxy = await resolveOperationProxy(invokeCommand);
       const update = await check(proxy ? { proxy } : undefined);
       if (!update) {
-        throw new Error("更新源上没有可用的新版本（版本可能已下线），请重新检查更新");
+        throw new UpdateFailureError("更新源上没有可用的新版本（版本可能已下线），请重新检查更新", {
+          kind: "network",
+        });
       }
       // 从拿到 Update 起，所有出口（版本不匹配 / 下载失败 / 停止后端失败 / 安装失败 /
       // 安装成功）都必须释放它；只释放一次，且释放异常不掩盖真正的失败原因。
@@ -344,8 +405,9 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
       try {
         const expected = options?.expectedVersion?.trim();
         if (expected && compareVersions(update.version, expected) !== 0) {
-          throw new Error(
+          throw new UpdateFailureError(
             `更新源上的版本已变化（界面显示 ${expected}，实际 ${update.version}），已放弃安装；请重新检查更新`,
+            { kind: "network" },
           );
         }
 
@@ -369,9 +431,18 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
           await update.install();
         } catch (error) {
           // 后端已经（或可能已经）被停掉：必须恢复，不能把聊天留在不可用状态。
-          // 恢复状态放在最前面：用户首先要知道「现在能不能继续用」，然后才是真因。
+          // 主界面先说「现在能不能继续用」（recovery），原始原因只进诊断（detail）。
           const recovery = await restoreBackend(invokeCommand);
-          throw new Error(`${recovery.suffix} 原因：${errorText(error)}`);
+          throw new UpdateFailureError(
+            recovery.recovery === "restored"
+              ? "更新没有安装成功；应用已恢复运行，可以重试"
+              : "更新没有安装成功，且后端未能自动恢复",
+            {
+              kind: "installer",
+              detail: [recovery.detail, errorText(error)].filter(Boolean).join("；"),
+              recovery: recovery.recovery,
+            },
+          );
         }
       } finally {
         await release();

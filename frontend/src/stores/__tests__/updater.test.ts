@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import {
+  UpdateFailureError,
   compareVersions,
   describeUpdateError,
   type UpdaterApi,
@@ -51,19 +52,35 @@ describe("错误分类", () => {
     expect(describeUpdateError(new Error("installer exited with code 1")).kind).toBe("installer");
   });
 
-  it("未知错误也不吞，给原文", () => {
+  it("未知错误也不吞，给原文（原文进 detail，主界面用人话）", () => {
     const out = describeUpdateError(new Error("boom"));
     expect(out.kind).toBe("unknown");
-    expect(out.message).toContain("boom");
+    expect(out.detail).toContain("boom");
+    expect(out.message).toBe("更新失败");
   });
 
-  it("任何分类都必须带出原始信息（不许用我们猜的原因盖掉真因）", () => {
+  it("任何分类都必须保留原始信息（不许用我们猜的原因盖掉真因）", () => {
     // 实测：插件连不上、代理不对、清单解析失败都会报同一句
     // "Could not fetch a valid release JSON from the remote"
     const out = describeUpdateError(
       new Error("Could not fetch a valid release JSON from the remote"),
     );
-    expect(out.message).toContain("Could not fetch a valid release JSON from the remote");
+    expect(out.detail).toContain("Could not fetch a valid release JSON from the remote");
+    expect(out.message).not.toContain("Could not fetch");
+  });
+
+  it("我们自己说成人话的失败不再被二次包装（message 原样，原因进 detail）", () => {
+    const out = describeUpdateError(
+      new UpdateFailureError("更新没有安装成功，且后端未能自动恢复", {
+        kind: "installer",
+        detail: "后端未能自动恢复：连接失败；installer exited",
+        recovery: "unrecovered",
+      }),
+    );
+    expect(out.kind).toBe("installer");
+    expect(out.message).toBe("更新没有安装成功，且后端未能自动恢复");
+    expect(out.detail).toContain("installer exited");
+    expect(out.recovery).toBe("unrecovered");
   });
 });
 
@@ -87,7 +104,10 @@ describe("更新状态机", () => {
     expect(store.phase).toBe("failed");
     expect(store.errorKind).toBe("network");
     expect(store.message).toContain("更新源请求失败");
-    expect(store.message).toContain("network unreachable"); // 原始信息必须可见
+    // 原始信息必须保留，但只在诊断字段里（主界面不铺原始错误）
+    expect(store.errorDetail).toContain("network unreachable");
+    expect(store.message).not.toContain("network unreachable");
+    expect(store.recovery).toBe("none");
   });
 
   it("发现新版本 → available，但不自动下载", async () => {

@@ -16,6 +16,7 @@ import {
   describeUpdateError,
   tauriUpdaterApi,
   type UpdateErrorKind,
+  type UpdateRecovery,
   type UpdateStage,
   type UpdaterApi,
 } from "../services/updater";
@@ -38,6 +39,8 @@ interface ActiveOperation {
   /** 操作开始前的展示状态：被停用取消时恢复，避免停在 checking 上。 */
   phaseBefore: UpdatePhase;
   messageBefore: string;
+  errorDetailBefore: string;
+  recoveryBefore: UpdateRecovery;
   errorKindBefore: UpdateErrorKind;
 }
 
@@ -61,8 +64,12 @@ export const useUpdaterStore = defineStore("updater", {
      * 业务状态仍由 phase 决定，阶段回调不会推进 phase。
      */
     stage: "idle" as UpdateStage | "idle" | "done",
-    /** 失败原因的人话（分类见 services/updater.describeUpdateError） */
+    /** 失败原因的人话（主界面只显示这一句；分类见 services/updater.describeUpdateError） */
     message: "",
+    /** 原始错误 / 恢复细节：只进按需展开的诊断，不铺在常态失败行里 */
+    errorDetail: "",
+    /** 安装失败后本实例后端是否已恢复（决定主界面给哪一条下一步） */
+    recovery: "none" as UpdateRecovery,
     errorKind: "unknown" as UpdateErrorKind,
     lastCheckedAt: "" as string,
     autoCheck: true,
@@ -115,6 +122,8 @@ export const useUpdaterStore = defineStore("updater", {
         kind,
         phaseBefore: this.phase,
         messageBefore: this.message,
+        errorDetailBefore: this.errorDetail,
+        recoveryBefore: this.recovery,
         errorKindBefore: this.errorKind,
       };
       return seq;
@@ -133,6 +142,8 @@ export const useUpdaterStore = defineStore("updater", {
       this._activeOperation = null;
       this.phase = active.phaseBefore;
       this.message = active.messageBefore;
+      this.errorDetail = active.errorDetailBefore;
+      this.recovery = active.recoveryBefore;
       this.errorKind = active.errorKindBefore;
     },
     /**
@@ -156,6 +167,8 @@ export const useUpdaterStore = defineStore("updater", {
       if (seq === null) return; // 单一有效操作：检查/下载期间不再起第二个
       this.phase = "checking";
       this.message = "";
+      this.errorDetail = "";
+      this.recovery = "none";
       this.stage = "idle";
       try {
         const api = await this._apiOrLoad();
@@ -183,6 +196,8 @@ export const useUpdaterStore = defineStore("updater", {
         this.phase = "failed";
         this.errorKind = described.kind;
         this.message = described.message;
+        this.errorDetail = described.detail;
+        this.recovery = described.recovery;
       } finally {
         this._finishOperation(seq);
       }
@@ -194,6 +209,8 @@ export const useUpdaterStore = defineStore("updater", {
       if (seq === null) return;
       this.phase = "downloading";
       this.message = "";
+      this.errorDetail = "";
+      this.recovery = "none";
       this.progressPercent = null;
       // 先标「下载中」：api 的 onStage 会随真实进度推进到校验/安装；
       // 即使测试替身不实现 onStage，界面也不会停在「未开始」。
@@ -229,6 +246,8 @@ export const useUpdaterStore = defineStore("updater", {
         this.phase = "failed";
         this.errorKind = described.kind;
         this.message = described.message;
+        this.errorDetail = described.detail;
+        this.recovery = described.recovery;
         this.stage = "idle";
       } finally {
         this._finishOperation(seq);

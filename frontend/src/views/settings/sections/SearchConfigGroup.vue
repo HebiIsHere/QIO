@@ -8,6 +8,8 @@
  * 2. **博查 Key 留空 ≠ 清除**：已配置时留空保存不会发送该字段；清除必须显式操作（QConfirm）。
  * 3. **「已配置」不等于「连接检查通过」**：状态分「未配置 / 已配置（未检查）/ 检查通过 /
  *    检查失败（原因）」四种；只有真的做过连接检查且通过，才显示「检查通过」。
+ *    这条语义由**通道行自己的状态**表达（data-channel-check-state），不靠常驻的判据说明；
+ *    只有旧后端没有状态接口时才解释一次。
  *
  * 保存方式：数字参数与 SearXNG 地址属于「搜索配置组」，一起保存（有未保存标记）；
  * 免密钥开关与博查 Key 的替换/清除是显式动作，各自独立。
@@ -96,6 +98,11 @@ const channelViews = computed(() => {
   function configText(configured: boolean, text: string): string {
     return configured ? text : "未配置";
   }
+  /** 检查状态是**状态**，不只是文案：模板把它写成 data-channel-check-state，测试按状态断言。 */
+  function checkState(check: ChannelCheck): "unchecked" | "ok" | "failed" {
+    if (!check.checked) return "unchecked";
+    return check.ok ? "ok" : "failed";
+  }
   function checkText(check: ChannelCheck): string {
     if (!check.checked) return "，尚未检查";
     return check.ok ? "，检查通过" : `，检查失败${check.reason ? `：${check.reason}` : ""}`;
@@ -113,6 +120,7 @@ const channelViews = computed(() => {
       // 文案 7：配置状态只写「已开启 / 已关闭」；检查状态是**另一段**（「尚未检查 / 检查通过」），
       // 不混进配置状态里，也不伪装成「已验证」。开关本身保留。
       checkText: keyless.value ? checkText(checks.keyless) : "",
+      checkState: keyless.value ? checkState(checks.keyless) : "off",
       tone: !keyless.value ? "off" : checks.keyless.checked ? (checks.keyless.ok ? "ok" : "err") : "warn",
       checkTone: checkTone(checks.keyless),
     },
@@ -122,6 +130,7 @@ const channelViews = computed(() => {
       configured: bochaConfigured.value,
       configText: configText(bochaConfigured.value, "已配置"),
       checkText: bochaConfigured.value ? checkText(checks.bocha) : "",
+      checkState: bochaConfigured.value ? checkState(checks.bocha) : "off",
       tone: !bochaConfigured.value ? "off" : checks.bocha.checked ? (checks.bocha.ok ? "ok" : "err") : "warn",
       checkTone: checkTone(checks.bocha),
     },
@@ -131,6 +140,7 @@ const channelViews = computed(() => {
       configured: Boolean(search.values.searxngUrl.trim()),
       configText: configText(Boolean(search.values.searxngUrl.trim()), "已填写地址"),
       checkText: search.values.searxngUrl.trim() ? checkText(checks.searxng) : "",
+      checkState: search.values.searxngUrl.trim() ? checkState(checks.searxng) : "off",
       tone: !search.values.searxngUrl.trim()
         ? "off"
         : checks.searxng.checked
@@ -188,9 +198,9 @@ async function runConnectionCheck(): Promise<void> {
       statusAvailable.value = false;
       save.setNotice("info", "当前版本暂不提供连接检查；仍可查看「已配置 / 未配置」状态");
     } else {
-      // 检查请求失败 ≠ 通道不可用：两件事必须分开说。
       // 这是「这一次检查」的失败：配置原样保留，重试只重放检查（不重写配置）。
-      save.setNotice("err", "连接检查请求失败（不代表通道不可用）", undefined, {
+      // 主界面只说这一次检查的结果；原始原因在按需展开的技术详情里。
+      save.setNotice("err", "这次检查失败", undefined, {
         detail: reason,
         retry: () => {
           void runConnectionCheck();
@@ -441,15 +451,13 @@ onMounted(() => {
           v-if="channel.checkText"
           class="set-channel__state"
           :class="channel.checkTone"
+          :data-channel-check-state="channel.checkState"
           data-channel-check
         >{{ channel.checkText }}</span>
       </div>
-      <p class="set-hint">
-        「已配置」不代表「检查通过」：检查只在你主动点击下面的按钮时进行，只有这一次真实成功才显示「检查通过」。
-        修改配置后，旧的检查结论不再沿用。
-        <span v-if="statusAvailable === false" data-testid="settings-search-status-unavailable">
-          当前版本暂不提供通道状态接口，这里显示的是配置状态（已配置 / 未配置）。
-        </span>
+      <!-- 只有旧后端真的没有状态接口时才解释一次；常态不再常驻判据说明。 -->
+      <p v-if="statusAvailable === false" class="set-hint" data-testid="settings-search-status-unavailable">
+        当前版本暂不提供通道状态接口，这里显示的是配置状态（已配置 / 未配置）。
       </p>
       <div class="set-channel-actions">
         <button

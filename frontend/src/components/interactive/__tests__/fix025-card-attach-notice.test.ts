@@ -243,6 +243,8 @@ describe("卡片内成功提示的生命周期", () => {
     expect(statusText(w), "成功文案没有说清「提交后 QIO 才可见」").toContain("提交");
     expect(statusText(w), "成功文案没有说清这是本地板面改动").toContain("本地");
     expect(statusText(w), "成功文案声称服务端已保存 / 同步了板面关联").not.toMatch(/服务端|已同步|已保存到/);
+    // 卡片内成功提示与 AddMenu 是**不同**入口：卡片内保留「本地改动 / 提交后可见」这句
+    // （卡片没有别的提交状态承接），AddMenu 的提示才缩成一句。
     expect(await noticeTimerCount(), "成功提示没有挂上自动移除计时器").toBe(base + 1);
 
     // 关联通过 patch 交给父级（组件自己不直接改板面状态）

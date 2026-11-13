@@ -123,7 +123,9 @@ describe("UpdateCard 如实展示阶段", () => {
     const w = mount(UpdateCard, { global: { plugins: [pinia] } });
     store.phase = "failed";
     store.errorKind = "installer";
-    store.message = "后端未能自动恢复：连接失败；请完全退出 QIO 后重新启动。原因：installer exited";
+    store.recovery = "unrecovered";
+    store.message = "更新没有安装成功，且后端未能自动恢复";
+    store.errorDetail = "后端未能自动恢复：连接失败；installer exited";
     await w.vm.$nextTick();
     const issue = issues.issueById("updater_install_failed");
     expect(issue).toBeTruthy();
@@ -146,7 +148,9 @@ describe("UpdateCard 如实展示阶段", () => {
     const issues = useGlobalIssuesStore();
     const w = mount(UpdateCard, { global: { plugins: [pinia] } });
     store.phase = "failed";
-    store.message = "后端已恢复（已重新启动），聊天可以继续使用。原因：installer exited";
+    store.recovery = "restored";
+    store.message = "更新没有安装成功；应用已恢复运行，可以重试";
+    store.errorDetail = "后端已重新启动；installer exited";
     await w.vm.$nextTick();
     expect(issues.issueById("updater_install_failed")).toBe(null);
     w.unmount();

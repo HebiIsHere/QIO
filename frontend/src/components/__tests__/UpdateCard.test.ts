@@ -7,7 +7,8 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import UpdateCard from "../UpdateCard.vue";
 import { useUpdaterStore } from "../../stores/updater";
-import type { UpdaterApi } from "../../services/updater";
+import { useGlobalIssuesStore } from "../../stores/globalIssues";
+import { UpdateFailureError, type UpdaterApi } from "../../services/updater";
 
 function api(overrides: Partial<UpdaterApi> = {}): UpdaterApi {
   return {
@@ -60,7 +61,7 @@ describe("更新卡片", () => {
     expect(w.text()).toContain("0.1.4");
   });
 
-  it("检查失败：显示失败原因，不写「已是最新」", async () => {
+  it("检查失败：主界面说清失败与下一步，原始错误进按需展开的诊断", async () => {
     const { w, store } = mountCard({
       check: vi.fn(async () => {
         throw new Error("failed to fetch: network unreachable");
@@ -68,9 +69,16 @@ describe("更新卡片", () => {
     });
     await store.check();
     expect(w.text()).not.toContain("已是最新");
-    expect(w.text()).toContain("更新源请求失败");
-    expect(w.text()).toContain("原始信息"); // 真因必须显示出来，不能被我们的措辞盖掉
+    // 主界面：可理解的失败状态 + 实际可用的下一步（重试）
+    expect(w.find("[data-update-failure]").text()).toContain("更新源请求失败");
+    expect(w.find("[data-update-next]").exists()).toBe(true);
     expect(w.find("[data-action='check']").text()).toContain("重试");
+    // 原始错误不铺在常态失败行里，但也不丢：在默认折叠的诊断里
+    const diagnostics = w.find("[data-update-diagnostics]");
+    expect(diagnostics.exists()).toBe(true);
+    expect(diagnostics.attributes("open")).toBeUndefined();
+    expect(diagnostics.text()).toContain("network unreachable");
+    expect(w.find("[data-update-failure]").text()).not.toContain("network unreachable");
   });
 
   it("下载完成：给出「立即重启」并提示重启后生效", async () => {
@@ -98,6 +106,23 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     expect(w.text()).not.toContain("qio.log");
   });
 
+  it("失败时代理与日志路径只在按需展开的诊断里（默认折叠）", async () => {
+    const { w, store } = mountCard({
+      check: vi.fn(async () => {
+        throw new Error("failed to fetch: network unreachable");
+      }),
+    });
+    await store.check();
+    const diagnostics = w.find("[data-update-diagnostics]");
+    expect(diagnostics.exists()).toBe(true);
+    expect(diagnostics.attributes("open")).toBeUndefined();
+    expect(diagnostics.text()).toContain("updater-proxy.txt");
+    expect(diagnostics.text()).toContain("qio.log");
+    // 主界面（失败行本身）不出现排查路径
+    expect(w.find("[data-update-failure]").text()).not.toContain("updater-proxy.txt");
+    expect(w.find("[data-update-next]").text()).not.toContain("qio.log");
+  });
+
   it("下载失败：停在结果页并给出「完全退出 QIO 后重试安装」，代理与日志进失败详情", async () => {
     const { w, store } = mountCard({
       check: vi.fn(async () => ({ version: "0.1.4" })),
@@ -107,11 +132,12 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     });
     await store.check();
     await store.download();
-    const text = w.text();
-    expect(text).toContain("更新包校验未通过");
-    expect(text).toContain("完全退出 QIO 后重试安装");
-    expect(text).toContain("updater-proxy.txt");
-    expect(text).toContain("qio.log");
+    expect(w.find("[data-update-failure]").text()).toContain("更新包校验未通过");
+    expect(w.find("[data-update-next]").text()).toContain("完全退出 QIO 后重试安装");
+    const diagnostics = w.find("[data-update-diagnostics]");
+    expect(diagnostics.text()).toContain("updater-proxy.txt");
+    expect(diagnostics.text()).toContain("qio.log");
+    expect(diagnostics.text()).toContain("signature verify failed");
   });
 
   it("有新版本：只有「下载并安装」一个安装入口，说明关闭与重开，不新增安装前确认框", async () => {
@@ -130,6 +156,82 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     await store.download();
     expect(w.text()).toContain("安装已完成，重启 QIO 后生效");
     expect(w.find("[data-action='restart']").text()).toContain("立即重启");
+  });
+
+  it("安装失败且后端已恢复：主界面说「应用已恢复运行，可以重试」，原始原因进诊断", async () => {
+    const { w, store } = mountCard({
+      check: vi.fn(async () => ({ version: "0.1.4" })),
+      downloadAndInstall: vi.fn(async () => {
+        throw new UpdateFailureError("更新没有安装成功；应用已恢复运行，可以重试", {
+          kind: "installer",
+          detail: "后端已重新启动；ShellExecute failed",
+          recovery: "restored",
+        });
+      }),
+    });
+    await store.check();
+    await store.download();
+
+    expect(w.find("[data-update-failure]").text()).toBe("更新没有安装成功；应用已恢复运行，可以重试");
+    expect(w.find("[data-update-next]").text()).toContain("应用已恢复运行");
+    expect(w.find("[data-update-next]").text()).toContain("重试");
+    // 原始原因只在诊断里
+    expect(w.find("[data-update-failure]").text()).not.toContain("ShellExecute");
+    expect(w.find("[data-update-diagnostics]").text()).toContain("ShellExecute failed");
+    // 已恢复：不进全局异常入口
+    expect(useGlobalIssuesStore().issueById("updater_install_failed")).toBe(null);
+  });
+
+  it("安装失败且后端未恢复：主界面说清「完全退出再启动」，并进全局异常入口", async () => {
+    const { w, store } = mountCard({
+      check: vi.fn(async () => ({ version: "0.1.4" })),
+      downloadAndInstall: vi.fn(async () => {
+        throw new UpdateFailureError("更新没有安装成功，且后端未能自动恢复", {
+          kind: "installer",
+          detail: "后端未能自动恢复：sidecar spawn failed；ShellExecute failed",
+          recovery: "unrecovered",
+        });
+      }),
+    });
+    await store.check();
+    await store.download();
+
+    expect(w.find("[data-update-failure]").text()).toBe("更新没有安装成功，且后端未能自动恢复");
+    expect(w.find("[data-update-next]").text()).toContain("完全退出 QIO 再重新启动");
+    expect(w.find("[data-update-diagnostics]").text()).toContain("sidecar spawn failed");
+    const issue = useGlobalIssuesStore().issueById("updater_install_failed");
+    expect(issue).toBeTruthy();
+    expect(issue?.severity).toBe("error");
+    // 全局栏的诊断里带原始原因（按需展开），主行只放人话
+    expect(issue?.reason).toBe("更新没有安装成功，且后端未能自动恢复");
+    expect(issue?.diagnostics.join(" ")).toContain("sidecar spawn failed");
+  });
+
+  it("检查失败与安装失败的下一步不同：检查失败给「重试」，安装失败给退出/重启指引", async () => {
+    const checkFail = mountCard({
+      check: vi.fn(async () => {
+        throw new Error("failed to fetch: network unreachable");
+      }),
+    });
+    await checkFail.store.check();
+    expect(checkFail.w.find("[data-update-next]").text()).toContain("重试");
+    expect(checkFail.w.find("[data-update-next]").text()).not.toContain("完全退出 QIO 再重新启动");
+    checkFail.w.unmount();
+
+    const installFail = mountCard({
+      check: vi.fn(async () => ({ version: "0.1.4" })),
+      downloadAndInstall: vi.fn(async () => {
+        throw new UpdateFailureError("更新没有安装成功，且后端未能自动恢复", {
+          kind: "installer",
+          detail: "后端未能自动恢复",
+          recovery: "unrecovered",
+        });
+      }),
+    });
+    await installFail.store.check();
+    await installFail.store.download();
+    expect(installFail.w.find("[data-update-next]").text()).toContain("完全退出 QIO 再重新启动");
+    installFail.w.unmount();
   });
 
   it("源码里保持单一路径：没有第二个安装按钮、没有真人确认框调用", async () => {

@@ -8,7 +8,7 @@
  *
  * 这一份测试按 Lead 冻结的 useTransientNotice 原语验收（假定时器，不依赖真实 3 秒）：
  *   1 成功约 3 秒后自动移除，且只移除提示（卡片 meta 里的 attachmentId 仍在）；
- *     成功文案只陈述「附件已保存」与「板面关联是本地改动」，不声称服务端已保存；
+ *     成功文案只说「已关联附件『文件名』」：来源与板面关联的本地性质不在提示里重复；
  *   2 等待选择 / 上传 / 处理期间是真实进度，不会被成功计时器提前藏掉；
  *   3 失败不自动消失：简短原因 + 关闭入口 + 「重新选择文件」，点了真的重走一遍；
  *   4 连续两次添加：旧计时器清不掉新提示，旧操作的迟到结果也覆盖不了新提示
@@ -170,10 +170,12 @@ describe("成功提示的生命周期", () => {
     const el = statusEl();
     expect(el.exists(), "关联成功后没有任何提示").toBe(true);
     expect(el.classes(), "成功提示的色调不对").toContain("is-ok");
-    expect(statusText()).toContain("报告.pdf");
-    // 成功文案的诚实口径：附件已保存 + 板面关联还是本地改动（commit 不等于服务端已保存）
-    expect(statusText(), "成功文案没有说清「提交后 QIO 才可见」").toContain("提交");
-    expect(statusText(), "成功文案没有说清这是本地板面改动").toContain("本地");
+    // 成功只说一件事：已关联附件『文件名』
+    expect(statusText()).toBe("已关联附件「报告.pdf」");
+    // 来源（浏览器上传 / 原路径登记）与「板面关联是本地改动」不在提示里重复：
+    // 前者在文件卡的「材料详情」里按需展开，后者由卡片自身的提交状态承担。
+    expect(statusText(), "成功提示又带上了来源说明").not.toContain("工作区材料源文件");
+    expect(statusText(), "成功提示又带上了板面关联解释").not.toContain("本地改动");
     expect(
       statusText(),
       "成功文案声称服务端已经保存 / 同步了板面关联",
@@ -497,6 +499,25 @@ describe("长文件名与布局", () => {
     expect(cssRule(".add-status"), "提示缺少长文件名换行样式").toContain("overflow-wrap: anywhere");
     expect(cssRule(".add-status"), "提示缺少断词样式").toContain("word-break: break-word");
     expect(cssRule(".status-text"), "文本区不能换行 / 断词").toContain("overflow-wrap: anywhere");
+  });
+
+  it("成功提示只有一句：来源与板面关联解释不再重复（来源在材料详情里）", async () => {
+    mountMenu();
+    mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "报告.pdf"));
+    // 浏览器上传来源：旧实现会把「已保存为工作区材料源文件（来源：浏览器上传）」塞进成功行
+    mocks.uploadAttachment.mockResolvedValue(
+      attachment({ id: "att_src", name: "报告.pdf", sourceKind: "browser_upload" }),
+    );
+    await clickAdd("file");
+
+    expect(statusText()).toBe("已关联附件「报告.pdf」");
+    // 来源说明与「板面关联是本地改动」都不在提示里：它们各有自己的位置
+    expect(statusText()).not.toContain("工作区材料源文件");
+    expect(statusText()).not.toContain("浏览器上传");
+    expect(statusText()).not.toContain("本地改动");
+    expect(statusText()).not.toContain("提交后 QIO 才可见");
+    // 同一句只显示一次（没有第二个提示节点）
+    expect(wrapper!.findAll('[data-im="add-material-status-text"]').length).toBe(1);
   });
 
   it("提示与菜单在同一悬浮列里各占一行，整层不吃指针事件（不遮挡「添加」按钮与其它操作）", async () => {
