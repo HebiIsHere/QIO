@@ -10,7 +10,8 @@
 | 共同基线 | `7445170d0f51756b2740eb7209d798540d8042a2` |
 | 集成分支 | `fix/pm-qio032-integration` |
 | 集成 worktree | `D:\qio-dev\pm-qio032-integration` |
-| 最终固定 SHA | `acf323a3669010b7ae99f5d9c1989bf4f58340fd` |
+| 代码冻结 SHA（全部产品代码与测试） | `acf323a3669010b7ae99f5d9c1989bf4f58340fd` |
+| 最终固定 SHA（本分支尖端，含本报告与证据） | 见交付消息；`git rev-parse fix/pm-qio032-integration` 可复核 |
 | 远端可核查状态 | `见 §9（推送后回填）` |
 | 合并方式 | 从基线建 worktree/分支，逐支按固定 SHA `git merge --no-ff`（保留历史），每次解决冲突并核对两侧行为后再合下一支 |
 
