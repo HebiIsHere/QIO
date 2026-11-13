@@ -149,7 +149,9 @@ describe("清单本身", () => {
     const button = w.find("button.btn-continue");
     expect(button.attributes("disabled")).toBeDefined();
     expect(button.attributes("title")).toBeUndefined();
-    expect(hasTipRecord(button.element as HTMLElement), "禁用原因要走统一用途说明").toBe(true);
+    // 文案清理（S07）：同一个禁用原因在下方 .blocked 里集中显示一次，不再在按钮上重复
+    // 挂一份悬停说明；disabled 按钮本来也无法聚焦，悬停说明对键盘/读屏用户不可达。
+    expect(hasTipRecord(button.element as HTMLElement), "禁用原因不再重复挂在按钮悬停").toBe(false);
     expect(w.find(".blocked").text()).toContain("无法确认上次的写入者是否已停止");
 
     await button.trigger("click");
