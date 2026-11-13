@@ -17,7 +17,6 @@ import { useQioSettingsSave } from "../../../composables/useQioSettingsSave";
 import { effectiveFacts, patchEffectiveFacts } from "../effectiveFacts";
 import { modelFacts } from "../modelFacts";
 import SettingRow from "../shell/SettingRow.vue";
-import SettingsNoticeLine from "../shell/SettingsNoticeLine.vue";
 
 const save = useQioSettingsSave("tools");
 const { notice } = save;
@@ -212,7 +211,18 @@ function modelConnectionLabel(info: {
   return info.connectionName || info.providerName || info.credentialId || "";
 }
 
+/** 嵌入不是「未配置的用途」，而是「用当前内置配置」：显示名与状态都与普通用途不同（文案 1）。 */
+function isEmbeddingUsage(usage: (typeof modelFacts.usages)[number]): boolean {
+  return usage.usageKey === "embedding";
+}
+function usageDisplayLabel(usage: (typeof modelFacts.usages)[number]): string {
+  return isEmbeddingUsage(usage) ? "嵌入模型" : usage.label;
+}
+
 function usageFactLine(usage: (typeof modelFacts.usages)[number]): string {
+  // 嵌入模型用的是 QIO 当前内置配置，不写成「沿用现有处理方式 / 未接通」这类会让人误判的措辞。
+  // 限制说明只在「模型与服务 → 用途分配」里集中写一次，这里只给结论。
+  if (isEmbeddingUsage(usage)) return "使用当前配置";
   // 跟随默认的用途以 resolved（后端解析后的真实目标）为准；显式分配的用自身字段
   const target =
     usage.followsDefault && usage.resolved
@@ -271,9 +281,13 @@ onMounted(() => {
       <h2>工具记录</h2>
     </header>
 
+    <p class="set-hint">
+      输出保留与记录保留都支持填 0：0 表示永久保留。
+    </p>
+
     <SettingRow
       title="保存输出全文"
-      desc="关闭后仍保留参数、状态、失败原因与耗时，只是没有完整输出"
+      desc="关闭后仍保留基本记录（参数、状态、失败原因与耗时），只是没有输出全文"
       settings-key="tools.records.record-outputs"
     >
       <button
@@ -290,7 +304,7 @@ onMounted(() => {
 
     <SettingRow
       title="输出保留天数"
-      desc="到期只清空输出全文，参数与失败原因继续保留；填 0 表示永久保留"
+      desc="到期只清空输出全文，参数与失败原因继续保留（与删除整条记录不同）"
       settings-key="tools.records.output-retention"
     >
       <QNumber
@@ -298,6 +312,7 @@ onMounted(() => {
         :model-value="outputRetentionDays"
         :min="0"
         :max="3650"
+        required
         mono
         label="输出保留（天）"
         unit="天"
@@ -308,7 +323,7 @@ onMounted(() => {
 
     <SettingRow
       title="记录保留天数"
-      desc="到期删除整条工具记录（参数与输出一起）；填 0 表示永久保留，这也是默认值"
+      desc="到期删除整条工具记录（参数与输出一起）；默认 0，即永久保留"
       settings-key="tools.records.record-retention"
     >
       <QNumber
@@ -316,6 +331,7 @@ onMounted(() => {
         :model-value="recordRetentionDays"
         :min="0"
         :max="3650"
+        required
         mono
         label="记录保留（天）"
         unit="天"
@@ -385,28 +401,57 @@ onMounted(() => {
       </dd>
     </dl>
 
+    <p
+      v-if="modelFacts.usages.length"
+      class="set-hint"
+      data-settings-key="tools.effective.usages-note"
+    >
+      共同条件：未单独分配的用途跟随默认模型。下面每行显示它当前实际使用的模型，
+      或该用途当前的处理方式。
+    </p>
+
     <dl v-if="modelFacts.usages.length" class="set-raw" data-settings-key="tools.effective.usages">
       <template v-for="usage in modelFacts.usages" :key="usage.usageKey">
-        <dt>{{ usage.label }}</dt>
+        <dt>{{ usageDisplayLabel(usage) }}</dt>
+        <!-- 只显示一次结论：usageFactLine 已经给出「实际模型 / 沿用现有处理方式 / 未接通」，
+             不再在行尾补一句同样的括注（文案 9：同一句不在同一行说两遍）。 -->
         <dd>
-          {{ usageFactLine(usage) }}
-          <span v-if="usage.followsDefault && usage.modelId" class="set-hint-inline mono">（跟随默认）</span>
-          <span
-            v-if="usage.status === 'unsupported'"
-            class="set-hint-inline mono"
-            data-usage-status="unsupported"
-            >（未接通）</span
-          >
-          <span
-            v-else-if="usage.status === 'existing'"
-            class="set-hint-inline mono"
-            data-usage-status="existing"
-            >（沿用现有处理方式）</span
-          >
+          <span :data-usage-status="usage.status">{{ usageFactLine(usage) }}</span>
         </dd>
       </template>
     </dl>
 
-    <SettingsNoticeLine :notice="notice" label="tools" />
+    <div v-if="notice" :data-settings-notice="'tools'">
+      <p
+        class="set-notice"
+        :class="notice.kind"
+        :role="notice.kind === 'err' ? 'alert' : 'status'"
+      >
+        {{ notice.text }}
+      </p>
+      <div class="set-channel-actions">
+        <button
+          v-if="notice.retry"
+          type="button"
+          class="qio-btn mini"
+          data-settings-action="retry"
+          @click="notice.retry()"
+        >
+          重试
+        </button>
+        <button
+          type="button"
+          class="qio-btn mini quiet"
+          aria-label="关闭这项提示"
+          @click="save.dismissNotice()"
+        >
+          关闭
+        </button>
+      </div>
+      <details v-if="notice.detail">
+        <summary>技术详情</summary>
+        <p class="set-notice info mono">{{ notice.detail }}</p>
+      </details>
+    </div>
   </section>
 </template>

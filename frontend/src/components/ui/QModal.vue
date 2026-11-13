@@ -323,7 +323,9 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--sp-2);
   width: min(var(--qio-modal-width, 480px), 100%);
-  max-height: calc(100vh - 2 * var(--window-frame-inset) - 2 * var(--sp-6));
+  /* 高度上限 = 遮罩（已按 --window-frame-inset 固定在内容视口）的内容盒，
+     长内容在面板内部滚动；不写死 top 偏移，也不用 100vh 再减一套魔法数字。 */
+  max-height: 100%;
   padding: var(--sp-5) var(--sp-5) var(--sp-4);
   border-radius: var(--qio-ui-radius);
   color: var(--text-primary);
@@ -342,7 +344,7 @@ onBeforeUnmount(() => {
 @media (max-width: 480px) {
   .qio-modal {
     padding: var(--sp-4);
-    max-height: calc(100vh - 2 * var(--window-frame-inset) - 2 * var(--sp-4));
+    /* max-height: 100% 会跟着遮罩内边距变化，这里不再另算一套 */
   }
 }
 </style>

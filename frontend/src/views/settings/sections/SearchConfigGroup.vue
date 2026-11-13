@@ -27,7 +27,6 @@ import { patchEffectiveFacts } from "../effectiveFacts";
 import SettingRow from "../shell/SettingRow.vue";
 import AdvGroup from "../shell/AdvGroup.vue";
 import GroupSaveBar from "../shell/GroupSaveBar.vue";
-import SettingsNoticeLine from "../shell/SettingsNoticeLine.vue";
 
 const save = useQioSettingsSave("models");
 const { notice } = save;
@@ -87,37 +86,51 @@ async function loadStatus(): Promise<void> {
   }
 }
 
-/** 每个通道的四态文案：未配置 / 已配置（未检查）/ 检查通过 / 检查失败（原因） */
+/**
+ * 通道状态分两段，各说一件事（#7 / #23）：
+ * - 配置状态：未配置 / 已配置 / 已填写地址；免密钥通道只写「已开启 / 已关闭」；
+ * - 检查状态：尚未检查 / 检查通过 / 检查失败（原因）——只有用户**主动点过检查**才存在，
+ *   「检查通过」也只能来自真实成功的这一次检查。
+ */
 const channelViews = computed(() => {
-  function stateText(configured: boolean, configuredText: string, check: ChannelCheck): string {
-    if (!configured) return "未配置";
-    if (check.checked) {
-      return check.ok ? "检查通过" : `检查失败${check.reason ? `：${check.reason}` : ""}`;
-    }
-    return `${configuredText}（未检查）`;
+  function configText(configured: boolean, text: string): string {
+    return configured ? text : "未配置";
+  }
+  function checkText(check: ChannelCheck): string {
+    if (!check.checked) return "，尚未检查";
+    return check.ok ? "，检查通过" : `，检查失败${check.reason ? `：${check.reason}` : ""}`;
+  }
+  function checkTone(check: ChannelCheck): string {
+    if (!check.checked) return "warn";
+    return check.ok ? "ok" : "err";
   }
   return [
     {
       id: "keyless" as ChannelId,
       name: "免密钥通道",
       configured: keyless.value,
-      text: keyless.value
-        ? stateText(true, "已开启", checks.keyless)
-        : "已关闭（其它通道不受影响）",
+      configText: keyless.value ? "已开启" : "已关闭",
+      // 文案 7：配置状态只写「已开启 / 已关闭」；检查状态是**另一段**（「尚未检查 / 检查通过」），
+      // 不混进配置状态里，也不伪装成「已验证」。开关本身保留。
+      checkText: keyless.value ? checkText(checks.keyless) : "",
       tone: !keyless.value ? "off" : checks.keyless.checked ? (checks.keyless.ok ? "ok" : "err") : "warn",
+      checkTone: checkTone(checks.keyless),
     },
     {
       id: "bocha" as ChannelId,
       name: "博查 API Key",
       configured: bochaConfigured.value,
-      text: stateText(bochaConfigured.value, "已配置", checks.bocha),
+      configText: configText(bochaConfigured.value, "已配置"),
+      checkText: bochaConfigured.value ? checkText(checks.bocha) : "",
       tone: !bochaConfigured.value ? "off" : checks.bocha.checked ? (checks.bocha.ok ? "ok" : "err") : "warn",
+      checkTone: checkTone(checks.bocha),
     },
     {
       id: "searxng" as ChannelId,
       name: "自建 SearXNG",
       configured: Boolean(search.values.searxngUrl.trim()),
-      text: stateText(Boolean(search.values.searxngUrl.trim()), "已填写地址", checks.searxng),
+      configText: configText(Boolean(search.values.searxngUrl.trim()), "已填写地址"),
+      checkText: search.values.searxngUrl.trim() ? checkText(checks.searxng) : "",
       tone: !search.values.searxngUrl.trim()
         ? "off"
         : checks.searxng.checked
@@ -125,9 +138,22 @@ const channelViews = computed(() => {
             ? "ok"
             : "err"
           : "warn",
+      checkTone: checkTone(checks.searxng),
     },
   ];
 });
+
+/**
+ * 配置变了，旧的检查结论就不再属于这份配置：回到「尚未检查」，
+ * 避免把上一份地址/Key 的「检查通过」继续显示成当前配置的结论。
+ */
+function resetCheck(id: ChannelId): void {
+  checks[id] = { checked: false, ok: null, reason: "" };
+}
+
+const hasCheckedAnyChannel = computed(() =>
+  (["keyless", "bocha", "searxng"] as ChannelId[]).some((id) => checks[id].checked),
+);
 
 async function runConnectionCheck(): Promise<void> {
   if (checking.value) return;
@@ -147,7 +173,12 @@ async function runConnectionCheck(): Promise<void> {
       return;
     }
     if (result.ok === false) {
-      save.setNotice("warn", `连接检查未通过：${result.message || result.error || "通道不可用"}`);
+      save.setNotice("warn", "连接检查未通过", undefined, {
+        detail: result.message || result.error || "通道不可用",
+        retry: () => {
+          void runConnectionCheck();
+        },
+      });
       return;
     }
     save.setNotice("info", result.message || "连接检查已完成（结果见各通道状态）");
@@ -157,8 +188,14 @@ async function runConnectionCheck(): Promise<void> {
       statusAvailable.value = false;
       save.setNotice("info", "当前版本暂不提供连接检查；仍可查看「已配置 / 未配置」状态");
     } else {
-      // 检查请求失败 ≠ 通道不可用：两件事必须分开说
-      save.setNotice("err", `连接检查请求失败（不代表通道不可用）：${reason}`);
+      // 检查请求失败 ≠ 通道不可用：两件事必须分开说。
+      // 这是「这一次检查」的失败：配置原样保留，重试只重放检查（不重写配置）。
+      save.setNotice("err", "连接检查请求失败（不代表通道不可用）", undefined, {
+        detail: reason,
+        retry: () => {
+          void runConnectionCheck();
+        },
+      });
     }
   } finally {
     checking.value = false;
@@ -219,10 +256,15 @@ async function onSaveGroup(): Promise<void> {
     manualError.value = "请输入新的博查 API Key，或取消替换";
     return;
   }
+  const previousUrl = search.baseline.value.searxngUrl.trim();
+  const replacingBocha = bochaEditing.value && bochaKeyDraft.value.trim().length > 0;
   saveFlags.current = null;
   const ok = await search.save();
   if (!ok) return;
   const truth = search.baseline.value;
+  // 保存成功后，被改动的那份配置之前的检查结论不再有效：回到「尚未检查」。
+  if (truth.searxngUrl.trim() !== previousUrl) resetCheck("searxng");
+  if (replacingBocha) resetCheck("bocha");
   // 赋值发生在 commit 回调里：控制流分析看不到，所以这里显式取一次快照
   const flags = saveFlags.current as { bocha: boolean; keyless: boolean } | null;
   if (flags) {
@@ -253,6 +295,8 @@ function toggleKeyless(): void {
   const next = !keyless.value;
   keyless.value = next;
   keylessTouched += 1;
+  // 开关变了，上一次针对旧开关状态的检查结论不再有效。
+  resetCheck("keyless");
   void save.saveNow<SearchSettings>({
     // F08：免密钥开关与搜索配置组是同一分区的不同设置，互不作废在途保存。
     key: "models.search.keyless",
@@ -302,9 +346,15 @@ async function clearBochaKey(): Promise<void> {
     bochaConfigured.value = result.bocha_has_key;
     bochaEditing.value = false;
     bochaKeyDraft.value = "";
+    resetCheck("bocha");
     save.setNotice("warn", "博查 API Key 已清除；免密钥通道与 SearXNG 不受影响");
   } catch (e) {
-    save.setNotice("err", `清除博查 API Key 失败：${settingsErrorText(e)}`);
+    save.setNotice("err", "清除博查 API Key 失败", undefined, {
+      detail: settingsErrorText(e),
+      retry: () => {
+        void clearBochaKey();
+      },
+    });
   }
 }
 
@@ -386,10 +436,17 @@ onMounted(() => {
       >
         <span class="set-channel__dot" aria-hidden="true"></span>
         <span class="set-channel__name">{{ channel.name }}</span>
-        <span class="set-channel__state" :class="channel.tone">{{ channel.text }}</span>
+        <span class="set-channel__state" :class="channel.tone" data-channel-config>{{ channel.configText }}</span>
+        <span
+          v-if="channel.checkText"
+          class="set-channel__state"
+          :class="channel.checkTone"
+          data-channel-check
+        >{{ channel.checkText }}</span>
       </div>
       <p class="set-hint">
-        「已配置」不代表「检查通过」：只有真正做过连接检查并成功，才会显示「检查通过」。
+        「已配置」不代表「检查通过」：检查只在你主动点击下面的按钮时进行，只有这一次真实成功才显示「检查通过」。
+        修改配置后，旧的检查结论不再沿用。
         <span v-if="statusAvailable === false" data-testid="settings-search-status-unavailable">
           当前版本暂不提供通道状态接口，这里显示的是配置状态（已配置 / 未配置）。
         </span>
@@ -403,7 +460,7 @@ onMounted(() => {
           :aria-busy="checking || undefined"
           @click="runConnectionCheck"
         >
-          {{ checking ? "检查中…" : "检查连接" }}
+          {{ checking ? "检查中…" : hasCheckedAnyChannel ? "重新检查" : "检查连接" }}
         </button>
         <span v-if="checkedAt" class="set-state mono" aria-hidden="true">上次检查：{{ checkedAt }}</span>
       </div>
@@ -428,7 +485,6 @@ onMounted(() => {
 
     <SettingRow
       title="博查 API Key"
-      :desc="bochaConfigured ? '已配置（留空保存不会改动它；要移除必须点「清除」）' : ''"
       settings-key="models.search.bocha"
     >
       <template v-if="bochaEditing">
@@ -441,6 +497,9 @@ onMounted(() => {
           aria-label="新的博查 API Key"
           data-testid="settings-search-bocha-input"
         />
+        <span class="set-hint-inline" data-testid="settings-search-bocha-hint">
+          留空保存不会改动已保存的 Key；要移除请点「清除」。
+        </span>
         <button type="button" class="qio-btn" @click="cancelReplace">取消替换</button>
       </template>
       <template v-else>
@@ -485,6 +544,7 @@ onMounted(() => {
           :model-value="search.values.topK"
           :min="1"
           :max="20"
+          required
           mono
           label="返回条数"
           @update:model-value="(value: number | null) => (search.values.topK = value ?? 0)"
@@ -501,6 +561,7 @@ onMounted(() => {
           :model-value="search.values.maxFetchChars"
           :min="1000"
           :max="40000"
+          required
           mono
           label="字符预算"
           @update:model-value="(value: number | null) => (search.values.maxFetchChars = value ?? 0)"
@@ -518,6 +579,37 @@ onMounted(() => {
       @cancel="onCancelGroup"
     />
 
-    <SettingsNoticeLine :notice="notice" label="models" />
+    <div v-if="notice" :data-settings-notice="'models'">
+      <p
+        class="set-notice"
+        :class="notice.kind"
+        :role="notice.kind === 'err' ? 'alert' : 'status'"
+      >
+        {{ notice.text }}
+      </p>
+      <div class="set-channel-actions">
+        <button
+          v-if="notice.retry"
+          type="button"
+          class="qio-btn mini"
+          data-settings-action="retry"
+          @click="notice.retry()"
+        >
+          重试
+        </button>
+        <button
+          type="button"
+          class="qio-btn mini quiet"
+          aria-label="关闭这项提示"
+          @click="save.dismissNotice()"
+        >
+          关闭
+        </button>
+      </div>
+      <details v-if="notice.detail">
+        <summary>技术详情</summary>
+        <p class="set-notice info mono">{{ notice.detail }}</p>
+      </details>
+    </div>
   </section>
 </template>

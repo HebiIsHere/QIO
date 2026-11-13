@@ -81,6 +81,13 @@ beforeEach(() => {
   mocks.getAttachment.mockResolvedValue(ref());
 });
 
+/** QConfirm 的 layer 档 Teleport 到 document.body（#82 窗口层），确认按钮不在组件子树里。 */
+function bodyButton(text: string): HTMLButtonElement | undefined {
+  return [...document.querySelectorAll("button")].find((btn) =>
+    (btn.textContent || "").includes(text),
+  ) as HTMLButtonElement | undefined;
+}
+
 describe("源引用信息展示", () => {
   it("文件名 / 类型 / 引用 id / 来源 / 可用性 / 用户说明都可见", async () => {
     const w = mountPanel();
@@ -162,14 +169,15 @@ describe("源文件缺失：重新指定位置（需用户确认同一文件）"
     await w.get('[data-im="file-card-relocate"]').trigger("click");
     await flushPromises();
     expect(mocks.pickLocalSource).toHaveBeenCalledTimes(1);
-    expect(w.text()).toContain("这是同一个文件吗？");
-    expect(w.text()).toContain("D:\\新位置\\季度报告.docx");
+    // 窗口层确认框 Teleport 到 body：按文档查，不按组件子树查
+    expect(document.body.textContent).toContain("这是同一个文件吗？");
+    expect(document.body.textContent).toContain("D:\\新位置\\季度报告.docx");
     // 未确认前不得调用 relocate
     expect(mocks.relocateAttachment).not.toHaveBeenCalled();
 
-    const confirm = w.findAll("button").find((b) => b.text().includes("是，继续引用这个文件"));
+    const confirm = bodyButton("是，继续引用这个文件");
     expect(confirm).toBeTruthy();
-    await confirm!.trigger("click");
+    confirm!.click();
     await flushPromises();
     expect(mocks.relocateAttachment).toHaveBeenCalledWith(
       "att_1",
@@ -187,9 +195,11 @@ describe("源文件缺失：重新指定位置（需用户确认同一文件）"
     await flushPromises();
     await w.get('[data-im="file-card-relocate"]').trigger("click");
     await flushPromises();
-    const cancel = w.findAll("button").find((b) => b.text() === "取消");
+    const cancel = [...document.querySelectorAll("button")].find(
+      (btn) => (btn.textContent || "").trim() === "取消",
+    ) as HTMLButtonElement | undefined;
     expect(cancel).toBeTruthy();
-    await cancel!.trigger("click");
+    cancel!.click();
     await flushPromises();
     expect(mocks.relocateAttachment).not.toHaveBeenCalled();
     w.unmount();

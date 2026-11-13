@@ -279,6 +279,10 @@ function toggleDiagnostics(): void {
       </SettingRow>
     </AdvGroup>
 
-    <SettingsNoticeLine :notice="regularNotice" label="regular" />
+    <SettingsNoticeLine
+      :notice="regularNotice"
+      label="regular"
+      @dismiss="save.dismissNotice()"
+    />
   </section>
 </template>

@@ -181,3 +181,81 @@ describe("滚动：只有一个主要纵向视口（§15）", () => {
     expect(view).not.toMatch(/::-webkit-scrollbar|scrollbar-width\s*:/);
   });
 });
+
+
+describe("#90 五个分区共用外边界：外框宽度只由容器决定", () => {
+  it("窄窗切成纵向布局时回 stretch，并让主容器占满整行", () => {
+    const top = /\.qio-settings\[data-nav-layout="top"\] \{([^}]*)\}/.exec(SETTINGS_CSS);
+    expect(top, "窄窗布局规则").not.toBeNull();
+    expect(top === null ? "" : top[1]).toContain("align-items: stretch");
+    expect(SETTINGS_CSS).toMatch(/\.qio-settings\[data-nav-layout="top"\] \.set-main \{[^}]*width:\s*100%/);
+  });
+
+  it("面板与分区都声明 100% 宽度，不会按分区内容收缩", () => {
+    expect(SETTINGS_CSS).toMatch(/\.set-panels \{[^}]*width:\s*100%/);
+    expect(SETTINGS_CSS).toMatch(/\.set-section \{[^}]*width:\s*100%/);
+  });
+
+  it("不存在按分区 id/内容写死宽度的规则", () => {
+    expect(SETTINGS_CSS).not.toMatch(/\[data-settings-section[^\]]*\][^{]*\{[^}]*width:/);
+    expect(SETTINGS_SURFACE_CSS).not.toMatch(/\[data-settings-section[^\]]*\][^{]*\{[^}]*width:/);
+  });
+});
+
+describe("#70 设置行：标签与控件落在同一可读区域", () => {
+  it("行用两列网格，控件紧跟标题列；不再用弹性空档把控件推到面板最右", () => {
+    const row = /\.set-row \{([^}]*)\}/.exec(SETTINGS_CSS);
+    expect(row, ".set-row").not.toBeNull();
+    const body = row === null ? "" : row[1];
+    expect(body).toContain("display: grid");
+    expect(body).toMatch(/grid-template-areas:[\s\S]*"title ctl"/);
+    expect(body).toContain("column-gap: 24px");
+    // 旧写法：标签侧 flex 增长 + 控件被剩余空间推远。两种都不允许回潮。
+    expect(SETTINGS_CSS).not.toMatch(/\.set-row__txt \{[^}]*flex:/);
+    expect(SETTINGS_CSS).not.toMatch(/\.set-row__ctl \{[^}]*margin-left:\s*auto/);
+    // 只允许 min-width: 0（允许收缩）；禁止用固定 min-width 撑开距离
+    expect(SETTINGS_CSS).not.toMatch(/\.set-row__ctl \{[^}]*min-width:\s*[1-9]\d*px/);
+  });
+
+  it("说明文字跨两列，不参与撑宽标题列；窄窗按 标题 → 说明 → 控件 上下排列", () => {
+    expect(SETTINGS_CSS).toMatch(/\.set-row__desc \{[^}]*grid-area:\s*desc/);
+    expect(SETTINGS_CSS).toMatch(/grid-template-areas:[\s\S]*"title"[\s\S]*"desc"[\s\S]*"ctl"/);
+    expect(SETTINGS_CSS).toMatch(/@media \(max-width: 900px\) \{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  });
+
+  it("SettingRow 结构：标题单独一列，说明与控件是兄弟节点", () => {
+    const source = read("views/settings/shell/SettingRow.vue");
+    expect(source).toMatch(/<div class="set-row__txt">\s*<div class="set-row__title">/);
+    expect(source).toMatch(/<p v-if="desc" class="set-row__desc">/);
+    expect(source).toMatch(/<div class="set-row__ctl">/);
+    // 说明不再放在标题容器里：否则说明宽度会把标题列撑宽、控件被推远
+    const txtBlock = /<div class="set-row__txt">([\s\S]*?)<\/div>/.exec(source);
+    expect(txtBlock, "set-row__txt").not.toBeNull();
+    expect(txtBlock === null ? "" : txtBlock[1]).not.toContain("set-row__desc");
+  });
+});
+
+describe("#87 危险按钮：设置页普通按钮规则不得覆盖危险态", () => {
+  it("danger 与 danger-solid 在普通按钮规则之后恢复危险外观", () => {
+    const generic = SETTINGS_SURFACE_CSS.indexOf(".qio-settings .qio-btn.qio-btn {");
+    const danger = SETTINGS_SURFACE_CSS.indexOf(".qio-settings .qio-btn.qio-btn.danger {");
+    const solid = SETTINGS_SURFACE_CSS.indexOf(".qio-settings .qio-btn.qio-btn.danger-solid {");
+    expect(generic).toBeGreaterThanOrEqual(0);
+    expect(danger).toBeGreaterThan(generic);
+    expect(solid).toBeGreaterThan(generic);
+    expect(SETTINGS_SURFACE_NO_COMMENTS).toMatch(
+      /\.qio-settings \.qio-btn\.qio-btn\.danger-solid \{[^}]*background:\s*var\(--danger\)/,
+    );
+    expect(SETTINGS_SURFACE_NO_COMMENTS).toMatch(
+      /\.qio-settings \.qio-btn\.qio-btn\.danger \{[^}]*color:\s*var\(--danger\)/,
+    );
+  });
+
+  it("设置页不新增第二套危险按钮类名（沿用基线的 .danger / .danger-solid）", () => {
+    const custom = [...SETTINGS_SURFACE_NO_COMMENTS.matchAll(/\.qio-btn\.qio-btn\.([a-z-]+)/g)]
+      .map((match) => match[1])
+      .filter((name) => name === "danger" || name === "danger-solid");
+    expect(custom.length).toBeGreaterThanOrEqual(2);
+    expect(SETTINGS_SURFACE_NO_COMMENTS).not.toMatch(/\.qio-danger|qio-btn--danger|btn-danger/);
+  });
+});

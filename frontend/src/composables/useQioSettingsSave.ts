@@ -25,7 +25,12 @@ export type SettingsNoticeKind = "ok" | "err" | "warn" | "info";
 
 export interface SettingsNotice {
   kind: SettingsNoticeKind;
+  /** 用户读的一句话；失败时保持简短（原因放 detail，按需展开） */
   text: string;
+  /** 技术诊断（URL / 状态码 / 响应片段）；仅失败提示有，默认收起 */
+  detail?: string;
+  /** 重放「原来的那次操作」；只有失败提示会带（不是假按钮） */
+  retry?: () => void;
 }
 
 /** 成功提示的存活时长：成功只要「看见它发生了」，不该长期占位（失败更持久）。 */
@@ -75,8 +80,15 @@ export interface ImmediateSaveOptions<T> {
 
 export interface QioSettingsSave {
   notice: Ref<SettingsNotice | null>;
-  setNotice: (kind: SettingsNoticeKind, text: string) => void;
+  setNotice: (
+    kind: SettingsNoticeKind,
+    text: string,
+    key?: string,
+    extra?: Pick<SettingsNotice, "detail" | "retry">,
+  ) => void;
   clearNotice: () => void;
+  /** 关闭当前提示（错误也一起清掉，不会在下一次成功时又冒出来）；不改变任何设置值 */
+  dismissNotice: () => void;
   beginWrite: (key?: string) => number;
   isLatest: (token: number, key?: string) => boolean;
   saveNow: <T>(options: ImmediateSaveOptions<T>) => Promise<boolean>;
@@ -141,7 +153,12 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     noticeKey = last[0];
   }
 
-  function setNotice(kind: SettingsNoticeKind, text: string, key?: string): void {
+  function setNotice(
+    kind: SettingsNoticeKind,
+    text: string,
+    key?: string,
+    extra?: Pick<SettingsNotice, "detail" | "retry">,
+  ): void {
     const owner = key ?? null;
     if (kind === "ok") {
       // 成功只清除「这个设置自己」的错误；其它设置未解决的失败继续显示在原反馈区。
@@ -164,7 +181,7 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     }
     if (kind === "err") {
       clearTimer();
-      const error: SettingsNotice = { kind, text };
+      const error: SettingsNotice = { kind, text, detail: extra?.detail, retry: extra?.retry };
       notice.value = error;
       noticeKey = owner;
       if (owner !== null) errorNotices.set(owner, error);
@@ -182,6 +199,18 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     notice.value = null;
     noticeKey = null;
     errorNotices.clear();
+  }
+
+  /**
+   * 用户主动关闭提示：只丢掉「当前这条」，同分区其它设置仍未解决的失败继续可见。
+   * 关闭失败提示不等于保存成功 —— 控件值已由回滚/最终校准回到真实生效值。
+   */
+  function dismissNotice(): void {
+    if (noticeKey !== null) errorNotices.delete(noticeKey);
+    clearTimer();
+    notice.value = null;
+    noticeKey = null;
+    showLatestUnresolvedError();
   }
 
   function beginWrite(key?: string): number {
@@ -236,7 +265,14 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
         latestOutcome.set(id, "failure");
         // 失败必须让控件回到真实值：停在「看起来改了、其实没保存」比报错更危险。
         restoreSaved(options, id);
-        setNotice("err", `${options.failure}失败：${settingsErrorText(e)}`, key);
+        // 提示保持简短可读；技术诊断按需展开；同一操作的原始参数保留在闭包里，
+        // 「重试」重放的是刚才那次写入（不是让用户从头再填一遍）。
+        setNotice("err", `${options.failure}失败`, key, {
+          detail: settingsErrorText(e),
+          retry: () => {
+            void saveNow(options);
+          },
+        });
         return false;
       } finally {
         inflightWrites.set(id, Math.max(0, inflightOf(id) - 1));
@@ -259,7 +295,7 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
 
   // section 参与 data 属性时有用，但不应产生任何全局副作用；保留为调试标签。
   void section;
-  return { notice, setNotice, clearNotice, beginWrite, isLatest, saveNow };
+  return { notice, setNotice, clearNotice, dismissNotice, beginWrite, isLatest, saveNow };
 }
 
 /** 草稿值只允许可 JSON 化的普通值：这里也顺带挡住误传 Ref/组件实例。 */

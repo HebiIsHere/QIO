@@ -23,16 +23,33 @@
   --r-sm: var(--qio-ui-radius);
   --r-md: var(--qio-ui-radius);
 }
-/* 窄窗：只把导航容器换成顶部布局；内容 DOM 与顺序完全不变（同一份模板） */
+/* 窄窗：只把导航容器换成顶部布局；内容 DOM 与顺序完全不变（同一份模板）。
+   align-items 必须回 stretch：宽窗是 row 方向（cross axis = 纵向），flex-start 只影响高度；
+   窄窗切成 column 后 cross axis 变成横向，flex-start 会让 .set-main 按内容收缩，
+   不同分区的最大内容宽度不同 → 外框在 756 / 452 之间跳变（#90）。
+   内容宽度由 align-self: stretch + width: 100% 钉死，和分区内容无关。 */
 .qio-settings[data-nav-layout="top"] {
   flex-direction: column;
+  align-items: stretch;
   gap: 10px;
+}
+.qio-settings[data-nav-layout="top"] .set-main {
+  align-self: stretch;
+  width: 100%;
 }
 .set-main {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+/* 内容面板外边界与主容器同宽：分区切换不改变外框宽度（#90）。
+   内部阅读宽度可以另行限制，但外框只由容器决定，不由分区内容决定。 */
+.set-panels {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
 }
 
 /* ---------------- 导航 ---------------- */
@@ -106,7 +123,7 @@
 }
 
 /* ---------------- 分区与分组 ---------------- */
-.set-section { display: flex; flex-direction: column; min-width: 0; }
+.set-section { display: flex; flex-direction: column; width: 100%; min-width: 0; }
 .set-block { display: flex; flex-direction: column; min-width: 0; }
 .set-section__head { margin: 26px 0 6px; min-width: 0; }
 .set-section__head:first-child { margin-top: 0; }
@@ -139,30 +156,41 @@
   letter-spacing: 0.04em;
 }
 
-/* ---------------- 设置行 ---------------- */
+/* ---------------- 设置行 ----------------
+   #70：标题与控件在同一段可读区域，控件紧跟标题（不是被弹性空间推到面板最右侧）。
+   两列网格：第一列按标题实际文字宽度收缩（上限 22em，超长标题换行），
+   第二列是控件；说明文字跨两列单独占下一行，不参与撑宽第一列。
+   窄窗（≤900px）改为单列「标题 → 说明 → 控件」。 */
 .set-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  grid-template-areas:
+    "title ctl"
+    "desc desc";
   align-items: center;
-  gap: 16px;
+  column-gap: 24px;
+  row-gap: 4px;
   padding: 13px 4px;
   border-bottom: 1px solid var(--border-subtle);
-  flex-wrap: wrap;
   min-width: 0;
 }
-.set-row__txt { flex: 1 1 240px; min-width: 0; }
+.set-row__txt { grid-area: title; max-width: 22em; min-width: 0; }
 .set-row__title { font-size: 13.5px; color: var(--text-strong); overflow-wrap: anywhere; }
 .set-row__desc {
+  grid-area: desc;
   font-size: 11.5px;
   color: var(--text-muted);
-  margin-top: 2px;
+  margin: 0;
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
 .set-row__ctl {
+  grid-area: ctl;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-start;
   min-width: 0;
   font-family: var(--mono);
   font-size: 11px;
@@ -412,9 +440,18 @@
   border-radius: var(--qio-ui-radius);
 }
 
-/* ---------------- 窄窗排版细节 ---------------- */
+/* ---------------- 窄窗排版细节 ----------------
+   窄窗允许上下排列：标题、说明、控件依次占满一行（#70）。 */
 @media (max-width: 900px) {
-  .set-row { gap: 10px; }
+  .set-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "title"
+      "desc"
+      "ctl";
+    row-gap: 8px;
+  }
+  .set-row__txt { max-width: none; }
   .set-row__ctl { width: 100%; justify-content: flex-start; }
   .set-input { min-width: 0; width: 100%; }
 }

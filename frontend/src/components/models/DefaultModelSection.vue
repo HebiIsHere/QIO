@@ -18,6 +18,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   save: [target: { credentialId: string; modelId: string }];
+  /** #65：失败后重试「刚才那次选择」（父级保留原目标） */
+  retry: [];
 }>();
 
 const picking = ref(false);
@@ -39,6 +41,32 @@ const currentReason = computed(() => currentModel.value?.unavailableReason ?? ""
 const mainChat = computed(
   () => props.catalog?.usages.find((u) => u.usageKey === "main-chat") ?? null,
 );
+
+/**
+ * 当前对话实际在用的目标：优先后端算好的 effective（与运行同一份规则），
+ * 老后端退回 resolved。没有默认模型时也能如实说明「现在用的是哪一条」。
+ */
+const actualChat = computed(() => {
+  const usage = mainChat.value;
+  if (!usage) return null;
+  const effective = usage.effective;
+  if (effective) {
+    if (!effective.ok || !effective.credentialId || !effective.modelId) {
+      return { text: "", reason: effective.unavailableReason || "运行时没有解析到可用目标" };
+    }
+    const name = props.connections.find((c) => c.credentialId === effective.credentialId)?.name;
+    return {
+      text: (name || effective.credentialId) + " · " + effective.modelId,
+      reason: effective.usable ? "" : effective.unavailableReason,
+    };
+  }
+  const resolved = usage.resolved;
+  if (!resolved) return null;
+  return {
+    text: (resolved.credentialName || resolved.credentialId) + " · " + resolved.modelId,
+    reason: resolved.usable ? "" : resolved.unavailableReason,
+  };
+});
 
 function pick(target: { credentialId: string; modelId: string } | null) {
   picking.value = false;
@@ -69,14 +97,23 @@ function pick(target: { credentialId: string; modelId: string } | null) {
       <span v-if="!currentUsable && currentReason" class="current__reason">{{ currentReason }}</span>
     </div>
     <p v-else class="muted">
-      还没有设置默认模型。日常对话会回退到兼容的旧凭据选择规则。
+      还没有设置默认模型。日常对话目前沿用现有可用配置；要固定下来，请在下面选择默认模型。
     </p>
-    <p v-if="mainChat && mainChat.resolved" class="muted mono">
-      当前实际使用：{{ mainChat.resolved.credentialName }} · {{ mainChat.resolved.modelId }}
-      <span v-if="!mainChat.resolved.usable">（不可用：{{ mainChat.resolved.unavailableReason }}）</span>
+    <p v-if="actualChat?.text" class="muted mono">
+      现在实际在用：{{ actualChat.text }}
+      <span v-if="actualChat.reason">（不可用：{{ actualChat.reason }}）</span>
     </p>
 
     <p v-if="error" class="qio-feedback err" role="alert">{{ error }}</p>
+    <button
+      v-if="error"
+      type="button"
+      class="qio-btn mini quiet"
+      data-testid="default-model-retry"
+      @click="emit('retry')"
+    >
+      重试保存
+    </button>
 
     <CandidatePicker
       v-if="picking"

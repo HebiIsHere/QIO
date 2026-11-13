@@ -121,3 +121,54 @@ describe("只有用户操作才能切换（PUT user_confirmed=true）", () => {
     w.unmount();
   });
 });
+describe("#21 三模式同一结构 / 旧值进诊断 / 单一系统边界说明", () => {
+  it("每个模式都按「可读什么 / 可改什么 / 何时需要审批」同一结构交代", async () => {
+    const w = mountSettings();
+    const store = useSecurityStore();
+    store.applyMode({ mode: "restricted", label: "受限模式", legacyValue: "default" });
+    await flushPromises();
+
+    const options = w.findAll('[data-im="permission-mode-options"] [role="radio"]');
+    expect(options).toHaveLength(3);
+    for (const option of options) {
+      const facts = option.find("[data-mode-facts]");
+      expect(facts.exists(), option.text()).toBe(true);
+      const text = facts.text();
+      expect(text).toContain("可读什么");
+      expect(text).toContain("可改什么");
+      expect(text).toContain("何时需要审批");
+    }
+    w.unmount();
+  });
+
+  it("旧配置值收进诊断（默认不展开），不再当常驻展示值", async () => {
+    const w = mountSettings();
+    const store = useSecurityStore();
+    store.applyMode({ mode: "restricted", label: "受限模式", legacyValue: "default" });
+    await flushPromises();
+
+    const diag = w.get('[data-im="permission-mode-diagnostics"]');
+    expect(diag.element.tagName).toBe("DETAILS");
+    expect(diag.attributes("open")).toBeUndefined();
+    expect(diag.find('[data-im="permission-mode-legacy"]').text()).toContain("default");
+    // 诊断之外不再有旧值映射作为展示值
+    expect(w.find('[data-im="permission-mode-current"]').text()).not.toContain("default");
+    w.unmount();
+  });
+
+  it("系统权限边界只写一次，且明确「受限子进程不是安全沙箱」", async () => {
+    const w = mountSettings();
+    const store = useSecurityStore();
+    store.applyMode({ mode: "unrestricted", label: "完全无限制模式", legacyValue: "bypass" });
+    await flushPromises();
+
+    const notes = w.findAll('[data-im="permission-mode-safety-note"]');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].text()).toContain("受限子进程不是安全沙箱");
+    expect(notes[0].text()).toContain("放宽不会自动批准等待中的审批");
+    // 放宽权限必须由用户确认：模式只能由点击改变（PUT 由 store 的 changeMode 触发）
+    await w.get('[data-mode="restricted"]').trigger("click");
+    expect(mocks.setSecurityMode).toHaveBeenCalledWith("restricted");
+    w.unmount();
+  });
+});

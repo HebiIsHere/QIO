@@ -105,7 +105,14 @@ describe("全窗 fixed 层 / 顶部锚定 / 视口换算都读同一组令牌", 
       expect(read(rel), rel).toContain("windowFrame");
     }
     expect(read("components/DevTaskEntry.vue")).toContain("2 * var(--window-frame-inset)");
-    expect(read("components/ui/QModal.vue")).toContain("2 * var(--window-frame-inset)");
+    // QModal 不再自己算「100vh - 2*inset - 2*sp6」：它的高度上限相对**遮罩内容盒**，
+    // 遮罩由 base.css 用 inset: var(--window-frame-inset) 定位并按内容视口留 padding。
+    // 这样全站弹窗只有一处读窗口令牌，不各算一套（#82 的根因之一就是这套算法与 fixed 包含块打架）。
+    const qmodal = read("components/ui/QModal.vue");
+    expect(qmodal).toContain("max-height: 100%");
+    // 注释里提到「不用 100vh」是允许的；这里禁止的是把它写成声明值（100vh;）
+    expect(qmodal).not.toContain("100vh;");
+    expect(read("styles/base.css")).toMatch(/\.qio-modal-scrim\{[^}]*inset:var\(--window-frame-inset\)/);
   });
 
   it("视口 JS 不再用裸 innerWidth/innerHeight（统一走 utils/windowFrame）", () => {

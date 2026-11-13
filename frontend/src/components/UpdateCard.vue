@@ -12,6 +12,9 @@
  *   给出真实动作（完全退出 QIO 后重新启动），不再让用户以为重试会解决一切。
  * - 自动检查不再用原生外观 checkbox（自定义开关），更新发现后也**不会**自己弹提示：
  *   只在设置入口留一个小标记（见 WindowChrome）。
+ * - 2026-11-12（#19/#25）：开关文案统一为「启动时检查更新」；代理与日志路径只在失败详情里出现；
+ *   「下载并安装」是唯一安装路径（没有第二个安装按钮、也没有安装前二次确认框），
+ *   按钮 / 失败说明 / 结果页统一用「安装时 QIO 会关闭，安装完成后需要重新打开」描述关闭与重开。
  */
 import { computed, onMounted, watch } from "vue";
 import { useUpdaterStore } from "../stores/updater";
@@ -117,7 +120,7 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
       <span v-if="updater.notes" class="notes">{{ updater.notes }}</span>
     </p>
     <p v-else-if="updater.phase === 'ready'" class="line ok" role="status">
-      已下载并安装完成，重启后生效
+      安装已完成，重启 QIO 后生效
     </p>
     <p v-else-if="updater.phase === 'failed'" class="line err" role="alert">
       <span class="err-reason">{{ updater.message }}</span>
@@ -130,6 +133,10 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
       <span v-else class="hint err-action">
         更新没有安装。可以点「重试」重新检查；若安装被中止（例如 "Can't write …qio-backend.exe"），
         请完全退出 QIO 后重试安装。
+      </span>
+      <span class="hint err-diagnostics">
+        连不上更新源时，可在 <span class="mono">%APPDATA%\qio\updater-proxy.txt</span> 写一行代理地址；
+        排查记录在 <span class="mono">%APPDATA%\qio\logs\qio.log</span>。
       </span>
     </p>
     <p v-else-if="downloading" class="line" role="status">
@@ -187,24 +194,22 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
         class="update-toggle auto-switch"
         role="switch"
         :aria-checked="updater.autoCheck"
-        aria-label="启动后自动检查更新"
+        aria-label="启动时检查更新"
         :disabled="updater.phase === 'downloading'"
         @click="toggleAutoCheck"
       ></button>
-      <span class="auto-text">启动后自动检查更新</span>
+      <span class="auto-text">启动时检查更新</span>
     </div>
 
     <p v-if="updater.phase === 'available'" class="hint note-ending">
-      下载并安装会让你退出当前运行：安装时 QIO 会关闭，安装完成后重新打开；更新包经过签名校验后才会安装。
+      下载并安装会完成下载、签名校验与安装：安装时 QIO 会关闭，安装完成后需要重新打开。
+      签名校验不通过就不会安装。
     </p>
     <p v-else-if="updater.phase === 'ready'" class="hint note-ending">
-      重启会结束当前运行并重新打开 QIO；未完成的工作按现有恢复规则保留。
+      立即重启会关闭当前 QIO 并重新打开；未完成的工作按现有恢复规则保留。
     </p>
 
-    <p class="hint foot">
-      连不上更新源时可在 <span class="mono">%APPDATA%\qio\updater-proxy.txt</span> 写一行代理地址；
-      排查记录在 <span class="mono">%APPDATA%\qio\logs\qio.log</span>。自动检查只检查、不会自动下载或安装。
-    </p>
+    <p class="hint auto-note">启动时只检查更新，不会自动下载或安装。</p>
   </div>
 </template>
 
@@ -221,6 +226,8 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
 .strong { color: var(--text-strong); }
 .notes { display: block; margin-top: 4px; color: var(--text-secondary); }
 .err-action { display: block; line-height: 1.6; overflow-wrap: anywhere; }
+/* #19：代理与日志路径只属于失败排查信息，放在失败详情里而不是常驻卡片底部。 */
+.err-diagnostics { display: block; line-height: 1.6; overflow-wrap: anywhere; }
 .progress {
   height: 3px; border-radius: var(--r-pill); background: var(--layer-hover); overflow: hidden;
 }
@@ -258,7 +265,7 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
 .auto-switch:disabled { opacity: 0.45; cursor: not-allowed; }
 .auto-text { font-size: 12.5px; color: var(--text-secondary); }
 .note-ending { margin: 2px 0 0; line-height: 1.6; }
-.foot { margin: 2px 0 0; overflow-wrap: anywhere; }
+.auto-note { margin: 0; line-height: 1.6; }
 @media (max-width: 520px) {
   .actions { align-items: flex-start; }
 }

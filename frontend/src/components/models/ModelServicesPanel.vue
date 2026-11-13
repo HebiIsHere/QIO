@@ -11,7 +11,7 @@
  *   每组独立反馈，失败保留原值并把原因写在分区里；迟到的旧响应不覆盖新状态
  *   （每次写带自增 seq，只有 seq 仍是最新才落 UI）。
  */
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import KeyAccessSection from "./KeyAccessSection.vue";
 import DefaultModelSection from "./DefaultModelSection.vue";
 import UsageAssignmentSection from "./UsageAssignmentSection.vue";
@@ -40,6 +40,11 @@ const defaultBusy = ref(false);
 const defaultError = ref("");
 const usageBusy = ref<string | null>(null);
 const usageErrors = ref<Record<string, string>>({});
+/** #65：失败后保留「原来那次操作」，重试重放同一请求（不是让用户重新选一遍） */
+const defaultRetry = ref<{ credentialId: string; modelId: string } | null>(null);
+const usageRetry = ref<Record<string, { keys: string[]; target: { credentialId: string; modelId: string } | null }>>({});
+/** #22：用途分配默认收起，按需展开（渐进披露） */
+const usageOpen = ref(false);
 /** 正在提交的用途改动指向哪些连接：删连接前也要把这些「未完成的引用」算进去 */
 const pendingRefs = ref<string[]>([]);
 
@@ -66,29 +71,78 @@ function factStatus(usage: UsageAssignment): "unsupported" | "existing" | "follo
  * 只在读取/保存**成功**后调用：失败时保留上一次已知的真实值（不清空、不写草稿），
  * 失败原因由本面板分区自己显示。写权限也在这里收口 —— A 不直连模型目录 API。
  */
+function connectionOf(credentialId: string | null | undefined) {
+  const current = catalog.value;
+  if (!current || !credentialId) return null;
+  return current.connections.find((item) => item.credentialId === credentialId) ?? null;
+}
+
+/**
+ * 合并行的实际生效目标：优先本行 effective，其次兄弟行的（两者由后端同一份
+ * resolve_shared_target 算出，真实后端两个 key 都会带上）。
+ */
+function effectiveOf(usage: UsageAssignment) {
+  const current = catalog.value;
+  if (!current) return null;
+  if (usage.effective) return usage.effective;
+  const siblingKey =
+    usage.usageKey === "main-chat"
+      ? "general-chat"
+      : usage.usageKey === "general-chat"
+        ? "main-chat"
+        : "";
+  if (!siblingKey) return null;
+  const sibling = current.usages.find((item) => item.usageKey === siblingKey);
+  return sibling?.effective ?? null;
+}
+
+/**
+ * #22 首页第一事实：当前对话（主对话 / 通用对话合并路径）实际在用的模型。
+ *
+ * 调用方是后端的 resolve_shared_target（与真实运行同一份规则），前端只负责呈现；
+ * 未设默认模型但能对话时，这里**不写**「未设置默认模型」这种提示（那属于「默认模型」一项）。
+ */
+const actualChat = computed(() => {
+  const current = catalog.value;
+  if (!current) return null;
+  const merged = current.usages.find((item) => item.usageKey === "main-chat")
+    ?? current.usages.find((item) => item.usageKey === "general-chat")
+    ?? null;
+  if (!merged) return null;
+  const effective = effectiveOf(merged);
+  if (effective) {
+    if (!effective.ok || !effective.usable || !effective.credentialId || !effective.modelId) {
+      return {
+        available: false as const,
+        reason: effective.unavailableReason || "运行时没有解析到可用目标",
+      };
+    }
+    return {
+      available: true as const,
+      credentialId: effective.credentialId,
+      modelId: effective.modelId,
+      connectionName: connectionOf(effective.credentialId)?.name || effective.credentialId,
+    };
+  }
+  const resolved = merged.resolved;
+  if (!resolved) return null;
+  if (!resolved.usable) {
+    return {
+      available: false as const,
+      reason: resolved.unavailableReason || "运行时没有解析到可用目标",
+    };
+  }
+  return {
+    available: true as const,
+    credentialId: resolved.credentialId,
+    modelId: resolved.modelId,
+    connectionName: resolved.credentialName || connectionOf(resolved.credentialId)?.name || resolved.credentialId,
+  };
+});
+
 function publishModelFacts() {
   const current = catalog.value;
   if (!current) return;
-  const connectionOf = (credentialId: string | null | undefined) => {
-    if (!credentialId) return null;
-    return current.connections.find((item) => item.credentialId === credentialId) ?? null;
-  };
-  /**
-   * 合并行的实际生效目标：优先本行 effective，其次兄弟行的（两者由后端同一份
-   * resolve_shared_target 算出，真实后端两个 key 都会带上）。
-   */
-  const effectiveOf = (usage: UsageAssignment) => {
-    if (usage.effective) return usage.effective;
-    const siblingKey =
-      usage.usageKey === "main-chat"
-        ? "general-chat"
-        : usage.usageKey === "general-chat"
-          ? "main-chat"
-          : "";
-    if (!siblingKey) return null;
-    const sibling = current.usages.find((item) => item.usageKey === siblingKey);
-    return sibling?.effective ?? null;
-  };
   try {
     setModelFacts({
       defaultModel: current.default
@@ -223,18 +277,29 @@ async function saveDefault(target: { credentialId: string; modelId: string }) {
   const seq = ++defaultSeq;
   defaultBusy.value = true;
   defaultError.value = "";
+  defaultRetry.value = null;
   try {
     await modelCatalogApi.setDefault(target);
     if (seq === defaultSeq) {
+      defaultRetry.value = null;
       await reload();
       // 保存成功之后再写一次：只读区显示的是刚保存并重新读回的真实值，不是点击时的草稿。
       if (!loadError.value) publishModelFacts();
     }
   } catch (exc) {
-    if (seq === defaultSeq) defaultError.value = modelErrorMessage(exc);
+    if (seq === defaultSeq) {
+      // 失败保留原选择：控件仍显示已生效的旧值，错误旁边可以直接重试这次操作。
+      defaultError.value = modelErrorMessage(exc);
+      defaultRetry.value = { ...target };
+    }
   } finally {
     if (seq === defaultSeq) defaultBusy.value = false;
   }
+}
+
+function retryDefault(): void {
+  const target = defaultRetry.value;
+  if (target && !defaultBusy.value) void saveDefault(target);
 }
 
 async function assignUsage(
@@ -249,6 +314,12 @@ async function assignUsage(
   const referenced = target?.credentialId;
   if (referenced && !pendingRefs.value.includes(referenced)) {
     pendingRefs.value = [...pendingRefs.value, referenced];
+  }
+  const previousRetry = usageRetry.value[primary];
+  if (previousRetry) {
+    const next = { ...usageRetry.value };
+    delete next[primary];
+    usageRetry.value = next;
   }
   try {
     // 一次请求整体写：合并行（main-chat + general-chat）**不能**分成两次保存 ——
@@ -268,11 +339,22 @@ async function assignUsage(
   } catch (exc) {
     if (usageSeq.get(primary) === seq) {
       usageErrors.value = { ...usageErrors.value, [primary]: modelErrorMessage(exc) };
+      // 保留原来那次分配（keys + 目标），重试直接重放，不需要重新打开候选。
+      usageRetry.value = {
+        ...usageRetry.value,
+        [primary]: { keys: [...keys], target: target ? { ...target } : null },
+      };
     }
   } finally {
     if (referenced) pendingRefs.value = pendingRefs.value.filter((id) => id !== referenced);
     if (usageSeq.get(primary) === seq) usageBusy.value = null;
   }
+}
+
+function retryUsage(keys: string[]): void {
+  const primary = keys[0];
+  const retry = usageRetry.value[primary];
+  if (retry && usageBusy.value !== primary) void assignUsage(retry.keys, retry.target);
 }
 </script>
 
@@ -292,6 +374,29 @@ async function assignUsage(
     <div v-if="loading && !catalog" class="loading" role="status">正在读取模型与服务设置…</div>
 
     <template v-else>
+      <!-- #22 首页第一事实：当前对话实际在用的模型（不是「默认模型设置」本身）。 -->
+      <section class="actual" data-testid="models-actual-chat">
+        <h3 class="actual__title">当前对话实际在用</h3>
+        <p v-if="actualChat && actualChat.available" class="actual__target">
+          <span class="actual__name">{{ actualChat.connectionName }}</span>
+          <span class="actual__model mono">{{ actualChat.modelId }}</span>
+        </p>
+        <p v-else-if="actualChat" class="actual__target" data-testid="models-actual-unavailable">
+          当前实际生效目标不可用：{{ actualChat.reason }}
+        </p>
+        <p v-else class="muted">还没有可用的对话模型；先在下面接入一把 Key 并获取模型。</p>
+      </section>
+
+      <hr class="divider" />
+      <DefaultModelSection
+        :connections="connections"
+        :catalog="catalog"
+        :busy="defaultBusy"
+        :error="defaultError"
+        @save="saveDefault"
+        @retry="retryDefault"
+      />
+      <hr class="divider" />
       <KeyAccessSection
         :connections="connections"
         :credentials="credentials"
@@ -301,21 +406,28 @@ async function assignUsage(
         @changed="reload"
       />
       <hr class="divider" />
-      <DefaultModelSection
-        :connections="connections"
-        :catalog="catalog"
-        :busy="defaultBusy"
-        :error="defaultError"
-        @save="saveDefault"
-      />
-      <hr class="divider" />
-      <UsageAssignmentSection
-        :connections="connections"
-        :catalog="catalog"
-        :busy-key="usageBusy"
-        :errors="usageErrors"
-        @assign="assignUsage"
-      />
+      <!-- #22：用途分配属于「按需展开」，默认收起，不占用首页。 -->
+      <section class="usage-block" data-testid="models-usage-block">
+        <button
+          type="button"
+          class="qio-btn mini quiet"
+          data-testid="models-usage-toggle"
+          :aria-expanded="usageOpen"
+          @click="usageOpen = !usageOpen"
+        >
+          {{ usageOpen ? "收起用途分配" : "用途分配（按需展开）" }}
+        </button>
+        <div v-show="usageOpen" data-testid="models-usage-body">
+          <UsageAssignmentSection
+            :connections="connections"
+            :catalog="catalog"
+            :busy-key="usageBusy"
+            :errors="usageErrors"
+            @assign="assignUsage"
+            @retry="retryUsage"
+          />
+        </div>
+      </section>
     </template>
   </div>
 </template>
@@ -326,5 +438,13 @@ async function assignUsage(
 .panel__bar { display: flex; justify-content: flex-end; margin-bottom: -8px; }
 .divider { border: none; border-top: 1px solid var(--border-subtle); margin: 4px 0; }
 .loading { font-size: var(--fs-xs); color: var(--text-muted); }
+/* 先给结论：当前对话实际在用的模型；与「默认模型设置」是两条事实。 */
+.actual { display: flex; flex-direction: column; gap: 4px; }
+.actual__title { margin: 0; font-size: var(--fs-sm); color: var(--text-strong); }
+.actual__target { margin: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--text-secondary); }
+.actual__name { color: var(--text-strong); font-weight: 600; }
+.actual__model { color: var(--text-secondary); overflow-wrap: anywhere; }
+.muted { margin: 0; font-size: 10.5px; color: var(--text-muted); }
+.usage-block { display: flex; flex-direction: column; gap: 8px; }
 .qio-feedback.err { color: var(--danger); }
 </style>

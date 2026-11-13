@@ -263,8 +263,12 @@ async function onSaved(credentialId: string) {
 
 function verifyNotice(report: VerifyReport | null | undefined) {
   if (!report) return;
-  if (report.ok) notice.value = { tone: "ok", text: "验证通过：" + report.message };
-  else notice.value = { tone: "warn", text: report.message };
+  // #6：验证范围写清楚 —— 只验证当前默认模型（不会逐模型检查这把 Key 的全部模型）。
+  if (report.ok) {
+    notice.value = { tone: "ok", text: "仅验证当前默认模型：通过。" + report.message };
+  } else {
+    notice.value = { tone: "warn", text: "仅验证当前默认模型：" + report.message };
+  }
 }
 
 async function toggle(connection: ModelConnection) {
@@ -389,7 +393,7 @@ async function confirmAction() {
   try {
     if (state.kind === "revoke") {
       await api.revokeCredential(state.credentialId);
-      notice.value = { tone: "ok", text: "已在本机撤销这条连接（未吊销厂商后台 Key）" };
+      notice.value = { tone: "ok", text: "已在本机撤销这条连接" };
     } else {
       await api.deleteCredential(state.credentialId);
       notice.value = { tone: "ok", text: "连接已删除" };

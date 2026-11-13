@@ -197,15 +197,43 @@ describe("候选列表 · 不可用原因", () => {
 });
 
 describe("默认模型 · 跟随默认与恢复", () => {
-  it("没有默认模型时如实说明会回退到兼容规则", () => {
+  it("没有默认模型时只在「默认模型」项里提示，并说明现在实际在用什么", () => {
     const wrapper = mountIt(DefaultModelSection, {
       connections: [connection()],
-      catalog: catalog({ usages: [usage({ resolved: null, inheritsOk: false })] }),
+      catalog: catalog({
+        usages: [
+          usage({
+            resolved: {
+              credentialId: "key_a",
+              modelId: "m1",
+              source: "default",
+              usable: true,
+              unavailableReason: "",
+              credentialName: "工作用 DeepSeek",
+            },
+          }),
+        ],
+      }),
       busy: false,
       error: "",
     });
     expect(wrapper.text()).toContain("还没有设置默认模型");
-    expect(wrapper.text()).toContain("回退到兼容的旧凭据选择规则");
+    expect(wrapper.text()).toContain("沿用现有可用配置");
+    // 能对话但没设默认模型：在「默认模型」一项里说明现在实际在用的目标
+    expect(wrapper.text()).toContain("现在实际在用");
+    expect(wrapper.text()).toContain("工作用 DeepSeek · m1");
+  });
+
+  it("保存失败：错误旁边保留「重试保存」，重试重放原选择（#65）", async () => {
+    const wrapper = mountIt(DefaultModelSection, {
+      connections: [connection()],
+      catalog: catalog({ default: { credentialId: "key_a", modelId: "m1" } }),
+      busy: false,
+      error: "503 upstream overloaded",
+    });
+    expect(wrapper.find('[role="alert"]').text()).toContain("503 upstream overloaded");
+    await wrapper.find('[data-testid="default-model-retry"]').trigger("click");
+    expect(wrapper.emitted("retry")).toBeTruthy();
   });
 
   it("选择候选后向上抛出保存默认模型的请求", async () => {
@@ -344,14 +372,18 @@ describe("用途分配 · 合并日常入口 / 恢复跟随默认 / 沿用现有
 
   it("embedding 改为只读说明：没有独立调用路径，历史覆盖标未生效且可清除", async () => {
     const wrapper = mountSection();
-    const embeddingRow = wrapper.findAll(".row").find((row) => row.text().includes("向量 / 嵌入"));
+    const embeddingRow = wrapper.findAll(".row").find((row) => row.text().includes("嵌入模型"));
     // 不再提供「指定模型」：换外部嵌入模型并不会被真实调用读取。
     const picker = embeddingRow!
       .findAll("button")
       .find((button) => button.text().includes("指定模型"));
     expect(picker, "embedding 不应再有独立模型选择").toBeFalsy();
-    expect(embeddingRow!.text()).toContain("沿用现有处理方式");
+    // 文案 1：嵌入写「使用当前配置」，不是「未配置/未接通」
+    expect(embeddingRow!.text()).toContain("使用当前配置");
     expect(embeddingRow!.text()).toContain("历史配置（未生效）");
+    // 限制说明只写一次（在只读分组里），不在每行重复
+    expect(wrapper.findAll('[data-test="usage-embedding-note"]').length).toBe(1);
+    expect(embeddingRow!.text()).not.toContain("历史配置（未生效）：这个用途没有独立的模型调用路径");
     await buttonByText(embeddingRow!, "清除历史覆盖").trigger("click");
     expect(wrapper.emitted("assign")).toEqual([[["embedding"], null]]);
   });
@@ -385,8 +417,11 @@ describe("Key 管理 · 删除引用保护", () => {
       draftRefs: [],
     });
     await openManageAndDelete(wrapper);
-    expect(wrapper.find(".qio-confirm").text()).toContain("还被用途引用");
-    expect(wrapper.find(".qio-confirm").text()).toContain("看图 / 视觉");
+    // layer 档确认框是窗口层（Teleport 到 body），按文档查。
+    const blocked = document.querySelector(".qio-confirm");
+    expect(blocked).not.toBeNull();
+    expect(blocked!.textContent).toContain("还被用途引用");
+    expect(blocked!.textContent).toContain("看图 / 视觉");
     expect(api.deleteCredential).not.toHaveBeenCalled();
   });
 
@@ -399,7 +434,7 @@ describe("Key 管理 · 删除引用保护", () => {
       draftRefs: ["key_a"],
     });
     await openManageAndDelete(wrapper);
-    expect(wrapper.find(".qio-confirm").text()).toContain("尚未保存的用途改动");
+    expect(document.querySelector(".qio-confirm")?.textContent).toContain("尚未保存的用途改动");
     expect(api.deleteCredential).not.toHaveBeenCalled();
   });
 
@@ -413,9 +448,10 @@ describe("Key 管理 · 删除引用保护", () => {
       draftRefs: [],
     });
     await openManageAndDelete(wrapper);
-    const confirm = wrapper.find(".qio-confirm");
-    expect(confirm.text()).toContain("删除这条连接");
-    await confirm.find('[data-qio-confirm-action="confirm"]').trigger("click");
+    const confirm = document.querySelector(".qio-confirm");
+    expect(confirm).not.toBeNull();
+    expect(confirm!.textContent).toContain("删除这条连接");
+    (confirm!.querySelector('[data-qio-confirm-action="confirm"]') as HTMLElement).click();
     await flushPromises();
     expect(api.deleteCredential).toHaveBeenCalledWith("key_a");
     expect(wrapper.emitted("changed")).toBeTruthy();

@@ -40,9 +40,8 @@ describe("记忆分段：按组保存", () => {
     await openCategory(w, "memory");
     const memory = sectionById(w, "memory");
 
-    expect(memory.find('[data-settings-group="memory.fragment"] [data-settings-dirty]').text()).toContain(
-      "已保存",
-    );
+    // #16：无改动时不显示保存条（不摆一个常驻的「已保存」操作行）
+    expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(false);
 
     await chooseSelectOption(memory, "自定义");
     const turns = memory.find('input[aria-label="自定义轮数"]');
@@ -64,8 +63,8 @@ describe("记忆分段：按组保存", () => {
       fragment_max_turns: 12,
       fragment_max_tokens: 8000,
     });
-    const group = memory.find('[data-settings-group="memory.fragment"]');
-    expect(group.find('[data-settings-dirty]').text()).toContain("已保存");
+    // 保存真正成功后：保存条收起，并给一次短反馈
+    expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(false);
     expect(memory.find(".set-notice.ok").text()).toContain("记忆分段已保存");
     w.unmount();
   });
@@ -86,7 +85,8 @@ describe("记忆分段：按组保存", () => {
     expect(
       (memory.find('input[aria-label="单段长度目标"]').element as HTMLInputElement).value,
     ).toBe("4096");
-    expect(memory.find('[data-settings-dirty]').text()).toContain("已保存");
+    // 取消后没有改动：保存条收起
+    expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(false);
     expect(api.updateMemorySettings).not.toHaveBeenCalled();
     w.unmount();
   });
@@ -141,7 +141,7 @@ describe("记忆分段：按组保存", () => {
     w.unmount();
   });
 
-  it("清空必填数字后按最小边界收口（1 轮），不会把空值/null 发出去", async () => {
+  it("#64 清空只是编辑过程：失焦提示必填并回显当前值，不把空值当 0 / 下限发出去", async () => {
     const { api } = await import("../../../services/api");
     const w = await mountSettings();
     await openCategory(w, "memory");
@@ -149,16 +149,25 @@ describe("记忆分段：按组保存", () => {
 
     await chooseSelectOption(memory, "自定义");
     const turns = memory.find('input[aria-label="自定义轮数"]');
-    await turns.setValue("");
+    // 真实打字只有 input 事件（VTU 的 setValue 会顺带触发 change，等于同时离开输入框）
+    (turns.element as HTMLInputElement).value = "";
+    await turns.trigger("input");
+    await nextTick();
+    // 只清空、还没离开：不伪造 0（父级值仍是 10）
+    expect((turns.element as HTMLInputElement).value).toBe("");
     await turns.trigger("blur");
     await nextTick();
+
+    // 离开时提示必填，并把显示恢复为当前值（不是 0、也不是下限 1）
+    expect(memory.text()).toContain("这项必填");
+    expect((turns.element as HTMLInputElement).value).toBe("10");
     await memory
       .find('[data-settings-group="memory.fragment"] [data-settings-action="save"]')
       .trigger("click");
     await flushFrames();
 
     expect(api.updateMemorySettings).toHaveBeenCalledWith({
-      fragment_max_turns: 1,
+      fragment_max_turns: 10,
       fragment_max_tokens: 4096,
     });
     w.unmount();
@@ -327,6 +336,224 @@ describe("即时保存失败回滚", () => {
     await tools.find('input[aria-label="记录保留（天）"]').trigger("blur");
     await flushFrames();
     expect(api.updateToolHistorySettings).toHaveBeenCalledWith({ record_retention_days: 120 });
+    w.unmount();
+  });
+});
+describe("#63 非法文本不保存 / 显式 0 是合法值", () => {
+  /**
+   * 真实浏览器的「打字」只有 input 事件；VTU 的 setValue 会顺带触发 change（提交），
+   * 会把「编辑过程中」和「离开输入框」两步揉成一步。这里显式分开。
+   */
+  async function typeOnly(input: { element: Element; trigger: (event: string) => Promise<void> }, value: string) {
+    (input.element as HTMLInputElement).value = value;
+    await input.trigger("input");
+    await nextTick();
+  }
+
+  async function mountTools() {
+    const { api } = await import("../../../services/api");
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    return { api, w, tools };
+  }
+
+  it("输出保留期输入 abc / 1e / -1：不发保存请求、有可读提示、显示保留最近保存值 90", async () => {
+    const { api, w, tools } = await mountTools();
+    const update = api.updateToolHistorySettings as ReturnType<typeof vi.fn>;
+    const input = tools.find('input[aria-label="输出保留（天）"]');
+
+    for (const bad of ["abc", "1e", " -1"]) {
+      await typeOnly(input, bad);
+      await input.trigger("blur");
+      await flushFrames();
+      // 不发保存请求（空白/非法/低于下限都不是用户表达的合法值）
+      expect(update, bad).not.toHaveBeenCalled();
+      // 可读提示（不是把错误塞进控制台）
+      expect(tools.text(), bad).toContain("已恢复为当前值");
+      // 显示仍是最近已保存值 90，而不是空白或 0
+      expect((input.element as HTMLInputElement).value, bad).toBe("90");
+    }
+    w.unmount();
+  });
+
+  it("显式输入 0：发出保存请求且后端落库为 0，重新进入设置后仍是 0", async () => {
+    const { api } = await import("../../../services/api");
+    (api.updateToolHistorySettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      record_outputs: true,
+      output_retention_days: 0,
+      record_retention_days: 0,
+      purged: 0,
+    });
+
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    const input = tools.find('input[aria-label="输出保留（天）"]');
+    await input.setValue("0");
+    await input.trigger("blur");
+    await flushFrames();
+
+    expect(api.updateToolHistorySettings).toHaveBeenCalledWith({ output_retention_days: 0 });
+    expect((input.element as HTMLInputElement).value).toBe("0");
+    w.unmount();
+
+    // 重新进入设置（等价于刷新后的重新读取）：与后端保存的 0 一致，不显示旧的 90
+    (api.getToolHistorySettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      record_outputs: true,
+      output_retention_days: 0,
+      record_retention_days: 0,
+    });
+    const again = await mountSettings();
+    await openCategory(again, "tools");
+    expect(
+      (sectionById(again, "tools").find('input[aria-label="输出保留（天）"]').element as HTMLInputElement)
+        .value,
+    ).toBe("0");
+    again.unmount();
+  });
+});
+
+describe("#64 清空只是编辑过程：离开回显 / 刷新后与后端一致，不出现假 0", () => {
+  async function typeOnly(input: { element: Element; trigger: (event: string) => Promise<void> }, value: string) {
+    (input.element as HTMLInputElement).value = value;
+    await input.trigger("input");
+    await nextTick();
+  }
+
+  it("清空输出保留期后失焦：提示必填、回显 90、不发请求；重新进入仍是 90", async () => {
+    const { api } = await import("../../../services/api");
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    const input = tools.find('input[aria-label="输出保留（天）"]');
+
+    await typeOnly(input, "");
+    // 编辑过程中：输入框为空，但父级没被写成 0（不能出现「后端是 90、界面显示 0」）
+    expect((input.element as HTMLInputElement).value).toBe("");
+    expect(api.updateToolHistorySettings).not.toHaveBeenCalled();
+
+    await input.trigger("blur");
+    await flushFrames();
+    expect(tools.text()).toContain("这项必填");
+    expect((input.element as HTMLInputElement).value).toBe("90");
+    expect(api.updateToolHistorySettings).not.toHaveBeenCalled();
+    w.unmount();
+
+    const again = await mountSettings();
+    await openCategory(again, "tools");
+    expect(
+      (sectionById(again, "tools").find('input[aria-label="输出保留（天）"]').element as HTMLInputElement)
+        .value,
+    ).toBe("90");
+    again.unmount();
+  });
+});
+
+describe("#65 保存失败：回到实际生效值、可关闭、可重试、旧回执不覆盖新状态", () => {
+  it("503 失败：控件回 90、错误简短可关闭、技术详情可展开；重试成功后显示真正成功", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateToolHistorySettings as ReturnType<typeof vi.fn>;
+    update.mockRejectedValueOnce(new Error("PUT /api/settings/tool-history -> 503: upstream overloaded"));
+    update.mockResolvedValueOnce({
+      record_outputs: true,
+      output_retention_days: 30,
+      record_retention_days: 0,
+      purged: 0,
+    });
+
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    const input = tools.find('input[aria-label="输出保留（天）"]');
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+
+    expect((input.element as HTMLInputElement).value).toBe("90");
+    const error = tools.find(".set-notice.err");
+    expect(error.text()).toContain("保存输出保留期失败");
+    // 错误简短：不把整段 URL/状态码塞进主提示
+    expect(error.text()).not.toContain("503");
+    // 技术诊断按需查看
+    expect(tools.find("details").text()).toContain("技术详情");
+    expect(tools.find("details").text()).toContain("503");
+    // 可关闭
+    await tools.find('button[aria-label="关闭这项提示"]').trigger("click");
+    await nextTick();
+    expect(tools.find(".set-notice.err").exists()).toBe(false);
+
+    // 关闭后重新输入同一个值再失焦：仍能真正保存（不是只能靠「重试」按钮）
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+    expect((input.element as HTMLInputElement).value).toBe("30");
+    expect(tools.find(".set-notice.ok").text()).toContain("输出保留期已保存");
+    w.unmount();
+  });
+
+  it("重试按钮重放原操作：失败后点重试，成功后值真正生效", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateToolHistorySettings as ReturnType<typeof vi.fn>;
+    update.mockRejectedValueOnce(new Error("503 boom"));
+    update.mockResolvedValueOnce({
+      record_outputs: true,
+      output_retention_days: 40,
+      record_retention_days: 0,
+      purged: 0,
+    });
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    const input = tools.find('input[aria-label="输出保留（天）"]');
+    await input.setValue("40");
+    await input.trigger("blur");
+    await flushFrames();
+    expect((input.element as HTMLInputElement).value).toBe("90");
+
+    await tools.find('[data-settings-action="retry"]').trigger("click");
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(2);
+    // 重试的是原来那次写入（同一字段 40），不是让用户从头再填
+    expect(update.mock.calls[1][0]).toEqual({ output_retention_days: 40 });
+    expect((input.element as HTMLInputElement).value).toBe("40");
+    expect(tools.find(".set-notice.ok").text()).toContain("输出保留期已保存");
+    w.unmount();
+  });
+
+  it("迟到失败不覆盖新操作：第一次失败晚回、第二次成功 → 显示第二次的 40，无旧错误", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateToolHistorySettings as ReturnType<typeof vi.fn>;
+    let rejectFirst: (e: Error) => void = () => {};
+    update.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectFirst = reject; }),
+    );
+    update.mockResolvedValueOnce({
+      record_outputs: true,
+      output_retention_days: 40,
+      record_retention_days: 0,
+      purged: 0,
+    });
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    const input = tools.find('input[aria-label="输出保留（天）"]');
+
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+    await input.setValue("40");
+    await input.trigger("blur");
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(1); // 同一设置串行
+
+    rejectFirst(new Error("503 boom"));
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(2);
+    expect((input.element as HTMLInputElement).value).toBe("40");
+    // 旧失败回执被隔离：既不覆盖新值，也不留下一条指向旧操作的错误
+    expect(tools.find(".set-notice.err").exists()).toBe(false);
+    expect(tools.find(".set-notice.ok").text()).toContain("输出保留期已保存");
     w.unmount();
   });
 });

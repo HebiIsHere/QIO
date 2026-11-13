@@ -109,8 +109,15 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     const w = await mountSettings();
     await openCategory(w, "memory");
     const memory = sectionById(w, "memory");
-    expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(true);
-    // 本轮清理解释性文案：改为断言控件结构与按组保存行为，不再断言被删掉的说明文字。
+    // #16：没有改动时不摆常驻保存条；首屏先给后台整理三项（#24）
+    expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(false);
+    expect(memory.text()).toContain("启用后台整理");
+    expect(memory.text()).toContain("整理间隔");
+    expect(memory.text()).toContain("立即整理");
+    // 分段设置与模型用量在「高级选项」里（默认收起，控件仍在 DOM）
+    expect(
+      memory.find('[data-settings-fold-toggle="memory.advanced"]').attributes("aria-expanded"),
+    ).toBe("false");
     expect(memory.find('[data-settings-key="memory.fragment.tier"]').exists()).toBe(true);
     expect(memory.find('[data-settings-key="memory.fragment.max-tokens"]').exists()).toBe(true);
     await chooseSelectOption(memory, "自定义");
@@ -124,12 +131,13 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     expect(run).toBeTruthy();
     await run!.trigger("click");
     await nextTick();
-    const dialog = w.find('[role="dialog"]');
-    expect(dialog.exists()).toBe(true);
-    expect(dialog.text()).toContain("立即整理记忆与知识？");
+    // layer 档确认框是窗口层（Teleport 到 body），按文档查而不是按组件子树查。
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.textContent).toContain("立即整理记忆与知识？");
     const { api } = await import("../../../services/api");
     expect(api.runMaintenance).not.toHaveBeenCalled();
-    await dialog.find('[data-qio-confirm-action="confirm"]').trigger("click");
+    (dialog!.querySelector('[data-qio-confirm-action="confirm"]') as HTMLElement).click();
     await flushFrames();
     expect(api.runMaintenance).toHaveBeenCalledTimes(1);
     w.unmount();
@@ -149,6 +157,50 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     expect(raw.text()).toContain("128");
     expect(raw.text()).toContain("51200");
     expect(raw.text()).toContain("尚未读取");
+    w.unmount();
+  });
+
+  it("文案 1 / 9：当前生效参数里嵌入写「嵌入模型 · 使用当前配置」，不生效用途不重复同一句话", async () => {
+    const { setModelFacts, resetModelFacts } = await import("../modelFacts");
+    const w = await mountSettings();
+    // SettingsView 挂载时会重建只读事实表：必须挂载后再注入，否则会被 reset 掉。
+    setModelFacts({
+      defaultModel: null,
+      usages: [
+        {
+          usageKey: "main-chat",
+          label: "主对话",
+          followsDefault: true,
+          resolved: { credentialId: "c1", modelId: "m1" },
+          connectionName: "主力连接",
+          status: "follow",
+        },
+        { usageKey: "video", label: "视频", followsDefault: false, status: "existing", note: "沿用现有处理方式" },
+        { usageKey: "research", label: "研究", followsDefault: false, status: "unsupported", note: "未接通独立调用路径" },
+        {
+          usageKey: "embedding",
+          label: "向量与嵌入",
+          followsDefault: false,
+          status: "existing",
+          note: "沿用现有处理方式",
+        },
+      ],
+    });
+    await nextTick();
+    await openCategory(w, "tools");
+    await nextTick();
+    const usages = sectionById(w, "tools").find('[data-settings-key="tools.effective.usages"]');
+    expect(usages.exists()).toBe(true);
+    const text = usages.text();
+    // 嵌入：显示名与结论都按「使用当前配置」，不写成内部用途名或无配置态
+    expect(text).toContain("嵌入模型");
+    expect(text).toContain("使用当前配置");
+    expect(text).not.toContain("向量与嵌入");
+    // 同一行不再把同一句话写两遍（旧实现是「沿用现有处理方式 （沿用现有处理方式）」）
+    expect(text).not.toContain("（沿用现有处理方式）");
+    expect(text).not.toContain("（未接通）");
+    expect(text.split("沿用现有处理方式").length - 1).toBe(1);
+    resetModelFacts();
     w.unmount();
   });
 
@@ -289,7 +341,7 @@ describe("模型与服务容器", () => {
     w.unmount();
   });
 
-  it("联网搜索状态分「未配置 / 已配置（未检查）」，不把已配置说成检查通过", async () => {
+  it("联网搜索状态分「未配置 / 已配置，尚未检查」，不把已配置说成检查通过", async () => {
     const { api } = await import("../../../services/api");
     (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       searxng_url: "https://searx.example",
@@ -301,10 +353,136 @@ describe("模型与服务容器", () => {
     const w = await mountSettings();
     await openCategory(w, "models");
     const models = sectionById(w, "models");
-    expect(models.find('[data-search-channel="bocha"]').text()).toContain("已配置（未检查）");
-    expect(models.find('[data-search-channel="searxng"]').text()).toContain("已填写地址（未检查）");
-    expect(models.find('[data-search-channel="keyless"]').text()).toContain("开启（未检查）");
+    expect(models.find('[data-search-channel="bocha"]').text()).toContain("已配置，尚未检查");
+    expect(models.find('[data-search-channel="searxng"]').text()).toContain("已填写地址，尚未检查");
+    // #7：免密钥通道的状态只写「已开启 / 已关闭」，检查状态单独一段
+    expect(models.find('[data-search-channel="keyless"] [data-channel-config]').text()).toBe("已开启");
+    expect(models.find('[data-search-channel="keyless"] [data-channel-check]').text()).toBe("，尚未检查");
     expect(models.text()).toContain("「已配置」不代表「检查通过」");
+    expect(models.text()).toContain("检查只在你主动点击");
+    w.unmount();
+  });
+
+  it("#23 检查只由用户点按触发；改配置后回到「已配置，尚未检查」，旧结论不沿用", async () => {
+    const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "https://old.example",
+      bocha_has_key: true,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    (api.getSearchStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      channels: [
+        { channel: "searxng", configured: true, checked: true, ok: true, reason: "" },
+      ],
+      checked_at: "2026-11-12T00:00:00Z",
+    });
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+
+    // 挂载不自动做连接检查
+    expect(api.checkSearch).not.toHaveBeenCalled();
+    expect(models.find('[data-search-channel="searxng"] [data-channel-check]').text()).toContain(
+      "检查通过",
+    );
+
+    // 改动 SearXNG 地址并保存：旧检查结论属于旧地址，必须回到「尚未检查」
+    await models.find('[data-settings-fold-toggle="models.search.advanced"]').trigger("click");
+    await nextTick();
+    await models.find('input[aria-label="自建 SearXNG 地址"]').setValue("https://new.example");
+    await nextTick();
+    await models
+      .find('[data-settings-group="models.search"] [data-settings-action="save"]')
+      .trigger("click");
+    await flushFrames();
+    const searxngRow = models.find('[data-search-channel="searxng"]');
+    expect(searxngRow.text()).toContain("已填写地址，尚未检查");
+    expect(searxngRow.text()).not.toContain("检查通过");
+    w.unmount();
+  });
+
+  it("#23 用户点检查失败：保留配置、显示这次失败并可重试；成功后才显示「检查通过」", async () => {
+    const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "https://searx.example",
+      bocha_has_key: false,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    (api.checkSearch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      channels: [
+        { channel: "searxng", configured: true, checked: true, ok: false, reason: "连接被拒绝" },
+      ],
+    });
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+
+    await models.find('[data-testid="settings-search-check"]').trigger("click");
+    await flushFrames();
+    // 只描述「这一次检查」失败；已填配置保留
+    expect(models.find('[data-search-channel="searxng"]').text()).toContain("检查失败：连接被拒绝");
+    expect(
+      (models.find('input[aria-label="自建 SearXNG 地址"]').element as HTMLInputElement).value,
+    ).toBe("https://searx.example");
+    expect(models.find('[data-testid="settings-search-check"]').text()).toContain("重新检查");
+    expect(api.updateSearchSettings).not.toHaveBeenCalled();
+
+    // 用户再点一次检查：真实成功之后才写「检查通过」
+    (api.checkSearch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      channels: [
+        { channel: "searxng", configured: true, checked: true, ok: true, reason: "" },
+      ],
+    });
+    await models.find('[data-testid="settings-search-check"]').trigger("click");
+    await flushFrames();
+    expect(models.find('[data-search-channel="searxng"]').text()).toContain("检查通过");
+    expect(models.find('[data-search-channel="searxng"]').text()).not.toContain("检查失败");
+    w.unmount();
+  });
+
+  it("#7 免密钥通道状态只写「已开启 / 已关闭」，开关保留", async () => {
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    expect(models.find('[data-search-channel="keyless"] [data-channel-config]').text()).toBe("已开启");
+    const toggle = models.find('button[aria-label="免密钥联网搜索"]');
+    expect(toggle.exists()).toBe(true);
+    await toggle.trigger("click");
+    await flushFrames();
+    expect(models.find('[data-search-channel="keyless"] [data-channel-config]').text()).toBe("已关闭");
+    w.unmount();
+  });
+
+  it("#8 博查通道常态保留「状态 / 替换 / 清除」，「留空保留原密钥」只在替换输入旁说明", async () => {
+    const { api } = await import("../../../services/api");
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      searxng_url: "",
+      bocha_has_key: true,
+      keyless_fallback: true,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    await flushFrames();
+    const row = models.find('[data-settings-key="models.search.bocha"]');
+    expect(row.text()).toContain("已配置");
+    expect(row.text()).toContain("替换");
+    expect(row.text()).toContain("清除");
+    // 常态不显示长句说明
+    expect(row.text()).not.toContain("留空保留");
+    const replace = row.findAll("button").find((button) => button.text() === "替换");
+    await replace!.trigger("click");
+    await nextTick();
+    const editingRow = models.find('[data-settings-key="models.search.bocha"]');
+    expect(editingRow.find('[data-testid="settings-search-bocha-hint"]').text()).toContain(
+      "留空保存不会改动已保存的 Key",
+    );
     w.unmount();
   });
 
@@ -317,6 +495,38 @@ describe("模型与服务容器", () => {
     await models.find('[data-testid="settings-search-check"]').trigger("click");
     await flushFrames();
     expect(models.find(".set-notice.err").text()).toContain("不代表通道不可用");
+    w.unmount();
+  });
+});
+
+describe("关于与更新的文案边界（#13 / 第三方声明入口）", () => {
+  it("许可证保留 MIT 摘要与全文入口，不再指引「见仓库根目录」", async () => {
+    const w = await mountSettings();
+    await openCategory(w, "about");
+    const about = sectionById(w, "about");
+    const text = about.text();
+    expect(text).toContain("QIO 以 MIT 许可证开源");
+    expect(text).toContain("查看 QIO 许可全文");
+    expect(text).not.toContain("仓库根目录");
+    expect(text).not.toContain("本页展示的就是它");
+    // 全文仍然可读（构建期内联，不是链接）
+    expect(about.get('[data-testid="qio-license"]').text()).toContain("Permission is hereby granted");
+    w.unmount();
+  });
+
+  it("第三方声明入口写「查看第三方开源声明」，不再写生成物/仓库校验口径", async () => {
+    const w = await mountSettings();
+    await openCategory(w, "about");
+    const about = sectionById(w, "about");
+    const text = about.text();
+    expect(text).toContain("查看第三方开源声明");
+    expect(text).not.toContain("查看第三方开源组件声明");
+    expect(text).not.toContain("生成物");
+    expect(text).not.toContain("覆盖率由仓库里的校验脚本保证");
+    // 声明全文仍然与包一起分发、可离线展开
+    expect(about.get('[data-testid="third-party-notices"]').text()).toContain(
+      "QIO 第三方开源组件声明",
+    );
     w.unmount();
   });
 });
