@@ -1044,6 +1044,10 @@ class AgentLoop:
                 # 知识提交的稳定身份（见 tools/knowledge_propose.py 的 fingerprint）：
                 # 界面据此区分「同一条知识重试成功」与「另一条独立提交」。
                 "knowledge_key": result_facts.get("knowledge_key"),
+                # 文件实际读取失败的用户可读事实（#12，见 tools/attachment_tools.py）：
+                # 界面在受影响的文件旁就地显示一次；缺失如实为 None，不把其它
+                # 工具错误归成文件读取（判定只看结构化字段）。
+                "file_read": result_facts.get("file_read"),
                 "content_preview": safe_preview,
                 "duration_ms": duration_ms,
                 "presentation": data.get("presentation"),

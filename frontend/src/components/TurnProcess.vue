@@ -37,6 +37,10 @@ import {
   type TurnStage,
 } from "../stores/session";
 import {
+  fileReadFailureName,
+  isFileReadFailureTool,
+} from "./toolFailureFacts";
+import {
   isProcessExpanded,
   isProcessManual,
   isStageDetailManual,
@@ -340,6 +344,15 @@ function toolFailureSummary(m: StreamMessage): string {
 function toolAwaitingSummary(m: StreamMessage): string {
   return isKnowledgeProposal(m) ? "知识提交等待你确认（尚未生效）" : `${toolTitle(m)}等待你确认`;
 }
+/**
+ * 文件读取失败的「涉及几个文件」：按真实文件名去重（同名多次失败只算一个）；
+ * 没有名称的失败各自计一次（不把未知文件合并成一个，避免少报）。
+ */
+function fileReadFailureCount(list: StreamMessage[]): number {
+  const names = new Set(list.map(fileReadFailureName).filter(Boolean));
+  if (names.size) return names.size + list.filter((m) => !fileReadFailureName(m)).length;
+  return list.length;
+}
 
 const statusWord = computed(() => {
   if (props.running) {
@@ -408,13 +421,21 @@ const statusDetail = computed(() => {
      * 失败不能只留一个计数：默认可见区给出**可读的结构化结论**（code / 类别标签），
      * 不用 toolError 的原始文本（那是展开详情）。单次可恢复失败不改变整轮状态；
      * 同一次知识提交先失败后重试成功时，以最后一次成功证据为准。
+     *
+     * 文件读取失败单独收成一句短结论（真实原因 / 下一步在工具卡里，状态行不重复整段）；
+     * 其它失败仍按原来的「工具名执行失败（类别）」口径。
      */
-    const first = toolFailureSummary(summaryFailedTools.value[0]);
-    bits.push(
-      summaryFailedTools.value.length === 1
-        ? first
-        : `${first}；共 ${summaryFailedTools.value.length} 项调用未成功`,
-    );
+    const fileReadFailures = summaryFailedTools.value.filter(isFileReadFailureTool);
+    const otherFailures = summaryFailedTools.value.filter((m) => !isFileReadFailureTool(m));
+    if (fileReadFailures.length) {
+      bits.push(`这次没读到文件内容（${fileReadFailureCount(fileReadFailures)} 个文件）`);
+    }
+    if (otherFailures.length) {
+      const first = toolFailureSummary(otherFailures[0]);
+      bits.push(
+        otherFailures.length === 1 ? first : `${first}；共 ${otherFailures.length} 项调用未成功`,
+      );
+    }
   }
   if (cancelledTools.value.length) bits.push(`${cancelledTools.value.length} 项已取消`);
   if (unknownTools.value.length) bits.push(`${unknownTools.value.length} 项结果未收到`);

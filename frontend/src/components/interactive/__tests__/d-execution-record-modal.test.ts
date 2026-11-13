@@ -166,6 +166,29 @@ describe("执行记录浮层的键盘完整操作", () => {
     wrapper.unmount();
   });
 
+  it("标题栏（含关闭按钮）固定在浮层顶部，正文在独立滚动容器里（#91）", async () => {
+    const wrapper = mountPanel();
+    await flushPromises();
+    const panel = wrapper.get('[data-im="execution-record"]');
+    const head = wrapper.get(".erp-head");
+    const body = wrapper.get('[data-im="execution-record-body"]');
+
+    // 标题栏是浮层的第一个直接子节点：滚动正文时它不会跟着滚走。
+    expect(panel.element.firstElementChild).toBe(head.element);
+    expect(head.element.parentElement).toBe(panel.element);
+    const closeButton = wrapper.get('[data-im="execution-record-close"]');
+    expect(head.element.contains(closeButton.element)).toBe(true);
+    expect(body.element.contains(closeButton.element)).toBe(false);
+
+    // 正文（含所有分区与诊断）都在自己的滚动容器里，与标题栏是兄弟节点。
+    expect(body.element.parentElement).toBe(panel.element);
+    expect(body.element.contains(wrapper.get(".erp-title").element)).toBe(true);
+    expect(body.element.contains(wrapper.get('[data-im="execution-record-basis"]').element)).toBe(true);
+    expect(body.element.contains(wrapper.get('[data-im="execution-record-diagnostics"]').element)).toBe(true);
+    expect(head.element.contains(wrapper.get('[data-im="execution-record-basis"]').element)).toBe(false);
+    wrapper.unmount();
+  });
+
   it("打开它的入口已被移除时，关闭后焦点退回仍在的可见入口", async () => {
     const tasksEntry = document.createElement("button");
     tasksEntry.setAttribute("data-im", "tasks-entry");

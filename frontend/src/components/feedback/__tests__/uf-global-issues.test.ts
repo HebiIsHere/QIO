@@ -65,6 +65,28 @@ describe("全局异常来源：一个入口、根因去重、部分恢复", () =
     handle.stop();
   });
 
+  it("凭据暂停：只保留暂停状态与「打开凭据设置」，标题/正文/诊断不重复且不显示原始文本", async () => {
+    const { events, issues, handle } = setup();
+    events.credentialNotice =
+      "有一项凭据已暂停：依赖它的能力暂时不可用（可在「设置 → 凭据」恢复）";
+    await tick();
+
+    const item = issues.issues[0];
+    expect(item.id).toBe("credential_paused");
+    expect(item.title).toContain("暂停");
+    // 标题已经说清状态：正文不再复述，诊断只放额外信息（不重复、不显示凭据内容）。
+    expect(item.reason).toBe("");
+    expect(item.actions.map((action) => action.label)).toEqual(["打开凭据设置"]);
+    expect(item.diagnostics).toEqual([
+      "凭据内容不会在这里显示；只能在本机设置页查看与修改。",
+    ]);
+    const visible = [item.title, item.reason, ...item.diagnostics].join("\n");
+    expect(visible.split("暂停").length - 1, "「暂停」只在标题出现一次").toBe(1);
+    expect(visible).not.toContain("可在「设置 → 凭据」恢复");
+    expect(visible).not.toContain("依赖它的能力暂时不可用（可在");
+    handle.stop();
+  });
+
   it("模型能力受限：报告一次，恢复正常后移除", async () => {
     const { events, issues, handle } = setup();
     events.modelMode = "unsupported";
