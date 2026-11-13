@@ -105,7 +105,8 @@
 
 ### 第三轮 commits
 - `3440edbf` fix(interactive-canvas): 拖放/多文件导入批次反馈 UI（#44/#45/#46）
-- `4be73295` fix(interactive-canvas): 连线撤销/提示分级与失败重试防重复（#10/#11）
+- `3bf8689a` fix(interactive-canvas): 连线撤销/提示分级与失败重试防重复（#10/#11）（首次提交 4be73295 后 amend 补报告 SHA）
+- `905281f2` fix(interactive-canvas): 加入组选择器/解除组连线确认/组名省略号（#60/#62/#72）
 
 ### 第三轮逐项结果
 | # | 结果 | 证据 / 说明 |
@@ -134,6 +135,16 @@
 - 「添加→文件」单击流程仍是原有单文件瞬态提示（fix025 已冻结的 useTransientNotice 生命周期），未改成批次区；拖放/多文件两条入口共用批次规则。若要求单击也进批次区，需要重写 fix025 的 12 条基线用例（请 Lead 裁定）。
 - #46 的 taskId 绑定目前只是数据层透传，画布暂无「任务产物回传」入口；迟到回执的卡片删除守卫在 store 侧。
 - 批次成功/失败演示中，上传失败的文件不会建空卡（失败只在批次区记录）；如产品要求「失败也留卡」，需改流程。
+
+### 第三轮补充（组操作 #60/#62/#72，commit `905281f2`）
+| # | 结果 | 证据 / 说明 |
+|---|---|---|
+| #62 加入组 QIO 选择器 | **已修复** | SelectionMenu 去掉原生 `<select>`，改为可展开的 QIO 列表：每项显示组名 + 「N 名成员」+ 成员摘要（前 3 位）；同名组额外标「同名组」（`data-same-name="1"`），点击按 `data-group-id` 真实组 ID 加入。用例覆盖：不再有 select、成员数/摘要、同名组区分、按真实 id 加入。 |
+| #60 解除有组级连线的组 | **已修复** | 解除前汇总受影响组级关系（含义 + 两端名称），用 QConfirm（layer）列出并确认；确认后才一次提交（解除组 + 移除组级关系）；成员之间的关系保留；一次撤销同时恢复组与组级关系（用例覆盖：确认前不提交、取消不解除、确认后成员线保留、undo 恢复组+组级线）。 |
+| #72 组名静态省略号 | **已修复** | BoardGroupFrame 增加静态组名层：未聚焦时单行 `text-overflow: ellipsis`，`title` / `aria-label` 可读全名；聚焦后切回输入框（完整输入），改名逻辑不变（用例：静态省略号样式、title/aria 全名、聚焦切编辑态并触发 rename）。 |
+
+第三轮组操作测试：`pm032-canvas-group-ops.test.ts` → 6/6 绿；回归 p2b-group-frame / i2v2-b-f07-group-leave / acceptance-i2v2-group-leave / BoardToolbar / p2int-canvas-wiring → 51/51 绿；`npx vue-tsc --noEmit` exit 0。
+E2E 选择器补充：#62 `[data-im="group-join"]` / `[data-im="group-join-list"]` / `[data-im="group-join-option"]`（`data-group-id`、`data-group-name`）；#60 确认框 `[data-qio-confirm-action="confirm"]` / `[data-qio-confirm-action="cancel"]`；#72 `[data-im="group-name-static"]`（`title` 全名）。
 
 ## 5. 未完成与集成风险
 
