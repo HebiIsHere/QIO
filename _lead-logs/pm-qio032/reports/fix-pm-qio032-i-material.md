@@ -162,6 +162,7 @@ if callable(stamper):
 | `tests/pm_qio032_material_scope_test.py` | **21 passed** |
 | `pm_qio032_submit_first_round_materials / pm_qio032_submit_authorization_facts / pm_qio032_submit_intents_event` + `test_p3_b_tools` + `test_interactive_materials` | **76 passed** |
 | `pm_qio032_submit_empty_semantics` + `test_interactive_board` + `test_p3_b_service` + `test_p3_d_frozen_surface` + `test_attachment_tools` + `test_p2_d_participation_endpoints_display_version` | **148 passed** |
+| `test_interactive_submission`（合并父分支后的提交/板面集成回归） | **45 passed** |
 
 ### 7.7 未做 / 风险（第三轮）
 
