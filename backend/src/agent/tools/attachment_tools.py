@@ -147,6 +147,54 @@ def _media_work_dir() -> Path:
             pass
     return Path(tempfile.mkdtemp(prefix="qio-media-"))
 
+def _attachment_read_failed_notice() -> str:
+    """#28：绑定提交的附件读取失败时给用户的那一句短文案（唯一来源在 materials）。"""
+    try:
+        from agent.interactive import materials as materials_module
+
+        return str(
+            getattr(
+                materials_module,
+                "SUBMISSION_ATTACHMENT_READ_FAILED_NOTICE",
+                "读不到提交时的附件，请重新提交。",
+            )
+        )
+    except Exception:  # noqa: BLE001 - 互动模块不可用时用同一句短文案
+        return "读不到提交时的附件，请重新提交。"
+
+
+def _verified_material_dir() -> Path:
+    """#28：核验过的提交材料字节的**受控临时目录**（解析完立即清理）。
+
+    优先落在 QIO 数据目录的 tmp 下（与媒体派生同一口径）；取不到就落系统临时目录。
+    目录名带固定前缀，便于异常退出后按前缀回收；调用方负责 _cleanup_temp_dir。
+    """
+    import os
+    import tempfile
+
+    base = os.environ.get("QIO_DATA_DIR")
+    if base:
+        try:
+            root = Path(base) / "tmp"
+            root.mkdir(parents=True, exist_ok=True)
+            return Path(tempfile.mkdtemp(prefix="verified-material-", dir=str(root)))
+        except OSError:
+            pass
+    return Path(tempfile.mkdtemp(prefix="qio-verified-material-"))
+
+
+def _cleanup_temp_dir(path: Path | None) -> None:
+    """清理核验材料的临时目录（清理失败不影响读取结论，也不外泄内容）。"""
+    if path is None:
+        return
+    try:
+        import shutil
+
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:  # noqa: BLE001 - 清理是收尾动作
+        pass
+
+
 #: Python str.splitlines 的行分隔符集合
 _SEPARATORS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _SEP_RE = re.compile("[" + re.escape(_SEPARATORS) + "]")
@@ -660,29 +708,20 @@ class ReadAttachmentTool(Tool):
                 {},
             )
         if not scope.get("available"):
-            notice = str(
-                getattr(
-                    materials_module,
-                    "SUBMISSION_READ_FAILED_NOTICE",
-                    "读不到这次提交的内容，请重新提交。",
-                )
-            )
+            # #28：用户侧只有一句短文案；具体原因（快照为什么不可用）进诊断。
+            notice = _attachment_read_failed_notice()
+            detail = str(scope.get("reason") or "提交快照不可用")
             return (
                 ToolResult(
                     ok=False,
-                    error=notice
-                    + " 具体原因："
-                    + str(scope.get("reason") or "提交快照不可用")
-                    + "；请重新提交后再读",
+                    error=notice + " 具体原因：" + detail,
                     category="permission",
                     recoverable=False,
                     code="material_scope_unavailable",
                     protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
                     data={
                         "submission_id": submission_id,
-                        "diagnostics": {
-                            "snapshot": str(scope.get("reason") or "提交快照不可用")
-                        },
+                        "diagnostics": {"snapshot": detail},
                         "next_step": "resubmit",
                     },
                 ),
@@ -690,19 +729,12 @@ class ReadAttachmentTool(Tool):
             )
         stale = scope.get("stale") or {}
         if att.id in stale:
+            # #28：源内容已变化 / 无法核对 → 明确失败 + 重新提交入口（原因进诊断）。
             return (
-                ToolResult(
-                    ok=False,
-                    error=str(stale.get(att.id)),
-                    category="permission",
-                    recoverable=True,
-                    code="material_source_changed",
-                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
-                    data={
-                        "attachment_id": att.id,
-                        "submission_id": submission_id,
-                        "next_step": "resubmit",
-                    },
+                self._submission_read_failure(
+                    att,
+                    {"submission_id": submission_id},
+                    str(stale.get(att.id)),
                 ),
                 {},
             )
@@ -736,80 +768,129 @@ class ReadAttachmentTool(Tool):
             "sha256": str(recorded.get("sha256") or ""),
         }
 
-    def _submission_material_changed_after_read(
-        self, att: Attachment, guard: dict
-    ) -> str:
-        """#28：读完之后再核对一次内容版本；变了就不交付（绝不把另一个版本交出去）。
+    def _submission_read_failure(
+        self, att: Attachment, guard: dict, reason: str
+    ) -> ToolResult:
+        """#28：读不到提交时的附件 → 明确失败 + 重新提交入口（具体原因进诊断）。
 
-        读取前的范围核对只说明「当时」能对上；这里保证**实际读的这段时间里**文件没有
-        被换成别的版本。核对不了（读不到）同样按「不能确认」处理。
+        用户侧只有一句短文案（SUBMISSION_ATTACHMENT_READ_FAILED_NOTICE）；给模型的
+        error 里带上具体原因，机器可读的原因放 data.diagnostics，next_step=resubmit。
         """
-        if not guard.get("required"):
-            return ""
-        expected = str(guard.get("sha256") or "")
-        if not expected:
-            return "这条材料没有可核对的提交时内容版本，本次不交付读取结果；请重新提交后再读"
-        try:
-            from agent.interactive import materials as materials_module
-
-            current = materials_module.current_material_content_sha256(
-                self.attachments, att
-            )
-        except Exception as exc:  # noqa: BLE001 - 核对失败按不能确认处理（失败关闭）
-            return (
-                "读取后无法再次核对材料内容版本（"
-                + type(exc).__name__
-                + "）：本次不交付读取结果；请重新提交后再读"
-            )
-        if not current:
-            return (
-                "读取后无法再次核对材料内容版本（源文件读不到或过大）："
-                "本次不交付读取结果；请重新提交后再读"
-            )
-        if current != expected:
-            return (
-                "读取过程中这份材料的内容版本发生了变化（与提交时冻结的内容不一致）："
-                "本次不交付读取结果；请重新提交后再读"
-            )
-        return ""
+        notice = _attachment_read_failed_notice()
+        detail = str(reason or "").strip() or "提交时的内容版本无法核对"
+        return ToolResult(
+            ok=False,
+            error=notice + " 具体原因：" + detail,
+            category="unavailable",
+            recoverable=False,
+            code="material_source_changed",
+            protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+            data={
+                "attachment_id": att.id,
+                "submission_id": str(guard.get("submission_id") or ""),
+                "diagnostics": {"material": detail},
+                "next_step": "resubmit",
+            },
+        )
 
     # -- 读取 --------------------------------------------------------------
 
     async def _read(
         self, att: Attachment, *, offset: int, limit: int, fragment_offset: int = 0
     ) -> ToolResult:
-        """读取入口：先核对提交材料范围，读完后**再核对一次内容版本**才交付。
+        """读取入口：先核对提交材料范围；绑定提交时只解析**核验过的同一份字节**。
 
-        #28：绑定提交的一轮里，只交付「提交时冻结的那一份内容」；读取期间内容版本变了
-        （或核对不了）就整体失败并提示重新提交，绝不把另一版本交给模型。
+        #28：绑定提交的一轮里，只交付「提交时冻结的那一份内容」。核验与解析必须是
+        同一份字节（一次读取 + 用冻结的 sha256 校验 → 受控临时文件 → 解析），绝不
+        在核验之后按路径再读一次 —— 否则解析器读到的可能是另一个版本（A→B→A 竞态：
+        读前核对是 A、解析时是 B、读后核对又回到 A，两次核对都通过却交付了 B）。
         """
         denial, guard = self._submission_material_guard(att)
         if denial is not None:
             return denial
-        result = await self._read_content(
-            att, offset=offset, limit=limit, fragment_offset=fragment_offset
+
+        async def load_verified() -> tuple[Path | None, Path | None, str]:
+            return await self._load_verified_submission_material(att, guard)
+
+        loader = load_verified if guard.get("required") else None
+        return await self._read_content(
+            att,
+            offset=offset,
+            limit=limit,
+            fragment_offset=fragment_offset,
+            verified_loader=loader,
+            guard=guard,
         )
-        if getattr(result, "ok", False):
-            changed = self._submission_material_changed_after_read(att, guard)
-            if changed:
-                return ToolResult(
-                    ok=False,
-                    error=changed,
-                    category="unavailable",
-                    recoverable=False,
-                    code="material_source_changed",
-                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
-                    data={
-                        "attachment_id": att.id,
-                        "submission_id": str(guard.get("submission_id") or ""),
-                        "next_step": "resubmit",
-                    },
+
+    async def _load_verified_submission_material(
+        self, att: Attachment, guard: dict
+    ) -> tuple[Path | None, Path | None, str]:
+        """#28：一次读取 + 用提交时冻结的 sha256 校验，并把这份字节落到受控临时文件。
+
+        返回 (临时目录, 解析路径, 原因)：解析路径非 None 表示这份字节就是提交当时的那一份，
+        调用方负责在 finally 里清理临时目录；否则 (None, None, 可读原因)。
+        核验失败 / 冻结版本缺失 / 源文件不可读一律返回原因，绝不退回按路径读当前内容。
+        读取与落盘都在工作线程里做（分块 + 增量哈希，取消在块边界生效）。
+        """
+        try:
+            from agent.interactive import materials as materials_module
+        except Exception as exc:  # noqa: BLE001 - 互动模块不可用按失败关闭
+            return None, None, "互动材料模块不可用：" + type(exc).__name__
+        resolve = getattr(
+            materials_module, "submission_material_verified_path", None
+        )
+        read_bytes = getattr(materials_module, "read_verified_bytes_at_path", None)
+        if not callable(resolve) or not callable(read_bytes):
+            return None, None, "互动材料模块缺少核验读取入口"
+        # 路径解析 / 授权 / 冻结版本核对在**事件循环线程**上做（附件服务与数据库连接
+        # 都不是线程安全的）；工作线程只拿路径做纯文件 I/O。
+        source, reason = resolve(self.attachments, att, recorded=guard)
+        if source is None:
+            return None, None, reason
+        expected = str(guard.get("sha256") or "")
+        suffix = Path(att.original_name).suffix or ".bin"
+
+        def work(cancel: threading.Event) -> tuple[Path | None, Path | None, str]:
+            verified, failure = read_bytes(source, expected, cancel=cancel)
+            if verified is None:
+                return None, None, failure
+            temp_dir = _verified_material_dir()
+            try:
+                path = temp_dir / ("verified" + suffix)
+                path.write_bytes(verified)
+            except OSError as exc:
+                _cleanup_temp_dir(temp_dir)
+                return (
+                    None,
+                    None,
+                    "核验过的内容无法交给解析器（写临时文件失败）："
+                    + type(exc).__name__,
                 )
-        return result
+            return temp_dir, path, ""
+
+        try:
+            return await self._run_worker(work)
+        except _JobCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 核验失败按不能确认处理（失败关闭）
+            return None, None, "核验提交材料内容失败：" + type(exc).__name__
 
     async def _read_content(
-        self, att: Attachment, *, offset: int, limit: int, fragment_offset: int = 0
+        self,
+        att: Attachment,
+        *,
+        offset: int,
+        limit: int,
+        fragment_offset: int = 0,
+        verified_loader: Callable[[], Any] | None = None,
+        guard: dict | None = None,
     ) -> ToolResult:
+        """解析并交付一段内容。
+
+        verified_loader 给定时（#28 绑定提交的轮次）：先**一次读取 + 校验**拿到提交时
+        冻结的那份字节，落到受控临时文件（保留扩展名 / 文件类型信息）后只解析这一份；
+        成功、异常、取消三条路径都在 finally 里清理，绝不在核验之后按路径再读源文件。
+        """
         described = self._describe(att)
         notes: list[str] = [f"附件来源：{described['display']}"]
         if att.state == "prepared":
@@ -828,6 +909,12 @@ class ReadAttachmentTool(Tool):
             )
         path, origin = self._resolve_read_path(att)
         if path is None:
+            if verified_loader is not None:
+                # #28：绑定提交的轮次里，源文件读不到 = 提交时的内容无法核对；
+                # 按「读不到提交时的附件」失败并给重新提交入口，不退回通用读取失败。
+                return self._submission_read_failure(
+                    att, guard or {}, "源文件不可读：提交时的内容无法核对"
+                )
             # 真实读取失败路径 1/3：登记的位置已经不可用。用户可读事实只说明
             # 「没读到 + 需要重新指定位置」；给模型的「可以让用户…」仍只在 error 里。
             reason = (
@@ -980,6 +1067,50 @@ class ReadAttachmentTool(Tool):
                 "内容可能与当初保存时不同；可以让用户重新指定位置以重建副本"
             )
         mode, label, label_note = classify_readability(path.name)
+        temp_dir: Path | None = None
+        parse_path = path
+        if verified_loader is not None:
+            # #28：核验与解析必须是同一份字节 —— 核验过的字节先落到受控临时文件
+            # （保留扩展名，解析器据此判断文件类型），解析器只读这一份；
+            # 成功 / 异常 / 取消三条路径都在下面的 finally 里清理。
+            temp_dir, parse_path, reason = await verified_loader()
+            if parse_path is None:
+                return self._submission_read_failure(att, guard or {}, reason)
+            notes.append(
+                "本次解析的就是核验过的提交材料字节：内容哈希与提交时冻结的版本一致"
+            )
+        try:
+            return await self._parse_content(
+                att,
+                parse_path,
+                described=described,
+                notes=notes,
+                mode=mode,
+                label=label,
+                label_note=label_note,
+                offset=offset,
+                limit=limit,
+                fragment_offset=fragment_offset,
+            )
+        finally:
+            if temp_dir is not None:
+                _cleanup_temp_dir(temp_dir)
+
+    async def _parse_content(
+        self,
+        att: Attachment,
+        path: Path,
+        *,
+        described: dict,
+        notes: list[str],
+        mode: str,
+        label: str,
+        label_note: str,
+        offset: int,
+        limit: int,
+        fragment_offset: int,
+    ) -> ToolResult:
+        """按文件类型解析并组装结果（解析器只认传进来的这一个路径）。"""
         try:
             if mode == "text" or mode == "csv":
                 content = await self._run_worker(

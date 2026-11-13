@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from agent.interactive import (
     submission,
 )
 from agent.services.attachments import AttachmentService
+from agent.tools import attachment_tools
 
 BOARD = "board_qio032"
 SUB = "sub_qio032_a"
@@ -543,6 +545,207 @@ async def test_read_attachment_scope_matches_submission_included_materials(db_co
         assert denied.ok is False
         assert denied.code == "not_in_submission_scope"
         assert "提交" in denied.error
+
+
+# ---------------------------------------------------------------------------
+# #28 返修：解析器必须消费「提交时核验过的那一份字节」（A→B→A 竞态）
+# ---------------------------------------------------------------------------
+#
+# 已证实的残留缺陷：旧实现读前核对一次、读后核对一次，但解析器仍**单独按路径**
+# 打开源文件。验收让源文件在解析前是 A、解析时变成同大小 B、解析后恢复 A：
+# 两次核对都通过，工具却把 B 的正文交给了模型。
+#
+# 现在的实现：一次读取 + 用提交时冻结的 sha256 校验 → 受控临时文件 → 解析器只读
+# 这一份；解析期间源路径怎么变都不影响交付内容。
+
+
+def _swap_source_during_parse(
+    monkeypatch,
+    source: Path,
+    *,
+    body_a: bytes,
+    body_b: bytes,
+    seen: list[dict],
+) -> None:
+    """在解析器开始读文件的**那一刻**把源文件换成同大小 B，解析后再换回 A。
+
+    这正是验收要求的可控 A→B→A 竞态：换入换出都发生在「读前核对之后、读后核对之前」。
+    """
+    original = attachment_tools._extract_text
+
+    def hooked(att, path, offset, limit, fragment_offset, label, cancel):
+        source.write_bytes(body_b)
+        seen.append({"parse_path": str(path), "source": str(source)})
+        try:
+            return original(att, path, offset, limit, fragment_offset, label, cancel)
+        finally:
+            source.write_bytes(body_a)
+
+    monkeypatch.setattr(attachment_tools, "_extract_text", hooked)
+
+
+def _record_verified_dirs(monkeypatch) -> list[Path]:
+    """记录核验材料临时目录，用来断言成功 / 异常 / 取消三条路径都清理干净。"""
+    created: list[Path] = []
+    original = attachment_tools._verified_material_dir
+
+    def spy() -> Path:
+        path = original()
+        created.append(path)
+        return path
+
+    monkeypatch.setattr(attachment_tools, "_verified_material_dir", spy)
+    return created
+
+
+async def test_parse_reads_verified_bytes_not_source_path(db_conn, svc, tmp_path, monkeypatch):
+    """A→B→A：解析时源文件被换成同大小 B，工具仍只交付 A（或明确失败），绝不含 B。"""
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    _ensure(db_conn)
+    body_a = b"AAAA-OLD-CONTENT"
+    body_b = b"BBBB-NEW-CONTENT"
+    assert len(body_a) == len(body_b), "验收要求同大小替换：只按大小看不出来"
+    att = _ready(svc, tmp_path, "竞态.txt", body_a)
+    # 解析器真正会打开的那个文件（QIO 保存的副本；历史记录口径见 content_target）。
+    target = svc.content_target(att.id)
+    source = Path(target[0]) if isinstance(target, tuple) else Path(target)
+    assert source.read_bytes() == body_a
+
+    state = _saved_state(db_conn)
+    state, _card_id = _add_file_card(state, att=att, name="竞态.txt")
+    _save(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
+
+    seen: list[dict] = []
+    _swap_source_during_parse(
+        monkeypatch, source, body_a=body_a, body_b=body_b, seen=seen
+    )
+    temp_dirs = _record_verified_dirs(monkeypatch)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        result = await tool.run(attachment_id=att.id)
+
+    assert seen, "解析器必须真的跑过（否则这条用例没有覆盖到竞态窗口）"
+    dumped = json.dumps(
+        {"content": result.content, "error": result.error, "data": result.data},
+        ensure_ascii=False,
+    )
+    assert body_b.decode() not in dumped, "绝不能把解析时换入的 B 版本交付出去"
+    # 验收口径：只返回 A 正文，或明确失败；两种都不许含 B。
+    # 当前实现是前者（核验字节已落临时副本，源路径怎么变都不影响解析结果）。
+    if result.ok:
+        assert body_a.decode() in result.content, "成功时交付的必须是提交时的 A 正文"
+    else:
+        # 明确失败也可以，但必须是「读不到提交时的附件 + 重新提交」这一种。
+        assert result.code == "material_source_changed", result.code
+        assert "读不到提交时的附件，请重新提交。" in (result.error or "")
+        assert result.data["next_step"] == "resubmit"
+    # 解析器读的是核验过的临时副本，不是源路径（源路径在解析期间是 B）。
+    assert all(item["parse_path"] != str(source) for item in seen), seen
+    # 成功 / 异常 / 取消三条路径都要清理：这里覆盖成功路径。
+    assert temp_dirs, "绑定提交的读取必须走核验临时文件"
+    assert all(not path.exists() for path in temp_dirs), temp_dirs
+
+
+async def test_stable_same_size_change_is_rejected(db_conn, svc, tmp_path):
+    """稳定变化的同大小文件（读的时候就是 B）必须被拒绝，不交付 B 正文。"""
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    _ensure(db_conn)
+    body_a = b"AAAA-OLD-CONTENT"
+    body_b = b"BBBB-NEW-CONTENT"
+    assert len(body_a) == len(body_b)
+    att = _ready(svc, tmp_path, "稳定变化.txt", body_a)
+    state = _saved_state(db_conn)
+    state, _card_id = _add_file_card(state, att=att, name="稳定变化.txt")
+    _save(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
+
+    # 提交后真实替换成同大小 B，并且**保持**是 B（不是竞态，是稳定变化）。
+    target = svc.content_target(att.id)
+    Path(target[0] if isinstance(target, tuple) else target).write_bytes(body_b)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        result = await tool.run(attachment_id=att.id)
+
+    assert result.ok is False, result
+    assert result.code == "material_source_changed", result.code
+    assert "读不到提交时的附件，请重新提交。" in (result.error or "")
+    assert result.data["next_step"] == "resubmit"
+    assert result.data["diagnostics"]["material"], result.data
+    dumped = json.dumps(
+        {"content": result.content, "error": result.error, "data": result.data},
+        ensure_ascii=False,
+    )
+    assert body_b.decode() not in dumped
+
+
+async def test_verified_temp_dir_is_cleaned_on_parse_failure(db_conn, svc, tmp_path, monkeypatch):
+    """解析抛异常时，核验材料的临时目录同样要清理干净（异常路径）。"""
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    _ensure(db_conn)
+    att = _ready(svc, tmp_path, "异常路径.txt", b"exception path body")
+    state = _saved_state(db_conn)
+    state, _card_id = _add_file_card(state, att=att, name="异常路径.txt")
+    _save(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
+
+    temp_dirs = _record_verified_dirs(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise OSError("parser exploded")
+
+    monkeypatch.setattr(attachment_tools, "_extract_text", boom)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        result = await tool.run(attachment_id=att.id)
+
+    assert result.ok is False, result
+    assert result.code == attachment_tools.FILE_READ_FAILED_CODE, result.code
+    assert temp_dirs, "绑定提交的读取必须走核验临时文件"
+    assert all(not path.exists() for path in temp_dirs), temp_dirs
+
+
+async def test_verified_temp_dir_is_cleaned_on_cancel(db_conn, svc, tmp_path, monkeypatch):
+    """读取被取消时，核验材料的临时目录同样要清理干净（取消路径）。"""
+    import threading
+
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    _ensure(db_conn)
+    att = _ready(svc, tmp_path, "取消路径.txt", b"cancel path body")
+    state = _saved_state(db_conn)
+    state, _card_id = _add_file_card(state, att=att, name="取消路径.txt")
+    _save(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
+
+    temp_dirs = _record_verified_dirs(monkeypatch)
+    started = threading.Event()
+    original = attachment_tools._extract_text
+
+    def slow(att_obj, path, offset, limit, fragment_offset, label, cancel):
+        started.set()
+        while cancel is None or not cancel.is_set():
+            time.sleep(0.005)
+        raise attachment_tools._JobCancelled()
+
+    monkeypatch.setattr(attachment_tools, "_extract_text", slow)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        task = asyncio.create_task(tool.run(attachment_id=att.id))
+        assert await asyncio.to_thread(started.wait, 5.0), "解析没有开始"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert temp_dirs, "绑定提交的读取必须走核验临时文件"
+    assert all(not path.exists() for path in temp_dirs), temp_dirs
 
 
 async def test_board_tools_reject_unbound_normal_mode(db_conn):

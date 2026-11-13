@@ -423,6 +423,31 @@ SUBMISSION_MATERIAL_UNVERIFIABLE = (
     "相同文件名和相同大小都不能证明内容没有变化，本次不读取；请重新提交后再读"
 )
 
+#: #28：绑定提交的**附件读取**失败时给界面的短文案（具体原因放 data.diagnostics）。
+#: 与 SUBMISSION_READ_FAILED_NOTICE（板面 / 材料入口）分开：这里说的是「附件」。
+SUBMISSION_ATTACHMENT_READ_FAILED_NOTICE = "读不到提交时的附件，请重新提交。"
+
+#: #28：核验失败的可读原因（一次读取 + 校验与附件读取入口共用同一份措辞）。
+_MATERIAL_UNREADABLE_REASON = (
+    "这张材料在提交后无法核对内容版本（源文件不可读）："
+    "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
+)
+_MATERIAL_CHANGED_REASON = (
+    "这张材料在提交后内容已变化（内容哈希与提交时不一致，大小可能相同）："
+    "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
+)
+_MATERIAL_TOO_LARGE_REASON = (
+    f"这份材料超过「核对后才能交付」的大小上限（{MATERIAL_HASH_MAX_BYTES} 字节）："
+    "本次没有读取，也不能保证它还是提交当时的内容；请重新提交，或换一份更小的材料"
+)
+
+#: 核验读取的分块大小（工作线程按块读 + 增量算哈希，取消能在块边界生效）
+_VERIFY_CHUNK_BYTES = 1024 * 1024
+
+
+class MaterialReadCancelled(Exception):
+    """核验读取被协作取消（工作线程在分块边界检查到取消标志）。"""
+
 
 def _read_grant_reason(att: Any) -> str:
     """本轮读取授权事实：没通过授权就如实说「没读」，不冒充「源文件不可读 / 内容变了」。"""
@@ -490,6 +515,115 @@ def submission_material_verdict(
     return ""
 
 
+def submission_material_verified_path(
+    service: Any,
+    att: Any,
+    *,
+    recorded: dict | None = None,
+    respect_read_grants: bool = True,
+) -> tuple[Path | None, str]:
+    """#28：核验读取的**前置判定 + 路径解析**（必须在事件循环线程上调用）。
+
+    附件服务与数据库连接都不是线程安全的：路径解析、授权、冻结版本核对都在这里一次
+    做完，工作线程只拿返回的路径做纯文件 I/O（见 read_verified_bytes_at_path）。
+    返回 (路径, "") 表示可以继续读；否则 (None, 可读原因)。
+    """
+    reason = _submission_material_precheck(att, recorded)
+    if reason:
+        return None, reason
+    if respect_read_grants:
+        reason = _read_grant_reason(att)
+        if reason:
+            return None, reason
+    path = _material_path(service, att, respect_read_grants=respect_read_grants)
+    if path is None:
+        return None, _MATERIAL_UNREADABLE_REASON
+    return path, ""
+
+
+def read_verified_bytes_at_path(
+    path: Path | str,
+    recorded_sha: str,
+    *,
+    cancel: Any = None,
+) -> tuple[bytes | None, str]:
+    """#28：按路径**一次读取 + 校验**（纯文件 I/O，可在工作线程里跑）。
+
+    分块推进并增量算哈希（不在内存里再复制一份整文件），每块检查一次协作取消标志；
+    超过 MATERIAL_HASH_MAX_BYTES 时边读边停。返回 (字节, "") 表示这份字节已用冻结的
+    sha256 核对过；否则 (None, 可读原因)。
+    """
+    expected = str(recorded_sha or "").strip()
+    if not expected:
+        return None, SUBMISSION_MATERIAL_UNVERIFIABLE
+    target = Path(path)
+    try:
+        size = int(target.stat().st_size)
+    except OSError:
+        return None, _MATERIAL_UNREADABLE_REASON
+    if size > MATERIAL_HASH_MAX_BYTES:
+        return None, _MATERIAL_TOO_LARGE_REASON
+    digest = hashlib.sha256()
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        with open(target, "rb") as handle:
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise MaterialReadCancelled()
+                block = handle.read(_VERIFY_CHUNK_BYTES)
+                if not block:
+                    break
+                total += len(block)
+                if total > MATERIAL_HASH_MAX_BYTES:
+                    return None, _MATERIAL_TOO_LARGE_REASON
+                digest.update(block)
+                chunks.append(block)
+    except MaterialReadCancelled:
+        raise
+    except OSError:
+        return None, _MATERIAL_UNREADABLE_REASON
+    if digest.hexdigest() != expected:
+        return None, _MATERIAL_CHANGED_REASON
+    return b"".join(chunks), ""
+
+
+def read_verified_submission_material_bytes(
+    service: Any,
+    att: Any,
+    card: dict | None = None,
+    *,
+    recorded: dict | None = None,
+    respect_read_grants: bool = True,
+    cancel: Any = None,
+) -> tuple[bytes | None, str]:
+    """#28：**一次读取 + 校验**（可分块取消），返回的字节就是允许交付的那一份内容。
+
+    与 verified_submission_material_bytes 同一份判定，区别只有两点：
+
+    * 读取按块推进并**增量算哈希**（不在内存里再复制一份整文件），每块检查一次
+      协作取消标志 —— 附件读取在工作线程里跑，取消/超时要在块边界生效；
+    * 超过 MATERIAL_HASH_MAX_BYTES 时**边读边停**（不先整份读进内存再判大小）。
+
+    返回 (content, "") 表示这份字节已用提交时冻结的 sha256 核对过；否则 (None, 原因)。
+    调用方必须用返回的字节去解析 / 交付（不要再按路径读第二次），否则核对与交付
+    可能不是同一个版本。
+    """
+    path, reason = submission_material_verified_path(
+        service,
+        att,
+        recorded=recorded,
+        respect_read_grants=respect_read_grants,
+    )
+    if path is None:
+        return None, reason
+    return read_verified_bytes_at_path(
+        path,
+        str((recorded or {}).get("sha256") or ""),
+        cancel=cancel,
+    )
+
+
 def verified_submission_material_bytes(
     service: Any,
     att: Any,
@@ -504,47 +638,13 @@ def verified_submission_material_bytes(
     调用方必须用返回的字节去解析 / 交付（不要再按路径读第二次），否则核对与交付
     可能不是同一个版本。
     """
-    reason = _submission_material_precheck(att, recorded)
-    if reason:
-        return None, reason
-    if respect_read_grants:
-        reason = _read_grant_reason(att)
-        if reason:
-            return None, reason
-    recorded_sha = str((recorded or {}).get("sha256") or "").strip()
-    path = _material_path(service, att, respect_read_grants=respect_read_grants)
-    if path is None:
-        return None, (
-            "这张材料在提交后无法核对内容版本（源文件不可读）："
-            "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
-        )
-    try:
-        size = int(path.stat().st_size)
-    except OSError:
-        size = -1
-    if size < 0:
-        return None, (
-            "这张材料在提交后无法核对内容版本（源文件不可读）："
-            "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
-        )
-    if size > MATERIAL_HASH_MAX_BYTES:
-        return None, (
-            f"这份材料超过「核对后才能交付」的大小上限（{MATERIAL_HASH_MAX_BYTES} 字节）："
-            "本次没有读取，也不能保证它还是提交当时的内容；请重新提交，或换一份更小的材料"
-        )
-    try:
-        content = path.read_bytes()
-    except OSError:
-        return None, (
-            "这张材料在提交后无法核对内容版本（源文件不可读）："
-            "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
-        )
-    if hashlib.sha256(content).hexdigest() != recorded_sha:
-        return None, (
-            "这张材料在提交后内容已变化（内容哈希与提交时不一致，大小可能相同）："
-            "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
-        )
-    return content, ""
+    return read_verified_submission_material_bytes(
+        service,
+        att,
+        card,
+        recorded=recorded,
+        respect_read_grants=respect_read_grants,
+    )
 
 
 def material_change_reason(
