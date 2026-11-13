@@ -919,6 +919,19 @@ def _tool_rows(ctx: Any, conn: sqlite3.Connection, acked: set[str]) -> list[dict
         name = str(row["tool_name"] or "")
         if name in subagent_tools or name in _SHELL_TOOLS:
             continue
+        # #12 三处去重核对：文件**实际读取失败**在「任务提示 / 轮内工具卡 / 答案注记」
+        # 三处只出现一次 —— 轮内工具卡已经就地在受影响的文件旁显示（TOOL_END 的
+        # file_read 事实），答案注记也跳过了它；任务栏沿「单次工具失败默认只留在
+        # 执行记录」的口径不再另列一条。判定只认结构化字段（tool_name / status /
+        # code），不解析 error 文本：权限、审批、限额等其它 read_attachment 失败不是
+        # 文件读取，仍按既有规则展示。执行记录（tool_records 与
+        # /api/tool-records/{id}）原样保留，不删除、不改写成成功。
+        if (
+            name == "read_attachment"
+            and str(row["status"] or "") == "failed"
+            and str(row["code"] or "") == "file_read_failed"
+        ):
+            continue
         if str(row["id"]) in hidden:
             continue
         raw_status = str(row["status"] or "")
