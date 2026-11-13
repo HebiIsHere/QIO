@@ -167,5 +167,8 @@ if callable(stamper):
 ### 7.7 未做 / 风险（第三轮）
 
 - submission.py 的 stamp 调用归 i-submit；未接线前 #28 仍只按 size 核对（现状如实提示，不静默换内容）。
-- 浏览器级 E2E ①-6b（TXT 首轮交付）仍需 Lead 复跑确认；后端真实编排链路测试已 3/3 通过。
+- 浏览器级 E2E ①-6b（TXT 首轮交付）：i-submit 已查明根因是 **E2E 脚本自相矛盾**（TXT 卡提交前被设为「显示但不参与」，
+  且同一 txtBody 同时用于 ①-6b 期望出现 / ①-7 期望不出现），不是 materials 解析问题；i-submit 用真实编排链路
+  （fake adapter 捕获首轮请求）验证参与 TXT 文件正文正常交付（source=attachment_text）、排除/隐藏不交付。
+  本分支后端链路测试 3/3 通过；E2E 脚本修正归 Lead/i-submit，本分支无需改动。
 - `MATERIAL_HASH_MAX_BYTES` 之外的超大材料：有记录哈希但无法核对 → 拒绝交付并要求重新提交（保守、如实）。
