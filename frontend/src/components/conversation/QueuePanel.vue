@@ -41,8 +41,15 @@ async function cancelTurn(turnId: string, label: string): Promise<void> {
   cancelError.value = "";
   notice.value = "";
   try {
-    await api.cancelTurn(turnId);
-    notice.value = `已提交「${label}」的取消请求（以后端确认为准）`;
+    // 文案 11：取消回执用**实际状态**（服务端说取消成功就写已取消，说没取消就如实说没取消）
+    const receipt = await api.cancelTurn(turnId);
+    const cancelled = (receipt as { cancelled?: unknown } | null | undefined)?.cancelled;
+    if (cancelled === true) notice.value = `已取消「${label}」`;
+    else if (cancelled === false) {
+      notice.value = `后端没有取消「${label}」：这一轮可能已经开始，可以按「停止」处理`;
+    } else {
+      notice.value = `取消请求已提交，后端没有给出取消结论：「${label}」`;
+    }
   } catch (e) {
     cancelError.value = `取消没有成功：${(e as Error).message}（任务状态未改变，可以重试）`;
   } finally {
@@ -52,7 +59,8 @@ async function cancelTurn(turnId: string, label: string): Promise<void> {
 
 const STATE_LABEL: Record<string, string> = {
   running: "运行中",
-  queued: "排队中",
+  // 文案 11：队列常态用「待发送」
+  queued: "待发送",
   cancelled: "已取消",
   local: "本机已提交",
 };
@@ -62,10 +70,6 @@ void props;
 
 <template>
   <div class="queue-panel" data-panel-section="queue">
-    <p class="lead">
-      这里只列出已经交给 QIO 的消息。取消是请求，以后端确认为准。
-    </p>
-
     <ul v-if="rows.length" class="list">
       <li
         v-for="row in rows"

@@ -3,7 +3,8 @@
  * 星球页（全屏覆盖层）—— 记忆星球页改版（契约 _MP-COMMON §3）。
  *
  * 结构：`.planet-view`（fixed 全屏、overflow: clip）内部多一层 `.planet-content`
- * （`inset: var(--titlebar-height) 0 0 0`）。星球层与管理区都在这层里：
+ * （`inset: var(--chrome-top) var(--window-frame-inset) …` —— 可见内容区顶边 = 透明留白 + 标题条实际高度）。
+ * 星球层与管理区都在这层里：
  * - 默认浏览态：管理区收起，星球在**内容区域**里水平+垂直居中（不再是整窗居中，
  *   所以球心比基线低半个标题条，这正是本轮要改对的位置）；
  * - 管理展开：管理区在右侧按 `--mp` 宽度展开，星球层靠 CSS 位移把球心挪到内容区左边缘，
@@ -1134,8 +1135,84 @@ onUnmounted(() => {
   abandonContinuum();
 });
 
+/* ------------------------------------------------------------------
+ * 模态对话框语义与焦点循环（#38 / 本组契约 §4.3，navigation 实现）
+ *
+ * 星球打开时盖住对话页，是事实上的模态层：根层必须暴露 role="dialog" +
+ * aria-modal="true" + data-planet-overlay（conversation 据此给背景加 inert），
+ * 键盘焦点不能跑回下层页面。球态（关闭常驻、只画入口小球）不是对话框，
+ * 不能把整窗暴露成 dialog/aria-modal。
+ * ------------------------------------------------------------------ */
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+/** 星球内当前可用的焦点目标（排除 inert 子树 / aria-hidden / display:none / visibility:hidden）。 */
+function focusablesInPlanet(): HTMLElement[] {
+  const root = rootRef.value;
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((el) => {
+    if (el.closest("[inert]")) return false;
+    if (el.getAttribute("aria-hidden") === "true") return false;
+    if (typeof getComputedStyle === "function") {
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+    return true;
+  });
+}
+
+/** 打开时把初始焦点移入星球内第一个可用控件（没有可用控件时落在根层，Tab 仍能进入）。 */
+function focusInitialPlanetControl(): void {
+  const root = rootRef.value;
+  if (!root) return;
+  const first = focusablesInPlanet()[0];
+  if (first) first.focus();
+  else root.focus();
+}
+
+watch(
+  () => props.open,
+  (open) => {
+    if (!open) return;
+    void nextTick(() => {
+      if (props.open) focusInitialPlanetControl();
+    });
+  },
+  { flush: "post" },
+);
+onMounted(() => {
+  if (props.open) void nextTick(() => focusInitialPlanetControl());
+});
+
+/** Tab / Shift+Tab 在星球内循环：最后一个回第一个，第一个 Shift+Tab 回最后一个。 */
+function trapTabInPlanet(e: KeyboardEvent): void {
+  const items = focusablesInPlanet();
+  if (!items.length) {
+    e.preventDefault();
+    rootRef.value?.focus();
+    return;
+  }
+  const active = document.activeElement as HTMLElement | null;
+  const index = active ? items.indexOf(active) : -1;
+  if (e.shiftKey) {
+    if (index <= 0) {
+      e.preventDefault();
+      items[items.length - 1].focus();
+    }
+    return;
+  }
+  if (index === -1 || index === items.length - 1) {
+    e.preventDefault();
+    items[0].focus();
+  }
+}
+
 function onKeydown(e: KeyboardEvent) {
-  if (!props.open) return; // 已关闭但实例常驻：不能再响应 Esc
+  if (!props.open) return; // 已关闭但实例常驻：不能再响应 Esc / 焦点循环
+  if (e.key === "Tab") {
+    trapTabInPlanet(e);
+    return;
+  }
   if (e.key !== "Escape") return;
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
@@ -1568,13 +1645,20 @@ async function close() {
   <div
     ref="rootRef"
     class="planet-view"
+    :role="open ? 'dialog' : undefined"
+    :aria-modal="open ? 'true' : undefined"
+    :aria-label="open ? '话题星球' : undefined"
+    :aria-hidden="open ? undefined : 'true'"
+    :tabindex="open ? -1 : undefined"
+    :data-planet-overlay="open ? '' : undefined"
     :class="{ entered, closing, settling, layers: layersIn, armed: stageArmed, curtain: curtainOn, ball: ballMode, tail: tailMode, managing: managingActive, stacked }"
     :style="[demoStyle, ballMode ? { opacity: String(ballOpacity) } : null]"
     :data-tab="manageTab"
     :data-view="manageView"
   >
     <!-- 内容区域（契约 §3.1）：位于全局栏下方。星球层与管理区都在这层里，
-         所以管理区永远在全局栏下面展开；layoutOrigin 的 offsetParent 链会加回标题条高度。
+         所以管理区永远在全局栏下面展开；layoutOrigin 的 offsetParent 链会加回
+         「透明留白 + 标题条」的实际底边（--chrome-top），不是从窗口客户区顶算。
          星球层铺满整个内容区且**尺寸不随管理区变化**（画布不 resize → 球体直径绝对不变），
          管理展开只把画布整体左移半个画布宽：球心从「内容宽/2」连续移到 0，只剩右半球可见。 -->
     <div ref="contentRef" class="planet-content" v-qio-scrollbar data-scroll="planet-content">
@@ -1735,8 +1819,11 @@ async function close() {
 .planet-content {
   position: absolute;
   /* 内容层落在可见内容区内：留白内不排版任何控件（planet-view 本身仍 fixed inset:0，
-     保证星球转场用 offsetParent 链算出的布局原点=视口原点，球态/转场对齐不受影响） */
-  inset: var(--titlebar-height) var(--window-frame-inset) var(--window-frame-inset) var(--window-frame-inset);
+     保证星球转场用 offsetParent 链算出的布局原点=视口原点，球态/转场对齐不受影响）。
+     #36/#75：顶边必须是「透明留白 + 标题条」的组合令牌 --chrome-top，而不是裸的
+     --titlebar-height —— 后者从客户区顶算，会把内容（含管理区导航/页面工具行）
+     塞进窗口层（WindowChrome，z-index 240）底下，按钮上半截点不到。 */
+  inset: var(--chrome-top) var(--window-frame-inset) var(--window-frame-inset) var(--window-frame-inset);
   display: flex;
   flex-direction: column;
   /* 默认浏览态**不裁切**：球顶弧可以像基线一样伸到全局栏后面，美术与基线一致。
@@ -1905,8 +1992,13 @@ async function close() {
 
 .close-btn {
   /* 让开自定义标题条（窗口层，比这里的 60 高）：否则条会盖住按钮上半截，
-     用户点上去只看到「没反应」 */
-  position: absolute; top: calc(var(--titlebar-height) + 14px); left: 14px; z-index: 60;
+     用户点上去只看到「没反应」。
+     #36：标题条的实际底边是 --chrome-top（含前面 28px 透明留白），左边距也必须加回
+     留白（--window-frame-inset），否则按钮左边落在透明留白带里、上沿被顶部拖动区吃掉。 */
+  position: absolute;
+  top: calc(var(--chrome-top) + 14px);
+  left: calc(var(--window-frame-inset) + 14px);
+  z-index: 60;
   color: var(--text-strong);
   font-family: var(--sans);
   font-size: var(--fs-sm);
@@ -1921,7 +2013,9 @@ async function close() {
 .close-btn:hover { border-color: var(--accent); color: var(--accent); }
 .close-btn:disabled { opacity: 0.6; cursor: default; }
 .hud {
-  position: absolute; bottom: 14px; left: 14px; font-size: 12px; color: var(--text-muted);
+  /* #36：与可见内容区同源，不落进透明留白带 */
+  position: absolute; bottom: calc(var(--window-frame-inset) + 14px);
+  left: calc(var(--window-frame-inset) + 14px); font-size: 12px; color: var(--text-muted);
   padding: 6px 12px;
 }
 /* 本页圆角统一 14px（本轮需求）：这几个浮层复用共享的 .qio-glass--chip
@@ -1952,8 +2046,10 @@ async function close() {
 .webgl-fallback .wf-title { font-size: 19px; color: var(--text-strong); }
 .webgl-fallback .wf-text { font-size: 13px; color: var(--text-secondary); line-height: 1.75; }
 .load-error {
-  position: absolute; top: calc(var(--titlebar-height) + 14px); left: 50%; transform: translateX(-50%);
-  z-index: 61; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 200px));
+  /* #36：标题条实际底边用 --chrome-top；宽度按可见内容区收，不按整个客户区 */
+  position: absolute; top: calc(var(--chrome-top) + 14px); left: 50%; transform: translateX(-50%);
+  z-index: 61; display: flex; align-items: center; gap: 10px;
+  max-width: min(560px, calc(100vw - 2 * var(--window-frame-inset) - 200px));
   padding: 8px 12px; border-radius: var(--qio-ui-radius);
   /* 危险色调通过玻璃自己的令牌表达：直接写 border-color 会覆盖掉左右冷暖边，
      把「透明介质」压成一块普通描边色块（实测：两边颜色变成完全相同的红）。 */
@@ -1978,7 +2074,7 @@ async function close() {
   display: block; margin-top: 2px; color: var(--text-secondary); overflow-wrap: anywhere;
 }
 .planet-loading {
-  position: absolute; top: calc(var(--titlebar-height) + 14px); left: 50%; transform: translateX(-50%); z-index: 61;
+  position: absolute; top: calc(var(--chrome-top) + 14px); left: 50%; transform: translateX(-50%); z-index: 61;
   padding: 8px 14px; border-radius: var(--qio-ui-radius); font-size: 12.5px;
   color: var(--text-secondary);
 }

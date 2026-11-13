@@ -20,7 +20,7 @@ import { vQioTip } from "../composables/useQioTip";
  * 6. **原文默认简述 + 就地展开**（滚动规则）：长原文默认两行，点「展开原文」看全文 ——
  *    不在同一阅读流里再切出一个小滚动窗口，也不把全文藏进只有悬停才看得到的 title。
  */
-import { computed, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import QConfirm from "./ui/QConfirm.vue";
 import { useSessionStore } from "../stores/session";
 import {
@@ -29,6 +29,17 @@ import {
   type RecoveryOutcome,
 } from "../stores/session";
 import type { RecoveryActionView, RecoveryRecordView } from "../services/recoveryApi";
+
+const props = withDefaults(
+  defineProps<{
+    /**
+     * #78：要滚动并聚焦的那一条（由对话页在「去处理」时传入）。
+     * 变化时滚动到同一条并聚焦它的第一个可用动作；目标已不存在时给真实反馈。
+     */
+    focusRecordId?: string | null;
+  }>(),
+  { focusRecordId: null },
+);
 
 const session = useSessionStore();
 /** 哪些条目展开了详情（默认全部收起） */
@@ -39,6 +50,13 @@ const openTextIds = ref<string[]>([]);
 const localErrors = ref<Record<string, string>>({});
 /** 每条自己最近一次的成功说明（列表消失前也能看到结果） */
 const localNotices = ref<Record<string, string>>({});
+/**
+ * 每条最近一次**失败的动作 id**（记录 id → 动作 id）。
+ *
+ * #77：重试必须重试原来那个动作 —— 用「第一个可用动作」顶替，会让用户在
+ * 「忽略」失败后点重试却执行了「继续发送」，两件事的后果完全不同。
+ */
+const failedActions = ref<Record<string, string>>({});
 /**
  * 正在等用户确认「旧执行者已停止」的那一条（F01）。
  *
@@ -62,8 +80,66 @@ const hiddenCount = computed(() =>
   Math.max(0, Number(session.recoveryTotal || 0) - count.value),
 );
 
-const summary = computed(() =>
-  count.value === 1 ? "有 1 条未完成事项" : `有 ${count.value} 条未完成事项`,
+/**
+ * 文案 5：整个窗口只用一个标题「未完成事项 · N」。
+ * 页面侧不再重复写标题/数量；读取失败或读取中时只保留标题本身。
+ */
+const titleText = computed(() =>
+  count.value > 0 ? `未完成事项 · ${count.value}` : "未完成事项",
+);
+
+const rootEl = ref<HTMLElement | null>(null);
+/** #78：要定位的那条已经不存在时的真实反馈（不静默、不假装已经定位）。 */
+const focusError = ref("");
+/** 刚被定位的那一条（短暂高亮），只是让用户看见「就是这条」。 */
+const focusedId = ref("");
+let focusTimer: ReturnType<typeof setTimeout> | null = null;
+
+function recordElement(recordId: string): HTMLElement | null {
+  const root = rootEl.value;
+  if (!root) return null;
+  const rows = root.querySelectorAll("[data-record-id]");
+  for (const row of Array.from(rows)) {
+    if ((row as HTMLElement).dataset.recordId === recordId) return row as HTMLElement;
+  }
+  return null;
+}
+
+/** #78：滚动到同一条并聚焦它的第一个可操作按钮（没有就聚焦详情入口）。 */
+async function locateFocus(recordId: string): Promise<void> {
+  const id = String(recordId ?? "").trim();
+  if (!id) return;
+  focusError.value = "";
+  focusedId.value = "";
+  if (focusTimer) clearTimeout(focusTimer);
+  await nextTick();
+  if (!currentRecord(id)) {
+    // 目标已消失：这是必须让用户知道的事实，不能静默打开一个「什么都没发生」的窗口
+    focusError.value =
+      "要定位的这条未完成事项已经不存在：可能已经被处理，或后端已经清理（清单会随刷新更新）。如需核对，可以回到任务列表刷新后再看。";
+    return;
+  }
+  const row = recordElement(id);
+  if (!row) return;
+  row.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  const target =
+    row.querySelector<HTMLElement>("button.btn-action:not([disabled])") ??
+    row.querySelector<HTMLElement>("button.btn-details") ??
+    row;
+  target?.focus?.();
+  focusedId.value = id;
+  focusTimer = setTimeout(() => {
+    focusTimer = null;
+    focusedId.value = "";
+  }, 1800);
+}
+
+watch(
+  () => props.focusRecordId,
+  (value) => {
+    if (value) void locateFocus(value);
+  },
+  { immediate: true },
 );
 
 function isOpen(recordId: string): boolean {
@@ -95,14 +171,33 @@ function isLongText(text: string): boolean {
   return text.length > 80 || text.includes("\n");
 }
 
+/**
+ * Esc 分层（#79）：先收这一块里展开的详情/原文/确认，再让调用方收弹窗。
+ *
+ * 返回 true = 本次 Esc 已被这里消费（调用方不要再关窗口）；
+ * 返回 false = 这里没有可收的内层，调用方按自己的层级继续处理。
+ */
+function handleEscape(): boolean {
+  if (confirmingId.value) {
+    confirmingId.value = "";
+    return true;
+  }
+  if (openIds.value.length || openTextIds.value.length) {
+    openIds.value = [];
+    openTextIds.value = [];
+    return true;
+  }
+  return false;
+}
+
 /** Esc 只收起这一块里展开的详情，不动任何记录、不碰别的组件。 */
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
-  if (!openIds.value.length && !openTextIds.value.length) return;
-  event.stopPropagation();
-  openIds.value = [];
-  openTextIds.value = [];
+  if (handleEscape()) event.stopPropagation();
 }
+
+/** #79：把 Esc 分层能力交给对话页（先调它，false 再关弹窗）。 */
+defineExpose({ handleEscape });
 
 /** 消息原文；派生任务没有用户原文，就给一句不编造的说明。 */
 function messageOf(record: RecoveryRecordView): string {
@@ -132,43 +227,142 @@ function actionLabel(action: RecoveryActionView): string {
   return recoveryActionLabel(action.id, action.label);
 }
 
+/**
+ * 文案 6：把「具体后果」放在对应动作旁（页面的通用导语删掉后，用户仍要能预判）。
+ * 只描述这个动作真的会做什么/不会做什么，不重复禁用原因。
+ */
+function recoveryActionEffect(actionId: string): string {
+  if (actionId === "continue") return "按原话题重新排队，不会新建一条";
+  if (actionId === "repair") return "只修好重发关系，不会自动重发";
+  if (actionId === "ignore") return "不再提示；原文与记录仍然保留";
+  if (actionId === "requeue") return "放回待执行队列，不改已尝试次数";
+  if (actionId === "confirm_stopped") return "只记录你的判断，不执行任何东西";
+  if (actionId === "retry_answer" || actionId === "retry_topic_answer") {
+    return "只重试这一次回答，不重发消息";
+  }
+  return "";
+}
+
+function actionEffect(action: RecoveryActionView): string {
+  return action.enabled ? recoveryActionEffect(action.id) : "";
+}
+
+/**
+ * 文案 7：多个动作共用的禁用原因只显示一次；不同原因分别保留。
+ * 返回按「原因」分组后的禁用动作（同一句原因里列出所有受它影响的动作）。
+ */
+function blockedGroups(record: RecoveryRecordView): { reason: string; labels: string[] }[] {
+  const groups: { reason: string; labels: string[] }[] = [];
+  for (const action of actionsOf(record)) {
+    if (action.enabled) continue;
+    const reason = (action.reason || "").trim();
+    if (!reason) continue;
+    const existing = groups.find((group) => group.reason === reason);
+    if (existing) existing.labels.push(actionLabel(action));
+    else groups.push({ reason, labels: [actionLabel(action)] });
+  }
+  return groups;
+}
+
+/** 就地写一条失败原因（清掉同一行的成功说明）。 */
+function sayError(id: string, message: string): void {
+  localNotices.value = { ...localNotices.value, [id]: "" };
+  localErrors.value = { ...localErrors.value, [id]: message };
+}
+
+/** 清单里当前的那条记录（没有 = 已经被处理 / 被后端清理）。 */
+function currentRecord(recordId: string): RecoveryRecordView | null {
+  return items.value.find((row) => row.record_id === recordId) ?? null;
+}
+
+/**
+ * #77：动作开始前核对「这条记录还在 + 这个动作还在 + 当前真的可用」。
+ * 任何一项不成立都给出真实原因（不盲目再打一次注定失败的请求，也不静默）。
+ */
+function readyAction(recordId: string, actionId: string): RecoveryActionView | null {
+  const current = currentRecord(recordId);
+  if (!current) {
+    sayError(
+      recordId,
+      "这条未完成事项已经不在清单里：可能已经被处理，或后端已经清理（刷新清单可以确认）。",
+    );
+    return null;
+  }
+  const action = actionsOf(current).find((item) => item.id === actionId) ?? null;
+  if (!action) {
+    sayError(recordId, "这个操作在当前状态下已经不存在（记录可能已经变化，刷新清单后再试）。");
+    return null;
+  }
+  if (!action.enabled) {
+    const reason = (action.reason || "").trim() || "记录状态已经变化";
+    sayError(recordId, actionLabel(action) + "现在不可用：" + reason);
+    return null;
+  }
+  return action;
+}
+
 /** 一次动作的结果；成功说明留在那一条旁边。 */
 async function run(record: RecoveryRecordView, action: RecoveryActionView) {
-  if (!action.enabled || busyId.value) return;
+  if (busyId.value) return;
   const id = record.record_id;
-  if (action.id === "confirm_stopped") {
+  const ready = readyAction(id, action.id);
+  if (!ready) return;
+  if (ready.id === "confirm_stopped") {
     // 先弹一次就地确认（这一步不执行任何东西），确认后才真的提交
     confirmingId.value = id;
     return;
   }
   localErrors.value = { ...localErrors.value, [id]: "" };
   localNotices.value = { ...localNotices.value, [id]: "" };
+  // 这一次动作重新开始：上一条失败动作从「待重试」里撤下（失败时再按当前动作记回）
+  if (failedActions.value[id]) {
+    const next = { ...failedActions.value };
+    delete next[id];
+    failedActions.value = next;
+  }
   let outcome: RecoveryOutcome;
-  if (action.id === "continue") outcome = await session.continueRecovery(id);
-  else if (action.id === "repair") outcome = await session.repairOrphan(id);
-  else if (action.id === "ignore") outcome = await session.ignoreRecovery(id);
-  else if (action.id === "requeue") outcome = await session.requeueDerived(id);
-  else if (action.id === "retry_answer" || action.id === "retry_topic_answer") {
+  if (ready.id === "continue") outcome = await session.continueRecovery(id);
+  else if (ready.id === "repair") outcome = await session.repairOrphan(id);
+  else if (ready.id === "ignore") outcome = await session.ignoreRecovery(id);
+  else if (ready.id === "requeue") outcome = await session.requeueDerived(id);
+  else if (ready.id === "retry_answer" || ready.id === "retry_topic_answer") {
     // F04：话题回答恢复只走 store 的唯一 retry 入口（不重发消息、不重跑话题工具）
     const result = await session.retryTopicAnswer(id);
     outcome = { ok: result.ok, message: result.message };
   } else {
     // 认不出的动作：如实说，不给一个点了没效果的按钮
-    localErrors.value = {
-      ...localErrors.value,
-      [id]: "这一版界面还不认识这个操作，请更新后再试",
-    };
+    sayError(id, "这一版界面还不认识这个操作，请更新后再试");
     return;
   }
   if (outcome.ok) {
     localNotices.value = { ...localNotices.value, [id]: outcome.message };
     return;
   }
+  // #77：记住失败发生的**这个动作**；重试只重试它
+  failedActions.value = { ...failedActions.value, [id]: ready.id };
   localErrors.value = { ...localErrors.value, [id]: outcome.message };
 }
 
-function retry(record: RecoveryRecordView, action: RecoveryActionView) {
-  void run(record, action);
+/**
+ * 重试上一次失败的那一个动作（原记录 + 原动作）。
+ * 动作已经不可用（记录消失 / 动作被删除 / 被禁用）时只给真实原因，不再调用接口。
+ */
+function retry(record: RecoveryRecordView) {
+  const id = record.record_id;
+  const actionId = failedActions.value[id];
+  if (!actionId) {
+    sayError(id, "没有记录到上一次失败的操作，请重新选择要处理的动作。");
+    return;
+  }
+  const ready = readyAction(id, actionId);
+  if (!ready) return;
+  if (ready.id === "confirm_stopped") {
+    confirmingId.value = id;
+    return;
+  }
+  const current = currentRecord(id);
+  if (!current) return;
+  void run(current, ready);
 }
 
 /** 用户在确认框里点了「确认已停止」：提交给服务端，结果就地说明。 */
@@ -182,12 +376,19 @@ async function confirmStopped(record: RecoveryRecordView) {
     localNotices.value = { ...localNotices.value, [id]: outcome.message };
     return;
   }
+  // #77：确认失败也记住「原失败动作是确认」，重试回到同一个确认步骤
+  failedActions.value = { ...failedActions.value, [id]: "confirm_stopped" };
   localErrors.value = { ...localErrors.value, [id]: outcome.message };
 }
 
 function cancelConfirm() {
   confirmingId.value = "";
 }
+
+onBeforeUnmount(() => {
+  if (focusTimer) clearTimeout(focusTimer);
+  focusTimer = null;
+});
 
 /** 时间：台账里是 UTC ISO，用户判断要不要处理靠本地时间。 */
 function formatWhen(record: RecoveryRecordView): string {
@@ -206,7 +407,8 @@ function formatWhen(record: RecoveryRecordView): string {
     但「为什么没有 / 为什么可能是旧的」必须留在屏幕上，不能整块消失。
   -->
   <section
-    v-if="count || listError || session.recoveryLoading"
+    v-if="count || listError || session.recoveryLoading || focusError"
+    ref="rootEl"
     class="recovery-inbox"
     data-qio-fit
     aria-label="未完成事项"
@@ -214,9 +416,13 @@ function formatWhen(record: RecoveryRecordView): string {
   >
     <header class="head">
       <span class="mark" aria-hidden="true">↻</span>
-      <span class="title">{{ count ? summary : "未完成事项" }}</span>
+      <!-- 文案 5：整块只有一个标题「未完成事项 · N」（页面不再重复写一遍） -->
+      <span class="title">{{ titleText }}</span>
       <span v-if="session.recoveryLoading" class="loading" role="status">读取中…</span>
     </header>
+
+    <!-- #78：要定位的那条已经不存在 —— 真实反馈，不静默 -->
+    <p v-if="focusError" class="focus-error" role="alert">{{ focusError }}</p>
 
     <!-- 拉清单失败：保留已显示的记录，如实说可能不完整，并给一次重试 -->
     <p v-if="listError" class="list-error" role="status">
@@ -227,7 +433,13 @@ function formatWhen(record: RecoveryRecordView): string {
     </p>
 
     <ul class="list">
-      <li v-for="record in items" :key="record.record_id" class="item">
+      <li
+        v-for="record in items"
+        :key="record.record_id"
+        class="item"
+        :class="{ focused: focusedId === record.record_id }"
+        :data-record-id="record.record_id"
+      >
         <p
           class="message"
           :class="{ clamped: !isTextOpen(record.record_id) && isLongText(messageOf(record)) }"
@@ -242,19 +454,21 @@ function formatWhen(record: RecoveryRecordView): string {
         </p>
 
         <div class="actions">
-          <button
-            v-for="action in actionsOf(record)"
-            :key="`${record.record_id}:${action.id}`"
-            class="qio-btn btn-action"
-            :class="[`btn-${action.id}`, action.enabled ? 'primary' : 'quiet']"
-            type="button"
-            :disabled="!action.enabled || Boolean(busyId)"
-            :aria-label="`${actionLabel(action)}：${messageOf(record)}`"
-            v-qio-tip="action.enabled ? '' : action.reason"
-            @click="run(record, action)"
-          >
-            {{ busyId === record.record_id ? "提交中…" : actionLabel(action) }}
-          </button>
+          <template v-for="action in actionsOf(record)" :key="`${record.record_id}:${action.id}`">
+            <button
+              class="qio-btn btn-action"
+              :class="[`btn-${action.id}`, action.enabled ? 'primary' : 'quiet']"
+              type="button"
+              :disabled="!action.enabled || Boolean(busyId)"
+              :aria-label="`${actionLabel(action)}：${messageOf(record)}`"
+              v-qio-tip="action.enabled ? '' : action.reason"
+              @click="run(record, action)"
+            >
+              {{ busyId === record.record_id ? "提交中…" : actionLabel(action) }}
+            </button>
+            <!-- 文案 6：具体后果就写在对应动作旁 -->
+            <span v-if="actionEffect(action)" class="action-effect">{{ actionEffect(action) }}</span>
+          </template>
           <button
             v-if="isLongText(messageOf(record))"
             class="link btn-text"
@@ -274,13 +488,16 @@ function formatWhen(record: RecoveryRecordView): string {
           </button>
         </div>
 
-        <!-- 为什么动不了：服务端给的一句话，按钮禁用时也要能读到 -->
+        <!--
+          为什么动不了：服务端给的一句话，按钮禁用时也要能读到。
+          文案 7：多个动作共用同一个禁用原因时只显示一次（不同原因分别保留）。
+        -->
         <p
-          v-for="action in actionsOf(record).filter((a) => !a.enabled && a.reason)"
-          :key="`${record.record_id}:why:${action.id}`"
+          v-for="(group, index) in blockedGroups(record)"
+          :key="`${record.record_id}:why:${index}`"
           class="blocked"
         >
-          {{ actionLabel(action) }}：{{ action.reason }}
+          {{ group.labels.join("、") }}：{{ group.reason }}
         </p>
 
         <!-- 详情默认收起：内部标识与时间按需展开 -->
@@ -320,12 +537,13 @@ function formatWhen(record: RecoveryRecordView): string {
         <!-- 失败就地说话 + 可重试（重试就是同一个动作再点一次） -->
         <p v-if="localErrors[record.record_id]" class="inline-error" role="status">
           <span class="text">{{ localErrors[record.record_id] }}</span>
+          <!-- #77：重试只重试**上一次失败的那个动作**（忽略失败只能重试忽略） -->
           <button
-            v-if="actionsOf(record).some((a) => a.enabled)"
+            v-if="failedActions[record.record_id]"
             class="qio-btn quiet btn-retry"
             type="button"
             :disabled="Boolean(busyId)"
-            @click="retry(record, actionsOf(record).find((a) => a.enabled)!)"
+            @click="retry(record)"
           >
             重试
           </button>
@@ -416,5 +634,22 @@ function formatWhen(record: RecoveryRecordView): string {
   margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.6;
   display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
 }
+/* #78：定位目标已不存在时的真实反馈（就地可见，不静默） */
+.focus-error {
+  margin: 0; font-size: var(--fs-xs); color: var(--warning); line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+/* 文案 6：动作后果，紧跟对应按钮，小字不抢按钮层级 */
+.action-effect {
+  font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+/* #78：被定位的那一条短暂高亮（只说明「就是这条」，不改变任何记录） */
+.item.focused {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--qio-ui-radius);
+}
+.item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .truncated { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
 </style>

@@ -781,7 +781,7 @@ function retryKnowledgeDetail() {
             v-if="!isTopic"
             class="ua-close"
             type="button"
-            aria-label="关闭（不会自动批准或拒绝；稍后处理：只收起窗口，保留申请）"
+            aria-label="稍后处理（只收起窗口；不会自动批准或拒绝）"
             @click="unified.closePanel()"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1120,8 +1120,8 @@ function retryKnowledgeDetail() {
       <p class="ua-note">
         {{
           isTopic
-            ? "关闭窗口只会收起这项话题申请；不会替你选择，也不会丢失申请。"
-            : "每次只处理当前申请。关闭窗口不会自动批准或拒绝，也不会丢失申请。"
+            ? "稍后处理只收起这项话题申请；不会替你选择，申请会保留。"
+            : "稍后处理只收起窗口，不会自动批准或拒绝；申请会保留。"
         }}
       </p>
       </template>
@@ -1182,7 +1182,7 @@ function retryKnowledgeDetail() {
             data-test="unified-approval-list-close"
             @click="unified.closePanel()"
           >
-            关闭
+            稍后处理
           </button>
         </footer>
       </template>

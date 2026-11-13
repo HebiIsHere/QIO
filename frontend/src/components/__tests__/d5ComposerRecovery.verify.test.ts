@@ -57,7 +57,7 @@ function recoveryButtons(wrapper: ReturnType<typeof mount>) {
   return wrapper.findAll("button").filter((node) => {
     const el = node.element as HTMLButtonElement;
     const name = ((node.text() || "") + " " + (el.getAttribute("aria-label") ?? "") + " " + (el.getAttribute("title") ?? "")).trim();
-    if (!/(放回|找回|取回|恢复|互换)/.test(name)) return false;
+    if (!/(放回|找回|取回|恢复|互换|交换)/.test(name)) return false;
     /**
      * 驱动修正（主智能体）：jsdom 不做布局，getBoundingClientRect() 恒为全 0，
      * 原来那句 `rect.width > 0` 会让这个辅助函数**永远找不到按钮**（不是产品缺入口）。

@@ -68,8 +68,11 @@ describe("入口④ 排队面板的取消语义", () => {
     expect(pending.attributes("disabled")).toBeDefined();
     release({ ok: true });
     await flushPromises();
-    // 请求成功只说明「取消请求已提交」，不能宣称已经停止
-    expect(w.find(".notice").text()).toContain("以后端确认为准");
+    // 文案 11：后端没给取消结论时不宣称已取消/已停止，只说请求已提交且没有结论
+    const notice = w.find(".notice").text();
+    expect(notice).toContain("取消请求已提交");
+    expect(notice).not.toContain("已取消");
+    expect(notice).not.toContain("已停止");
     w.unmount();
   });
 

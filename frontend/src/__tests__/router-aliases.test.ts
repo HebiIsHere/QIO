@@ -5,7 +5,10 @@
  * 未知深链同样回对话页：单窗口桌面应用里不存在可停留的 404 空白页。
  */
 import { describe, expect, it } from "vitest";
-import router from "../router";
+import router, {
+  resetSettingsEntrySource,
+  settingsReturnPath,
+} from "../router";
 
 /**
  * 冷启动时 router.push 会懒加载 ConversationView/InteractiveView（大模块，首次 transform 可达数秒）；
@@ -33,5 +36,18 @@ describe("路由深链兼容", () => {
     expect(router.currentRoute.value.name).toBe("interactive");
     await router.push("/settings");
     expect(router.currentRoute.value.name).toBe("settings");
+  });
+
+  it("#48 路由守卫记录设置来源：互动 → 回互动，对话 → 默认回对话", { timeout: ROUTE_PUSH_TIMEOUT_MS }, async () => {
+    resetSettingsEntrySource();
+    await router.push("/interactive");
+    await router.push("/settings");
+    expect(settingsReturnPath()).toBe("/interactive");
+
+    resetSettingsEntrySource();
+    await router.push("/");
+    await router.push("/settings");
+    expect(settingsReturnPath()).toBe("/");
+    resetSettingsEntrySource();
   });
 });

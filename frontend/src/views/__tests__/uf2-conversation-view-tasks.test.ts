@@ -292,7 +292,9 @@ describe("uf2 对话页注册通知落点宿主", () => {
   });
 
   it("uf2- 窄窗用现有任务抽屉保证可见落点，且不抢走当前焦点", async () => {
-    setViewport(1000);
+    // 0.3.2 #83：左栏不再按固定 1180 断点提前收起；680px 时中央放不下左栏下限，
+    // 才走「临时收起 + 任务抽屉」这条窄窗路径（旧断点行为被 #83 否定）。
+    setViewport(680);
     const anchor = document.createElement("button");
     anchor.textContent = "页面上的当前焦点";
     document.body.appendChild(anchor);

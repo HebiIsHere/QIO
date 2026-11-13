@@ -332,11 +332,11 @@ onBeforeUnmount(() => {
     >
       <div class="td-head">
         <span class="td-name serif">{{ detail?.name || topicTitle }}</span>
+        <!-- 文案 10：关闭提示只写「收起话题说明」，不再追加第二句解释。 -->
         <QIconButton
           class="td-close"
           icon="close"
           label="收起话题说明"
-          description="收起话题说明，话题与消息都不受影响"
           size="sm"
           tone="quiet"
           @click="detailsOpen = false"
@@ -348,8 +348,9 @@ onBeforeUnmount(() => {
         <button class="qio-btn mini quiet" type="button" @click="retryTopicDetail">重试</button>
       </template>
       <template v-else-if="detail">
+        <!-- 文案 17：没有摘要就直说「暂无话题说明」，不编造也不解释机制。 -->
         <p class="td-summary" :class="{ empty: !detailSummary }">
-          {{ detailSummary || "这个话题还没有描述（读到的数据里没有摘要，这里不编造）" }}
+          {{ detailSummary || "暂无话题说明" }}
         </p>
         <dl v-if="detailRows.length" class="td-rows">
           <div v-for="row in detailRows" :key="row.label" class="td-row">
@@ -361,17 +362,17 @@ onBeforeUnmount(() => {
       <p v-else-if="!session.currentTopicId" class="td-note">
         还没有话题：发出第一条消息后会建立话题。
       </p>
-      <!-- 历史续接状态：说清「位置在哪」与「下一条会从哪继续」的区别 -->
-      <div class="td-continuation">
+      <!--
+        文案 18：常态（停在话题最新处）不另写说明；
+        只有选了历史片段 / 登记了续接时，才提示「下一条从哪里继续」。
+      -->
+      <div v-if="session.pendingContinuation || hasAnchorPosition" class="td-continuation">
         <span class="td-label mono">历史续接</span>
-        <p v-if="session.pendingContinuation" class="td-line">
-          {{ continuationLine }}（已经登记，发出下一条消息时生效；可在输入区上方的「继续」入口取消）
-        </p>
+        <p v-if="session.pendingContinuation" class="td-line">{{ continuationLine }}</p>
         <p v-else-if="hasAnchorPosition" class="td-line">
-          当前位置停在历史片段<template v-if="anchorTitle">「{{ anchorTitle }}」</template>上：下一条消息会从这里继续，
-          不会排到话题最新位置。
+          <template v-if="anchorTitle">下一条将从「{{ anchorTitle }}」继续。</template>
+          <template v-else>下一条将从所选历史位置继续。</template>
         </p>
-        <p v-else class="td-line">当前位置在话题最新处：下一条消息会接在最新内容后面。</p>
       </div>
     </section>
 

@@ -186,11 +186,24 @@ describe("预览标签方向键切换", () => {
     (buttons[0].element as HTMLElement).focus();
     const tabEvent = await pressTablistKey(wrapper, "Tab");
     expect(tabEvent.defaultPrevented).toBe(false);
+    wrapper.unmount();
+  });
 
-    // 删除键仍只删当前标签，并把焦点交给新的当前标签
+  it("删除键按实际焦点所指标签关（旧行为「只删当前标签」被本项否定）", async () => {
+    const tabs = seedTabs(2);
+    const wrapper = await mountPanel();
     const shell = useConversationShellStore();
-    await pressTablistKey(wrapper, "Delete");
-    expect(shell.prefs.previewTabs).toHaveLength(1);
+    // 激活的是乙，焦点在甲的关闭按钮上：不能误关乙。
+    shell.prefs.activePreviewTabId = tabs[1].id;
+    const closeButtons = wrapper.findAll(".pv-tab-close");
+    (closeButtons[0].element as HTMLElement).focus();
+    const event = new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true });
+    closeButtons[0].element.dispatchEvent(event);
+    await flushPromises();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(shell.prefs.previewTabs.map((tab) => tab.id)).toEqual([tabs[1].id]);
+    expect(shell.prefs.activePreviewTabId).toBe(tabs[1].id);
     expect(document.activeElement).toBe(wrapper.findAll('[role="tab"]')[0].element);
     wrapper.unmount();
   });

@@ -129,7 +129,8 @@ describe("清单本身", () => {
   it("每条显示原文、原状态与「为什么动不了」，并可展开详情（默认收起）", async () => {
     const { w } = mountInbox([readyRecord()]);
 
-    expect(w.find(".title").text()).toContain("有 1 条未完成事项");
+    // 文案 5：整块只有一个标题「未完成事项 · N」（旧「有 N 条未完成事项」被本项否定）
+    expect(w.find(".title").text()).toBe("未完成事项 · 1");
     const item = w.find(".item");
     // 原文在 DOM 里是完整的（视觉两行截断，读屏读到全文）
     expect(item.find(".message").text()).toBe(readyRecord().message);

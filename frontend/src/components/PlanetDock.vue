@@ -11,7 +11,7 @@
  */
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
-import { vQioTip } from "../composables/useQioTip";
+import { suppressTip, vQioTip } from "../composables/useQioTip";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
 import { FLOAT_AVOID_SELECTORS } from "../composables/floatingState";
 import { planetContinuum } from "../composables/planetContinuum";
@@ -65,8 +65,44 @@ watch(
   },
 );
 
+/**
+ * 入口用途说明在「进入星球 / 退出星球」时的清理（#37）。
+ *
+ * 进入星球：入口开始交棒（.handed 透明且不接收指针），说明浮层必须立刻收起，
+ * 并把进入前排队/触发的迟到定时器一起清掉 —— 否则 500ms 后会有一条说明
+ * 凭空出现在星球界面上（指向一个已经不可见的控件）。
+ * 退出星球：本轮关闭的焦点归还是同步事件，先保持停用一小段宽限，等归还结束后再解除；
+ * 解除后也不主动显示，等用户下一次真实悬停/聚焦。
+ */
+const TIP_RESUME_GRACE_MS = 250;
+/** window.setTimeout 的返回值（浏览器/DOM 环境是 number；不用 NodeJS.Timeout 以免类型双源） */
+let tipResumeTimer: number | null = null;
+watch(
+  () => planetContinuum.phase,
+  (phase) => {
+    const entry = elRef.value;
+    if (tipResumeTimer !== null) {
+      window.clearTimeout(tipResumeTimer);
+      tipResumeTimer = null;
+    }
+    if (!entry) return;
+    if (phase !== "idle") {
+      suppressTip(entry, true);
+      return;
+    }
+    tipResumeTimer = window.setTimeout(() => {
+      tipResumeTimer = null;
+      suppressTip(entry, false);
+    }, TIP_RESUME_GRACE_MS);
+  },
+);
+
 onBeforeUnmount(() => {
   window.clearTimeout(receiveTimer);
+  if (tipResumeTimer !== null) {
+    window.clearTimeout(tipResumeTimer);
+    tipResumeTimer = null;
+  }
 });
 
 const float = anchored.value
@@ -85,6 +121,19 @@ const float = anchored.value
       }),
     });
 
+/**
+ * 入口文案（#39）：对话页 v3 的星球入口是**锚定**在输入区旁的固定控件（不拖动、不贴边），
+ * 所以锚定模式不能再说「可拖动贴边」；只有遗留的非锚定浮动模式仍保留该能力与提示。
+ */
+const entryLabel = computed(() =>
+  anchored.value ? "打开话题星球（星球入口）" : "打开话题星球（星球入口；可拖动贴边）",
+);
+const entryTip = computed(() =>
+  anchored.value
+    ? "打开话题星球：查看话题、知识与记忆待确认"
+    : "打开话题星球：查看话题、知识与记忆待确认（可拖动贴边）",
+);
+
 function onClick() {
   if (!anchored.value && float.moved.value) return; // 拖动不误触发
   if (handedOff.value) return; // 转场中不重复触发
@@ -99,8 +148,8 @@ function onClick() {
     :class="{ activating, handed: handedOff, receiving, anchored }"
     data-planet-entry
     :aria-expanded="handedOff"
-    aria-label="打开话题星球（星球入口；可拖动贴边）"
-    v-qio-tip="'打开话题星球：查看话题、知识与记忆待确认（可拖动贴边）'"
+    :aria-label="entryLabel"
+    v-qio-tip="entryTip"
     @click="onClick"
   >
     <!-- 真实渲染未就位时才显示 2D 压缩态（首屏兜底 / WebGL 不可用） -->

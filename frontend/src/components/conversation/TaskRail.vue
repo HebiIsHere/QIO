@@ -207,10 +207,10 @@ onBeforeUnmount(() => {
     <header class="rail-head">
       <h2 class="rail-title">任务</h2>
       <div class="rail-head-actions">
+        <!-- 文案 9：悬停只写「刷新任务列表」（不再附带一段用途解释） -->
         <QIconButton
           icon="refresh"
           label="刷新任务列表"
-          description="重新读取任务清单（不会执行或取消任何任务）"
           size="sm"
           tone="quiet"
           :busy="state.loading"

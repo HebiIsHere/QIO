@@ -130,24 +130,37 @@ describe("话题栏：标题常驻 + 完整说明", () => {
     });
     await details.find(".qio-btn").trigger("click");
     await flushPromises();
-    // 重试成功但没有摘要：如实说「没有描述」，不编一段
-    expect(w.find("#topic-details").text()).toContain("这个话题还没有描述");
+    // 重试成功但没有摘要：如实说「暂无话题说明」，不编一段（文案 17）
+    const detailsText = w.find("#topic-details").text();
+    expect(detailsText).toContain("暂无话题说明");
+    expect(detailsText).not.toContain("还没有描述");
     w.unmount();
   });
 
-  it("历史续接状态说明「当前位置」与「下一条生效」的区别", async () => {
+  it("常态历史续接不另写说明；选了历史片段才提示下一条从哪里继续（文案 18）", async () => {
     const pinia = freshPinia();
     const session = useSessionStore();
     session.currentTopicId = "t1";
+    // 常态：停在话题最新处 → 说明卡里没有历史续接块，也不写「当前位置在最新处」这类说明
+    const normal = mountColumn(pinia);
+    await normal.find(".topic-main").trigger("click");
+    await flushPromises();
+    expect(normal.find("#topic-details .td-continuation").exists()).toBe(false);
+    expect(normal.find("#topic-details").text()).not.toContain("话题最新处");
+    normal.unmount();
+
+    // 选了历史片段并登记续接 → 只提示「下一条从哪里继续」
     session.setAnchor("t1", "f13", "话题A", { id: "f13", title: "锚点片段" }, true);
     session.setPendingContinuation({ intentId: "intent_1", sourceTitle: "锚点片段" });
     const w = mountColumn(pinia);
     expect(w.find('[data-test="topic-continuation"]').text()).toContain("下一条将从「锚点片段」继续");
     await w.find(".topic-main").trigger("click");
     await flushPromises();
-    const text = w.find("#topic-details").text();
-    expect(text).toContain("已经登记");
-    expect(text).toContain("下一条消息时生效");
+    const block = w.find("#topic-details .td-continuation");
+    expect(block.exists()).toBe(true);
+    expect(block.text()).toContain("下一条将从「锚点片段」继续");
+    expect(block.text()).not.toContain("已经登记");
+    expect(block.text()).not.toContain("下一条消息时生效");
     w.unmount();
   });
 });
@@ -156,6 +169,24 @@ describe("话题栏：标题常驻 + 完整说明", () => {
  * 纵向节奏（视觉修复轮）：展开后整张卡只用一套间距值，分隔线上下对称。
  * jsdom 不计算样式表，所以这里静态扫描 SFC 的 scoped style（与 settings-visual.test.ts 同口径）。
  */
+describe("文案：关闭提示 / 空说明只说一句（文案 10、17）", () => {
+  const SFC = readFileSync(
+    resolve(process.cwd(), "src/components/conversation/ChatColumn.vue"),
+    "utf8",
+  );
+
+  it("话题说明关闭按钮只写「收起话题说明」，不再追加第二句解释", async () => {
+    const w = mountColumn(freshPinia());
+    await w.find(".topic-main").trigger("click");
+    await flushPromises();
+    const close = w.find(".td-close");
+    expect(close.exists()).toBe(true);
+    expect(close.attributes("aria-label")).toBe("收起话题说明");
+    expect(SFC).not.toContain("收起话题说明，话题与消息都不受影响");
+    w.unmount();
+  });
+});
+
 describe("话题详情的纵向节奏：一套固定值 + 分隔线上下对称", () => {
   const SFC = readFileSync(
     resolve(process.cwd(), "src/components/conversation/ChatColumn.vue"),

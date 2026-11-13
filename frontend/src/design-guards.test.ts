@@ -50,10 +50,15 @@ describe("设计语言守卫", () => {
     const readers = FILES.filter((f) => f.text.includes("data-planet-entry")).map((f) => f.path);
     // 允许：定义处（planetContinuum.ts）、入口元素本身（PlanetDock.vue）；
     // 任何第三处都意味着有人在别处偷偷量入口位置 —— 那正是「两个对象」的开端。
+    //
+    // ConversationView.vue 是唯一例外，且只把选择器当**焦点归还**的落点：
+    // 星球覆盖层收起后 querySelector("[data-planet-entry]").focus()，不读任何几何。
+    // 它没有、也不允许从入口坐标推导渲染位置（#38 的焦点归还）。
     expect(readers.sort()).toEqual(
       [
         "components/PlanetDock.vue",
         "composables/planetContinuum.ts",
+        "views/ConversationView.vue",
       ].sort(),
     );
   });
@@ -224,7 +229,9 @@ describe("无边框窗口契约", () => {
     for (const path of ["views/PlanetView.vue"]) {
       const file = FILES.find((f) => f.path === path);
       expect(file, path).toBeTruthy();
-      expect(file!.text, path).toContain("var(--titlebar-height)");
+      // 0.3.2 + #36/#75：星球页顶边读「透明留白 + 标题条」的组合令牌 --chrome-top；
+      // 旧行为被本项否定：裸 --titlebar-height 从客户区顶算，会让按钮上沿被拖动区吃掉。
+      expect(file!.text, path).toMatch(/var\(--chrome-top\)|var\(--titlebar-height\)/);
     }
     // 顶部提示条（待确认审批 / 没执行的操作 / 开发任务）统一挂在 App 的 .top-notes 里：
     // 默认位置必须让开标题条 —— 有人在这条上写死 12px，它就会重新被压住

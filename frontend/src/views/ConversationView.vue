@@ -26,16 +26,14 @@ import { useSessionStore } from "../stores/session";
 import { useConversationShellStore } from "../stores/conversationShell";
 import { useConversationTasksStore } from "../stores/conversationTasks";
 import {
-  LEFT_AUTO_COLLAPSE_BELOW,
   LEFT_DEFAULT,
   LEFT_MAX,
   LEFT_MIN,
   RIGHT_DEFAULT,
   RIGHT_MAX,
   RIGHT_MIN,
-  clampLeftWidth,
-  clampRightWidth,
 } from "../conversation/layoutPrefs";
+import { useEscapeLayer } from "../composables/useEscapeLayer";
 import { listenFocusTask } from "../services/conversationTasks";
 import {
   registerNoticeNavigationHost,
@@ -76,8 +74,48 @@ const planetTab = ref<"topic" | "knowledge" | "entity" | "memory">("topic");
 const planetFocusPendingId = ref<string | null>(null);
 /** 「未完成事项」恢复区：左栏任务的「去处理」会打开它（原有恢复动作都在这里）。 */
 const recoveryOpen = ref(false);
+/** 本次打开恢复窗口要滚动并聚焦的记录（来自「去处理」事件；null = 不指定）。 */
+const recoveryFocusRecordId = ref<string | null>(null);
+/** 收件箱暴露 handleEscape()：Esc 先收它的内层详情，未消费才关弹窗（契约 §4.2）。 */
+const recoveryInboxRef = ref<unknown>(null);
+/** 各模态层打开前的焦点：关闭后归还给触发元素（#38/#51/#79）。 */
+let planetReturnFocus: HTMLElement | null = null;
+let previewReturnFocus: HTMLElement | null = null;
+let recoveryReturnFocus: HTMLElement | null = null;
 let stopViewport: (() => void) | null = null;
 let stopFocusListener: (() => void) | null = null;
+
+/** 记住当前真实焦点元素（body / documentElement 不算，避免把「无焦点」当触发点）。 */
+function rememberFocus(): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || active === document.body || active === document.documentElement) return null;
+  return active;
+}
+
+/**
+ * 把焦点还给触发元素；触发元素已不在 DOM（或落在仍被 inert 隔离的背景里）时用 fallback。
+ * 一律等一次 nextTick：先让覆盖层卸载、inert 解除，再聚焦，避免浏览器把焦点丢回 body。
+ */
+function restoreFocus(target: HTMLElement | null, fallback?: () => HTMLElement | null): void {
+  if (typeof document === "undefined") return;
+  void nextTick(() => {
+    const fallbackEl = target && target.isConnected ? null : (fallback?.() ?? null);
+    const el = target && target.isConnected ? target : fallbackEl;
+    if (!el || !el.isConnected || el.closest("[inert]")) return;
+    el.focus({ preventScroll: true });
+  });
+}
+
+/** 预览层收起后把焦点放在哪：分栏回到当前标签，收起状态回到预览恢复入口。 */
+function previewFallbackFocus(collapsed: boolean): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  if (collapsed) return document.querySelector<HTMLElement>(".preview-reopen");
+  return (
+    document.querySelector<HTMLElement>('[data-preview-panel] [role="tab"][aria-selected="true"]') ??
+    document.querySelector<HTMLElement>("[data-preview-panel]")
+  );
+}
 
 // 接线桥必须在**本组件 setup 期间**注册：消息流/任务栏子组件在 setup 时读取
 // 「有没有接线」决定是否渲染按钮（放到 onMounted 会晚于子组件 setup，按钮永远不出现）。
@@ -108,7 +146,9 @@ function setDraggingChrome(on: boolean) {
 function beginDrag(kind: Exclude<DragKind, null>, event: PointerEvent) {
   dragKind.value = kind;
   dragStartX = event.clientX;
-  dragStartWidth = kind === "left" ? shell.prefs.leftWidth : shell.prefs.rightWidth;
+  // 从「当前实际看到的宽度」开始拖：窗口被压缩时用户拖的是眼前这条边，
+  // 不是早已放不下的保存值（#83）。
+  dragStartWidth = kind === "left" ? shell.leftWidth : shell.rightWidth;
   (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
   setDraggingChrome(true);
   event.preventDefault();
@@ -117,16 +157,13 @@ function beginDrag(kind: Exclude<DragKind, null>, event: PointerEvent) {
 function moveDrag(event: PointerEvent) {
   if (!dragKind.value) return;
   const delta = event.clientX - dragStartX;
+  // 拖动过程中只改内存：松手才落盘，避免每移动一像素写一次服务端。
+  // 保存的是用户想要的宽度（只夹到可调范围），窗口太窄时显示侧再收缩，不改写偏好。
   if (dragKind.value === "left") {
-    // 拖动过程中只改内存：松手才落盘，避免每移动一像素写一次服务端。
-    shell.prefs.leftWidth = clampLeftWidth(dragStartWidth + delta);
+    shell.prefs.leftWidth = Math.round(dragStartWidth + delta);
     shell.prefs.leftCollapsed = false;
   } else {
-    shell.prefs.rightWidth = clampRightWidth(
-      dragStartWidth - delta,
-      shell.viewportWidth,
-      shell.leftWidth,
-    );
+    shell.prefs.rightWidth = Math.round(dragStartWidth - delta);
   }
 }
 
@@ -151,8 +188,9 @@ function nudgeSplitter(kind: "left" | "right", event: KeyboardEvent) {
   const step = event.shiftKey ? 32 : 12;
   event.preventDefault();
   const direction = event.key === "ArrowRight" ? 1 : -1;
-  if (kind === "left") shell.setLeftWidth(shell.prefs.leftWidth + direction * step);
-  else shell.setRightWidth(shell.prefs.rightWidth - direction * step);
+  // 方向键同样从实际宽度起算：窗口压缩时不会出现「按了没反应」。
+  if (kind === "left") shell.setLeftWidth(shell.leftWidth + direction * step);
+  else shell.setRightWidth(shell.rightWidth - direction * step);
 }
 
 // ── 收起后的任务入口 / 窄窗口抽屉 ─────────────────────────────────────────
@@ -177,8 +215,9 @@ const railEntryLabel = computed(() => {
 });
 
 function onRailEntry() {
-  // 窄窗口：抽屉式临时展开（不改写用户偏好）；否则按用户手动收起状态展开。
-  if (shell.viewportWidth < LEFT_AUTO_COLLAPSE_BELOW) {
+  // 窗口窄到放不下（临时收起）：抽屉式临时展开，不改写用户偏好；
+  // 宽窗口只是用户手动收起：直接展开并记住选择。
+  if (shell.autoCollapsedLeft) {
     railDrawerAutofocus.value = true;
     railDrawer.value = true;
   } else shell.toggleLeft();
@@ -229,9 +268,21 @@ watch(railDrawer, async (open) => {
  */
 async function ensureTaskListVisibleForNotice(): Promise<boolean> {
   // 1) 页内覆盖层：记忆星球 / 恢复收件箱；全窗口预览也会整块盖住三栏。
-  if (recoveryOpen.value) recoveryOpen.value = false;
-  if (planetOpen.value) planetOpen.value = false;
-  if (shell.prefs.previewFull) shell.setPreviewFull(false);
+  //    这是程序化导航，不还原焦点、也不清除用户标签与阅读位置。
+  if (recoveryOpen.value) {
+    recoveryOpen.value = false;
+    recoveryFocusRecordId.value = null;
+    recoveryReturnFocus = null;
+  }
+  if (planetOpen.value) {
+    planetOpen.value = false;
+    planetReturnFocus = null;
+  }
+  if (shell.effectivePreviewFull) {
+    // 手动全窗口回分栏；窄窗临时全窗口没有分栏可回，直接收起预览。
+    if (shell.prefs.previewFull) shell.setPreviewFull(false);
+    else shell.setRightOpen(false);
+  }
   // 2) 左栏：宽窗按现有开关展开（用户手动收起时）；窄窗走现有任务抽屉。
   if (!shell.leftVisible) {
     if (shell.prefs.leftCollapsed) shell.toggleLeft();
@@ -269,6 +320,7 @@ function mountPlanetWhenIdle() {
 }
 
 function openPlanet() {
+  planetReturnFocus = rememberFocus();
   planetSeq.value += 1;
   planetMounted.value = true;
   planetOpen.value = true;
@@ -277,36 +329,88 @@ function openPlanet() {
 function closePlanet(seq?: number) {
   if (seq !== undefined && seq !== planetSeq.value) return;
   planetOpen.value = false;
+  // #38：退出把焦点还给星球入口（契约 §4.3 的 [data-planet-entry]）。
+  restoreFocus(planetReturnFocus, () =>
+    typeof document === "undefined"
+      ? null
+      : document.querySelector<HTMLElement>("[data-planet-entry]"),
+  );
+  planetReturnFocus = null;
 }
 
-function hasOpenModal(): boolean {
-  if (typeof document === "undefined") return false;
-  return Boolean(document.querySelector('[role="dialog"][aria-modal="true"]'));
+const previewOverlayOpen = computed(() => shell.rightVisible && shell.effectivePreviewFull);
+
+/**
+ * 页面级模态层背后的对话必须 inert：Tab / Enter / 鼠标都到不了下层
+ * （#38 星球、#51 全窗口预览、#79 恢复窗口）。分栏预览不做隔离 —— 两边都要能操作。
+ */
+const backgroundInert = computed(
+  () => planetOpen.value || previewOverlayOpen.value || recoveryOpen.value || railDrawer.value,
+);
+
+/** 分栏 → 全窗口（用户手动）：记住触发它的标签/按钮，收起时归还（#51）。 */
+function enterPreviewFull(): void {
+  previewReturnFocus = rememberFocus();
+  shell.setPreviewFull(true);
 }
 
-// 全窗口预览时按 Esc 返回对话；任务抽屉先关。弹窗打开时不抢它的 Esc。
-function onKeydown(event: KeyboardEvent) {
-  if (recoveryOpen.value) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      recoveryOpen.value = false;
-    }
+/**
+ * 全窗口预览 → 返回对话（#50）：
+ * - 大窗口手动全窗口：真正回到分栏，标签/搜索/阅读位置都在；
+ * - 小窗口临时全窗口：没有分栏可回，收起预览本身（不写偏好），标签/位置仍保留。
+ */
+function exitPreviewFull(): void {
+  const temporary = !shell.prefs.previewFull;
+  const returnTarget = previewReturnFocus;
+  previewReturnFocus = null;
+  if (temporary) {
+    shell.setRightOpen(false);
+    restoreFocus(returnTarget, () => previewFallbackFocus(true));
     return;
   }
-  if (railDrawer.value) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void closeRailDrawer();
-      return;
-    }
-    if (event.key === "Tab") trapDrawerFocus(event);
-    return;
-  }
-  if (event.key !== "Escape") return;
-  if (!shell.effectivePreviewFull || planetOpen.value) return;
-  if (event.defaultPrevented || hasOpenModal()) return;
   shell.setPreviewFull(false);
+  restoreFocus(returnTarget, () => previewFallbackFocus(false));
 }
+
+function onPreviewToggleFull(): void {
+  if (!shell.effectivePreviewFull) {
+    enterPreviewFull();
+    return;
+  }
+  exitPreviewFull();
+}
+
+/** 收起预览：全窗口时焦点回预览入口，分栏时同样给恢复入口（不可丢到 body）。 */
+function onPreviewClose(): void {
+  const returnTarget = previewReturnFocus ?? rememberFocus();
+  previewReturnFocus = null;
+  shell.setRightOpen(false);
+  restoreFocus(returnTarget, () => previewFallbackFocus(true));
+}
+
+// Esc 走共用层级栈：#79 恢复窗口最靠前（先收详情再关弹窗），其次任务抽屉，最后全窗口预览。
+// 星球若自己注册了层级（navigation 的 PlanetView），它后注册、先处理，这里不抢。
+useEscapeLayer({
+  id: "conversation-page",
+  active: () => recoveryOpen.value || railDrawer.value || previewOverlayOpen.value,
+  onEscape: () => {
+    if (recoveryOpen.value) {
+      const inbox = recoveryInboxRef.value as { handleEscape?: () => boolean } | null;
+      const consumed = inbox?.handleEscape?.() === true;
+      if (!consumed) closeRecovery();
+      return true;
+    }
+    if (railDrawer.value) {
+      void closeRailDrawer();
+      return true;
+    }
+    if (previewOverlayOpen.value && !planetOpen.value) {
+      exitPreviewFull();
+      return true;
+    }
+    return false;
+  },
+});
 
 /** 抽屉是模态层：Tab 在抽屉内循环，不跑到背后的页面。 */
 function trapDrawerFocus(event: KeyboardEvent) {
@@ -346,12 +450,33 @@ function onVisibilityChange() {
 
 // ── 恢复事项（原有恢复动作集中在这里，不复制一套） ─────────────────────────
 
-function openRecoveryFromTask(): void {
+function openRecovery(recordId: string | null = null): void {
+  if (!recoveryOpen.value) recoveryReturnFocus = rememberFocus();
+  recoveryFocusRecordId.value = recordId;
   recoveryOpen.value = true;
+}
+
+/**
+ * 任务栏「去处理」/ 恢复通知（契约 §4.1）：
+ * 事件 detail.recordId 指明要聚焦的那一条；没有就打开清单本身。
+ */
+function onOpenRecoveryEvent(event: Event): void {
+  const detail = (event as CustomEvent<{ recordId?: unknown }>).detail;
+  const recordId = typeof detail?.recordId === "string" && detail.recordId ? detail.recordId : null;
+  openRecovery(recordId);
 }
 
 function closeRecovery(): void {
   recoveryOpen.value = false;
+  recoveryFocusRecordId.value = null;
+  const target = recoveryReturnFocus;
+  recoveryReturnFocus = null;
+  // #79：关闭后归还焦点（触发「去处理」的按钮还在就还给它，否则给任务入口）。
+  restoreFocus(target, () =>
+    typeof document === "undefined"
+      ? null
+      : document.querySelector<HTMLElement>("[data-rail-entry]"),
+  );
 }
 
 // ── 记忆问题提醒 → 星球待确认定位（不改星球入口样式/功能） ────────────────
@@ -399,10 +524,9 @@ onMounted(() => {
   stopFocusListener = listenFocusTask((taskId) => {
     void tasks.focusTask(taskId);
   });
-  window.addEventListener("qio:open-recovery", openRecoveryFromTask);
+  window.addEventListener("qio:open-recovery", onOpenRecoveryEvent);
 
   mountPlanetWhenIdle();
-  window.addEventListener("keydown", onKeydown);
   document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
@@ -411,9 +535,8 @@ onBeforeUnmount(() => {
   stopViewport = null;
   stopFocusListener?.();
   stopFocusListener = null;
-  window.removeEventListener("keydown", onKeydown);
   document.removeEventListener("visibilitychange", onVisibilityChange);
-  window.removeEventListener("qio:open-recovery", openRecoveryFromTask);
+  window.removeEventListener("qio:open-recovery", onOpenRecoveryEvent);
   registerExecutionTaskLocator(null);
   registerConversationPreviewOpener(null);
   registerConversationReplyCodeOpener(null);
@@ -435,8 +558,10 @@ onBeforeUnmount(() => {
     }"
     :data-dragging="dragKind ?? undefined"
     :data-left-auto="shell.autoCollapsedLeft ? 'true' : 'false'"
+    :data-center-width="shell.centerWidth"
+    :data-preview-full="shell.effectivePreviewFull ? 'true' : 'false'"
   >
-    <div class="workspace-row">
+    <div class="workspace-row" :inert="backgroundInert ? true : undefined">
       <TaskRail
         v-if="shell.leftVisible"
         class="left-pane"
@@ -494,7 +619,7 @@ onBeforeUnmount(() => {
       </ChatColumn>
 
       <div
-        v-if="shell.rightVisible && !shell.effectivePreviewFull"
+        v-if="shell.splitRightVisible"
         class="splitter"
         role="separator"
         aria-orientation="vertical"
@@ -513,25 +638,29 @@ onBeforeUnmount(() => {
       ></div>
 
       <PreviewPanel
-        v-if="shell.rightVisible && !shell.effectivePreviewFull"
+        v-if="shell.splitRightVisible"
         class="right-pane"
         :style="{ width: shell.rightWidth + 'px' }"
-        @close="shell.setRightOpen(false)"
-        @toggle-full="shell.setPreviewFull(true)"
+        @close="onPreviewClose"
+        @toggle-full="onPreviewToggleFull"
       />
     </div>
 
-    <!-- 全窗口预览：外层负责卡片网格的内缩/圆角，内层只填满它 -->
-    <div v-if="shell.rightVisible && shell.effectivePreviewFull" class="preview-overlay">
-      <PreviewPanel
-        full
-        @close="shell.setRightOpen(false)"
-        @toggle-full="shell.setPreviewFull(false)"
-      />
+    <!-- 全窗口预览：外层负责卡片网格的内缩/圆角，内层只填满它（背景由 inert 隔离） -->
+    <div
+      v-if="previewOverlayOpen"
+      class="preview-overlay"
+      :inert="planetOpen || recoveryOpen ? true : undefined"
+    >
+      <PreviewPanel full @close="onPreviewClose" @toggle-full="onPreviewToggleFull" />
     </div>
 
     <!-- 任务栏被窗口宽度临时收起时的抽屉（不改写偏好；Esc / 点外部关闭） -->
-    <div v-if="railDrawer" class="rail-drawer-layer">
+    <div
+      v-if="railDrawer"
+      class="rail-drawer-layer"
+      :inert="planetOpen || previewOverlayOpen ? true : undefined"
+    >
       <div class="rail-drawer-backdrop" aria-hidden="true" @click="closeRailDrawer"></div>
       <div
         ref="railDrawerEl"
@@ -560,24 +689,24 @@ onBeforeUnmount(() => {
 
     <!-- 未完成事项（恢复区）：原有继续 / 重发 / 忽略 / 重试动作都在这里，
          左栏任务的「去处理」把它打开；不另做一套恢复逻辑。 -->
-    <div v-if="recoveryOpen" class="recovery-layer">
+    <div v-if="recoveryOpen" class="recovery-layer" :inert="planetOpen ? true : undefined">
       <div class="recovery-backdrop" aria-hidden="true" @click="closeRecovery"></div>
       <section
         class="recovery-panel"
         role="dialog"
         aria-modal="true"
         aria-label="未完成事项"
-        @keydown.esc.stop="closeRecovery"
       >
+        <!-- 文案 5/6：标题（含条数）与后果说明只由收件箱给一份；页面不再重复标题与通用导语。 -->
         <header class="recovery-head">
-          <h2>未完成事项</h2>
           <button class="qio-btn quiet mini" type="button" @click="closeRecovery">关闭</button>
         </header>
-        <p class="recovery-hint">
-          这些是上次没有执行完、或归属无法确认的事项。继续、重发或忽略都由你决定；
-          关掉这个窗口不会处理它们。
-        </p>
-        <RecoveryInbox />
+        <!-- focus-record-id 是契约 §4.2 的冻结接口（基线的 RecoveryInbox 尚未声明该 prop，
+             用 v-bind 透传，合并 recovery 分支后即为正式 prop） -->
+        <RecoveryInbox
+          ref="recoveryInboxRef"
+          v-bind="{ 'focus-record-id': recoveryFocusRecordId ?? undefined }"
+        />
       </section>
     </div>
 
@@ -895,11 +1024,5 @@ onBeforeUnmount(() => {
   font-size: var(--fs-lg);
   font-weight: 500;
   color: var(--text-strong);
-}
-.recovery-hint {
-  margin: 0 0 var(--sp-2);
-  font-size: var(--fs-sm);
-  line-height: var(--lh-base);
-  color: var(--text-secondary);
 }
 </style>

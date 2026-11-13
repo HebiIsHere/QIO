@@ -28,12 +28,47 @@ const preview = useConversationPreviewStore();
 const tabs = computed(() => shell.prefs.previewTabs);
 const activeTab = computed(() => preview.activeTab);
 
+/**
+ * 手动全窗口（用户偏好 previewFull）与窄窗自动全窗口分开：
+ * 自动全窗口是布局推导出来的，「返回对话」不可能回到分栏，只能收起预览
+ * （标签、搜索与阅读位置保留，下次打开继续读）。
+ */
+const autoFull = computed(() => shell.effectivePreviewFull && !shell.prefs.previewFull);
+
+/** 阅读器一侧的最新搜索词/滚动位置：切换、收起、全窗口前立即写回（#53）。 */
+const readerRef = ref<{ flushPosition?: () => void } | null>(null);
+
+function flushReader(): void {
+  readerRef.value?.flushPosition?.();
+}
+
 function activate(tabId: string): void {
+  // 切到别的标签前把当前阅读器的最新搜索词/位置立即写回（#53）；
+  // 重复点当前标签保持基线行为（只确保展开与加载）。
+  if (tabId !== activeTab.value?.id) flushReader();
   preview.activateTab(tabId);
 }
 
 function closeTab(tabId: string): void {
+  flushReader();
   preview.closeTab(tabId);
+}
+
+/** 标题栏右侧按钮：分栏时进入全窗口；全窗口时手动偏好返回分栏、自动全窗口收起预览。 */
+function onSizeButton(): void {
+  flushReader();
+  if (!(props.full || shell.effectivePreviewFull)) {
+    emit("toggleFull");
+    return;
+  }
+  if (autoFull.value) emit("close");
+  else emit("toggleFull");
+}
+
+/** 「收起」：只收起预览栏，标签与阅读位置保留。 */
+function onCollapse(): void {
+  flushReader();
+  emit("close");
 }
 
 const tabStrip = ref<HTMLElement | null>(null);
@@ -71,24 +106,45 @@ function revealTab(button: HTMLButtonElement): void {
 }
 
 /**
+ * 这一下键盘操作实际落在哪个标签上（#52）。
+ *
+ * 优先取事件目标所在的标签（真实焦点在标签主体或它的关闭按钮上都算）；
+ * 事件目标是标签栏本身时（合成事件 / 极简 webview）退回 document.activeElement。
+ * 找不到就退回当前激活标签，保证原有键盘路径仍可用。
+ */
+function focusedTabId(event: KeyboardEvent): string {
+  const fromEvent = event.target instanceof Element ? event.target.closest("[data-tab-id]") : null;
+  const fromFocus =
+    typeof document !== "undefined" && document.activeElement instanceof Element
+      ? document.activeElement.closest("[data-tab-id]")
+      : null;
+  const candidate = fromEvent?.getAttribute("data-tab-id") ?? fromFocus?.getAttribute("data-tab-id") ?? "";
+  if (candidate && tabs.value.some((tab) => tab.id === candidate)) return candidate;
+  return activeTab.value?.id ?? "";
+}
+
+/**
  * 标签栏键盘：←/→ 循环切换、Home/End 到首尾，选中项、当前文件、真实焦点、可见性一起变；
  * Tab / Shift+Tab 不受影响（不 preventDefault），按现有 ARIA tabs 约定进出标签组。
- * 删除键只删当前标签（键盘关闭路径），删完把焦点交给新的当前标签。
+ * 删除键关的是「焦点所在的标签」（不是碰巧处于激活态的另一个标签），
+ * 删完把焦点交给新的当前标签。
  */
 async function onTabsKeydown(event: KeyboardEvent): Promise<void> {
   const ids = tabs.value.map((tab) => tab.id);
   if (!ids.length) return;
-  if ((event.key === "Delete" || event.key === "Backspace") && activeTab.value) {
+  if (event.key === "Delete" || event.key === "Backspace") {
+    const closingId = focusedTabId(event);
+    if (!closingId) return;
     event.preventDefault();
     event.stopPropagation();
-    const closingId = activeTab.value.id;
     closeTab(closingId);
     await nextTick();
     const nextActive = activeTab.value?.id;
     if (nextActive) focusTab(nextActive);
     return;
   }
-  const currentIndex = Math.max(0, ids.indexOf(activeTab.value?.id ?? ids[0]));
+  const focusedId = focusedTabId(event);
+  const currentIndex = Math.max(0, ids.indexOf(focusedId || ids[0]));
   let next = -1;
   if (event.key === "ArrowRight") next = (currentIndex + 1) % ids.length;
   else if (event.key === "ArrowLeft") next = (currentIndex - 1 + ids.length) % ids.length;
@@ -130,14 +186,23 @@ useEscapeLayer({
   onEscape: () => {
     if (!(props.full || shell.effectivePreviewFull)) return false;
     if (hasBlockingDialogInFront()) return false;
-    emit("toggleFull");
+    flushReader();
+    // 手动全窗口：返回分栏；窄窗自动全窗口：Esc 直接收起预览（分栏放不下），标签与位置保留。
+    if (autoFull.value) emit("close");
+    else emit("toggleFull");
     return true;
   },
 });
 </script>
 
 <template>
-  <aside class="preview-panel" :class="{ full }" aria-label="文件预览" data-preview-panel>
+  <aside
+    class="preview-panel"
+    :class="{ full }"
+    aria-label="文件预览"
+    data-preview-panel
+    :data-preview-full="full ? '' : undefined"
+  >
     <header class="pv-head">
       <div class="pv-head-title">
         <span class="pv-head-label">文件预览</span>
@@ -149,7 +214,7 @@ useEscapeLayer({
           class="qio-btn quiet mini"
           v-qio-tip="full ? '返回对话布局' : '全窗口预览'"
           :aria-label="full ? '返回对话布局' : '全窗口预览'"
-          @click="emit('toggleFull')"
+          @click="onSizeButton"
         >
           {{ full ? "返回对话" : "全窗口" }}
         </button>
@@ -158,7 +223,7 @@ useEscapeLayer({
           class="qio-btn quiet mini"
           v-qio-tip="'收起预览，保留标签与阅读位置'"
           aria-label="收起预览，保留标签与阅读位置"
-          @click="emit('close')"
+          @click="onCollapse"
         >
           收起
         </button>
@@ -179,6 +244,7 @@ useEscapeLayer({
         :key="tab.id"
         class="pv-tab"
         :class="{ 'is-active': tab.id === activeTab?.id }"
+        :data-tab-id="tab.id"
       >
         <button
           ref="tabMainButtons"
@@ -197,13 +263,19 @@ useEscapeLayer({
           type="button"
           class="pv-tab-close"
           :aria-label="'关闭预览：' + tab.target.title"
-          v-qio-tip="'关闭这个预览（不删除文件）'"
+          v-qio-tip="'关闭预览'"
           @click.stop="closeTab(tab.id)"
         >×</button>
       </div>
     </div>
 
-    <PreviewReader v-if="activeTab" :key="activeTab.id" :tab="activeTab" :full="full" />
+    <PreviewReader
+      v-if="activeTab"
+      ref="readerRef"
+      :key="activeTab.id"
+      :tab="activeTab"
+      :full="full"
+    />
 
     <div v-else class="pv-empty" data-preview-empty>
       <p class="pv-empty-title">从对话或任务里打开文件后在这里阅读</p>
