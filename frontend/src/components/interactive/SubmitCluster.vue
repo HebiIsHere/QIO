@@ -644,11 +644,12 @@ const submitTip = computed(() => {
 });
 /** #03：提交区唯一主状态：优先用 store 的统一轮次标签（排队 / 处理中 / 已回复 / 待确认 / 失败 / 终态）。 */
 const primaryStatusLabel = computed(() => {
-  const label = submitState.value.roundStatusLabel;
-  if (label) return label;
-  // 文案 1 / #80：回执待确认与重复提交用任务书措辞（不把「未重复提交」说成失败或新提交）。
+  // 文案 1 / #80：这两个状态用任务书措辞优先 —— i-state 第三轮也会给同样的标签，
+  // 这里保证合并前（旧 roundStatusLabel 可能把 duplicate 说成笼统「已结束」）也不倒退。
   if (store.submitStatus === "unknown") return "提交结果待确认";
   if (store.submitStatus === "duplicate") return "已提交过";
+  const label = submitState.value.roundStatusLabel;
+  if (label) return label;
   return stateLabel.value;
 });
 const roundStatusDetail = computed(() => submitState.value.roundStatusDetail || "");

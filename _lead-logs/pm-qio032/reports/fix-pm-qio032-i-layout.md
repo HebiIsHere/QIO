@@ -13,6 +13,7 @@
   - `4f368cbe` fix(interactive-layout): 提交详情接入上次结果读取三态与失败重试（#41，i-state 字段可选读取）
   - `9f80b0cf`（fast-forward）merge fix/pm-qio032-interactive：并入父分支 e2e 台账/集成收口/i-state/i-canvas/i-tasks
   - `0f704016` fix(interactive-layout): 提交详情面板按可用空间钳制高度，避免遮挡提交按钮与任务入口（#05）
+  - `21146378` fix(interactive-layout): 重复提交主状态优先「已提交过」，补 #80/#03 UI 用例
   - 报告提交：见本文件所在 commit
 
 ## 2. 改动 / 新增文件清单
@@ -48,11 +49,11 @@
 | #55 | 已修复 | 板内搜索无命中：结果层保留并显示「没有找到卡片」；清空关键词收起。旧用例（断言“不渲染任何结果层/说明”）按新验收改写为断言新行为（见 §6）。pm032「#55」 |
 | #73 | 已修复 | 书签栏：单行紧凑、关闭入口在列表头部、打开时注册 Esc 可收起、长列表 `flex:1 + overflow-y:auto` 单独滚动。pm032「#73」 |
 | #76 | 已修复 | 悬浮工具区改为一枚连续、轻量承载面（半透明 + 模糊 + 胶囊），按钮退回透明表面；卡片文字/连线只从承载面后方经过，不从按钮间隙穿出。pm032「#76」 |
-| #80（UI） | 已修复 | 重复提交主状态「已提交过」+「查看原进度」→ 打开上次提交结果面板（原受理记录，不再次执行）。pm032「#80」 |
+| #80（UI） | 已修复（数据层待合并 i-state 1754b8b8/e37cf86e 后真机复测） | 主状态「已提交过」+「查看原进度」→ 打开上次提交结果面板（读 store.lastSubmission，i-state 保证 duplicate/empty 回执不覆盖原受理记录）。**状态措辞优先级：duplicate/unknown 用任务书措辞 > roundStatusLabel > 既有状态**，合并前旧 `roundStatusLabel`（duplicate→「已结束」）不会再倒退。新增 `pm032-layout-submit-status` 2 用例：duplicate 主状态只出现一处、失败/未知不出现、点「查看原进度」结果面板说原受理记录的改动条数。 |
 | #81（UI） | 已修复 | 回执待确认底部只留一行「提交结果待确认，改动已保留」+「查提交结果」；查证/重新读取与 `acceptanceLookupNote`（i-state 已改「暂未查到这次提交」）收进按需展开的提交详情。pm032「#81」 |
 | #86 | 已修复 | 删除消息滚动区上方重复关闭按钮 `data-ic-close` 与其样式；唯一入口为输入区旁 `data-ic-toggle`。InteractiveConversation 用例改为断言“只有一个入口且消息区无关闭按钮” |
 | #88 | 已修复（组件实现 + 纯函数） | 新增 `conversationComposerLayout()`（按实测宽度，非视口）：不足时 stacked（模式入口移到输入框上方、与输入框同 860 列，圆点完整可见）；够宽才 inline；工具组与输入框同轴（无 `padding-left:92px`）。悬浮对话卡最大宽 980→1180 给宽窗留空间。jsdom 首帧默认 stacked。pm032「#88」 |
-| #03（UI） | 已修复/部分 | 提交区唯一主状态：优先 `roundStatusLabel`（i-state），回退既有 submitStatus；unknown/duplicate 用任务书措辞；`roundStatusDetail` 进按需展开详情；轮次迟到事实不倒退由 store 保证。pm032「#03」 |
+| #03（UI） | 已修复 | 提交区唯一主状态：非特殊状态优先 `roundStatusLabel`（i-state），unknown/duplicate 用任务书措辞（合并后两者一致），再回退既有 submitStatus；`roundStatusDetail` 进按需展开详情；轮次迟到事实不倒退由 store 保证。新增用例断言「提交中」主状态取自 store.roundStatusLabel 且只出现一处。 |
 | #13（UI） | 已修复 | 提交按钮 `:disabled="busy || !canSubmit"`，禁用时提示 `submitBlockedReason`（回退“没有可提交的有效改动：空白卡不算…”）；不再自算第二套口径。pm032「#13」 |
 | 文案 1 | 已修复（UI） | 待确认只写「提交结果待确认，改动已保留」；「暂未查到这次提交」由 store 的 acceptanceLookupNote 提供，UI 不改写。pm032「文案1」 |
 | 文案 2 | 已修复 | BoardChangeList 标题「本次改动 · N 项」；行内类别名只出现一次（summary 前缀重复类别时剥离）。旧用例同步（见 §6）。 |
@@ -82,11 +83,12 @@ npx vitest run --reporter=dot \
   src/components/interactive/__tests__/p1b-v2-visual-guards.test.ts \
   src/interactive/__tests__/irl-c-layout.test.ts \
   src/components/interactive/__tests__/pm032-layout-submit-panel.test.ts \
+  src/components/interactive/__tests__/pm032-layout-submit-status.test.ts \
   src/views/__tests__/i2v2-a-task-entries.test.ts \
   src/views/__tests__/InteractiveViewFloating.test.ts \
   src/components/__tests__/MessageStream.test.ts
-# 结果（合并父分支 + #05 修复后）：Test Files 14 passed (14) / Tests 167 passed (167)
-# 其中新增 pm032-layout-submit-panel 8 用例、pm032-layout-shell 31 用例
+# 结果（合并父分支 + #05/#80 UI 后）：Test Files 15 passed (15) / Tests 169 passed (169)
+# 其中新增 pm032-layout-submit-panel 8 用例、pm032-layout-submit-status 2 用例、pm032-layout-shell 31 用例
 
 npx vue-tsc --noEmit
 # 结果：exit 0（自己范围 0 错误）
@@ -139,6 +141,7 @@ npx vue-tsc --noEmit
 4. #41：UI 三态已接，但依赖 i-state 5e7b244f 合并后字段才存在；合并前走基线回退（只显示正常内容）。合并后建议真机注入一次 understanding 读取失败，确认「读取失败 / 上次结果 / 成功为空」三态与重试。
 5. i-tasks 的 TaskCenterPanel 错误/重试 UI 与 Esc 层级、i-state 的 `acceptanceLookupNote` 文案变更需在父分支合并后联调；本分支未改它们文件。
 6. 未自造 store 状态：所有跨分支数据均以可选读取 + 基线回退消费，类型检查在本 worktree 通过（vue-tsc exit 0）。
+7. #80：UI 已在合并后的 store（v1 roundStatus）上验证；i-state 第三轮数据层（1754b8b8/e37cf86e，duplicate 不发 POST、原受理记录不被覆盖）尚未合并进本分支，合并后建议真机复测（步骤见 §8）。新增可选字段 `latestAcceptedSubmission / hasAcceptedSubmission / submissionBaseline / pendingSubmissionChanges` 本分支**未消费**（只增不改，兼容）；「本次改动」列表继续用本地 `fetchBoardState.pending`。
 
 ## 8. E2E 复测指引（#05，Lead 用）
 
@@ -157,3 +160,9 @@ npx vue-tsc --noEmit
 4. ④-6/④-7 边界：窗口宽 1176/1177（可用宽度 1120/1121）仍是 switch / side-by-side；侧并排时两块面板中心命中自己、与提交按钮无重叠；
 5. 空 fixture（无改动）：`submit-details-box` 内显示「本次没有改动」；面板同样按可用空间钳制，不覆盖提交按钮。
 压力夹具：板面放 5 项改动（如 5 张文字卡写正文）后保存，打开详情即可复现原 305px 场景。
+
+#80 复测（合并 i-state 第三轮数据层后）：
+- 步骤：同一板面提交一次成功 → 不新增改动再点「提交给 QIO」。
+- 预期：`[data-im="submit-status"]` 显示「已提交过」且只出现一处；`[data-im="submit-duplicate"]` 出现；
+  点 `[data-im="submit-duplicate-view"]` 打开 `[data-im="submit-result-panel"]`，内容为首次受理记录（不是第二次新记录）；
+  网络里没有第二次提交 POST。若仍显示「已结束」，先确认 i-state 1754b8b8 已合并；本分支已把 duplicate 措辞放在 roundStatusLabel 之前。
