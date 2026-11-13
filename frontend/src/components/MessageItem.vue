@@ -357,9 +357,9 @@ function previewOne(attachment: MessageAttachment): void {
       sourcePath: attachment.sourcePath ?? null,
     }),
   );
-  attachNotice.value = ok
-    ? `已在右侧打开「${attachment.name}」的只读预览`
-    : "这个版本还没有接上右侧预览（不会打开空白面板）";
+  // 成功由右侧预览面板自己反馈（读屏状态 + 激活标签高亮）；消息区不再追加成功文案。
+  // 只有在真的没打开时才就地说明，绝不留一句「已在右侧打开」的旧提示。
+  attachNotice.value = ok ? "" : "这个版本还没有接上右侧预览（不会打开空白面板）";
 }
 
 /**

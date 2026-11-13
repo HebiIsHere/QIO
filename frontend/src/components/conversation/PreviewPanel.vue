@@ -28,6 +28,22 @@ const preview = useConversationPreviewStore();
 const tabs = computed(() => shell.prefs.previewTabs);
 const activeTab = computed(() => preview.activeTab);
 
+/**
+ * 打开成功的反馈由面板自己承担：一句可读屏的状态说出「已打开哪个文件的只读预览」。
+ *
+ * 文案严格由**当前激活标签**派生（不是记忆上一次点击）：
+ *   * 切换标签 → 立即变成新文件，不残留旧文件名；
+ *   * 关闭标签 → 跟到剩下的标签，最后一个关掉后为空；
+ *   * 收起面板 → 组件卸载，状态随 DOM 一起消失。
+ * 视觉上不新增提示条：既有「只读」徽标与激活标签高亮已经表达同一件事。
+ */
+const openStatus = computed(() => {
+  const tab = activeTab.value;
+  if (!tab) return "";
+  const title = String(tab.target.title ?? "").trim();
+  return title ? `已打开「${title}」的只读预览` : "已打开只读预览";
+});
+
 function activate(tabId: string): void {
   preview.activateTab(tabId);
 }
@@ -138,6 +154,14 @@ useEscapeLayer({
 
 <template>
   <aside class="preview-panel" :class="{ full }" aria-label="文件预览" data-preview-panel>
+    <!-- 读屏反馈：随激活标签变化；空状态不保留任何旧成功文案 -->
+    <p
+      class="qio-sr-only pv-open-status"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-test="preview-open-status"
+    >{{ openStatus }}</p>
     <header class="pv-head">
       <div class="pv-head-title">
         <span class="pv-head-label">文件预览</span>
