@@ -1067,7 +1067,9 @@ async function pickAttachment(): Promise<void> {
         return;
       }
       fileName = file.name || "未命名";
-      attachNotice.progress(token, fallbackNote + "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
+      // 文案：常态进度只写「正在保存附件…」；来源（工作区材料源文件）在成功行里由
+      // attachmentSourceNote 说一次，不塞进进度附注。
+      attachNotice.progress(token, fallbackNote + "正在保存附件「" + fileName + "」…");
       created = await uploadAttachment(file, { sourceKind: "browser_upload" });
     }
     if (!attachNotice.isCurrent(token)) return;

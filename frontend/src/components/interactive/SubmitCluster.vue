@@ -1304,7 +1304,7 @@ defineExpose({
             role="alert"
             data-im="submit-last-read-error"
           >
-            上次结果读取失败：{{ lastResultReadError }}（这不代表没有上次结果）
+            上次结果读取失败：{{ lastResultReadError }}
             <button class="details" type="button" data-im="submit-last-read-retry" :disabled="lastResultRetrying" @click="retryLastResultRead">
               {{ lastResultRetrying ? "读取中…" : "重试读取" }}
             </button>
@@ -1327,7 +1327,7 @@ defineExpose({
           >服务端还没有上次提交 / 理解记录。</p>
           <!-- #41：本次改动读取失败 / 有效空态 / 上次结果分开说；失败处可重试。 -->
           <p v-if="pendingError" class="sc-panel-text" role="alert" data-im="submit-details-error">
-            本次改动读取失败：{{ pendingError }}（这不代表本次没有改动）
+            本次改动读取失败：{{ pendingError }}
             <button class="details" type="button" data-im="submit-details-retry" @click="refreshPending">重试读取</button>
           </p>
           <p

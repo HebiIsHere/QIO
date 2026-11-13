@@ -114,7 +114,9 @@ describe("summarizeConfirm：开始执行失败的真实原因", () => {
     expect(summary.startFailed).toBe(false);
     expect(summary.startError).toBe("");
     expect(summary.notice).not.toContain("没有开始执行");
-    expect(summary.notice).toContain("已确认不等于已完成");
+    // 文案：状态仍如实（逐项「已确认」），但不再追加「已确认不等于已完成」的判据解释。
+    expect(summary.notice).toContain("已确认");
+    expect(summary.notice).not.toContain("已确认不等于已完成");
   });
 });
 

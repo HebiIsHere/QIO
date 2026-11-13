@@ -557,7 +557,7 @@ const boardSize = computed(() => {
             role="alert"
           >
             <p class="im-load-failed-title serif">板面没有读取出来</p>
-            <p class="im-load-failed-text">首次读取失败：这不代表板面是空的。失败期间不会对旧板面发起编辑或提交。</p>
+            <p class="im-load-failed-text">首次读取失败。失败期间不会对旧板面发起编辑或提交。</p>
             <div class="im-load-failed-actions">
               <button class="im-chip" type="button" data-im="board-load-retry" :disabled="boardRetrying" @click="retryBoardLoad">
                 {{ boardRetrying ? "重试中…" : "重试" }}
@@ -578,7 +578,7 @@ const boardSize = computed(() => {
             <!-- F06 / #07：意图读取失败保留旧内容；同一次失败只在任务入口 + 任务面板各出现一次，
                  这里不再重复一条横幅（重试入口在任务面板内）。 -->
             <p v-if="recoveryReadError" class="im-notice warn" role="status" data-im="recovery-read-error">
-              恢复事项读取失败：{{ recoveryReadError }}（这不代表没有事项）
+              恢复事项读取失败：{{ recoveryReadError }}
               <button class="im-link" type="button" data-im="recovery-retry" :disabled="recoveryReadBusy" @click="retryRecoveryRead">
                 {{ recoveryReadBusy ? "读取中…" : "重试读取" }}
               </button>

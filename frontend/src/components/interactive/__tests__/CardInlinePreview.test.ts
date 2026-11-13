@@ -338,7 +338,7 @@ describe("CardInlinePreview：六种 renderer 各自渲染出对应容器", () =
     expect(w.find('[data-testid="cip-slide-images"]').text()).toContain("只列清单");
   });
 
-  it("code：行号 + 等宽 + 语言 + 只读", async () => {
+  it("code：行号 + 等宽 + 语言（文案 1：正文附注不再重复「只读」，与对话侧预览同一口径）", async () => {
     mocks.fetchAttachmentPreview.mockResolvedValue(
       envelope("code", { kind: "code", language: "python", lines: ["def f():", "    return 1"], totalLines: 2 }),
     );
@@ -346,7 +346,9 @@ describe("CardInlinePreview：六种 renderer 各自渲染出对应容器", () =
     await flushPromises();
     expect(w.find('[data-im="cip-code"]').exists(), "code 容器没有渲染出来").toBe(true);
     expect(w.find('[data-testid="cip-code-facts"]').text()).toContain("Python");
-    expect(w.find('[data-testid="cip-code-facts"]').text()).toContain("只读");
+    // 文案 1：预览「只读」只在必要位置出现一次；卡片内预览由「展开预览」进入、没有编辑入口，
+    // 正文附注不再追加「· 只读」（对话侧预览同款重复已被 shell 组清掉）。
+    expect(w.find('[data-testid="cip-code-facts"]').text()).not.toContain("只读");
     expect(w.findAll('[data-testid="cip-line"]')).toHaveLength(2);
   });
 });

@@ -475,18 +475,18 @@ onBeforeUnmount(() => {
       <p v-if="operationsLoading" class="erp-muted" data-im="execution-record-loading">正在读取操作记录…</p>
       <div v-else-if="operationsError" class="erp-error" role="alert" data-im="execution-record-error">
         <p>读取失败：{{ operationsError }}</p>
-        <p class="erp-muted">读取失败不等于没有操作记录，请重试。</p>
+        <!-- 失败态与空态已经分行显示（空态只在读取成功且确实为空时出现），
+             不再补一句「失败不等于没有」的判据解释。 -->
         <button class="erp-retry" type="button" data-im="execution-record-retry" @click="retryOperations">重试读取操作记录</button>
       </div>
       <div v-else-if="operationsUnavailable" class="erp-error" role="alert" data-im="execution-record-unavailable">
         <p>操作账本暂时不可用：{{ operationsUnavailable }}</p>
-        <p class="erp-muted">账本不可用不等于没有操作记录。</p>
         <button class="erp-retry" type="button" data-im="execution-record-retry" @click="retryOperations">重试读取操作记录</button>
       </div>
       <ul v-else-if="operations.length" data-im="execution-record-operations">
         <li v-for="item in operations" :key="item.operation_id || item.operation_key || item.action">
           {{ actionLabel(item.action) }} · {{ operationStatusLabel(item.status) }}
-          <span v-if="item.operation_key" class="erp-muted">（{{ item.operation_key }}）</span>
+          <!-- 内部 operation_key 属调试字段：只留在下方「诊断」的原始条目里，主界面不显示。 -->
         </li>
       </ul>
       <p v-else class="erp-muted">没有已记录的操作。</p>
@@ -497,12 +497,10 @@ onBeforeUnmount(() => {
       <p v-if="resultsLoading" class="erp-muted" data-im="execution-record-results-loading">正在读取结果…</p>
       <div v-else-if="resultsError" class="erp-error" role="alert" data-im="execution-record-results-error">
         <p>读取失败：{{ resultsError }}</p>
-        <p class="erp-muted">读取失败不等于没有成果，不能当作「没有结果」。</p>
         <button class="erp-retry" type="button" data-im="execution-record-results-retry" @click="retryResults">重试读取结果</button>
       </div>
       <div v-else-if="resultsUnavailable" class="erp-error" role="alert" data-im="execution-record-results-unavailable">
         <p>结果暂时不可用：{{ resultsUnavailable }}</p>
-        <p class="erp-muted">结果不可用不等于没有成果。</p>
         <button class="erp-retry" type="button" data-im="execution-record-results-retry" @click="retryResults">重试读取结果</button>
       </div>
       <ul v-else-if="results.length" data-im="execution-record-results">

@@ -214,7 +214,8 @@ describe("确认结果：显式 ids / 部分失败 / 真实 turn_id / 不说成�
     expect(summary.rows[1].reason).toContain("没有返回");
     expect(summary.rows[0].turnId).toBe("turn_1");
     expect(summary.notice).toContain("部分失败");
-    expect(summary.notice).toContain("已确认不等于已完成");
+    // 文案：不再写「已确认不等于已完成」这类判据解释；状态本身仍分得开。
+    expect(summary.notice).not.toContain("已确认不等于已完成");
     expect(summary.completedIds).toEqual([]);
   });
 
@@ -355,9 +356,11 @@ describe("IntentLayer：虚拟外观 / 选中 / 拖动 / 确认 / 恢复", () =>
     expect(row.attributes("data-intent-id")).toBe("i1");
     expect(row.attributes("data-turn-id")).toBe("turn_9");
     expect(row.attributes("data-completed")).toBe("false");
-    const notice = wrapper.find('[data-im="intent-confirm-notice"]').text();
+    // 文案：确认结果那句话只在层底的 role=status 行出现一次（结果面板不再抄一遍）。
+    expect(wrapper.find('[data-im="intent-confirm-notice"]').exists()).toBe(false);
+    const notice = wrapper.find('[data-im="intent-layer-notice"]').text();
     expect(notice).toContain("已确认（等待执行）");
-    expect(notice).toContain("已确认不等于已完成");
+    expect(notice).not.toContain("已确认不等于已完成");
     wrapper.unmount();
 
     mocks.api.confirmSingleIntent.mockResolvedValue({

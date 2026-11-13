@@ -181,7 +181,9 @@ async function attachRealFile(
     } else if (preset && "file" in preset) {
       // 浏览器拖放：只有字节 → 首次落盘为工作区材料源文件（来源如实标注）
       fileName = preset.file.name || "未命名";
-      progress(token, "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
+      // 文案：常态进度只说「正在保存附件…」；「首次落盘为工作区材料源文件」是内部附注，
+      // 由成功行里的来源说明（attachmentSourceNote）只讲一次。
+      progress(token, "正在保存附件「" + fileName + "」…");
       source = { file: preset.file };
     } else if (isDesktopShell()) {
       try {
@@ -213,7 +215,7 @@ async function attachRealFile(
         return;
       }
       fileName = file.name || "未命名";
-      progress(token, fallbackNote + "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
+      progress(token, fallbackNote + "正在保存附件「" + fileName + "」…");
       source = { file };
     }
     if (!alive) return;
@@ -223,7 +225,7 @@ async function attachRealFile(
     void started.done.catch(() => undefined);
   } catch (error) {
     if (!alive) return;
-    fail(token, "附件保存失败：" + messageOf(error), retryOf(kind, cardId));
+    fail(token, attachFailText(fileName, messageOf(error)), retryOf(kind, cardId));
   }
 }
 
@@ -289,8 +291,14 @@ function cardJobProgressText(
 ): string {
   if (job.phase === "processing") return "正在处理附件「" + job.fileName + "」…";
   return job.sourceKind === "browser_upload"
-    ? "正在保存附件「" + job.fileName + "」…（首次落盘为工作区材料源文件）"
+    ? "正在保存附件「" + job.fileName + "」…"
     : "正在登记源文件「" + job.fileName + "」…";
+}
+
+/** 失败提示要说清「哪一份」失败：用户同时上传多份时才分得清该重试哪一个。 */
+function attachFailText(name: string, error: string): string {
+  const who = String(name || "").trim();
+  return who ? "附件保存失败「" + who + "」：" + error : "附件保存失败：" + error;
 }
 
 function cardJobSuccessText(ref: AttachmentRef): string {
@@ -316,7 +324,7 @@ function showCardImportSnapshot(job: CardImportJobSnapshot): void {
     store.acknowledgeCardImport(job.attemptId);
     fail(
       token,
-      "附件保存失败：" + (job.error || "原因未知"),
+      attachFailText(job.fileName, job.error || "原因未知"),
       // 内存里还有这份文件时不需要用户重新选；只有确实没有源时才回退到重新选择
       {
         label: "重试关联",
@@ -360,7 +368,7 @@ function onImportJobEvent(event: ImportJobEvent): void {
   const cardId = result.cardId || event.cardId || "";
   fail(
     token,
-    "附件保存失败：" + (result.error || "原因未知"),
+    attachFailText(event.fileName, result.error || "原因未知"),
     cardId ? retryOf("file", cardId) : undefined,
   );
 }

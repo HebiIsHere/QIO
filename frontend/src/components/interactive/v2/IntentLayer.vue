@@ -591,7 +591,9 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
           </label>
         </header>
         <p v-if="item.blockText" class="vi-block" data-im="intent-block">{{ item.blockText }}</p>
-        <p v-else-if="!item.progressText" class="vi-note" data-im="intent-virtual-note">确认前不执行；确认后由服务端续作（本轮不代表已完成）。</p>
+        <!-- 定稿短版：只留「确认后会发生什么」这一句事实；推测性的「（本轮不代表已完成）」
+             已删（后端静态边界守卫要求 .vue 里存在「续作」，这里保留最小事实句）。 -->
+        <p v-else-if="!item.progressText" class="vi-note" data-im="intent-virtual-note">确认后由服务端续作。</p>
         <p
           v-if="displayStateOf(item.view.intent_id)?.phase === 'pending'"
           class="vi-meta mono"
@@ -645,9 +647,6 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
         data-im="intent-auth-pending"
       >{{ selectedView.auth.reason }}</p>
       <p v-if="selectedView.progressText" class="row mono" data-im="intent-detail-progress">{{ selectedView.progressText }}</p>
-      <p v-if="!selectedView.blockText && isConfirmable(selectedView.view)" class="hint" data-im="intent-confirm-hint">
-        确认只提交这一条（显式 id），确认后以服务端返回的执行轮次与状态为准；已确认不等于已完成。
-      </p>
 
       <div class="detail-actions">
         <button
@@ -704,7 +703,8 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
         class="row summary-title"
         data-im="intent-confirm-partial-title"
       >{{ partialView.title }}</p>
-      <p class="row" data-im="intent-confirm-notice">{{ summary.notice }}</p>
+      <!-- 文案：确认结果那句话只在层底的 role=status 行说一次（返回页面 / 读屏也读它），
+           这里不再把同一句抄进结果面板，面板只给标题、成功项、失败项与重试入口。 -->
       <p
         v-if="partialView.succeeded.length"
         class="row ok"

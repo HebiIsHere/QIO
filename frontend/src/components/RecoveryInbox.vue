@@ -461,7 +461,6 @@ function formatWhen(record: RecoveryRecordView): string {
               type="button"
               :disabled="!action.enabled || Boolean(busyId)"
               :aria-label="`${actionLabel(action)}：${messageOf(record)}`"
-              v-qio-tip="action.enabled ? '' : action.reason"
               @click="run(record, action)"
             >
               {{ busyId === record.record_id ? "提交中…" : actionLabel(action) }}

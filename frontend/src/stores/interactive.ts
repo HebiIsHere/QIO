@@ -2702,7 +2702,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           // 服务端明确说「这份能力现在不可用」：不是空集合，也不是读取成功
           intentViewsLoadState.value = "error";
           intentViewsLoadError.value =
-            (payload as { reason?: string }).reason || "服务端的意图视图能力当前不可用（不代表没有意图）";
+            (payload as { reason?: string }).reason || "服务端的意图视图能力当前不可用";
           return false;
         }
         const list = Array.isArray(payload?.intents) ? payload.intents : [];

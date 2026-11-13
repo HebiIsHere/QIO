@@ -756,15 +756,15 @@ defineExpose({
         v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
       >
         <p class="cip-fact" data-testid="cip-markdown-facts">
-          Markdown · 共 {{ codeView.totalLines }} 行 · 编码 {{ codeView.encoding }} · 已解析为正文 · 只读
+          Markdown · 共 {{ codeView.totalLines }} 行 · 编码 {{ codeView.encoding }} · 已解析为正文
         </p>
         <MarkdownContent :source="markdownSource" />
       </div>
 
-      <!-- 代码 / 文本：行号 + 等宽 + 语言 + 只读 -->
+      <!-- 代码 / 文本：行号 + 等宽 + 语言（「只读」不在正文附注里重复，同对话侧预览文案 1） -->
       <div v-else-if="plan.renderer === 'code' && codeView" class="cip-code" data-im="cip-code">
         <p class="cip-fact" data-testid="cip-code-facts">
-          {{ codeView.languageLabel }} · 共 {{ codeView.totalLines }} 行 · 编码 {{ codeView.encoding }} · 只读
+          {{ codeView.languageLabel }} · 共 {{ codeView.totalLines }} 行 · 编码 {{ codeView.encoding }}
         </p>
         <pre
           class="cip-pre"

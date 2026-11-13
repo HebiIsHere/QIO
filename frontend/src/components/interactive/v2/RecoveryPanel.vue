@@ -238,7 +238,7 @@ async function load(): Promise<void> {
       views.value = [];
       const reason = (response as { reason?: string }).reason ?? "";
       loadError.value =
-        "服务端的意图恢复能力当前不可用：" + (reason || "没有给出原因") + "（不代表没有需要恢复的事项）";
+        "服务端的意图恢复能力当前不可用：" + (reason || "没有给出原因");
       return;
     }
     views.value = Array.isArray(response.intents) ? response.intents : [];

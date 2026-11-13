@@ -183,7 +183,7 @@ const statusNotices = computed<StatusNotice[]>(() => {
       id: "history",
       tone: "quiet",
       tag: "历史",
-      text: "历史记录暂时无法读取（已经加载的内容仍保留，不代表没有历史）",
+      text: "历史记录暂时无法读取（已经加载的内容仍保留）",
       actions: [{ label: "重试", run: retryHistory }],
     });
   }

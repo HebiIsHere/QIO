@@ -547,7 +547,7 @@ const counts = computed(() => ({
         写入失败：{{ storageWriteError }}（内存里的记录仍可找回；关闭后可能丢失）
       </p>
       <p v-if="storageReadError" class="lead" data-im="composer-recovery-read-error">
-        读取失败：{{ storageReadError }}（这不代表没有失败原文）
+        读取失败：{{ storageReadError }}
       </p>
       <button
         v-if="storageReadError"

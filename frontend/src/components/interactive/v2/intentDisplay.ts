@@ -596,7 +596,8 @@ export function summarizeConfirm(
     );
   }
   if (failedIds.length) {
-    parts.push("部分失败：" + failedIds.join("、") + " 没有确认成功，可逐项重试或查看原因。");
+    // 重试入口就在结果面板里；这句话只说「哪些没成功」，不再教用户点哪里。
+    parts.push("部分失败：" + failedIds.join("、") + " 没有确认成功。");
   }
   if (startedUnknownIds.length) {
     parts.push(
@@ -616,9 +617,9 @@ export function summarizeConfirm(
   }
   if (completedIds.length) {
     parts.push("服务端已完成：" + completedIds.join("、") + "。");
-  } else if (succeededIds.length) {
-    parts.push("已确认不等于已完成：执行结果以服务端状态、账本与结果卡为准。");
   }
+  // 「已确认不等于已完成」不再写成一句解释：逐项状态 + 卡片上的真实进度已经说明这件事，
+  // 状态不同仍分开显示（成功项 / 已完成 / 未开始），只是不重复解释判据。
 
   return {
     batch,

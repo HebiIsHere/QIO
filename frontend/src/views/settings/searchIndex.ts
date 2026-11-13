@@ -50,7 +50,7 @@ export const SETTINGS_USAGE_ENTRIES: { key: string; label: string; group: string
   { key: "vision", label: "看图 / 视觉", group: "special", note: "只有真能读图的模型才该放这里" },
   { key: "video", label: "视频", group: "special", note: "沿用现有处理方式，不继承默认对话模型" },
   { key: "audio", label: "语音", group: "special", note: "沿用现有处理方式，不继承默认对话模型" },
-  { key: "embedding", label: "向量 / 嵌入", group: "special", note: "更换外部嵌入模型会影响既有索引维度" },
+  { key: "embedding", label: "向量 / 嵌入", group: "special", note: "使用 QIO 当前内置配置" },
   { key: "memory-organize", label: "记忆整理", group: "background", note: "后台整理记忆分段时使用" },
   { key: "knowledge-distill", label: "知识提炼", group: "background", note: "从对话里提炼知识候选时使用" },
   { key: "entity-extract", label: "实体提炼", group: "background", note: "抽取实体与关系时使用" },

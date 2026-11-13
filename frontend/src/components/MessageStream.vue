@@ -1291,7 +1291,7 @@ const phaseLabel = computed(() => {
       </template>
       <template v-else-if="session.history.status === 'error'">
         <div class="greet serif">历史没有读取出来</div>
-        <div class="sub mono">这不代表没有消息；可在上方状态条里重试</div>
+        <div class="sub mono">可在上方状态条里重试</div>
       </template>
       <!-- #16：互动空态只提示发消息或提交板面；对话模式的星球入口不移到这里。 -->
       <template v-else-if="props.emptyVariant === 'interactive'">

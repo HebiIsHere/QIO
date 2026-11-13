@@ -344,7 +344,9 @@ describe("执行记录：操作与成果分别读取（#68）", () => {
     resultReads[0].reject(new Error("结果读取失败：500 Internal Server Error"));
     await flashAll();
 
-    expect(wrapper.get('[data-im="execution-record-operations"]').text()).toContain("key_one");
+    // 主界面的操作行只给人话（动作 · 状态）；内部 operation_key 只在「诊断」的原始条目里，
+    // 身份核对仍然可查（文案：执行记录主界面不留调试字段）。
+    expect(wrapper.get('[data-im="execution-record-diagnostics"]').text()).toContain("key_one");
     expect(wrapper.find('[data-im="execution-record-error"]').exists()).toBe(false);
     expect(wrapper.find('[data-im="execution-record-results-retry"]').exists()).toBe(true);
     const resultsError = wrapper.get('[data-im="execution-record-results-error"]');
@@ -386,7 +388,7 @@ describe("执行记录：操作与成果分别读取（#68）", () => {
     expect(resultReads).toHaveLength(1);
     ledgerReads[1].resolve({ available: true, operations: [operationOf("intent_a", "retry")] });
     await flashAll();
-    expect(wrapper.get('[data-im="execution-record-operations"]').text()).toContain("key_retry");
+    expect(wrapper.get('[data-im="execution-record-diagnostics"]').text()).toContain("key_retry");
     expect(wrapper.find('[data-im="execution-record-results-error"]').exists()).toBe(true);
 
     // 只重试成果：操作侧不重复读取。
@@ -420,7 +422,7 @@ describe("执行记录：操作与成果分别读取（#68）", () => {
 
     ledgerReads[0].resolve({ available: true, operations: [operationOf("intent_a", "later")] });
     await flashAll();
-    expect(wrapper.get('[data-im="execution-record-operations"]').text()).toContain("key_later");
+    expect(wrapper.get('[data-im="execution-record-diagnostics"]').text()).toContain("key_later");
     expect(wrapper.text()).toContain("先到的成果");
     wrapper.unmount();
   });
@@ -516,7 +518,7 @@ describe("执行记录：记录身份（intentId + boardId + open + 代次）", 
 
     ledgerReads[1].resolve({ available: true, operations: [operationOf("intent_b", "final")] });
     await flashAll();
-    expect(wrapper.get('[data-im="execution-record-operations"]').text()).toContain("key_final");
+    expect(wrapper.get('[data-im="execution-record-diagnostics"]').text()).toContain("key_final");
     expect(wrapper.text()).not.toContain("A 的迟到成果");
     wrapper.unmount();
   });

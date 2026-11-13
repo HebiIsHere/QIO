@@ -284,7 +284,8 @@ export function taskControlLabel(action: TaskControlAction, busy: boolean): stri
 export function taskControlHint(action: TaskControlAction): string {
   if (action === "pause") return "暂停这条互动任务（不影响聊天）";
   if (action === "resume") return "继续这条互动任务（按当前材料，不自动重试）";
-  return "取消这条互动任务（与停止当前聊天不是同一件事）";
+  // 读屏名称要短而准：任务取消 ≠ 聊天停止这件事已经由「任务面板」分区与按钮所在位置区分。
+  return "取消这条互动任务";
 }
 
 /**

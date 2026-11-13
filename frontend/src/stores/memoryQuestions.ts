@@ -130,7 +130,7 @@ export const useMemoryQuestionsStore = defineStore("memoryQuestions", {
             this.status = "error";
             this.error =
               (listing.warnings && listing.warnings[0]) ||
-              "维护事项存储不可用：读不到记忆问题，不代表没有问题。";
+              "维护事项存储不可用：读不到记忆问题。";
             return false;
           }
           this.count = Number.isFinite(listing.total) ? Number(listing.total) : this.items.length;
@@ -141,9 +141,7 @@ export const useMemoryQuestionsStore = defineStore("memoryQuestions", {
         } catch (error) {
           this.status = "error";
           this.error =
-            "没能读到记忆整理问题：" +
-            ((error as Error)?.message || "未知原因") +
-            "（这不代表没有问题）";
+            "没能读到记忆整理问题：" + ((error as Error)?.message || "未知原因");
           return false;
         } finally {
           inflight = null;

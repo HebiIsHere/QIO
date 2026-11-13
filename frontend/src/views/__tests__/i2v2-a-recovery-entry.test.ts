@@ -127,7 +127,10 @@ describe("F05 恢复入口：不依赖面板挂载", () => {
     await flushPromises();
     const notice = byIm(wrapper, "recovery-read-error");
     expect(notice.length).toBe(1);
-    expect(notice[0].text()).toContain("不代表没有事项");
+    // 文案清理：读取失败不再补「不代表没有事项」这类判据解释；
+    // 失败状态本身 + 重试入口已经说清「这不是空结果」。
+    expect(notice[0].text()).toContain("恢复事项读取失败");
+    expect(notice[0].text()).not.toContain("不代表没有事项");
     expect(byIm(wrapper, "recovery-retry").length).toBe(1);
     wrapper.unmount();
   });

@@ -279,7 +279,9 @@ describe("RecoveryPanel：保存失败持续可见 + 服务端恢复", () => {
     const { w } = mountPanel(deps);
     await flushPromises();
     expect(w.get('[data-im="p3c-recovery-load-error"]').text()).toContain("不可用");
-    expect(w.get('[data-im="p3c-recovery-load-error"]').text()).toContain("不代表没有需要恢复的事项");
+    // 文案：不可用自己就是一句话事实；空态（「暂无可恢复的任务」）另走一条分支，
+    // 不再补「不代表没有需要恢复的事项」。
+    expect(w.get('[data-im="p3c-recovery-load-error"]').text()).not.toContain("不代表没有需要恢复的事项");
   });
 
   it("草稿保存失败 / 受理不明：给出真实动作，重试只做对应那件事", async () => {

@@ -3,7 +3,7 @@
  *
  * 钉住的行为：
  * - 话题标题常驻，来自真实 session；点击才去读话题说明，读不到如实说、可重试、不编造描述；
- * - 历史读取失败出现在话题栏下方（可重试），文案明确「不代表没有历史」，且不使用全局空态；
+ * - 历史读取失败出现在话题栏下方（可重试），说明「暂时无法读取 + 已加载内容仍保留」，不使用全局空态；
  * - 全局错误 / 凭据 / 同步失败进顶部状态区，不塞进消息流；
  * - 消息流的空 / 加载 / 失败三态如实；「回到最新消息」的未读计数来自流内真实逻辑。
  */
@@ -249,7 +249,10 @@ describe("全局状态区：影响整个对话的异常在话题栏下方", () =
     const w = mountColumn(pinia);
     const notice = w.find('[data-notice="history"]');
     expect(notice.exists()).toBe(true);
-    expect(notice.text()).toContain("不代表没有历史");
+    // 文案：失败态自己说清「暂时无法读取 + 已加载内容仍保留」，不再补一句「不代表没有历史」。
+    expect(notice.text()).toContain("暂时无法读取");
+    expect(notice.text()).toContain("已经加载的内容仍保留");
+    expect(notice.text()).not.toContain("不代表没有历史");
     await notice.find("button.link").trigger("click");
     expect(retry).toHaveBeenCalledTimes(1);
     // 状态区在消息流之上：消息流桩里不该出现这条提示
