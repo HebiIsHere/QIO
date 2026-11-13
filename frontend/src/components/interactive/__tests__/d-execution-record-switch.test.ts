@@ -416,7 +416,7 @@ describe("执行记录：操作与成果分别读取（#68）", () => {
     await flashAll();
     // 操作还在读：成果已经可见，操作区保持自己的读取状态。
     expect(wrapper.text()).toContain("先到的成果");
-    expect(wrapper.get('[data-im="execution-record-loading"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="execution-record-loading"]').exists()).toBe(true);
 
     ledgerReads[0].resolve({ available: true, operations: [operationOf("intent_a", "later")] });
     await flashAll();
@@ -501,7 +501,7 @@ describe("执行记录：记录身份（intentId + boardId + open + 代次）", 
     });
     await flashAll();
     expect(wrapper.text()).toContain("B 的成果");
-    expect(wrapper.get('[data-im="execution-record-loading"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="execution-record-loading"]').exists()).toBe(true);
 
     // A 两侧迟到，都不能覆盖 B。
     ledgerReads[0].resolve({ available: true, operations: [operationOf("intent_a", "late")] });
