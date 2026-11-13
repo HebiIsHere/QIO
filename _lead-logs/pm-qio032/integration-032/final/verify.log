@@ -1,0 +1,30 @@
+﻿== 0. 身份 ==
+HEAD=acf323a3669010b7ae99f5d9c1989bf4f58340fd
+branch=fix/pm-qio032-integration
+status=?? _lead-logs/pm-qio032/e2e-integration-032/; ?? _lead-logs/pm-qio032/integration-032/final/; ?? _lead-logs/pm-qio032/integration-032/verify-final.ps1; ?? _lead-logs/pm-qio032/reports/lead-integration-032.md
+
+== 1. 五个来源 SHA 的祖先关系 ==
+  shell a8c9222b ancestor=True
+  interactive 08d08955 ancestor=True
+  planet 0db3521d ancestor=True
+  settings baf2a1f9 ancestor=True
+  records 30575ceb ancestor=True
+
+== 2. 冲突标记 / 空白 ==
+conflict_marker_lines=0
+diff_check=
+
+== 3. 后端定向 pytest（材料版本与首轮读取 + 静态边界）==
+pytest_exit=0
+
+== 4. 前端定向 vitest（受影响入口）==
+vitest_exit=0
+
+== 5. 前端类型检查 ==
+vue_tsc_exit=0
+
+== 6. 文档一致性 / workflow 契约 ==
+check_docs_exit=0
+workflow_contract_exit=0
+
+== 结论：fail=0 ==

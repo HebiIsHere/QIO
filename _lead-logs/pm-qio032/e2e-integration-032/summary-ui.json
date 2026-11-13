@@ -1,0 +1,672 @@
+{
+  "runId": "20261113172945",
+  "startedAt": "2026-11-13T17:29:45.045Z",
+  "finishedAt": "2026-11-13T17:33:53.215Z",
+  "base": "http://127.0.0.1:5199",
+  "api": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8807",
+  "cdpPort": 9333,
+  "out": "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify",
+  "head": "acf323a3669010b7ae99f5d9c1989bf4f58340fd",
+  "pass": 22,
+  "fail": 1,
+  "unverified": 5,
+  "total": 28,
+  "results": [
+    {
+      "name": "环境-0 服务与集成 HEAD 记录",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "head": "acf323a3669010b7ae99f5d9c1989bf4f58340fd",
+        "worktreeDirty": true,
+        "base": "http://127.0.0.1:5199",
+        "api": "http://127.0.0.1:8734",
+        "provider": "http://127.0.0.1:8807",
+        "cdpPort": 9333,
+        "out": "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify"
+      }
+    },
+    {
+      "name": "环境-2 后端会话可用（GET /api/settings/ui，只读核对服务端真值）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "typewriter_cps": 50,
+        "hasConversationLayout": true,
+        "error": null
+      }
+    },
+    {
+      "name": "环境-1 关键选择器预检（对话/互动/设置）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "checks": [
+          {
+            "group": "conversation",
+            "missing": []
+          },
+          {
+            "group": "interactive-menu",
+            "missing": []
+          },
+          {
+            "group": "interactive",
+            "missing": []
+          },
+          {
+            "group": "settings",
+            "missing": []
+          },
+          {
+            "group": "settings-about",
+            "missing": []
+          }
+        ],
+        "missing": []
+      }
+    },
+    {
+      "name": "s1 场景未跑完",
+      "ok": false,
+      "unverified": false,
+      "detail": {
+        "error": "Error: 预览搜索框未出现（python 标签）：{\"tabId\":\"replycode:local_1794591004179_2:0\",\"readerKind\":\"code\",\"tools\":false,\"search\":false,\"scroll\":false,\"problem\":null,\"stateText\":\"正在读取这个文件…\"}\n    at waitReaderSearch (file:///D:/qio-dev/_lead-logs/integration-032/ui-verify/ui-verify.mjs:500:9)\n    at async s1WideLayout (file:///D:/qio-dev/_lead-logs/integration-032/ui-verify/ui-verify.mjs:540:3)\n    at async runScenario (file:///D:/qio-dev/_lead-logs/integration-032/ui-verify/ui-verify.mjs:1234:5)\n    at async main (file:///D:/qio-dev/_lead-logs/integration-032/ui-verify/ui-verify.mjs:1268:18)\n    at async file:///D:/qio-dev/_lead-logs/integration-032/ui-verify/ui-verify.mjs:1349:3",
+        "failureArchives": [
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\failure-s1-20261113173211-provider-log.json",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\failure-s1-20261113173211-backend-tail.log",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\failure-s1-20261113173211-page.json"
+        ]
+      }
+    },
+    {
+      "name": "#47-9 窄窗（800×600+预览占位）：自动收起/全窗口未被写成用户偏好",
+      "ok": false,
+      "unverified": true,
+      "detail": {
+        "kind": "unverified",
+        "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷",
+        "tabs": [
+          {
+            "id": "replycode:local_1794591004179_2:0",
+            "active": true,
+            "title": "python\n代码\n×",
+            "ariaSelected": "true"
+          }
+        ]
+      }
+    },
+    {
+      "name": "#47-10 窄窗下点击还原默认布局",
+      "ok": false,
+      "unverified": true,
+      "detail": {
+        "kind": "unverified",
+        "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷",
+        "tabs": [
+          {
+            "id": "replycode:local_1794591004179_2:0",
+            "active": true,
+            "title": "python\n代码\n×",
+            "ariaSelected": "true"
+          }
+        ]
+      }
+    },
+    {
+      "name": "#47-11 窄窗重开预览：自动全窗口",
+      "ok": false,
+      "unverified": true,
+      "detail": {
+        "kind": "unverified",
+        "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷",
+        "tabs": [
+          {
+            "id": "replycode:local_1794591004179_2:0",
+            "active": true,
+            "title": "python\n代码\n×",
+            "ariaSelected": "true"
+          }
+        ]
+      }
+    },
+    {
+      "name": "#47-12 拉宽回分栏",
+      "ok": false,
+      "unverified": true,
+      "detail": {
+        "kind": "unverified",
+        "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷",
+        "tabs": [
+          {
+            "id": "replycode:local_1794591004179_2:0",
+            "active": true,
+            "title": "python\n代码\n×",
+            "ariaSelected": "true"
+          }
+        ]
+      }
+    },
+    {
+      "name": "#46-1 上传在途时切到设置页（两张截图）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "shots": [
+          "46-uploading-interactive",
+          "46-uploading-settings"
+        ],
+        "simulated": true
+      }
+    },
+    {
+      "name": "#46-2 返回后只多一张卡且数量稳定（无重复卡）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "before": 0,
+        "after": 1,
+        "stable": 1
+      }
+    },
+    {
+      "name": "#46-3 文件卡已关联：工具栏变「重新关联附件」且无「未关联」提示",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "card": {
+          "index": 0,
+          "count": 1,
+          "text": "文本\ncrosspage-20261113172945.txt\n显示并参与\n参与\n\n文本\ncrosspage-20261113172945.txt\n449 B\n\n材料详情（路径 / 来源 / 引用）\n11-14 01:32",
+          "unlinked": false,
+          "retry": false,
+          "statusText": "",
+          "statusTone": ""
+        },
+        "toolbar": {
+          "present": true,
+          "attachText": "重新关联附件",
+          "openPresent": true,
+          "retryPresent": false,
+          "buttons": [
+            "编辑",
+            "复制",
+            "隐藏",
+            "加书签",
+            "删除",
+            "编辑",
+            "重新关联附件",
+            "查看",
+            "折成标题",
+            "更多",
+            "复制",
+            "隐藏",
+            "书签",
+            "整理",
+            "删除"
+          ]
+        },
+        "openEntry": true
+      }
+    },
+    {
+      "name": "#46-4 界面没有要求重新选文件/重新导入；成功状态可读",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "channel": "add-material-status",
+        "notice": {
+          "text": "已关联附件「crosspage-20261113172945.txt」：已保存为工作区材料源文件（来源：浏览器上传）；板面关联是本地改动，提交后 QIO 才可见",
+          "className": "add-status is-ok",
+          "retry": false,
+          "batchId": null
+        }
+      }
+    },
+    {
+      "name": "#46-5 补充：单文件拖放批次结算后显示「已接收 1 份」（非跨页）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "batch": {
+          "summary": "本批已接收 1 份 / 未接收 0 份（单批上限 5 份）\n\ndropbatch-20261113172945.txt\n已接收\n关闭",
+          "items": [
+            {
+              "name": "dropbatch-20261113172945.txt",
+              "status": "succeeded",
+              "text": "dropbatch-20261113172945.txt\n已接收"
+            }
+          ],
+          "active": false
+        },
+        "cardsBefore": 1,
+        "cardsAfter": 2
+      }
+    },
+    {
+      "name": "#47-13 设置搜索「单段长度」：自动展开「记忆·高级选项」并定位到可聚焦输入框",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "foldExpanded": "true",
+        "targetExists": true,
+        "targetVisible": true,
+        "highlighted": false,
+        "inputExists": true,
+        "inputLabel": "单段长度目标",
+        "inputFocused": true,
+        "category": "memory",
+        "rect": {
+          "x": 281,
+          "y": 480.65625,
+          "width": 1082,
+          "height": 81.390625
+        }
+      }
+    },
+    {
+      "name": "#47-14 设置搜索「还原默认布局」：命中并定位到真实按钮",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "inputValue": "还原默认布局",
+        "hitKeys": [
+          "regular.window.reset-layout"
+        ],
+        "groups": [
+          "常规"
+        ],
+        "highlightObserved": true,
+        "hit": true,
+        "targetExists": true,
+        "targetVisible": true,
+        "highlighted": true,
+        "buttonText": "还原默认布局",
+        "category": "regular",
+        "searchPanelOpen": false
+      }
+    },
+    {
+      "name": "#47-15 [模拟] 布局保存失败（HTTP 500）：明确失败提示 + 重试入口",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "notice": {
+          "text": "还原默认布局失败",
+          "className": "set-notice err",
+          "role": "alert"
+        },
+        "simulated": true
+      }
+    },
+    {
+      "name": "#47-16 [模拟] 重试成功：显示「已还原默认布局」",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "notice": {
+          "text": "已还原默认布局（预览标签与阅读位置保留）",
+          "className": "set-notice ok",
+          "role": "status"
+        },
+        "simulated": true
+      }
+    },
+    {
+      "name": "视觉-light-1440x900 控件可达 / 无横向溢出 / 无重复提示",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "residualBoardCards": 0,
+        "convBase": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "convPreview": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": [],
+          "searchInputPresent": false
+        },
+        "interactive": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "settings": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "duplicates": []
+      }
+    },
+    {
+      "name": "视觉-light-1440x900 关键截图（对话底部/预览标题/互动底部/设置搜索）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "shots": [
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\11-matrix-light-1440x900-conversation.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\12-matrix-light-1440x900-preview-head.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\13-matrix-light-1440x900-interactive.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\14-matrix-light-1440x900-interactive-bottom.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\15-matrix-light-1440x900-settings-search.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\16-matrix-light-1440x900-settings.png"
+        ]
+      }
+    },
+    {
+      "name": "视觉-light-800x600 控件可达 / 无横向溢出 / 无重复提示",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "residualBoardCards": 0,
+        "convBase": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "convPreview": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": [],
+          "searchInputPresent": false
+        },
+        "interactive": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "settings": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "duplicates": []
+      }
+    },
+    {
+      "name": "视觉-light-800x600 关键截图（对话底部/预览标题/互动底部/设置搜索）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "shots": [
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\17-matrix-light-800x600-conversation.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\18-matrix-light-800x600-preview-head.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\19-matrix-light-800x600-interactive.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\20-matrix-light-800x600-interactive-bottom.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\21-matrix-light-800x600-settings-search.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\22-matrix-light-800x600-settings.png"
+        ]
+      }
+    },
+    {
+      "name": "视觉-dark-1440x900 控件可达 / 无横向溢出 / 无重复提示",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "residualBoardCards": 0,
+        "convBase": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "convPreview": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": [],
+          "searchInputPresent": false
+        },
+        "interactive": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "settings": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "duplicates": []
+      }
+    },
+    {
+      "name": "视觉-dark-1440x900 关键截图（对话底部/预览标题/互动底部/设置搜索）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "shots": [
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\23-matrix-dark-1440x900-conversation.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\24-matrix-dark-1440x900-preview-head.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\25-matrix-dark-1440x900-interactive.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\26-matrix-dark-1440x900-interactive-bottom.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\27-matrix-dark-1440x900-settings-search.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\28-matrix-dark-1440x900-settings.png"
+        ]
+      }
+    },
+    {
+      "name": "视觉-dark-800x600 控件可达 / 无横向溢出 / 无重复提示",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "residualBoardCards": 0,
+        "convBase": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "convPreview": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": [],
+          "searchInputPresent": false
+        },
+        "interactive": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "settings": {
+          "pass": true,
+          "controlsOk": true,
+          "failingControls": [],
+          "overflowOk": true,
+          "overflowing": [],
+          "docOverflow": false,
+          "duplicatesOk": true,
+          "duplicateNotices": []
+        },
+        "duplicates": []
+      }
+    },
+    {
+      "name": "视觉-dark-800x600 关键截图（对话底部/预览标题/互动底部/设置搜索）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "shots": [
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\29-matrix-dark-800x600-conversation.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\30-matrix-dark-800x600-preview-head.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\31-matrix-dark-800x600-interactive.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\32-matrix-dark-800x600-interactive-bottom.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\33-matrix-dark-800x600-settings-search.png",
+          "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\shots\\34-matrix-dark-800x600-settings.png"
+        ]
+      }
+    },
+    {
+      "name": "视觉-失败态（真实入口：设置→关于与更新→检查更新）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "state": {
+          "text": "更新失败（原始信息：Cannot read properties of undefined (reading 'invoke')）\n更新没有安装。可以点「重试」重新检查；若安装被中止（例如 \"Can't write …qio-backend.exe\"）， 请完全退出 QIO 后重试安装。\n连不上更新源时，可在 %APPDATA%\\qio\\updater-proxy.txt 写一行代理地址； 排查记录在 %APPDATA%\\qio\\logs\\qio.log。",
+          "className": "line err",
+          "role": "alert"
+        },
+        "note": "真实入口的失败提示是内联 .line.err，不是浮层；已保留截图"
+      }
+    },
+    {
+      "name": "视觉-失败浮层（真实入口）",
+      "ok": false,
+      "unverified": true,
+      "detail": {
+        "kind": "unverified",
+        "reason": "真实入口只出现内联失败提示（.line.err），没有浮层形态；失败态本身已取证，见截图 matrix-failure-inline",
+        "realFailure": {
+          "text": "更新失败（原始信息：Cannot read properties of undefined (reading 'invoke')）\n更新没有安装。可以点「重试」重新检查；若安装被中止（例如 \"Can't write …qio-backend.exe\"）， 请完全退出 QIO 后重试安装。\n连不上更新源时，可在 %APPDATA%\\qio\\updater-proxy.txt 写一行代理地址； 排查记录在 %APPDATA%\\qio\\logs\\qio.log。",
+          "className": "line err",
+          "role": "alert"
+        }
+      }
+    },
+    {
+      "name": "视觉-矩阵总览（2 主题 × 2 尺寸）",
+      "ok": true,
+      "unverified": false,
+      "detail": {
+        "combos": [
+          {
+            "label": "light-1440x900",
+            "pass": true,
+            "shots": 6
+          },
+          {
+            "label": "light-800x600",
+            "pass": true,
+            "shots": 6
+          },
+          {
+            "label": "dark-1440x900",
+            "pass": true,
+            "shots": 6
+          },
+          {
+            "label": "dark-800x600",
+            "pass": true,
+            "shots": 6
+          }
+        ]
+      }
+    }
+  ],
+  "simulated": [
+    "③-1 上传延迟 4.5s（CDP Fetch delayRequests，等价 route 延迟；真实端点 POST /api/attachments/upload）",
+    "③-2 [模拟] PUT /api/settings/ui（conversation_layout）返回 500：CDP Fetch fulfillRequest，只影响还原布局这一次写入"
+  ],
+  "unverifiedNotes": [
+    {
+      "name": "#47-9 窄窗（800×600+预览占位）：自动收起/全窗口未被写成用户偏好",
+      "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷"
+    },
+    {
+      "name": "#47-10 窄窗下点击还原默认布局",
+      "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷"
+    },
+    {
+      "name": "#47-11 窄窗重开预览：自动全窗口",
+      "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷"
+    },
+    {
+      "name": "#47-12 拉宽回分栏",
+      "reason": "s1 未产出两个预览标签（s1 前置不成立/失败），无法在“预览占位”条件下验证窄窗自动布局；按 UNVERIFIED 记录，不判产品缺陷"
+    },
+    {
+      "name": "视觉-失败浮层（真实入口）",
+      "reason": "真实入口只出现内联失败提示（.line.err），没有浮层形态；失败态本身已取证，见截图 matrix-failure-inline"
+    }
+  ],
+  "failureArchives": [
+    {
+      "scenario": "s1",
+      "at": "2026-11-13T17:32:11.302Z",
+      "files": [
+        "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\failure-s1-20261113173211-provider-log.json",
+        "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\failure-s1-20261113173211-backend-tail.log",
+        "D:\\qio-dev\\_lead-logs\\integration-032\\ui-verify\\failure-s1-20261113173211-page.json"
+      ]
+    }
+  ],
+  "consoleErrors": [],
+  "note": "真实界面驱动：系统 Edge + CDP（scripts/verify-pm-qio032/cdp.mjs）；模型调用只打本机 fake provider；所有 [模拟] 见 simulated。"
+}
