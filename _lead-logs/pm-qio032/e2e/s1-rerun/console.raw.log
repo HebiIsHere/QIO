@@ -1,0 +1,41 @@
+﻿== PM-QIO032 E2E ==  base=http://127.0.0.1:5199 api=http://127.0.0.1:8734 provider=http://127.0.0.1:8807 runId=20261113050730
+
+---- s1 ① 首轮交付 / 三态参与 / 不泄漏 ----
+      · 板面已重置：{"ok":true,"status":200,"seq":157,"detail":null}
+[PASS] ①-0 正常入口：对话页模式切换进入互动板面 :: {"before":"conversation","after":"interactive","hash":"#/interactive"}
+[PASS] ①-1 文字卡写入唯一标记 :: {"ok":true,"body":"M1-20261113050730 参与项文字","stillEditing":false}
+      · 文件选择器已注入：{"frameId":"A2E2C73CA1DF3F27661B3E12BF44ED90","mode":"selectSingle","backendNodeId":3225}
+      · 文件选择器已注入：{"frameId":"A2E2C73CA1DF3F27661B3E12BF44ED90","mode":"selectSingle","backendNodeId":3319}
+[PASS] ①-2 上传两张 TXT 文件卡（参与项 + 排除项，正常「添加 → 文件」入口） :: {"participating":{"before":1,"after":2},"excluded":{"before":2,"after":3},"status":""}
+      · 文件选择器已注入：{"frameId":"A2E2C73CA1DF3F27661B3E12BF44ED90","mode":"selectSingle","backendNodeId":3411}
+      · 文件选择器已注入：{"frameId":"A2E2C73CA1DF3F27661B3E12BF44ED90","mode":"selectSingle","backendNodeId":3482}
+[PASS] ①-3 上传两张 PNG 文件卡（参与项 + 隐藏项） :: {"participating":{"before":3,"after":4},"hidden":{"before":4,"after":5}}
+      · 卡片序号 txt(参与)=1 txt(排除)=2 png(参与)=3 png(隐藏)=4 总卡数=5
+[PASS] ①-4a 隐藏后恢复显示默认只回「显示但不参与」 :: {"hiddenOn":{"before":"card selected","after":"card selected hidden","visibilityBefore":"included","visibilityAfter":"hidden_excluded","textBefore":"文字注释 显示并参与 参与 TXT-HIDDEN-20261113050730-隐藏项正文 11-13 13:07","textAfter":"文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261113050730-隐藏项正文 已隐藏：退出讨论范围 1","hiddenNow":true},"restored":{"before":"hidden_excluded","after":"displayed_excluded","menuOpened":1}}
+[PASS] ①-4 对照：排除项 TXT 卡「显示但不参与」 :: {"before":"included","after":"displayed_excluded","menuOpened":1}
+[PASS] ①-5 对照：隐藏项 PNG 卡「隐藏且不参与」 :: {"before":"card is-cover","after":"card hidden is-cover","visibilityBefore":"included","visibilityAfter":"hidden_excluded","textBefore":"查看原图 图片 png-hide-20261113050730.png 显示并参与 参与 11-13 13:07","textAfter":"查看原图 图片 png-hide-20261113050730.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11","hiddenNow":true}
+[PASS] ①-5b 交付对象（参与项 TXT / PNG）保持「显示并参与」 :: {"idxTxtPart":1,"idxPngPart":3,"txtVisibility":"included","pngVisibility":"included"}
+      · 保存状态：
+      · 轮次空闲=true
+[PASS] ①-6 提交后首个互动轮次模型请求携带参与项正文 :: {"chatRequests":3,"requestsWithTextMarker":1,"provider_log_requests":3}
+[PASS] ①-6b 参与项 TXT 文件的可读正文进入首轮模型请求（同一正式提交入口） :: {"kind":"txt_file_body_delivered","txtMarkerSeen":true,"fileNameSeen":true,"note":"参与项 TXT 正文出现在模型请求里（参与项交付成立）"}
+[PASS] ①-6c 参与项 PNG 的交付形态：image_url 带真实字节 = 真交付；无视觉链路则如实 image_unsupported :: {"kind":"image_delivered","imageUrlSeen":true,"bytesMatch":true,"pngNameSeen":true,"note":"请求里出现 image_url，且 data URL 的 base64 与本地 PNG 字节一致（字节交付成立）","submitLabel":"提交给 QIO","settled":{"text":"本次提交：已提交，排队中\n\n已受理\nQIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。\n\n刷新理解状态\n\n已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。\n\n提交给 QIO","label":"提交给 QIO"}}
+[PASS] ①-7 排除项（显示但不参与）正文不出现在模型请求里 :: {"excludedTxtMarkerPresent":false,"excludedTextMarkerPresent":false,"note":"参与项 TXT 已交付 → 本项对文件正文有区分力"}
+[PASS] ①-8 隐藏项（隐藏且不参与）正文/文件名不出现在模型请求里 :: {"hiddenTextMarkerPresent":false,"hiddenPngNamePresent":false}
+[PASS] ①-10 提交后新建的未提交材料不进入本次请求 :: {"unsubmittedPresent":false,"saveStatusAfter":""}
+
+== 结果：PASS 14 / 14 ==
+PASS  ①-0 正常入口：对话页模式切换进入互动板面
+PASS  ①-1 文字卡写入唯一标记
+PASS  ①-2 上传两张 TXT 文件卡（参与项 + 排除项，正常「添加 → 文件」入口）
+PASS  ①-3 上传两张 PNG 文件卡（参与项 + 隐藏项）
+PASS  ①-4a 隐藏后恢复显示默认只回「显示但不参与」
+PASS  ①-4 对照：排除项 TXT 卡「显示但不参与」
+PASS  ①-5 对照：隐藏项 PNG 卡「隐藏且不参与」
+PASS  ①-5b 交付对象（参与项 TXT / PNG）保持「显示并参与」
+PASS  ①-6 提交后首个互动轮次模型请求携带参与项正文
+PASS  ①-6b 参与项 TXT 文件的可读正文进入首轮模型请求（同一正式提交入口）
+PASS  ①-6c 参与项 PNG 的交付形态：image_url 带真实字节 = 真交付；无视觉链路则如实 image_unsupported
+PASS  ①-7 排除项（显示但不参与）正文不出现在模型请求里
+PASS  ①-8 隐藏项（隐藏且不参与）正文/文件名不出现在模型请求里
+PASS  ①-10 提交后新建的未提交材料不进入本次请求

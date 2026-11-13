@@ -97,3 +97,33 @@ npx vitest run              # 全量：583 个测试文件 / 5065 项，5060 pas
 - 父分支 `fix/pm-qio032-interactive`；最终提交 SHA 见交付消息与 `git log`。
 - `docs/status.md` 已更新本轮「最后核对」；`python scripts/check_docs.py` 通过。
 - 未 push / 未 PR / 未触发远端 CI / 未发布；`fix/pm-*` 分支不在 CI push 自动矩阵内。
+
+## 5. 第三轮（E2E 遗留缺陷修复与最终复测）
+
+第三轮针对第二轮 E2E 暴露的 5 个缺陷与 ⑤/⑥ 回归项继续修复，全部提交在本组分支并合入父分支：
+
+| 子分支 | 第三轮提交 | 修复 |
+| --- | --- | --- |
+| fix/pm-qio032-i-canvas | 3440edbf / 3bf8689a / 905281f2 / 49a19e02 | #44/#45/#46 拖放批次 UI（5 份上限、已接收/未接收明细、逐文件状态与重试、跨路由恢复）、#10/#11 连线撤销与提示分级、#60/#62/#72 组级连线解除确认/加入组选择器/组名省略号 |
+| fix/pm-qio032-i-layout | 0f704016 / 11fb8a34 / 21146378 / 20110ab6 | #05 提交详情面板按可用空间钳制（内部滚动，不遮提交按钮/任务入口）、#80/#03 重复提交主状态「已提交过」 |
+| fix/pm-qio032-i-state | 1754b8b8 / e37cf86e / aa6c9bd5 | #80 未改动重复提交不发请求、保留原受理记录；ImportBatch 汇总接口；两条基线用例按新语义最小适配 |
+| fix/pm-qio032-i-submit | 690df33d | #28 受理时冻结材料内容版本（materialVersions，sha256），同大小内容替换可识别 |
+| fix/pm-qio032-i-material | facb8a84 / 457ea500 / 15ecf19a / ae7f6a3c / 5929e0f9 | #28 材料哈希核对接口与同大小替换识别；#01 TXT 文件正文数据源复核（source=attachment_text） |
+
+第三轮结论更正：② 及 ① 的上轮失败中，①-6b 是验收脚本自相矛盾（唯一 TXT 卡被设为「显示但不参与」又要求交付）；
+修正后参与 TXT 正文以 source=attachment_text 逐字进入首轮请求，参与 PNG 以 image_url 交付且 base64 与本地字节一致（①-6c）——
+不是产品缺口，不需要为 ①-6b 再等修复。
+
+最终验证：
+- E2E（`scripts/verify-pm-qio032/run.ps1`，正常入口 + Edge/CDP + fake provider 台账）：**38/40 PASS**，
+  ① 14/14、② 1/3（②-2/②-3 UNVERIFIED）、③ 6/6、④ 9/9（含 #05 压力）、⑤ 3/3、⑥ 5/5；明细见
+  [e2e/README.md](../e2e/README.md)、[e2e/summary.json](../e2e/summary.json)。
+- 后端全量 `python scripts/run_backend_suite.py --workers 4`：**RESULT OK**（并行 6752 passed / 39 skipped、
+  串行 101 passed / 12 skipped、0 failed）。
+- 前端 `npx vue-tsc --noEmit` exit 0；全量 vitest 仅 2 个文件失败：`settings-search` 隔离复跑通过（并行负载波动）、
+  `windowFramePlacement` 在审计基线上同样失败（既有问题，与本轮无关）。
+- `python scripts/check_docs.py` 通过。
+
+剩余 UNVERIFIED / 边界（不宣称通过）：②-2/②-3 A/B 工具读取链（fake provider 脚本化工具调用未执行，后端冻结快照
+单测通过）、② 读文件一路、⑤ 旧卡迁移/隐藏成员/撤销连线、Windows 原生 Tauri 拖放；历史提交（无 materialVersions）
+仍按 size 核对并如实提示，不会静默替换；>64MiB 材料哈希核对保守拒绝交付。

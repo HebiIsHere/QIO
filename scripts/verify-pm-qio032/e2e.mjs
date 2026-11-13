@@ -78,11 +78,18 @@ async function waitProviderRequests(predicate, { timeout = 30000, step = 500 } =
   }
   return { log: log, waited: false };
 }
-/** 每个请求的 body 拍平成文本（台账里的 body 可能是字符串或对象）。 */
+/**
+ * 每个请求的 body 拍平成文本。
+ * 注意：fake_provider 把原始请求正文放在台账的 _body 上；旧实现优先读 req.body，
+ * 而基类台账没有 body/json/payload 字段，于是退化成 JSON.stringify(整个台账条目)——
+ * 嵌套字符串里的每个双引号又被 JSON 再转义一层，/"image_url"/ 这类带引号的模式永远匹配不到。
+ * 上一轮 ①-9 的 image_unsupported 有一半来自这个取数 bug。这里优先读 _body。
+ */
 function bodyText(req) {
-  const b = req.body ?? req.json ?? req.payload ?? req;
+  const b = req && (req._body ?? req.body ?? req.json ?? req.payload);
   if (typeof b === "string") return b;
-  try { return JSON.stringify(b); } catch { return ""; }
+  if (b && typeof b === "object") { try { return JSON.stringify(b); } catch { return ""; } }
+  try { return JSON.stringify(req ?? ""); } catch { return ""; }
 }
 /** 等后端主循环把这次提交的轮次跑完（提交受理与理解是异步的，台账断言前必须等它真的发请求）。 */
 async function waitTurnsIdle({ timeout = 120000, step = 500 } = {}) {
@@ -98,6 +105,18 @@ async function waitTurnsIdle({ timeout = 120000, step = 500 } = {}) {
 }
 function chatRequests(log) {
   return log.filter((r) => String(r.path || r.url || "").includes("chat/completions"));
+}
+/** 取出 role=tool 的消息正文：工具结果回灌的那一轮请求才带它。 */
+function toolMessages(req) {
+  let parsed = null;
+  try { parsed = JSON.parse(bodyText(req)); } catch { return []; }
+  const messages = (parsed && parsed.messages) || [];
+  return messages
+    .filter((m) => m && (m.role === "tool" || m.role === "function"))
+    .map((m) => {
+      if (typeof m.content === "string") return m.content;
+      try { return JSON.stringify(m.content); } catch { return ""; }
+    });
 }
 
 // ---------- 应用层操作（全部走正常界面入口） ----------
@@ -204,6 +223,11 @@ async function setVisibility(index, target) {
 async function toggleParticipation(index) {
   return setVisibility(index, "displayed_excluded");
 }
+/** 读卡片当前三态（included / displayed_excluded / hidden_excluded）。 */
+async function cardVisibility(index) {
+  return page.eval("(function(){ const c=document.querySelectorAll('[data-im=\"card\"]')[" + index + "]; " +
+    "const el=c && c.querySelector('[data-im=\"card-visibility\"]'); return el ? el.getAttribute('data-visibility') : null; })()");
+}
 /** 把指针移到卡片上（局部工具栏只在悬停/选中时出现）。 */
 async function hoverCard(index) {
   const info = await page.box('[data-im="card"]', index);
@@ -294,24 +318,39 @@ async function waitSubmitSettled(timeout = 90000) {
 // ---------- 场景 ----------
 
 /**
- * ① 首轮交付：文字卡 / TXT 文件卡 / PNG 图片卡 + 三态参与 + 提交，
- * 用 provider 台账断言「参与项真实交付、排除/隐藏/未提交内容不出现」。
+ * ① 首轮交付：参与项（文字卡 / TXT 文件卡 / PNG 图片卡）+ 对照卡（「显示但不参与」/「隐藏且不参与」）
+ * + 三态参与 + 提交，用 provider 台账断言「参与项真实交付、排除/隐藏/未提交内容不出现」。
+ *
+ * 设计修正（上一轮 ①-6b 的缺陷）：旧断言把**被设为「显示但不参与」**的 TXT 卡当成交付对象，
+ * 与 ①-7「排除项不泄漏」自相矛盾（同一条正文既要求出现又要求不出现）。现在：
+ *   - 交付对象 = 参与项 TXT 卡（正文必须进 provider body）+ 参与项 PNG 卡（按本机能力如实 image_unsupported）；
+ *   - 排除/隐藏卡只用来做「不泄漏」断言，不再承担交付断言；
+ *   - 排除项不泄漏的强度依赖「参与项文件正文确实会交付」：①-6b 失败时在 detail 里如实标注。
  */
 async function s1Delivery() {
   const reset = await resetBoard();
   note("板面已重置：" + JSON.stringify(reset));
   const mark = "M1-" + RUN_ID;
-  const txtBody = "TXT-MARK-" + RUN_ID + "-参与项正文";
+  const txtPartBody = "TXT-PART-" + RUN_ID + "-参与项正文";
   const exTxtBody = "TXT-EXCL-" + RUN_ID + "-排除项正文";
   const hiddenBody = "TXT-HIDDEN-" + RUN_ID + "-隐藏项正文";
   const unsubmitted = "TXT-UNSUB-" + RUN_ID + "-未提交";
-  const pngName = "png-" + RUN_ID + ".png";
-  const pngPath = join(MATERIALS, pngName);
+  const pngPartName = "png-part-" + RUN_ID + ".png";
+  const pngHideName = "png-hide-" + RUN_ID + ".png";
+  const pngPartPath = join(MATERIALS, pngPartName);
+  const pngHidePath = join(MATERIALS, pngHideName);
   // 1x1 纯色 PNG（唯一文件名标记；像素本身用文件名与哈希断言）
   const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
-  writeFileSync(pngPath, pngBytes);
-  const txtPath = join(MATERIALS, "txt-" + RUN_ID + ".txt");
-  writeFileSync(txtPath, txtBody + "\n", "utf8");
+  writeFileSync(pngPartPath, pngBytes);
+  writeFileSync(pngHidePath, pngBytes);
+  const txtPartName = "txt-part-" + RUN_ID + ".txt";
+  const txtExclName = "txt-excl-" + RUN_ID + ".txt";
+  const txtPartPath = join(MATERIALS, txtPartName);
+  const txtExclPath = join(MATERIALS, txtExclName);
+  writeFileSync(txtPartPath, txtPartBody + "\n", "utf8");
+  writeFileSync(txtExclPath, exTxtBody + "\n", "utf8");
+  /** 按卡片可见正文里的文件名/标记找卡片序号（-1 = 找不到）。 */
+  const findIndexByName = (needle) => page.eval("(function(){ const texts=[...document.querySelectorAll('[data-im=\"card\"]')].map(function(c){return c.innerText||'';}); return texts.findIndex(function(t){return t.indexOf(" + JSON.stringify(needle) + ")>=0;}); })()");
 
   const entry = await enterInteractive();
   record("①-0 正常入口：对话页模式切换进入互动板面", entry.after === "interactive" && entry.hash.includes("/interactive"), entry);
@@ -322,42 +361,50 @@ async function s1Delivery() {
   const edit = await setTextCardContent(textIndex, mark + " 参与项文字");
   record("①-1 文字卡写入唯一标记", edit.ok, edit);
 
-  // TXT 文件卡（将设为排除）
-  const f1 = await addFileCard([txtPath]);
+  // 参与项 TXT 文件卡（默认「显示并参与」）—— ①-6b 的交付对象
+  const fTxtPart = await addFileCard([txtPartPath]);
+  await sleep(1500);
+  // 对照：排除项 TXT 文件卡（稍后设为「显示但不参与」）
+  const fTxtExcl = await addFileCard([txtExclPath]);
   await sleep(1500);
   const attachState = await page.text('[data-im="card-attach-status"]').catch(() => "");
-  record("①-2 上传 TXT 文件卡（正常「添加 → 文件」入口）", f1.after === f1.before + 1, { ...f1, status: attachState.slice(0, 120) });
+  record("①-2 上传两张 TXT 文件卡（参与项 + 排除项，正常「添加 → 文件」入口）", fTxtPart.after === fTxtPart.before + 1 && fTxtExcl.after === fTxtExcl.before + 1, { participating: fTxtPart, excluded: fTxtExcl, status: attachState.slice(0, 120) });
 
-  // PNG 文件卡（将隐藏）
-  const f2 = await addFileCard([pngPath]);
+  // 参与项 PNG（交付对象）+ 对照：隐藏项 PNG
+  const fPngPart = await addFileCard([pngPartPath]);
   await sleep(1800);
-  record("①-3 上传 PNG 文件卡", f2.after === f2.before + 1, f2);
+  const fPngHide = await addFileCard([pngHidePath]);
+  await sleep(1800);
+  record("①-3 上传两张 PNG 文件卡（参与项 + 隐藏项）", fPngPart.after === fPngPart.before + 1 && fPngHide.after === fPngHide.before + 1, { participating: fPngPart, hidden: fPngHide });
 
-  const idxTxt = await page.eval("(function(){ const names=[...document.querySelectorAll('[data-im=\"card\"]')].map(c=>c.innerText); " +
-    "return names.findIndex(t=>t.includes('txt-" + RUN_ID + "')); })()");
-  const idxPng = await page.eval("(function(){ const names=[...document.querySelectorAll('[data-im=\"card\"]')].map(c=>c.innerText); " +
-    "return names.findIndex(t=>t.includes('png-" + RUN_ID + "')); })()");
-  note("卡片序号 txt=" + idxTxt + " png=" + idxPng + " 总卡数=" + (await cardCount()));
+  const idxTxtPart = await findIndexByName(txtPartName);
+  const idxTxtExcl = await findIndexByName(txtExclName);
+  const idxPngPart = await findIndexByName(pngPartName);
+  const idxPngHide = await findIndexByName(pngHideName);
+  note("卡片序号 txt(参与)=" + idxTxtPart + " txt(排除)=" + idxTxtExcl + " png(参与)=" + idxPngPart + " png(隐藏)=" + idxPngHide + " 总卡数=" + (await cardCount()));
 
-  // 第三张文字卡：先隐藏、再恢复显示（恢复默认只回「显示但不参与」，内容绝不能被读到）
+  // 排除项文字卡：先隐藏、再恢复显示（恢复默认只回「显示但不参与」，内容绝不能被读到）
   const addedHidden = await openAddMenu("text");
   await setTextCardContent(addedHidden.after - 1, hiddenBody);
   await waitSaved();
-  const idxHidden = await page.eval("(function(){ const names=[...document.querySelectorAll('[data-im=\"card\"]')].map(c=>c.innerText); " +
-    "return names.findIndex(t=>t.includes('" + hiddenBody.slice(0, 18) + "')); })()");
+  const idxHidden = await findIndexByName(hiddenBody.slice(0, 18));
   const hiddenOn = idxHidden >= 0 ? await hideCard(idxHidden) : { hiddenNow: false };
   const restored = idxHidden >= 0 ? await setVisibility(idxHidden, "displayed_excluded") : { after: null };
   record("①-4a 隐藏后恢复显示默认只回「显示但不参与」", restored.after === "displayed_excluded", { hiddenOn: hiddenOn, restored: restored });
 
-  // 三态：TXT 显示但不参与；PNG 隐藏且不参与
-  const idxTxt2 = await page.eval("(function(){ const names=[...document.querySelectorAll('[data-im=\"card\"]')].map(c=>c.innerText); " +
-    "return names.findIndex(t=>t.includes('txt-" + RUN_ID + "')); })()");
-  const idxPng2 = await page.eval("(function(){ const names=[...document.querySelectorAll('[data-im=\"card\"]')].map(c=>c.innerText); " +
-    "return names.findIndex(t=>t.includes('png-" + RUN_ID + "')); })()");
-  const part = idxTxt2 >= 0 ? await toggleParticipation(idxTxt2) : { before: null, after: null };
-  record("①-4 三态之一：TXT 卡「显示但不参与」", part.after === "displayed_excluded", part);
-  const hidden = idxPng2 >= 0 ? await hideCard(idxPng2) : { hiddenNow: false };
-  record("①-5 三态之一：PNG 卡「隐藏且不参与」", hidden.hiddenNow === true, hidden);
+  // 对照卡三态：排除项 TXT「显示但不参与」；隐藏项 PNG「隐藏且不参与」
+  const idxTxtExcl2 = await findIndexByName(txtExclName);
+  const idxPngHide2 = await findIndexByName(pngHideName);
+  const part = idxTxtExcl2 >= 0 ? await toggleParticipation(idxTxtExcl2) : { before: null, after: null };
+  record("①-4 对照：排除项 TXT 卡「显示但不参与」", part.after === "displayed_excluded", part);
+  const hidden = idxPngHide2 >= 0 ? await hideCard(idxPngHide2) : { hiddenNow: false };
+  record("①-5 对照：隐藏项 PNG 卡「隐藏且不参与」", hidden.hiddenNow === true, hidden);
+  // 交付对象必须保持参与（否则 ①-6b 的失败原因会被误读成「产品不交付」）
+  const partVis = {
+    txt: idxTxtPart >= 0 ? await cardVisibility(idxTxtPart) : null,
+    png: idxPngPart >= 0 ? await cardVisibility(idxPngPart) : null,
+  };
+  record("①-5b 交付对象（参与项 TXT / PNG）保持「显示并参与」", idxTxtPart >= 0 && idxPngPart >= 0 && partVis.txt === "included" && partVis.png === "included", { idxTxtPart: idxTxtPart, idxPngPart: idxPngPart, txtVisibility: partVis.txt, pngVisibility: partVis.png });
   await shot("s1-board-three-states");
 
   // 未提交材料：提交之后再建的卡（其标记绝不该出现在本次请求里）
@@ -391,32 +438,52 @@ async function s1Delivery() {
   };
   writeFileSync(join(OUT, "provider-log.json"), JSON.stringify({ runId: RUN_ID, requests: log, s1: { hits: hits.length, firstBodyHead: firstText.slice(0, 4000) } }, null, 2), "utf8");
   record("①-6 提交后首个互动轮次模型请求携带参与项正文", hits.length > 0, delivery);
-  const txtDelivered = hits.some((r) => bodyText(r).includes(txtBody));
-  record("①-6b 参与项 TXT 文件的可读正文交付（同一正式提交入口）", txtDelivered, {
-    kind: txtDelivered ? "txt_file_body_delivered" : "txt_file_body_not_delivered",
-    txtMarkerSeen: txtDelivered,
-    note: txtDelivered ? "模型请求里出现 TXT 文件正文" : "请求的 materials 只含文字卡 inline，TXT 文件正文未出现在请求里；等待 i-material/i-submit 接线后再验，不伪造",
+
+  // 交付断言只认**参与项**卡：TXT 正文必须进 provider body（文件名出现不算交付）。
+  const txtPartDelivered = hits.some((r) => bodyText(r).includes(txtPartBody));
+  const txtPartNameSeen = hits.some((r) => bodyText(r).includes(txtPartName));
+  const imageBlock = hits.some((r) => /"image_url"/.test(bodyText(r)));
+  const pngPartNameSeen = hits.some((r) => bodyText(r).includes(pngPartName));
+  // 字节级核对：真实 PNG 的 base64 必须出现在 image_url 的 data URL 里（只出现图片块不算交付）。
+  const pngBase64 = pngBytes.toString("base64");
+  const imageBytesMatch = hits.some((r) => bodyText(r).includes(pngBase64));
+  record("①-6b 参与项 TXT 文件的可读正文进入首轮模型请求（同一正式提交入口）", txtPartDelivered, {
+    kind: txtPartDelivered ? "txt_file_body_delivered" : "txt_file_body_not_delivered",
+    txtMarkerSeen: txtPartDelivered,
+    fileNameSeen: txtPartNameSeen,
+    note: txtPartDelivered
+      ? "参与项 TXT 正文出现在模型请求里（参与项交付成立）"
+      : "参与项 TXT 的正文没有出现在首轮请求里（文件名" + (txtPartNameSeen ? "出现" : "也未出现") + "）；按失败记录，等待 i-material/i-submit 接线后再复跑",
   });
-  record("①-7 排除项（显示但不参与）正文不出现在模型请求里", hits.length > 0 && !hits.some((r) => bodyText(r).includes(txtBody)), {
-    excludedMarkerPresent: hits.some((r) => bodyText(r).includes(txtBody)),
-  });
-  record("①-8 隐藏项正文不出现在模型请求里", hits.length > 0 && !hits.some((r) => bodyText(r).includes(hiddenBody)), {
-    hiddenMarkerPresent: hits.some((r) => bodyText(r).includes(hiddenBody)),
-  });
-  // 只认真正的图片块（image_url / image part）；仅仅出现文件名不等于字节交付。
-  const imageBlock = hits.some((r) => /"image_url"|"type"\s*:\s*"image"/.test(bodyText(r)));
-  const pngNameSeen = hits.some((r) => bodyText(r).includes(pngName));
-  record("①-9 PNG 图片字节交付 UNVERIFIED（本机无视觉链路，如实记 image_unsupported，不伪造）", true, {
-    verified: imageBlock, kind: imageBlock ? "image_delivered" : "image_unsupported",
-    pngNameSeen: pngNameSeen,
-    note: imageBlock ? "请求里出现 image_url/图片块" : "本机链路的模型 capability 未声明视觉，请求里没有 image_url：如实记为 image_unsupported，不伪造字节交付",
+  const imageKind = imageBlock ? (imageBytesMatch ? "image_delivered" : "image_url_mismatch") : "image_unsupported";
+  record("①-6c 参与项 PNG 的交付形态：image_url 带真实字节 = 真交付；无视觉链路则如实 image_unsupported", imageBlock ? imageBytesMatch : true, {
+    kind: imageKind,
+    imageUrlSeen: imageBlock,
+    bytesMatch: imageBytesMatch,
+    pngNameSeen: pngPartNameSeen,
+    note: imageBlock
+      ? (imageBytesMatch ? "请求里出现 image_url，且 data URL 的 base64 与本地 PNG 字节一致（字节交付成立）" : "请求里出现 image_url，但字节与本地 PNG 不一致（不得声称交付）")
+      : "本机链路没有 image_url：如实记为 image_unsupported，不伪造字节交付",
     submitLabel: submitLabel, settled: settled,
+  });
+  // 不泄漏断言：排除项 TXT、隐藏项 PNG、排除项文字卡、提交后新建的未提交材料都不得出现。
+  const excludedTxtSeen = hits.some((r) => bodyText(r).includes(exTxtBody));
+  const excludedTextSeen = hits.some((r) => bodyText(r).includes(hiddenBody));
+  const hiddenPngSeen = hits.some((r) => bodyText(r).includes(pngHideName));
+  record("①-7 排除项（显示但不参与）正文不出现在模型请求里", hits.length > 0 && !excludedTxtSeen && !excludedTextSeen, {
+    excludedTxtMarkerPresent: excludedTxtSeen,
+    excludedTextMarkerPresent: excludedTextSeen,
+    note: txtPartDelivered ? "参与项 TXT 已交付 → 本项对文件正文有区分力" : "参与项 TXT 正文本轮也未交付 → 本项只能证明文字卡排除，文件正文区分力不足（如实标注）",
+  });
+  record("①-8 隐藏项（隐藏且不参与）正文/文件名不出现在模型请求里", hits.length > 0 && !excludedTextSeen && !hiddenPngSeen, {
+    hiddenTextMarkerPresent: excludedTextSeen,
+    hiddenPngNamePresent: hiddenPngSeen,
   });
   record("①-10 提交后新建的未提交材料不进入本次请求", hits.length > 0 && !hits.some((r) => bodyText(r).includes(unsubmitted)), {
     unsubmittedPresent: hits.some((r) => bodyText(r).includes(unsubmitted)),
     saveStatusAfter: (savedAfter || "").slice(0, 40),
   });
-  return { mark: mark, txtBody: txtBody, hiddenBody: hiddenBody, unsubmitted: unsubmitted, pngName: pngName };
+  return { mark: mark, txtPartBody: txtPartBody, exTxtBody: exTxtBody, hiddenBody: hiddenBody, unsubmitted: unsubmitted, pngPartName: pngPartName, pngHideName: pngHideName };
 }
 
 async function resetBoard() {
@@ -498,15 +565,24 @@ async function s3Duplicate() {
   });
 
   // 再次点提交：同一份内容没有新改动时不得再执行；按钮可点但被门禁/幂等挡住。
+  // #80：成功后不改内容再提交 —— submissions 不增，且界面必须说「已提交过 / 没有新的改动」。
   const beforeSecond = board ? await submissionCount(board.id) : null;
   const label2 = await page.text('[data-im="submit"]');
   const disabled2 = await page.eval("document.querySelector('[data-im=\"submit\"]').disabled");
   await page.click('[data-im="submit"]').catch(() => null);
-  await sleep(1800);
+  await sleep(2200);
   const afterSecond = board ? await submissionCount(board.id) : null;
+  const clusterAfterSecond = ((await page.text('[data-im="submit-cluster"]').catch(() => "")) || "").replace(/\s+/g, " ");
+  const duplicateNote = ((await page.text('[data-im="submit-duplicate-text"]').catch(() => "")) || "").replace(/\s+/g, " ");
+  const noNewWorkText = /已提交过|没有新的改动|未重复提交|与上次成功提交内容一致/.test(clusterAfterSecond + " " + duplicateNote);
   await shot("s3-second-submit");
-  record("③-3 第二次提交不新增执行（按钮不锁死，但被空改动/幂等挡住）", disabled2 === true || afterSecond === beforeSecond, {
-    label2: label2, disabled: disabled2, submissionsBefore: beforeSecond, submissionsAfter: afterSecond,
+  record("③-3 成功后不改内容再提交：submissions 不增且界面说「已提交过 / 没有新的改动」（#80）", afterSecond === beforeSecond && noNewWorkText, {
+    label2: label2,
+    disabled: disabled2,
+    submissionsBefore: beforeSecond,
+    submissionsAfter: afterSecond,
+    uiText: (clusterAfterSecond + " " + duplicateNote).slice(0, 240),
+    noNewWorkText: noNewWorkText,
   });
 
   // 延迟回执：把提交 POST 的响应推迟 1.5s（[模拟]），界面必须先说「正在提交」再落到受理态。
@@ -665,8 +741,124 @@ async function s4SmallViewport() {
   record("④-7 边界两侧中心与命中一致，且两块面板/提交按钮互不遮挡", at[boundaryWindow].detailsOpen && at[boundaryWindow].taskOpen && at[boundaryWindow].detailsHit === true && at[boundaryWindow].taskHit === true && at[boundaryWindow].submitHit === true && !at[boundaryWindow].overlapSubmit && at[boundaryWindow - 1].detailsOpen === false && at[boundaryWindow - 1].taskOpen === true && at[boundaryWindow - 1].taskHit === true, {
     sideBySide: at[boundaryWindow], switch: at[boundaryWindow - 1],
   });
+  // #05 压力场景：有 5 项未提交改动时，800×600 的详情面板必须钳制（限高/内部滚动），
+  // 不能盖住提交按钮，也不能让任务入口点不到。
+  await page.setViewport(800, 600);
+  await sleep(700);
+  await closePanels();
+  for (let i = 1; i <= 5; i += 1) {
+    const addedChange = await openAddMenu("text");
+    await setTextCardContent(addedChange.after - 1, "CHG-" + RUN_ID + "-" + i + " 窄窗改动");
+  }
+  await waitSaved();
+  await openSubmitDetails();
+  const s5 = await panelSnapshot();
+  const viewportHeight = await page.eval("innerHeight");
+  const changeItems = await page.count('[data-im="change-item"]');
+  await shot("s4-800-details-5changes");
+  let taskOpened = false;
+  try {
+    await page.click('[data-im="tasks-entry"]');
+    taskOpened = await page
+      .waitFor("document.querySelector('[data-im=\"task-center\"]')", { timeout: 5000, label: "任务面板" })
+      .then(() => true)
+      .catch(() => false);
+  } catch {
+    taskOpened = false;
+  }
+  await shot("s4-800-task-from-5changes");
+  record("④-8 800×600、5 项改动时详情面板钳制、不遮提交按钮、任务入口可点（#05）", changeItems >= 5 && Boolean(s5.details) && s5.details.height <= viewportHeight && s5.detailsHit === true && s5.submitHit === true && !rectOverlap(s5.details, s5.submit) && taskOpened, {
+    changeItems: changeItems,
+    innerHeight: viewportHeight,
+    details: s5.details && { x: Math.round(s5.details.x), y: Math.round(s5.details.y), w: Math.round(s5.details.width), h: Math.round(s5.details.height) },
+    detailsHit: s5.detailsHit,
+    submitHit: s5.submitHit,
+    overlapSubmit: rectOverlap(s5.details, s5.submit),
+    taskOpened: taskOpened,
+  });
+
   await page.setViewport(1440, 900);
   await sleep(500);
+}
+
+/**
+ * ② 提交 A → 改 B → 绑定追问：板面显示 B，板面读工具的 source=submission 返回 A、latest 返回 B。
+ * 工具调用由 fake provider 的脚本发出（真实工具执行、真实结果回灌），不是 mock 业务接口。
+ */
+async function s2SnapshotReads() {
+  const reset = await resetBoard();
+  note("板面已重置：" + JSON.stringify(reset));
+  await ensureInteractive();
+  const markA = "AB-A-" + RUN_ID + "-提交版";
+  const markB = "AB-B-" + RUN_ID + "-提交后改动";
+  const added = await openAddMenu("text");
+  const cardIndex = added.after - 1;
+  const editA = await setTextCardContent(cardIndex, markA);
+  await waitSaved();
+  const cardId = await page.eval("(function(){ const c=document.querySelectorAll('[data-im=\"card\"]')[" + cardIndex + "]; return c ? c.getAttribute('data-card-id') : null; })()");
+  // 正常提交入口提交 A
+  await providerReset();
+  await providerScript([{ chunks: ["已收到提交 A。"], repeat: 8 }]);
+  const submitLabel = await clickSubmit();
+  const settled = await waitSubmitSettled();
+  await waitTurnsIdle({ timeout: 120000 });
+  // 提交后把同一张卡改成 B（真实编辑 + 保存）
+  const editB = await setTextCardContent(cardIndex, markB);
+  await waitSaved();
+  const boardShowsB = await page.eval("(function(){ return [...document.querySelectorAll('[data-im=\"card\"]')].some(function(c){ return (c.innerText||'').includes(" + JSON.stringify(markB) + "); }); })()");
+  const boardShowsA = await page.eval("(function(){ return [...document.querySelectorAll('[data-im=\"card\"]')].some(function(c){ return (c.innerText||'').includes(" + JSON.stringify(markA) + "); }); })()");
+  record("②-1 提交 A 后改成 B：板面显示 B（提交快照已不再等于板面）", editA.ok === true && editB.ok === true && boardShowsB === true && boardShowsA === false, {
+    cardId: cardId, editA: editA.ok, editB: editB.ok, boardShowsA: boardShowsA, boardShowsB: boardShowsB,
+    submitLabel: submitLabel, settled: settled.text.replace(/\s+/g, " ").slice(0, 160),
+  });
+
+  // 先发一条普通绑定追问（也用于消化可能的话题标题请求），再发脚本化工具读取。
+  await providerReset();
+  await providerScript([{ chunks: ["好的，我按你的要求读取。"], repeat: 4 }]);
+  await page.focus("#composer-input");
+  await page.type("#composer-input", "接下来请按提交快照读一下刚才那张卡");
+  await page.pressKey("Enter");
+  await waitTurnsIdle({ timeout: 60000 });
+  const warmLog = await providerLog();
+  const warmBound = chatRequests(warmLog).some((r) => bodyText(r).includes("interactive"));
+
+  const readViaTool = async (source) => {
+    const args = JSON.stringify({ card_ids: cardId ? [cardId] : [], source: source, offset: 0, limit: 20 });
+    await providerReset();
+    await providerScript([
+      { tool_chunks: [{ id: "call_read_" + source + "_1", name: "board_read_cards", args_fragments: [args] }] },
+      { chunks: ["已按 " + source + " 读取。"], repeat: 4 },
+    ]);
+    await page.focus("#composer-input");
+    await page.type("#composer-input", "请用 board_read_cards（source=" + source + "）读同一张卡");
+    await page.pressKey("Enter");
+    const waited = await waitProviderRequests((req) => toolMessages(req).some((t) => t.includes(markA) || t.includes(markB)), { timeout: 90000 });
+    const withTool = chatRequests(waited.log).filter((r) => toolMessages(r).length > 0);
+    const toolText = withTool.map((r) => toolMessages(r).join("\n")).join("\n");
+    return {
+      waited: waited.waited,
+      requests: chatRequests(waited.log).length,
+      toolRequests: withTool.length,
+      hasA: toolText.includes(markA),
+      hasB: toolText.includes(markB),
+      toolHead: toolText.replace(/\s+/g, " ").slice(0, 200),
+      basis: (() => {
+        const m = toolText.match(/\"basis\"\s*:\s*\{[^}]{0,200}\}/);
+        return m ? m[0].slice(0, 200) : "";
+      })(),
+    };
+  };
+
+  const subRead = await readViaTool("submission");
+  record("②-2 绑定追问：board_read_cards(source=submission) 的工具结果含提交版 A（不含 B）", subRead.waited === true && subRead.toolRequests >= 1 && subRead.hasA === true && subRead.hasB === false, {
+    warmBound: warmBound, ...subRead,
+  });
+
+  const latestRead = await readViaTool("latest");
+  record("②-3 同一工具 source=latest 返回当前板面 B（快照 / 最新两路分开，不静默互换）", latestRead.waited === true && latestRead.toolRequests >= 1 && latestRead.hasB === true && latestRead.hasA === false, {
+    ...latestRead,
+  });
+  return { markA: markA, markB: markB, cardId: cardId };
 }
 
 /** ⑤ 路由往返 / 六件拖放（第 6 件不得静默丢失）/ 首件失败重试（[模拟]）。 */
@@ -686,41 +878,85 @@ async function s5FilesAndRouting() {
   const routeText = await page.eval("(function(){ return [...document.querySelectorAll('[data-im=\"card\"]')].some(function(c){ return (c.innerText||'').includes(" + JSON.stringify(roundMark) + "); }); })()");
   record("⑤-1 互动 → 对话 → 互动路由往返后卡片与内容仍在", afterRoute === beforeRoute && routeText === true, { cardsBefore: beforeRoute, cardsAfter: afterRoute, markPresent: routeText });
 
-  // 六件拖放：同一批 5 份上限；必须明确列出已接收/未接收，第 6 份可重新导入（#44/#45）。
+  // 六件拖放：同一批 5 份上限；批次面板必须逐项列出「已接收 / 未接收」，第 6 份可重新导入（#44/#45）。
   const specs = [];
   for (let i = 1; i <= 6; i += 1) {
     const body = "BATCH-" + RUN_ID + "-" + i + "\n";
     specs.push({ name: "batch-" + RUN_ID + "-" + i + ".txt", type: "text/plain", dataUrl: "data:text/plain;base64," + Buffer.from(body).toString("base64") });
   }
+  const batchSnapshot = () => page.eval("(function(){" +
+    "const panel=document.querySelector('[data-im=\"add-material-status\"][data-batch-id]');" +
+    "const summaryEl=document.querySelector('[data-im=\"add-material-summary\"]');" +
+    "const items=[...document.querySelectorAll('[data-im=\"add-batch-item\"]')].map(function(li){ " +
+    "const retry=li.querySelector('[data-im=\"card-attach-retry\"]'); const err=li.querySelector('[data-im=\"file-card-error\"]');" +
+    "return { name:li.getAttribute('data-name'), status:li.getAttribute('data-status')," +
+    " retry: retry ? (retry.innerText||'').trim() : '', error: err ? (err.innerText||'').replace(/\\s+/g,' ').trim() : ''," +
+    " text:(li.innerText||'').replace(/\\s+/g,' ').trim().slice(0,120) }; });" +
+    "return { panel:!!panel, batchId: panel?panel.getAttribute('data-batch-id'):null," +
+    " summary: summaryEl ? (summaryEl.innerText||'').replace(/\\s+/g,' ').trim() : '', items: items };})()");
   const beforeDrop = await cardCount();
   const drop = await page.dragFiles('[data-im="add-menu"]', specs);
-  await sleep(5000);
+  await sleep(6000);
   const afterDrop = await cardCount();
-  const batchStatus = await page.text('[data-im="add-material-status"]').catch(() => "");
+  const batch = await batchSnapshot();
   await shot("s5-six-file-drop");
-  const listedSixth = /batch-.*-6\.txt/.test(batchStatus) || /未接收|第 ?6|第六/.test(batchStatus);
-  record("⑤-2 文件六件拖放：只接收 5 件且明确列出第 6 件未接收/可重新导入", drop.ok === true && afterDrop - beforeDrop === 5 && listedSixth, {
-    dropped: drop.count, cardsBefore: beforeDrop, cardsAfter: afterDrop, batchStatus: batchStatus.replace(/\s+/g, " ").slice(0, 260), listedSixth: listedSixth,
+  const sixthItem = batch.items[5] || null;
+  const sixthListed = Boolean(sixthItem) && /-6\.txt$/.test(sixthItem.name || "") && sixthItem.status === "unreceived";
+  const summaryOk = /已接收\s*5\s*份/.test(batch.summary) && /未接收\s*1\s*份/.test(batch.summary);
+  // 重新导入第 6 件：拖放当时的 File 句柄已不在内存，产品应重新打开文件选择器（正常入口）。
+  let reimport = { ok: false };
+  if (sixthListed) {
+    const chooser = page.setFilesOnChooser([specs[5]], { timeout: 20000 });
+    await page.eval("(function(){ const items=[...document.querySelectorAll('[data-im=\"add-batch-item\"]')]; const li=items[5]; " +
+      "const b=li&&li.querySelector('[data-im=\"card-attach-retry\"]'); if(b) b.click(); return !!b; })()");
+    const chooserInfo = await chooser.then((p) => ({ ok: true, mode: p.mode })).catch((e) => ({ ok: false, error: String(e.message) }));
+    await sleep(4500);
+    const afterReimport = await cardCount();
+    const statuses = batch.items.map((_, i) => i);
+    const sixthStatus = await page.eval("(function(){ const li=[...document.querySelectorAll('[data-im=\"add-batch-item\"]')][5]; return li?li.getAttribute('data-status'):null; })()");
+    reimport = { ok: afterReimport === afterDrop + 1 && sixthStatus === "succeeded", cardsAfter: afterReimport, sixthStatus: sixthStatus, chooser: chooserInfo };
+  }
+  record("⑤-2 六件拖放：只接收 5 件、批次清单列出第 6 件「未接收」且可重新导入（#44/#45）", drop.ok === true && drop.count === 6 && afterDrop - beforeDrop === 5 && batch.panel === true && summaryOk && sixthListed && reimport.ok === true, {
+    dropped: drop.count, cardsBefore: beforeDrop, cardsAfter: afterDrop,
+    batchSummary: batch.summary, itemStatuses: batch.items.map((it) => it.status),
+    sixth: sixthItem, sixthListed: sixthListed, reimport: reimport,
   });
 
-  // 首件失败：只让本批第一次上传失败（[模拟]网络故障），后续文件仍应成功，且失败项有可重试入口。
+  // 首件失败：只让本批第一次上传失败（[模拟]网络故障），失败项要有可见原因与重试入口，后续文件不陪葬。
   let failedOnce = false;
   await page.failRequests((url, method) => {
     if (method === "POST" && url.indexOf("/api/attachments/upload") >= 0 && !failedOnce) { failedOnce = true; return true; }
     return false;
   }, { errorReason: "Failed" });
-  const two = specs.slice(6, 8);
-  two.push({ name: "batch-" + RUN_ID + "-7.txt", type: "text/plain", dataUrl: "data:text/plain;base64," + Buffer.from("BATCH7\n").toString("base64") });
-  two.push({ name: "batch-" + RUN_ID + "-8.txt", type: "text/plain", dataUrl: "data:text/plain;base64," + Buffer.from("BATCH8\n").toString("base64") });
+  const two = [
+    { name: "batch-" + RUN_ID + "-7.txt", type: "text/plain", dataUrl: "data:text/plain;base64," + Buffer.from("BATCH7\n").toString("base64") },
+    { name: "batch-" + RUN_ID + "-8.txt", type: "text/plain", dataUrl: "data:text/plain;base64," + Buffer.from("BATCH8\n").toString("base64") },
+  ];
   const beforeFail = await cardCount();
   const drop2 = await page.dragFiles('[data-im="add-menu"]', two);
-  await sleep(5000);
+  await sleep(6000);
   await page.clearFailRequests();
   const afterFail = await cardCount();
-  const failUi = await page.eval("(function(){ return { errors:document.querySelectorAll('[data-im=\"file-card-error\"]').length, retries:document.querySelectorAll('[data-im=\"card-attach-retry\"],[data-im=\"file-card-error\"] button').length, texts:[...document.querySelectorAll('[data-im=\"card-attach-status\"],[data-im=\"file-card-error\"]')].map(function(e){return (e.innerText||'').replace(/\s+/g,' ').slice(0,80);}) }; })()");
+  const failBatch = await batchSnapshot();
+  const firstItem = failBatch.items[0] || null;
+  const secondItem = failBatch.items[1] || null;
+  const firstErrorVisible = Boolean(firstItem) && firstItem.status === "failed" && Boolean(firstItem.retry) && (Boolean(firstItem.error) || /失败|不可用|错误|网络/.test(firstItem.text));
+  const secondSucceeded = Boolean(secondItem) && secondItem.status === "succeeded";
+  // 重试首件：同批 File 句柄还在内存，应直接重发成功并补建卡片（只影响这一项）。
+  let retryFirst = { ok: false };
+  if (firstErrorVisible) {
+    await page.eval("(function(){ const items=[...document.querySelectorAll('[data-im=\"add-batch-item\"]')]; const li=items[0]; " +
+      "const b=li&&li.querySelector('[data-im=\"card-attach-retry\"]'); if(b) b.click(); return !!b; })()");
+    await sleep(5500);
+    const afterRetry = await cardCount();
+    const statuses = await page.eval("(function(){ return [...document.querySelectorAll('[data-im=\"add-batch-item\"]')].map(function(li){return li.getAttribute('data-status');}); })()");
+    retryFirst = { ok: afterRetry === afterFail + 1 && statuses[0] === "succeeded", cardsAfter: afterRetry, statuses: statuses };
+  }
   await shot("s5-first-file-failure");
-  record("⑤-3 首件上传失败：失败项有可见原因与重试入口，后续文件不陪葬（[模拟]首请求失败）", drop2.ok === true && failedOnce === true && afterFail - beforeFail >= 1 && (failUi.errors > 0 || failUi.retries > 0), {
-    simulated: true, failedOnce: failedOnce, cardsBefore: beforeFail, cardsAfter: afterFail, failUi: failUi,
+  record("⑤-3 首件上传失败：失败项有可见原因与重试入口，重试成功且后续文件不陪葬（[模拟]首请求失败）", drop2.ok === true && failedOnce === true && afterFail - beforeFail === 1 && firstErrorVisible && secondSucceeded && retryFirst.ok === true, {
+    simulated: true, failedOnce: failedOnce, cardsBefore: beforeFail, cardsAfter: afterFail,
+    batchSummary: failBatch.summary, items: failBatch.items, firstErrorVisible: firstErrorVisible,
+    secondSucceeded: secondSucceeded, retryFirst: retryFirst,
   });
   return { routeMark: roundMark };
 }
@@ -784,6 +1020,7 @@ async function s6ThemesAndKeys() {
 
 const SCENARIOS = {
   s1: { name: "① 首轮交付 / 三态参与 / 不泄漏", fn: s1Delivery },
+  s2: { name: "② A/B 快照一致（板面 B / 快照读 A / latest 读 B）", fn: s2SnapshotReads },
   s3: { name: "③ 重复提交与幂等", fn: s3Duplicate },
   s4: { name: "④ 800×600 布局与命中", fn: s4SmallViewport },
   s5: { name: "⑤ 文件批 / 首件失败 / 路由往返", fn: s5FilesAndRouting },
@@ -829,7 +1066,7 @@ async function main() {
     results: results, consoleErrors: consoleErrors.concat(page ? page.consoleErrors : []),
     shotsDir: SHOTS, note: "浏览器层=系统 Edge + CDP（本机没有 Playwright 包，见 README）",
     simulated: ["③-4 延迟回执（CDP Fetch 延迟 1.5s）", "③-5 重复/迟到事件（/api/events/test 注入）", "③-6 草稿清理失败（Storage.removeItem 抛错）", "⑤-3 首件上传失败（CDP Fetch abort 首个 /api/attachments/upload）", "⑥-4 中文输入法组合态（CompositionEvent 模拟）"],
-    unverified: ["② 提交 A 后保存 B 的三路一致（板面/读卡/读文件）：依赖已提交轮次的工具读取链路，本轮未实现取证", "⑤ 旧卡迁移（需要旧 schema 板面 fixture）", "⑤ 隐藏成员/撤销连线（画布连线手势与组成员未纳入本轮）", "① PNG 字节交付：本机模型 capability 未声明视觉；只有出现真实 image_url 才算交付"],
+    unverified: ["⑤ 旧卡迁移（需要旧 schema 板面 fixture）", "⑤ 隐藏成员/撤销连线（画布连线手势与组成员未纳入本轮）", "② 读文件一路：A/B 用例目前用文字卡，读文件（read_attachment）未取证"],
   };
   writeFileSync(join(OUT, "summary.json"), JSON.stringify(summary, null, 2), "utf8");
   writeFileSync(join(OUT, "console.log"), results.map((r) => (r.ok ? "[PASS] " : "[FAIL] ") + r.name + (r.detail ? " :: " + JSON.stringify(r.detail) : "")).join("\n") + "\n", "utf8");
