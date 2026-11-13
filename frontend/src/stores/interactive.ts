@@ -1163,6 +1163,30 @@ export const useInteractiveStore = defineStore("interactive", () => {
   let boardReadSeq = 0;
   let boardReadAppliedSeq = 0;
   /**
+   * #46：内存里的板面内容是在**哪块板面**下建立的（读取落地 / 保存回执 / 撤回恢复 / 提交）。
+   *
+   * 这是「已加载板面的真实身份」：`selectBoard()` 只改 boardId，不改它 ——
+   * 切回 A 但 A 还没读到时，boardId 已是 A、内容身份仍是上一块板面，回执据此判定「未加载」。
+   * 不用 `board.value.boardId` 单独判定：界面夹具会直接摆一块板面内容，
+   * 那种内容同样属于当前板面，不该被误判成「未加载」。
+   */
+  let boardContentBoardId = boardId.value;
+  /**
+   * #46：内存里的板面内容是不是「读取失败时补的空占位」。
+   *
+   * 空占位的 boardId 就是当前板面 id，但它不是读到过的内容：回执不许写进去。
+   */
+  let boardContentIsPlaceholder = false;
+  /**
+   * #46：正在读取的板面（按板面计数）。
+   *
+   * 回执到达时原板面还在读 → 等这次读取落定再决定写不写板面；
+   * 绝不把回执写进内存里碰巧还留着的另一块板面内容。
+   */
+  const boardReadsInFlight = new Map<string, number>();
+  /** #46：等原板面加载完成的回执（按板面分组；读取落定 / 板面身份变化时唤醒并重新判定）。 */
+  const boardReadyWaiters = new Map<string, Set<() => void>>();
+  /**
    * 用户已确认的影响检查句柄（M4）：
    * - `pendingConfirm` 在用户点「确认」后设置，随这一次保存的 PUT 一起提交；
    * - `confirmedCheck` 记录「哪一次确认授权了哪个已保存版本」，只有板面自那以后没有新改动时
@@ -2015,6 +2039,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
         const savedState = applyParticipation(clampBoardBounds(result.state));
         reconcileParticipationChoices(savedState);
         board.value = forceParticipationChoices(savedState);
+        // #46：保存回执给出的就是这块板面的服务端事实（内容可用，不是空占位）
+        if (String(board.value.boardId ?? "") === boardId.value) {
+          boardContentBoardId = boardId.value;
+          boardContentIsPlaceholder = false;
+        }
         cleanState = cloneState(board.value);
         reconcileCheckedChoices(board.value);
         boardCleanRev = putRev;
@@ -2344,6 +2373,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (!candidate) {
       cleanState = cloneState(serverState);
       board.value = forceParticipationChoices(serverState);
+      // #46：这块内容来自服务端事实（读取 / 保存回执），属于当前板面
+      if (String(board.value.boardId ?? "") === boardId.value) {
+        boardContentBoardId = boardId.value;
+        boardContentIsPlaceholder = false;
+      }
       reconcileParticipationChoices(serverState);
       boardLocalRev += 1;
       boardCleanRev = boardLocalRev;
@@ -2420,6 +2454,95 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return Object.entries(boardContentConflicts.value).map(([cardId, value]) => ({ cardId, ...value }));
   }
 
+  /* ------------------------------------------------------------------
+   * #46：板面「已加载」的真实身份
+   *
+   * 缺陷：`selectBoard()` 先改 boardId 再异步 load()。切回 A 但 A 还没读到时，
+   * boardId 已经是 A、内存里的 board 仍是 B —— 只比 boardId 的回执校验会放行，
+   * 把含 B 卡片的对象交给 commit()。
+   *
+   * 正确口径：回执只写进**真正读到过的原板面内容**。原板面还在读时，回执等它落定
+   * （已上传的附件与本次操作身份都保留，不需要重新选文件 / 重新上传）。
+   * ------------------------------------------------------------------ */
+  function beginBoardRead(targetBoardId: string): void {
+    boardReadsInFlight.set(targetBoardId, (boardReadsInFlight.get(targetBoardId) ?? 0) + 1);
+  }
+  function endBoardRead(targetBoardId: string): void {
+    const left = (boardReadsInFlight.get(targetBoardId) ?? 0) - 1;
+    if (left > 0) {
+      boardReadsInFlight.set(targetBoardId, left);
+      return;
+    }
+    boardReadsInFlight.delete(targetBoardId);
+    wakeBoardReadyWaiters(targetBoardId);
+  }
+  /** 板面身份变化 / 读取落定：唤醒等这块板面的回执，让它们按最新事实重新判定。 */
+  function wakeBoardReadyWaiters(targetBoardId: string): void {
+    const waiters = boardReadyWaiters.get(targetBoardId);
+    if (!waiters || !waiters.size) return;
+    boardReadyWaiters.delete(targetBoardId);
+    for (const wake of [...waiters]) {
+      try {
+        wake();
+      } catch {
+        // 等待方的异常不许打断板面读取本身
+      }
+    }
+  }
+  function boardReadInFlight(targetBoardId: string): boolean {
+    return (boardReadsInFlight.get(targetBoardId) ?? 0) > 0;
+  }
+  /**
+   * 内存里的板面内容是否**确实是**这块板面的内容。
+   *
+   * 三个条件同时成立才算：
+   * 1. 当前板面身份就是它（boardId）；
+   * 2. 内存里的内容是在这块板面下建立的（boardContentBoardId，不是「boardId 恰好等于它」）；
+   * 3. 这块内容不是读取失败时补的空占位。
+   *
+   * 第 2 条正是缺陷的根治点：切回 A 但 A 还没读到时，boardId 已是 A、内容仍是 B，
+   * 内容身份对不上 → 回执不许写板面。
+   */
+  function boardContentIsLoaded(targetBoardId: string): boolean {
+    if (!targetBoardId) return false;
+    if (boardId.value !== targetBoardId) return false;
+    if (boardContentIsPlaceholder) return false;
+    return boardContentBoardId === targetBoardId;
+  }
+  /**
+   * 等原板面可用：读取落定 / 板面身份变化 / 超时都会重新判定一次。
+   *
+   * 返回 true = 现在可以按真实板面内容判定；false = 仍然不可用（调用方如实结束这次回执）。
+   */
+  function waitForBoardReady(targetBoardId: string, timeoutMs = 15000): Promise<boolean> {
+    if (boardContentIsLoaded(targetBoardId)) return Promise.resolve(true);
+    if (boardId.value !== targetBoardId) return Promise.resolve(false);
+    /**
+     * 没有正在进行的读取：内存里的内容就是当前事实（读取失败留下的空占位 / 别的板面内容）。
+     * 不再等 —— 等下去只会让回执悬着，界面也拿不到真实结论。
+     */
+    if (!boardReadInFlight(targetBoardId)) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (ready: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const waiters = boardReadyWaiters.get(targetBoardId);
+        if (waiters) {
+          waiters.delete(onWake);
+          if (!waiters.size) boardReadyWaiters.delete(targetBoardId);
+        }
+        resolve(ready);
+      };
+      const onWake = () => finish(boardContentIsLoaded(targetBoardId));
+      const timer = setTimeout(() => finish(boardContentIsLoaded(targetBoardId)), timeoutMs);
+      const waiters = boardReadyWaiters.get(targetBoardId) ?? new Set<() => void>();
+      waiters.add(onWake);
+      boardReadyWaiters.set(targetBoardId, waiters);
+    });
+  }
+
   async function refreshBoardFromServer() {
     // 请求发出前的内存版本：迟到返回时用它判断「用户是不是已经又输入了」（§11.1）
     const before = new Map(draftKeySeq);
@@ -2445,9 +2568,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 而迟到的理解回执也可能落到新板面上。
      */
     if (requestedBoardId !== statusBoardId) resetSubmissionStatusForBoard(requestedBoardId);
-    const payload = await api.fetchBoardState(requestedBoardId);
+    // #46：这次读取在飞期间，原板面的上传回执要等它落定再决定写不写板面
+    beginBoardRead(requestedBoardId);
+    let payload: BoardStateResponse;
+    try {
+      payload = await api.fetchBoardState(requestedBoardId);
+    } catch (err) {
+      endBoardRead(requestedBoardId);
+      throw err;
+    }
     // 板面已经切走：这次回执不属于当前板面，按板面身份保护丢弃（不能串用别板面的版本）
-    if (boardId.value !== requestedBoardId) return false;
+    if (boardId.value !== requestedBoardId) {
+      endBoardRead(requestedBoardId);
+      return false;
+    }
     boardId.value = payload.board.id;
     // 服务端可能给出规范化的板面 id：以它为准，下一次读取（同一个板面）才不会误判成切换
     statusBoardId = payload.board.id;
@@ -2490,6 +2624,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
         // 接收服务器事实：吸收新版本，服务器上的独立变化被协调进候选，用户自己的编辑保留
         adoptServerFacts(payload.state);
         boardReadAppliedSeq = Math.max(boardReadAppliedSeq, readSeq);
+        // #46：候选已经按这块板面的服务器事实合并过 —— 内容属于当前板面
+        boardContentBoardId = requestedBoardId;
+        boardContentIsPlaceholder = false;
         settleCancelRecovery(true, null);
       } else {
         // 迟到的读取：只合并草稿，不用它回退任何板面事实
@@ -2497,6 +2634,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
       }
       if (pendingRemovals.size > 0) scheduleDraftSave();
       settleCancelRecovery(true, null);
+      // #46：这次读取落定（内容已按服务器事实合并进候选），等它的回执可以继续判定
+      endBoardRead(requestedBoardId);
       return true;
     }
     /**
@@ -2508,6 +2647,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       mergeDraftsFromPayload(payload, before, readSaved);
       if (pendingRemovals.size > 0) scheduleDraftSave();
       settleCancelRecovery(true, null);
+      endBoardRead(requestedBoardId);
       return true;
     }
     /*
@@ -2527,6 +2667,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
       本地参与选择只在「有未保存候选、合并服务器事实」时生效（adoptServerFacts）。
     */
     board.value = applyParticipation(clampBoardBounds(serverState));
+    // #46：读到的是这块板面的真实内容（不是读取失败补的空占位）
+    boardContentBoardId = requestedBoardId;
+    boardContentIsPlaceholder = false;
     cleanState = cloneState(board.value);
     reconcileCheckedChoices(board.value);
     // 整块采用服务器事实：与它不一致的本地勾选选择记录一并作废（不能留到下次合并又冒出来）
@@ -2547,6 +2690,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     // 刷新后发现的「待同步清除」要真的发出去：清空最后一份也要发（§11.2）
     if (pendingRemovals.size > 0) scheduleDraftSave();
     settleCancelRecovery(true, null);
+    // #46：读取落定，等这块板面的上传回执可以继续判定
+    endBoardRead(requestedBoardId);
     return true;
   }
 
@@ -2881,8 +3026,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
         void startUnderstandingPolling();
       }
     } catch (err) {
-      board.value = board.value ?? emptyBoardState(boardId.value);
+      if (!board.value) {
+        // #46：读取失败时补的空占位不是「已加载的原板面」：等它的上传回执按真实情况结束
+        board.value = emptyBoardState(boardId.value);
+        boardContentBoardId = boardId.value;
+        boardContentIsPlaceholder = true;
+      }
       loadError.value = (err as Error).message;
+      wakeBoardReadyWaiters(boardId.value);
     } finally {
       loading.value = false;
     }
@@ -2921,7 +3072,16 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } catch (err) {
       return { ok: false, reason: "读取板面清单失败：" + ((err as Error)?.message || "原因未知") };
     }
-    if (boardId.value !== id) boardId.value = id;
+    if (boardId.value !== id) {
+      boardId.value = id;
+      /**
+       * #46：板面身份一变，内存里的内容就不再属于当前板面（它还是上一块板面的内容）。
+       * 在 load() 真正读到之前，回执不许把它当成「已加载的原板面」写进去。
+       */
+      boardContentBoardId = "";
+      // 等原板面的上传回执立刻按新事实重新判定（切走 = 不再写板面；切回来 = 等读取落定后再写）
+      wakeBoardReadyWaiters(id);
+    }
     await load();
     if (loadError.value) return { ok: false, reason: loadError.value };
     return { ok: true, reason: "" };
@@ -4826,7 +4986,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * - 回读失败时如实说明「撤回还没被服务器确认」，给出重试入口，不假装撤回成功；
      * - 卡片编辑草稿与恢复来源仍不在这里清理（07：正式变更成功后才清对应版本）。
      */
-    if (cleanState) board.value = cloneState(cleanState);
+    if (cleanState) {
+      board.value = cloneState(cleanState);
+      // #46：撤回后的内容仍是这块板面读到过的那一份（不是空占位）
+      if (String(board.value.boardId ?? "") === boardId.value) {
+        boardContentBoardId = boardId.value;
+        boardContentIsPlaceholder = false;
+      }
+    }
     // 取消丢弃的是整个候选：这期间用户做的勾选选择也一并作废（以撤回后的板面为准）
     if (board.value) dropCheckedChoicesNotIn(board.value);
     boardLocalRev = boardCleanRev;
@@ -5858,11 +6025,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return created?.id ?? null;
   }
 
-  /** 回执核对：尝试 / 板面 / 原卡 / 原关联目标全部仍然有效才写板面。 */
-  function applyImportAssociation(
+  /**
+   * 回执核对：尝试 / 板面 / 原卡 / 原关联目标全部仍然有效才写板面。
+   *
+   * #46：板面这一项核对的是**已加载的原板面内容**，不是「boardId 恰好等于原板面」：
+   * - 原板面还在读（切回 A 但 A 还没读到）→ 等它落定再判定，已上传的附件与本次操作身份都保留；
+   * - 内存里的内容不是原板面读到过的（例如读取失败留下的空占位）→ 不写板面，如实结束这次回执。
+   */
+  async function applyImportAssociation(
     attempt: ImportAttemptRecord,
     settled: AttachmentRef,
-  ): ImportAssociationOutcome {
+  ): Promise<ImportAssociationOutcome> {
     const validity = attemptValidity(attempt);
     if (validity === "item") {
       return {
@@ -5898,6 +6071,58 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
     // #46：回执到达时当前板面不是原板面 —— 绝不写进「碰巧打开的另一张板」
     if (boardId.value !== attempt.boardId) {
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error:
+          "回执到达时当前板面不是发起上传时的原板面（" +
+          attempt.boardId +
+          "），这次上传没有写进板面；回到原板面后可以重试关联。",
+        superseded: false,
+        supersededBy: null,
+      };
+    }
+    /**
+     * #46：原板面还在读（切回 A 但 A 还没读到）→ 等它落定再判定。
+     *
+     * 已上传的附件与本次操作身份都保留：原板面可用后继续关联，不需要重新选文件 / 重新上传。
+     * 等待期间板面被切走、或读取失败留下空占位 → 按真实情况结束这次回执（不写板面）。
+     */
+    if (!boardContentIsLoaded(attempt.boardId)) {
+      const ready = await waitForBoardReady(attempt.boardId);
+      if (!ready) {
+        return {
+          ok: false,
+          cardId: attempt.cardId,
+          error:
+            boardId.value !== attempt.boardId
+              ? "回执到达时当前板面不是发起上传时的原板面（" +
+                attempt.boardId +
+                "），这次上传没有写进板面；回到原板面后可以重试关联。"
+              : "原板面（" +
+                attempt.boardId +
+                "）还没有读到可用内容，这次上传没有写进板面；原板面读取成功后可以重试关联。",
+          superseded: false,
+          supersededBy: null,
+        };
+      }
+    }
+    // 等待期间可能已经有更新的尝试接手：真正写入前再核对一次（沿用 attemptValidity）
+    const validityAfterWait = attemptValidity(attempt);
+    if (validityAfterWait !== "ok") {
+      return {
+        ok: false,
+        cardId: attempt.cardId,
+        error:
+          validityAfterWait === "item"
+            ? "这次上传已被同一份文件更新的尝试取代，回执没有写入板面。"
+            : "这张卡上已有更新的关联尝试，这次上传没有覆盖新的关联。",
+        superseded: true,
+        supersededBy: validityAfterWait,
+      };
+    }
+    // 等待期间板面可能又被切走：写入前再核对一次身份
+    if (boardId.value !== attempt.boardId || !boardContentIsLoaded(attempt.boardId)) {
       return {
         ok: false,
         cardId: attempt.cardId,
@@ -6004,7 +6229,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
         emitCardJobChange(attempt, "processing", null);
       }
       settled = await waitUntilSettled(created);
-      const outcome = applyImportAssociation(attempt, settled);
+      const outcome = await applyImportAssociation(attempt, settled);
       return { ...base, ...outcome, attachment: settled };
     } catch (error) {
       return { ...base, attachment: settled, error: importErrorText(error) };
