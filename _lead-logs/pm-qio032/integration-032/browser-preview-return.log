@@ -1,0 +1,27 @@
+# 真实浏览器验收（系统 Edge + CDP，本机 fake provider）
+# runId=20261113211938  base=http://127.0.0.1:5199  api=http://127.0.0.1:8734  provider=http://127.0.0.1:8807
+# 驱动脚本：_lead-logs/pm-qio032/e2e-round2/ui-verify-round2.mjs（只读驱动，不改产品代码）
+# 数据域：隔离目录 _lead-logs/pm-qio032/e2e-round2/data（跑完已删除，不碰用户真实数据）
+# 结果：PASS 19 / FAIL 0 / UNVERIFIED 0 / TOTAL 19
+
+# [模拟] 项：
+#   - p2 上传延迟 4s（CDP Fetch delayRequests，真实端点 POST /api/attachments/upload）
+#   - c1 连接检查请求 500（CDP Fetch fulfillRequest）
+
+## 代码预览：设置返回后恢复可用（p1）
+
+[PASS] p1-1 首次打开回复代码：正文可读（不是停在读取中）
+        {"tabId": "replycode:local_1794604785208_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+[PASS] p1-2 首次打开：搜索框可用（有命中计数）且正文可滚动
+        {"searchCount": "— / 2", "scrollTop": 300}
+[PASS] p1-3 关闭预览标签
+        {"tabCount": 0}
+[PASS] p1-4 设置返回后重开同一代码块：直接可读（不再停在「正在读取这个文件…」）
+        {"tabId": "replycode:local_1794604785208_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+[PASS] p1-5 设置返回后重开：搜索框与滚动容器都在
+        {"tabId": "replycode:local_1794604785208_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+[PASS] p1-6 设置返回后重开：搜索与滚动真实可用
+        {"searchCount": "— / 1", "scrollTop": 240}
+[PASS] p1-7 同一代码块重开不重复开标签
+        {"tabCount": 1}
+

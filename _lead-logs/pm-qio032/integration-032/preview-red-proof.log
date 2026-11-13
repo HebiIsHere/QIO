@@ -1,0 +1,10 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/components/conversation/__tests__/__tmp-red-proof.test.ts (1 test) 88ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  04:31:52
+   Duration  3.21s (transform 270ms, setup 30ms, import 416ms, tests 88ms, environment 2.37s)
+

@@ -1,0 +1,26 @@
+{
+  "opened": true,
+  "facts": {
+    "rows": [
+      {
+        "id": "keyless",
+        "config": "已开启",
+        "check": "，尚未检查",
+        "state": "unchecked"
+      },
+      {
+        "id": "bocha",
+        "config": "未配置",
+        "check": null,
+        "state": null
+      },
+      {
+        "id": "searxng",
+        "config": "未配置",
+        "check": null,
+        "state": null
+      }
+    ],
+    "scrolledTop": 385.265625
+  }
+}

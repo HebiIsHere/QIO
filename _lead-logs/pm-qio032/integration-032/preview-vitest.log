@@ -1,0 +1,52 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/conversation/__tests__/cv-c-preview-store.test.ts (14 tests) 191ms
+node.exe : Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Not implemented...vas npm package:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ ✓ src/components/conversation/__tests__/d-preview-tabs-keyboard.test.ts (5 tests) 597ms
+     ✓ ←/→ 切换时选中、当前文件与真实焦点同步；随后按 Enter 不会回到旧文件  364ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ ✓ src/components/conversation/__tests__/cv-c-preview-resources.test.ts (6 tests) 635ms
+     ✓ 恢复搜索词与缩放，并把位置留在标签上（离开时写回 shell）  408ms
+ ✓ src/components/conversation/__tests__/cv-c-preview-feedback.test.ts (5 tests) 684ms
+     ✓ 提供 aria-live=polite 的状态：说出当前打开文件与「只读」  411ms
+ ✓ src/components/conversation/__tests__/cv-c-preview-panel.test.ts (4 tests) 338ms
+stderr | src/components/conversation/__tests__/d-preview-esc-layers.test.ts > 全窗口预览的 Esc 层级 > 真实 QModal 作为前方弹窗时：Esc 只关 
+QModal，再按 Esc 才退出全窗口（与问题 6 同一层级栈）
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QModal open=true title="示例弹窗" modalId="d-test-qmodal"  ... > 
+  at <VTUROOT>
+
+ ✓ src/components/conversation/__tests__/d-preview-52-tab-focus.test.ts (3 tests) 347ms
+ ✓ src/components/conversation/__tests__/d-preview-esc-layers.test.ts (8 tests) 429ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ ✓ src/views/settings/__tests__/settings-reset-layout.test.ts (7 tests) 1284ms
+     ✓ 栏宽/左栏收起/预览开合/手动全窗口回到默认；标签顺序、当前标签、搜索词与位置、任务页签保留  596ms
+ ✓ src/components/conversation/__tests__/cv-c-preview-50-53-state.test.ts (9 tests) 879ms
+     ✓ 大窗手动全窗口：点「返回对话」发出 toggleFull（回到分栏），标签不动  321ms
+     ✓ 旧标签的迟到写入不覆盖后来编辑：切回后改成 new 词，等过旧防抖仍是 new  372ms
+ ✓ src/components/conversation/__tests__/cv-c-preview-reader.test.ts (3 tests) 921ms
+     ✓ 渲染标题/列表，搜索时在正文里标出命中并计数  549ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ ✓ src/views/__tests__/ConversationViewShell.test.ts (11 tests) 384ms
+ ✓ src/components/conversation/__tests__/cv-c-preview-remount.test.ts (17 tests) 386ms
+ ✓ src/views/__tests__/ConversationViewLayers.test.ts (13 tests) 462ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ ✓ src/components/conversation/__tests__/d-preview-pdf-search.test.ts (5 tests) 2604ms
+     ✓ 正常命中：显示「序号 / 命中数」，状态 ready  636ms
+     ✓ 文字读取失败：说明搜索未完成并提供重试，不能显示成无匹配；重试成功后显示真实命中  573ms
+     ✓ 快速修改查询：新查询词下不显示旧结果；旧查询的迟到结果被丢弃  812ms
+
+ Test Files  14 passed (14)
+      Tests  110 passed (110)
+   Start at  04:32:23
+   Duration  13.64s (transform 23.20s, setup 318ms, import 52.52s, tests 10.14s, environment 94.64s)
+

@@ -1,0 +1,42 @@
+# 真实浏览器验收（系统 Edge + CDP，本机 fake provider）
+# runId=20261113211938  base=http://127.0.0.1:5199  api=http://127.0.0.1:8734  provider=http://127.0.0.1:8807
+# 驱动脚本：_lead-logs/pm-qio032/e2e-round2/ui-verify-round2.mjs（只读驱动，不改产品代码）
+# 数据域：隔离目录 _lead-logs/pm-qio032/e2e-round2/data（跑完已删除，不碰用户真实数据）
+# 结果：PASS 19 / FAIL 0 / UNVERIFIED 0 / TOTAL 19
+
+# [模拟] 项：
+#   - p2 上传延迟 4s（CDP Fetch delayRequests，真实端点 POST /api/attachments/upload）
+#   - c1 连接检查请求 500（CDP Fetch fulfillRequest）
+
+## 上传中 → 设置 → 返回（p2）
+
+[PASS] p2-1 上传中进设置、返回后文件卡只多一张（无重复卡）
+        {"before": 2, "after": 3, "cardText": "文本\nround2-20261113211938.txt\n显示并参与\n参与\n\n文本\nround2-20261113211938.txt\n137 B\n\n材料详情（路径 / 来源 / 引用）\n11-14 05:20"}
+[PASS] p2-2 返回后成功提示只有一句「已关联附件『文件名』」
+        {"notice": {"text": "已关联附件「round2-20261113211938.txt」", "retry": false}, "expected": "已关联附件「round2-20261113211938.txt」"}
+[PASS] p2-3 返回后没有要求重新选文件 / 重新上传
+        {"notice": {"text": "已关联附件「round2-20261113211938.txt」", "retry": false}}
+[PASS] p2-4 卡片数量稳定（不重复结算）
+        {"after": 3, "stable": 3}
+
+## 受控竞态测试（vitest，jsdom；不是真实浏览器）
+
+# 命令：cd frontend; npx --no-install vitest run src/stores/__tests__/pm032-import-board-identity.test.ts
+# 结果：Test Files 1 passed (1) / Tests 7 passed (7)（完整输出见 46b-vitest-new.log）
+
+[PASS] A 上传 → 切到 B → 切回 A 且延迟 A 的读取：A 加载前不写板面，加载后只关联一次且都属于 A
+        断言：A 加载前保存请求数不变、无 card_b、板面仍是 B 内容；A 加载后 result.ok、上传只调用 1 次、
+        保存请求板面 ID 全为 A、卡片 card_a、附件 att_a
+[PASS] 原板面读取失败（空占位）不写板面
+[PASS] 原卡删除不重建
+[PASS] 原卡换绑不覆盖
+[PASS] 旧回执晚到 supersededBy=card
+[PASS] 批次新建卡跨板等待后只建一张、保存请求全属 A
+[PASS] 刷新/重读两块板：B 完整、A 无混入
+
+# 反证（用例确实抓得住原缺陷）：把新增两道门禁临时改成 if (false && …) 后重跑 → 3 failed
+#   （含「批次新建卡」原板面建了 2 张卡、B 的 card_b 混入）；恢复后 7/7 全绿。
+
+# 受影响既有用例复跑：pm032-canvas-import-batch + fix025-attach-notice + fix025-card-attach-notice
+#   → Test Files 3 passed (3) / Tests 44 passed (44)（见 46b-vitest-existing.log）
+

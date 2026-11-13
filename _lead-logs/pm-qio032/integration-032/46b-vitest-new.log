@@ -1,0 +1,11 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/stores/__tests__/pm032-import-board-identity.test.ts (7 tests) 655ms
+     ✓ A 上传 → 切到 B → 切回 A 且延迟 A 的读取：A 加载前不写板面，加载后只关联一次且都属于 A  635ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  04:20:34
+   Duration  4.60s (transform 887ms, setup 32ms, import 1.18s, tests 655ms, environment 2.38s)
+
