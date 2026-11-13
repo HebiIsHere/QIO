@@ -236,11 +236,81 @@ const linkEditorOpen = ref(false);
 const linkEditorPos = ref<{ x: number; y: number } | null>(null);
 const linkMeaning = ref("");
 const linkDirection = ref(false);
+/**
+ * #10：本次会话里**新建**的关系 id。关系编辑框据此提供「撤销这条新连线」，
+ * 撤销按连线身份（id）删除，只撤这一条；普通关闭不动板面状态（新线保留）。
+ */
+const newLinkIds = ref<string[]>([]);
+/** #11：最近一次真正失败的建链尝试；重试绑定这次操作，先查重再建，绝不重复建同一条线。 */
+let lastLinkAttempt: { fromId: string; targetId: string } | null = null;
 /** 指针悬停的组（纯显示）：只让该组的已有锚点从圆点变短条。 */
 const hoveredGroupId = ref<string | null>(null);
 /** 指针悬停的卡片（纯显示）：只让该卡已有的锚点从圆点变短条。 */
 const hoveredCardId = ref<string | null>(null);
 const notice = ref("");
+/*
+  #11：画布提示分级。
+  - 成功 / 一般提示自动消失（约 4 秒）；
+  - 失败提示不自动消失：就地可关闭、可重试；重试绑定**原操作**（例如原这次建链），
+    重试前先查关系是否已存在，绝不重复创建同一条线。
+*/
+const noticeTone = ref<"info" | "success" | "error">("info");
+const noticeRetry = ref<{ label: string; run: () => void } | null>(null);
+const NOTICE_AUTO_DISMISS_MS = 4000;
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearNotice(): void {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  notice.value = "";
+  noticeTone.value = "info";
+  noticeRetry.value = null;
+}
+
+function showNotice(
+  text: string,
+  options: { tone?: "info" | "success" | "error"; retry?: { label: string; run: () => void } | null } = {},
+): void {
+  noticeTone.value = options.tone ?? "info";
+  noticeRetry.value = options.retry ?? null;
+  notice.value = text;
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  if (noticeTone.value !== "error") {
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null;
+      notice.value = "";
+      noticeTone.value = "info";
+      noticeRetry.value = null;
+    }, NOTICE_AUTO_DISMISS_MS);
+  }
+}
+
+function runNoticeRetry(): void {
+  const retry = noticeRetry.value;
+  clearNotice();
+  retry?.run();
+}
+
+// 直接写 notice.value 的既有代码同样享受「成功自动消失」：错误提示（noticeTone=error）保留。
+watch(notice, (value) => {
+  if (!value) return;
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  if (noticeTone.value === "error") return;
+  noticeTimer = setTimeout(() => {
+    noticeTimer = null;
+    if (noticeTone.value === "error") return;
+    notice.value = "";
+    noticeRetry.value = null;
+  }, NOTICE_AUTO_DISMISS_MS);
+});
 
 /**
  * 拖线目标按**端点类型**拆开：卡片给卡片高亮 / 「连接到卡片」，
@@ -912,8 +982,17 @@ function toolbarButtonPositions(card: BoardCardModel): Array<{ x: number; y: num
   return toolbarButtonLayout({ card: rect, visible, ports }).map((box) => ({ x: box.x, y: box.y }));
 }
 
-function commit(next: BoardState, label: string) {
+/**
+ * 写板面：store 在整板读取失败期间会拒绝编辑（#20）。这里如实返回是否写入成功，
+ * 建链等「失败可重试」的路径据此给出真实的失败提示（不谎报成功）。
+ */
+function commit(next: BoardState, label: string): boolean {
+  if (store.boardEditBlockedReason) {
+    showNotice("板面当前不可编辑：" + store.boardEditBlockedReason, { tone: "error" });
+    return false;
+  }
   store.commit(next, label);
+  return true;
 }
 
 // --- 卡片尺寸调整（任务书 §3） ---------------------------------------------
@@ -2932,7 +3011,9 @@ function finishLinkDraft(allowCreate: boolean) {
   const current = boardState.value;
   if (!draft || !current) return;
   if (!allowCreate || !draft.targetId || draft.targetId === draft.fromId) {
-    notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+    // 拖到无效目标 / 取消：不落盘、也不提供「重试」——没有发生过建链操作。
+    lastLinkAttempt = null;
+    showNotice("没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。", { tone: "info" });
     return;
   }
   /*
@@ -2943,22 +3024,78 @@ function finishLinkDraft(allowCreate: boolean) {
   */
   const existing = linkBetween(current, draft.fromId, draft.targetId);
   if (existing) {
+    lastLinkAttempt = null;
     openLinkEditor(existing.id);
-    notice.value =
-      "这条关系已经存在：已打开原有关系（id、方向、含义与曲线都保留），没有新建，也没有改动。";
+    showNotice("这条关系已经存在：已打开原有关系（id、方向、含义与曲线都保留），没有新建，也没有改动。", {
+      tone: "info",
+    });
     return;
   }
-  const next = addLink(current, draft.fromId, draft.targetId, false, "");
+  const created = createLinkOnce(draft.fromId, draft.targetId);
+  if (!created) {
+    // 保留原操作，提供可重试提示；重试前会再查重（不会建第二条同样的线）。
+    lastLinkAttempt = { fromId: draft.fromId, targetId: draft.targetId };
+    const reason = store.boardEditBlockedReason
+      ? "板面当前不可编辑，关系没有建立。"
+      : "端点卡片可能刚被删除，关系没有建立。";
+    showNotice(reason + "可以重试这次建链，重复的线不会被建第二次。", {
+      tone: "error",
+      retry: { label: "重试这次建链", run: retryLastLinkAttempt },
+    });
+    return;
+  }
+  lastLinkAttempt = null;
+  openLinkEditor(created.id);
+}
+
+/**
+ * 建一条新线并登记为「本次新建」。返回 null 表示端点已不可用（不落盘）。
+ * 建链前再次查重：重试 / 快速重复操作都不会创建同一条线。
+ */
+function createLinkOnce(fromId: string, targetId: string): { id: string } | null {
+  const current = boardState.value;
+  if (!current) return null;
+  if (linkBetween(current, fromId, targetId)) return null;
+  const next = addLink(current, fromId, targetId, false, "");
   const created = next.links.find(
     (link) =>
-      (link.src === draft.fromId && link.dst === draft.targetId) ||
-      (link.src === draft.targetId && link.dst === draft.fromId),
+      (link.src === fromId && link.dst === targetId) || (link.src === targetId && link.dst === fromId),
   );
-  if (!created) {
-    notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+  if (!created) return null;
+  if (!commit(next, "新建关系（方向与含义由你写明）")) {
+    // 板面只读 / 保存被拦下：关系没有建立，保留原操作给用户重试（重试前会再次查重）。
+    return null;
+  }
+  newLinkIds.value = [...newLinkIds.value, created.id];
+  showNotice("已建立新关系：方向与含义可以稍后填写；关闭编辑框不会删除这条线。", { tone: "success" });
+  return created;
+}
+
+/** #11：重试绑定原操作；先查重，已存在就打开原线（不重复创建）。 */
+function retryLastLinkAttempt(): void {
+  const attempt = lastLinkAttempt;
+  if (!attempt) return;
+  const current = boardState.value;
+  if (!current) return;
+  const existing = linkBetween(current, attempt.fromId, attempt.targetId);
+  if (existing) {
+    lastLinkAttempt = null;
+    openLinkEditor(existing.id);
+    showNotice("这条关系已经存在：已打开原关系，没有重复创建。", { tone: "info" });
     return;
   }
-  commit(next, "新建关系（方向与含义由你写明）");
+  const created = createLinkOnce(attempt.fromId, attempt.targetId);
+  if (!created) {
+    const reason = store.boardEditBlockedReason
+      ? "板面当前不可编辑，关系没有建立。"
+      : "仍然无法建立关系：端点已经不存在。";
+    showNotice(reason, {
+      tone: "error",
+      retry: { label: "重试这次建链", run: retryLastLinkAttempt },
+    });
+    return;
+  }
+  lastLinkAttempt = null;
   openLinkEditor(created.id);
 }
 
@@ -3040,6 +3177,7 @@ function saveLinkEditor() {
 function onDeleteLink(linkId: string) {
   const current = boardState.value;
   if (!current) return;
+  forgetNewLink(linkId);
   commit(removeLink(current, linkId), "删除关系（撤回这条关联）");
   if (editingLinkId.value === linkId) {
     editingLinkId.value = null;
@@ -3052,7 +3190,45 @@ function deleteEditingLink() {
   const current = boardState.value;
   const linkId = editingLinkId.value;
   if (!current || !linkId) return;
+  forgetNewLink(linkId);
   commit(removeLink(current, linkId), "删除关系（撤回这条关联）");
+  showNotice("已删除这条关系（其它关系与卡片不受影响）。", { tone: "success" });
+  editingLinkId.value = null;
+  linkEditorOpen.value = false;
+  linkEditorPos.value = null;
+}
+
+function forgetNewLink(linkId: string): void {
+  if (!newLinkIds.value.includes(linkId)) return;
+  newLinkIds.value = newLinkIds.value.filter((id) => id !== linkId);
+}
+
+/** 当前编辑的关系是否是本次会话新建的那一条（决定是否显示「撤销这条新连线」）。 */
+const editingLinkIsNew = computed(() => {
+  const linkId = editingLinkId.value;
+  return Boolean(linkId && newLinkIds.value.includes(linkId));
+});
+
+/**
+ * #10：按**连线身份**撤销本次新建的那一条；普通关闭（×/关闭按钮）不删除新线。
+ * 撤销只删这一条关系，不动两端卡片、不动其它关系。
+ */
+function undoNewLink(): void {
+  const current = boardState.value;
+  const linkId = editingLinkId.value;
+  if (!current || !linkId) return;
+  const link = current.links.find((item) => item.id === linkId);
+  if (!link || link.deleted) {
+    forgetNewLink(linkId);
+    editingLinkId.value = null;
+    linkEditorOpen.value = false;
+    linkEditorPos.value = null;
+    showNotice("这条新连线已经不在了，没有可撤销的对象。", { tone: "error" });
+    return;
+  }
+  forgetNewLink(linkId);
+  commit(removeLink(current, linkId), "撤销这条新连线");
+  showNotice("已撤销这条新连线（只撤销这一条，两端卡片与其它关系不变）。", { tone: "success" });
   editingLinkId.value = null;
   linkEditorOpen.value = false;
   linkEditorPos.value = null;
@@ -3389,6 +3565,10 @@ onMounted(() => {
 */
 
 onBeforeUnmount(() => {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
   viewportEl.value?.removeEventListener("wheel", onWheel);
   viewportEl.value?.removeEventListener("scroll", onViewportScroll);
   window.removeEventListener("keydown", onKeyDown);
@@ -3426,7 +3606,31 @@ onBeforeUnmount(() => {
 <template>
   <section ref="shell" class="board-shell" data-im="board">
     <p v-if="dragging && dragHint" class="banner drag" role="status">{{ dragHint }}</p>
-    <p v-if="notice" class="banner" role="status">{{ notice }}</p>
+    <!-- #11：成功 / 一般提示自动消失；失败提示就地可关闭、可重试（重试绑定原操作）。 -->
+    <p
+      v-if="notice"
+      class="banner"
+      :class="'is-' + noticeTone"
+      role="status"
+      data-im="canvas-notice"
+      :data-tone="noticeTone"
+    >
+      <span class="banner-text">{{ notice }}</span>
+      <button
+        v-if="noticeRetry"
+        type="button"
+        class="banner-action"
+        data-im="canvas-notice-retry"
+        @click="runNoticeRetry"
+      >{{ noticeRetry.label }}</button>
+      <button
+        type="button"
+        class="banner-action banner-close"
+        data-im="canvas-notice-dismiss"
+        aria-label="关闭提示"
+        @click="clearNotice"
+      >关闭</button>
+    </p>
     <!--
       操作提示只在「本机还没用过查看手势」时出现一条，用过一次即永久收起。
       刻意不设 role="status"：它不是实时状态，而且文案里的缩放百分比会让 aria-live
@@ -3641,7 +3845,15 @@ onBeforeUnmount(() => {
       </label>
       <div class="link-actions">
         <button class="btn primary" type="button" @click="saveLinkEditor">保存方向与含义</button>
-        <button class="btn danger" type="button" @click="deleteEditingLink">删除关系</button>
+        <!-- #10：本次会话新建的线，编辑框里明确给出「撤销这条新连线」（按连线身份撤销）。 -->
+        <button
+          v-if="editingLinkIsNew"
+          class="btn"
+          type="button"
+          data-im="link-undo-new"
+          @click="undoNewLink"
+        >撤销这条新连线</button>
+        <button v-else class="btn danger" type="button" @click="deleteEditingLink">删除关系</button>
         <button class="btn" type="button" @click="editingLinkId = null; linkEditorOpen = false; linkEditorPos = null">关闭</button>
       </div>
     </div>
@@ -3677,6 +3889,31 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--border-subtle);
   pointer-events: none;
 }
+.banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.banner-text { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+/* #11：失败提示不自动消失，就地可关闭 / 可重试；成功提示短暂显示后自动消失。 */
+.banner.is-error { color: var(--text-strong); border-bottom-color: var(--danger); }
+.banner.is-success { color: var(--text-secondary); }
+.banner-action {
+  pointer-events: auto;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.banner-action:hover { border-color: var(--border-strong); color: var(--text-strong); }
+.banner-close { color: var(--text-muted); }
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
 /* #85（PM-QIO032）：板面操作指引必须可读 —— 用次级文字色，而不是更浅的 faint。 */
 .banner.view-hint { color: var(--text-secondary); }

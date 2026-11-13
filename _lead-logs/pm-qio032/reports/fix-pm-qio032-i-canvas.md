@@ -98,6 +98,43 @@
 - 基线用例大量引用旧 `card-participation` 按钮 / 旧材料开关。为不删改基线用例，保留了两个 **hidden + aria-hidden 兼容节点**（视觉与无障碍均不可达）：用户只看到三态入口。若 Lead 要求彻底删 DOM，需要同步改 `BoardToolbar.test.ts / irl-b-card-states.test.ts / r9-file-card-material-panel.test.ts / iml-b-reply-markdown.test.ts / textCardUnified.test.ts / boardCanvas.test.ts` 中的旧断言（约 13 处），请裁定。
 - `setCardVisibilityState` 不调用 `syncLegacyParticipation`（否则文件卡「显示但不参与」会被旧规则反写成 hidden=true）；旧 `checked` 只做镜像。提交范围/后端读卡仍需以 participation 为准（i-material 已确认）。
 
+## 第三轮补充（合并父分支 fix/pm-qio032-interactive 后）
+
+### 合并
+- 已 `git merge fix/pm-qio032-interactive` 进入本分支（无冲突），据此接入 i-state 的 ImportBatch 数据层与 i-material 事实接口；未 push、未动父分支。
+
+### 第三轮 commits
+- `3440edbf` fix(interactive-canvas): 拖放/多文件导入批次反馈 UI（#44/#45/#46）
+- `4be73295` fix(interactive-canvas): 连线撤销/提示分级与失败重试防重复（#10/#11）
+
+### 第三轮逐项结果
+| # | 结果 | 证据 / 说明 |
+|---|---|---|
+| #44 单批 5 份上限 / 已接收·未接收明细 | **已修复（UI 接线）** | `AddMenu.vue` 拖放（浏览器字节 + 桌面路径）统一走 `store.beginImportBatch`；第 6 份起不建卡、如实标「未接收」并保留在清单；摘要「本批已接收 N 份 / 未接收 M 份（单批上限 5 份）」；组件用例 8/8（六件拖放→5 卡 + 第 6 件可见、可重新导入后变 6 卡）。 |
+| #45 每文件真实状态 / 后续成功不覆盖失败 / 重试只对应文件 | **已修复（UI 接线）** | 逐项写 `noteImportItem`（waiting/uploading/succeeded/failed）；首件上传失败有可见原因（`[data-im="file-card-error"]`）+ 重试（`[data-im="card-attach-retry"]`），后续文件照常成功；重试用 `retryImportItem` 只重置并处理该项；已成功项不被迟到 failed 覆盖（用例）。 |
+| #46 批次绑定板面/卡/任务 + 路由恢复 + 迟到回执 | **部分（UI 侧完成可见部分）** | 批次数据自带 boardId/cardId/taskId；离开页面时仍在飞的上传记「结果未知，可重试」而非永远转圈；重新挂载按 `currentImportBatch` 恢复进度与重试入口；迟到成功回执的「原卡已删除/替换」守卫由 store 处理并在批次区如实显示。taskId 绑定目前仅透传（画布侧暂无任务产物回传入口）。 |
+| #10 有效拖线建链 / 普通关闭保留 / 撤销这条新连线 / 无效目标不落盘 | **已修复（画布侧）** | 记录本次会话新建关系 id；编辑框对新建线显示「撤销这条新连线」（`[data-im="link-undo-new"]`），按连线 id 删除；普通关闭与 Esc 不动板面（新线保留）；拖到空白/无效目标不提交（用例 7/7）。 |
+| #11 成功提示自动消失 / 失败可关闭可重试 / 重试绑定原操作防重复 | **已修复（画布侧）** | 画布提示分级：成功/一般提示约 4 秒自动消失；失败提示不自动消失，就地「关闭」`[data-im="canvas-notice-dismiss"]` + 「重试」`[data-im="canvas-notice-retry"]`；建链失败保留原 from/target，重试先 `linkBetween` 查重再建，不会重复建同一条线（用例覆盖只读失败→恢复重试、外部已建好→重试只打开原线）。 |
+| #60/#62/#72 等 | **未做（本轮时间用尽）** | 如实保留在未做清单。 |
+
+### 第三轮测试（本 worktree）
+- `pm032-canvas-import-batch.test.ts` → 8/8 绿（5 份上限/未接收、失败+重试、终态不被覆盖、未接收重新导入、跨路由恢复、离开页面上传结果未知）
+- `pm032-canvas-link-undo.test.ts` → 7/7 绿（有效建链+关闭保留、按身份撤销、无效目标不落盘、失败关闭/重试、重试防重复、成功提示自动消失）
+- 既有回归：AddMenu 相关（fix025-attach-notice 12 / a-unknown-consistency 3 / BoardToolbar 11 / boardToolbarBands 6 / r9-file-card-material-panel 6）→ 38/38 绿
+- 连线回归：i2v2-b-f04-links / acceptance-i2v2-board-links / acceptance-i2v2-board-relations / acceptance-i2v2-link-gesture / fix025-connect-resize / i2v2-c-link-gesture / boardCanvas（见提交前运行记录）
+- `npx vue-tsc --noEmit` 第三轮 exit 0
+
+### E2E 可验证选择器（⑤）
+- 批次区：`[data-im="add-material-status"]`（文本含「已接收 N 份 / 未接收 M 份」与每个文件名）
+- 批次项：`[data-im="add-batch-item"]`（`data-status` = pending/uploading/succeeded/failed/unreceived，`data-name`）
+- 失败原因：`[data-im="file-card-error"]`；重试/重新导入：`[data-im="card-attach-retry"]`；关闭：`[data-im="add-material-dismiss"]`（`[data-im="add-material-summary"]` 为摘要行）
+- 连线撤销：`[data-im="link-undo-new"]`；画布提示：`[data-im="canvas-notice"]`（`data-tone` = info/success/error）、`[data-im="canvas-notice-retry"]`、`[data-im="canvas-notice-dismiss"]`
+
+### 第三轮风险 / 待定
+- 「添加→文件」单击流程仍是原有单文件瞬态提示（fix025 已冻结的 useTransientNotice 生命周期），未改成批次区；拖放/多文件两条入口共用批次规则。若要求单击也进批次区，需要重写 fix025 的 12 条基线用例（请 Lead 裁定）。
+- #46 的 taskId 绑定目前只是数据层透传，画布暂无「任务产物回传」入口；迟到回执的卡片删除守卫在 store 侧。
+- 批次成功/失败演示中，上传失败的文件不会建空卡（失败只在批次区记录）；如产品要求「失败也留卡」，需改流程。
+
 ## 5. 未完成与集成风险
 
 - 本会话中途中断约 45 分钟，实际编码时间不足，导致 #09/#10/#11/#17/#19(补充)/#08/#54/#26/#44-46/#60-62/#72/#01 未完成或仅基线，需第二轮。
