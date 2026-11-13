@@ -6,6 +6,7 @@ import ToolCreationCard from "./ToolCreationCard.vue";
 import IntentExecutionMessage from "./IntentExecutionMessage.vue";
 import AttachmentChip from "./AttachmentChip.vue";
 import { mediaFactsOf } from "./mediaFacts";
+import { fileReadFailureOf } from "./toolFailureFacts";
 import { splitSystemAnnotation, useSessionStore } from "../stores/session";
 import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
@@ -185,8 +186,14 @@ const isKnowledgeProposalTool = computed(
     (props.message.presentation?.tool || props.message.toolName || "") ===
     "propose_knowledge",
 );
+/**
+ * 文件读取失败的可读事实（#12）：只认程序字段（toolCode / toolCategory /
+ * toolFileRead），并给出真实原因与下一步；不是文件读取失败时是 null。
+ */
+const fileReadFailure = computed(() => fileReadFailureOf(props.message));
 const toolFailureLine = computed(() => {
   if (!toolFailed.value) return "";
+  if (fileReadFailure.value) return fileReadFailure.value.headline;
   if (isKnowledgeProposalTool.value) {
     const label = KNOWLEDGE_FAILURE_LABELS[String(props.message.toolCode ?? "")];
     return label ? `知识提交未成功，${label}` : "知识提交未成功";
@@ -350,9 +357,9 @@ function previewOne(attachment: MessageAttachment): void {
       sourcePath: attachment.sourcePath ?? null,
     }),
   );
-  attachNotice.value = ok
-    ? `已在右侧打开「${attachment.name}」的只读预览`
-    : "这个版本还没有接上右侧预览（不会打开空白面板）";
+  // 成功由右侧预览面板自己反馈（读屏状态 + 激活标签高亮）；消息区不再追加成功文案。
+  // 只有在真的没打开时才就地说明，绝不留一句「已在右侧打开」的旧提示。
+  attachNotice.value = ok ? "" : "这个版本还没有接上右侧预览（不会打开空白面板）";
 }
 
 /**
@@ -739,6 +746,19 @@ function removeOne(id: string) {
         <p v-if="toolFailureLine" class="tool-fail-line" role="status" data-qio-fit>
           {{ toolFailureLine }}
         </p>
+        <!--
+          文件读取失败：真实原因与下一步来自后端 file_read 事实（不是 toolError 原文）。
+          具体工具名 / attachment_id / code / category / diagnostic 在展开后的诊断区。
+        -->
+        <div
+          v-if="fileReadFailure"
+          class="tool-fail-detail"
+          data-qio-fit
+          data-test="file-read-failure-detail"
+        >
+          <p v-if="fileReadFailure.reason" class="fr-reason">{{ fileReadFailure.reason }}</p>
+          <p v-if="fileReadFailure.nextStep" class="fr-next">{{ fileReadFailure.nextStep }}</p>
+        </div>
         <!-- 展开/收起必须连续：用 0fr→1fr 网格行做真实高度过渡，
              不再 v-show 瞬切（detail-wrap 不设内边距，否则收起时会留下细条） -->
         <div class="tool-detail-wrap" :class="{ open }">
@@ -768,7 +788,29 @@ function removeOne(id: string) {
               <p v-else-if="message.toolTruncated" class="tool-note mono" role="status" data-qio-fit>
                 输出过长，已截断（单条上限 4 万字）
               </p>
-              <p v-if="message.toolError" class="tool-error" data-qio-fit>{{ message.toolError }}</p>
+              <!--
+                文件读取失败：原始 toolError 里可能是给模型的内部指令
+                （「可以让用户…」「可以先不传…」），不作为可见文案；这里只显示结构化诊断。
+              -->
+              <div
+                v-if="fileReadFailure"
+                class="tool-detail-sec"
+                data-qio-fit
+                data-test="tool-file-read-diagnostics"
+              >
+                <div class="sec-label mono">诊断</div>
+                <dl class="fr-diag">
+                  <template v-for="row in fileReadFailure.rows" :key="row.label">
+                    <dt class="mono">{{ row.label }}</dt>
+                    <dd class="mono">{{ row.value }}</dd>
+                  </template>
+                </dl>
+              </div>
+              <p
+                v-else-if="message.toolError"
+                class="tool-error"
+                data-qio-fit
+              >{{ message.toolError }}</p>
             </div>
           </div>
         </div>
@@ -1282,6 +1324,46 @@ function removeOne(id: string) {
   font-size: 12px;
   /* 失败原因可能是一整条路径（没有空格可断行）：必须允许任意位置折行，
     否则窄窗口下会把卡片撑出横向溢出。 */
+  overflow-wrap: anywhere;
+}
+/* 文件读取失败：原因 / 下一步接在结论下面，与结论同属卡面（详情仍在折叠区） */
+.tool-fail-detail {
+  margin: 0;
+  padding: 0 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tool-fail-detail .fr-reason,
+.tool-fail-detail .fr-next {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.tool-fail-detail .fr-reason {
+  color: var(--text-secondary);
+}
+.tool-fail-detail .fr-next {
+  color: var(--text-muted);
+}
+/* 展开后的结构化诊断：标签 + 值两列，值可折行 */
+.fr-diag {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 10px;
+  margin: 4px 0 0;
+}
+.fr-diag dt {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.fr-diag dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
 .tool-detail-sec + .tool-detail-sec {

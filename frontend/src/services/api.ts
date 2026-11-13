@@ -320,6 +320,18 @@ export interface ToolRecordPreview {
   output_chars: number;
   preview: string;
   created_at: string;
+  /**
+   * 结构化结果事实（后端迁移 75 起随预览返回；旧后端 / 旧行没有这些键）。
+   * 历史界面用 code / category 生成可读结论（例如 file_read_failed），
+   * 不从 error 的中文文本猜。
+   */
+  code?: string | null;
+  /** 统一失败类别（后端 tool_feedback.ErrorCategory 值，例如 io_error） */
+  category?: string | null;
+  /** 这次失败是否值得重试（旧行 / 未表态为 null） */
+  recoverable?: boolean | null;
+  /** ToolResult.status 原值（completed / awaiting_approval / failed…） */
+  result_status?: string | null;
 }
 
 export interface ToolRecordFull extends ToolRecordPreview {
