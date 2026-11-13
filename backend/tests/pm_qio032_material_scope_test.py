@@ -112,9 +112,18 @@ def _add_text_card(state: dict, content: str, *, included: bool = True) -> tuple
     return state, card_id
 
 
-def _record_submission(conn: sqlite3.Connection, state: dict, submission_id: str = SUB) -> dict:
-    """落一条真实形状的提交记录：visible / after_state 都是当时允许查看的投影。"""
-    snapshot = submission.project_snapshot(state)
+def _record_submission(
+    conn: sqlite3.Connection,
+    state: dict,
+    submission_id: str = SUB,
+    *,
+    snapshot: dict | None = None,
+) -> dict:
+    """落一条真实形状的提交记录：visible / after_state 都是当时允许查看的投影。
+
+    snapshot 给定时直接用它（用于提交受理时冻结了 materialVersions 的精确版本核对）。
+    """
+    snapshot = dict(snapshot) if isinstance(snapshot, dict) else submission.project_snapshot(state)
     conn.execute(
         "INSERT OR REPLACE INTO board_submissions (id, board_id, seq, status,"
         " before_state, after_state, visible, expressions, baseline, delivery,"
@@ -635,3 +644,186 @@ async def test_intent_event_hook_tolerates_missing_helper(monkeypatch, db_conn):
     args = SimpleNamespace(submission_id=SUB, intents=[{"client_ref": "a"}], resolved_question_ids=[])
     result = await tools["board_propose_intents"]._run(_turn_for_events(), args)
     assert result.ok is True, result
+
+# ---------------------------------------------------------------------------
+# #01 素材数据源细化 / #28 同大小内容替换（提交受理冻结 materialVersions）
+# ---------------------------------------------------------------------------
+
+
+def test_txt_file_card_body_is_delivered_as_attachment_text(db_conn, svc, tmp_path):
+    """参与项 TXT 文件卡：source=attachment_text、read=true、text 是真实正文。"""
+    _ensure(db_conn)
+    txt = _ready(svc, tmp_path, "材料.txt", "第一段正文：预算\n第二段正文：排期".encode("utf-8"))
+    state = _saved_state(db_conn)
+    state, card_id = _add_file_card(state, att=txt, name="材料.txt")
+    _save(db_conn, state)
+    _record_submission(db_conn, state)
+
+    resolved = materials.submission_materials(
+        db_conn, board_id=BOARD, submission_id=SUB, attachments=svc
+    )
+    entry = {item["cardId"]: item for item in resolved["materials"]}[card_id]
+    assert entry["source"] == "attachment_text", entry
+    assert entry["read"] is True
+    assert "第一段正文：预算" in entry["text"] and "第二段正文：排期" in entry["text"]
+    assert entry["attachmentId"] == txt.id
+    assert resolved["stale"] == []
+
+
+def test_hidden_and_post_submission_files_are_not_delivered(db_conn, svc, tmp_path):
+    """隐藏的文件卡、提交后新增的文件卡都不进首轮材料范围（不泄漏）。"""
+    _ensure(db_conn)
+    included_att = _ready(svc, tmp_path, "参与材料.txt", b"included body")
+    hidden_att = _ready(svc, tmp_path, "隐藏材料.txt", b"hidden body")
+    later_att = _ready(svc, tmp_path, "提交后新增.txt", b"later body")
+
+    state = _saved_state(db_conn)
+    state, included_id = _add_file_card(state, att=included_att, name="参与材料.txt")
+    state, hidden_id = _add_file_card(state, att=hidden_att, name="隐藏材料.txt")
+    state = board.set_hidden(state, hidden_id, True)
+    _save(db_conn, state)
+    _record_submission(db_conn, state)
+
+    later = board.add_card(
+        _saved_state(db_conn),
+        "file",
+        "",
+        meta={"name": "提交后新增.txt", "file": {"name": "提交后新增.txt", "attachmentId": later_att.id, "size": later_att.size_bytes}},
+    )
+    _save(db_conn, later)
+
+    resolved = materials.submission_materials(
+        db_conn, board_id=BOARD, submission_id=SUB, attachments=svc
+    )
+    entry_ids = {item["cardId"] for item in resolved["materials"]}
+    assert included_id in entry_ids
+    assert hidden_id not in entry_ids
+    assert set(resolved["attachmentIds"]) == {included_att.id}
+    scope = materials.submission_attachment_scope(
+        db_conn, board_id=BOARD, submission_id=SUB, attachments=svc
+    )
+    assert scope["available"] is True
+    assert set(scope["allowed"]) == {included_att.id}
+    assert later_att.id not in scope["allowed"] and hidden_att.id not in scope["allowed"]
+
+
+def test_not_ready_attachment_is_stale_never_delivered(db_conn, svc, tmp_path):
+    """附件未就绪：如实标 stale（提示重新提交），不交付任何正文。"""
+    _ensure(db_conn)
+    source = tmp_path / "src-准备中.txt"
+    source.write_bytes(b"pending body")
+    pending = svc.prepare(str(source), topic_id="t1")
+    assert pending.state == "prepared"
+
+    state = _saved_state(db_conn)
+    state, card_id = _add_file_card(
+        state, att=pending, name="准备中.txt", size=len(b"pending body")
+    )
+    _save(db_conn, state)
+    _record_submission(db_conn, state)
+
+    resolved = materials.submission_materials(
+        db_conn, board_id=BOARD, submission_id=SUB, attachments=svc
+    )
+    stale = {item["cardId"]: item for item in resolved["stale"]}
+    assert card_id in stale
+    assert "重新提交" in stale[card_id]["reason"]
+    entry = {item["cardId"]: item for item in resolved["materials"]}[card_id]
+    assert entry["read"] is False and entry["text"] == ""
+    assert "pending body" not in entry["text"]
+
+
+def test_same_size_content_replacement_is_detected_with_stamped_versions(db_conn, svc, tmp_path):
+    """同大小内容替换：受理时冻结的 sha256 能识别，提示重新提交而不是悄悄换内容。"""
+    _ensure(db_conn)
+    old_body = b"AAAA-old-body"
+    new_body = b"BBBB-new-body"  # 与 old_body 等长
+    assert len(old_body) == len(new_body)
+    att = _ready(svc, tmp_path, "同大小.txt", old_body)
+
+    state = _saved_state(db_conn)
+    state, card_id = _add_file_card(state, att=att, name="同大小.txt")
+    _save(db_conn, state)
+    snapshot = submission.project_snapshot(state)
+    stamped = materials.stamp_snapshot_material_versions(
+        db_conn, snapshot, attachments=svc
+    )
+    version = stamped["materialVersions"][card_id]
+    assert version["attachmentId"] == att.id
+    assert version["sha256"], "受理时必须能冻结真实内容哈希"
+    _record_submission(db_conn, state, snapshot=stamped)
+
+    # 真实内容被同大小替换（旧实现按 size 看不出来）。
+    target = svc.content_target(att.id)
+    path = Path(target[0]) if isinstance(target, tuple) else Path(target)
+    path.write_bytes(new_body)
+
+    resolved = materials.submission_materials(
+        db_conn, board_id=BOARD, submission_id=SUB, attachments=svc
+    )
+    stale = {item["cardId"]: item for item in resolved["stale"]}
+    assert card_id in stale, resolved["stale"]
+    assert "内容哈希" in stale[card_id]["reason"]
+    assert "重新提交" in stale[card_id]["reason"]
+    entry = {item["cardId"]: item for item in resolved["materials"]}[card_id]
+    assert entry["read"] is False
+    assert "BBBB" not in entry["text"], "不能把替换后的新内容当旧材料交付"
+    assert resolved["materialVersions"][card_id]["sha256"] == version["sha256"]
+
+
+def test_stamp_snapshot_material_versions_only_adds_a_key(db_conn, svc, tmp_path):
+    """冻结版本只加顶层键，不改卡片 / 不参与前后求差。"""
+    _ensure(db_conn)
+    att = _ready(svc, tmp_path, "版本材料.txt", b"versioned body")
+    state = _saved_state(db_conn)
+    state, _card_id = _add_file_card(state, att=att, name="版本材料.txt")
+    _save(db_conn, state)
+    snapshot = submission.project_snapshot(state)
+    stamped = materials.stamp_snapshot_material_versions(db_conn, snapshot, attachments=svc)
+    assert stamped["cards"] == snapshot["cards"]
+    assert stamped["groups"] == snapshot["groups"]
+    assert stamped["links"] == snapshot["links"]
+    assert stamped["selection"] == snapshot["selection"]
+    assert set(stamped) - set(snapshot) == {"materialVersions"}
+    # 指纹 / 求差不因为多了这个键而把「没改」判成「改过」。
+    assert submission.content_fingerprint(stamped) == submission.content_fingerprint(snapshot)
+
+
+# ---------------------------------------------------------------------------
+# #08/#54 最终形态：旧卡迁移后恢复隐藏仍是「显示但不参与」
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_hidden_card_restore_stays_displayed_not_included(db_conn):
+    _ensure(db_conn)
+    state = _saved_state(db_conn)
+    legacy = {
+        **models.new_card("text", "旧卡隐藏且勾选", checked=True, hidden=True),
+        "participation": "included",  # 旧配置冲突：一边隐藏一边写着参与
+    }
+    state = board.normalize_state(
+        {**state, "cards": [legacy], "groups": [], "links": [], "selection": []}
+    )
+    card_id = str(state["cards"][0]["id"])
+    assert board.card_access_state(state["cards"][0]) == board.ACCESS_HIDDEN
+    assert models.card_participation(state["cards"][0]) == models.PARTICIPATION_EXCLUDED
+
+    # 用户恢复显示：只回到「显示但不参与」，不会借迁移把参与意图扩大回来。
+    restored = board.set_hidden(state, card_id, False)
+    card = models.card_by_id(restored, card_id)
+    assert board.card_access_state(card) == board.ACCESS_DISPLAYED
+    assert models.card_participation(card) == models.PARTICIPATION_EXCLUDED
+    _save(db_conn, restored)
+    assert models.selectable_ids(_saved_state(db_conn)) == set()
+
+    # 旧文件材料（旧规则默认可见）迁移后仍是参与，不能被「旧卡一律排除」误伤。
+    legacy_file = models.new_card(
+        "file", "", meta={"name": "旧材料.txt", "file": {"name": "旧材料.txt"}}
+    )
+    other = board.normalize_state(
+        {**state, "cards": [legacy_file], "groups": [], "links": [], "selection": []}
+    )
+    assert models.card_participation(
+        other["cards"][0]
+    ) == models.PARTICIPATION_INCLUDED
+    assert board.card_access_state(other["cards"][0]) == board.ACCESS_INCLUDED

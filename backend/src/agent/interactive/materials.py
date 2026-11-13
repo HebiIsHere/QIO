@@ -35,6 +35,7 @@ from typing import Any, Callable, Iterable
 
 from agent.interactive import models, text_card
 from agent.services import attachment_access, media
+from agent.services.file_identity import content_sha256
 from agent.services.attachments import (
     Attachment,
     AttachmentContentError,
@@ -68,6 +69,10 @@ DEFAULT_MEDIA_SAMPLE_FRAMES = 6
 MEDIA_SAMPLE_MAX_EDGE = media.DEFAULT_MAX_EDGE
 #: 单帧交付给模型的字节上限：一张 768px JPEG 通常远小于它，超过就如实说明
 MAX_FRAME_BYTES = 2 * 1024 * 1024
+
+#: #28 内容版本核对：只有提交受理时显式冻结了 sha256 才重新计算当前哈希；
+#: 超过这个大小不硬算（如实降级为「无法核对内容版本」，不声称已核对）。
+MATERIAL_HASH_MAX_BYTES = 64 * 1024 * 1024
 
 #: 允许作为多模态图片下发的媒体类型（其它类型如 svg/tiff 交给既有文本读取结论，不猜）。
 DELIVERABLE_IMAGE_TYPES = {
@@ -172,11 +177,14 @@ def _snapshot_shape(raw: Any) -> dict | None:
         return None
     if not all(key in raw for key in _SNAPSHOT_KEYS):
         return None
+    versions = raw.get("materialVersions")
     return {
         "cards": [card for card in raw.get("cards") or [] if isinstance(card, dict)],
         "groups": [group for group in raw.get("groups") or [] if isinstance(group, dict)],
         "links": [link for link in raw.get("links") or [] if isinstance(link, dict)],
         "selection": [item for item in raw.get("selection") or [] if isinstance(item, str)],
+        # 受理时冻结的材料内容版本（可选；旧记录没有就是 {}，不猜）。
+        "materialVersions": dict(versions) if isinstance(versions, dict) else {},
     }
 
 
@@ -199,6 +207,7 @@ def load_submission_snapshot(
         "available": False,
         "reason": "",
         "snapshot": {},
+        "materialVersions": {},
         "submissionId": sid,
         "boardId": bid,
         "createdAt": "",
@@ -234,6 +243,7 @@ def load_submission_snapshot(
                     "available": True,
                     "reason": "",
                     "snapshot": snapshot,
+                    "materialVersions": dict(snapshot.get("materialVersions") or {}),
                     "boardId": row_board or bid,
                     "createdAt": str(row["created_at"] or ""),
                 }
@@ -275,11 +285,104 @@ def _current_material_size(service: Any, att: Any) -> int | None:
         return None
 
 
-def material_change_reason(service: Any, att: Any, card: dict) -> str:
+def _material_content_sha256(service: Any, att: Any) -> str:
+    """当前真实可读文件的内容哈希；读不到 / 超过上限时返回空串（不猜、不硬算）。"""
+    if service is None or att is None:
+        return ""
+    try:
+        path, _origin = service_for_content(service, att)
+    except Exception:  # noqa: BLE001 - 读不到按无法核对处理
+        return ""
+    if path is None:
+        return ""
+    try:
+        if int(Path(path).stat().st_size) > MATERIAL_HASH_MAX_BYTES:
+            return ""
+        digest = content_sha256(Path(path))
+    except Exception:  # noqa: BLE001 - 哈希失败按无法核对处理
+        return ""
+    return str(digest or "")
+
+
+def _material_version_fact(service: Any, att: Any, *, with_hash: bool = True) -> dict:
+    """一条附件的当前内容版本事实（受理冻结与提交后核对共用这一份口径）。"""
+    fact: dict = {
+        "attachmentId": str(getattr(att, "id", "") or ""),
+        "name": str(getattr(att, "original_name", "") or ""),
+        "size": _int_bytes(att),
+        "state": str(getattr(att, "state", "") or ""),
+        "origin": getattr(att, "origin", None),
+        "sourceKind": getattr(att, "source_kind", None),
+        "sha256": "",
+    }
+    if with_hash and att is not None:
+        fact["sha256"] = _material_content_sha256(service, att)
+    return fact
+
+
+def material_version_facts(
+    conn: sqlite3.Connection,
+    *,
+    state: dict,
+    attachments: Any = None,
+) -> dict:
+    """提交受理时冻结「每张文件卡附件的内容版本」（#28 精确核对用）。
+
+    只处理**可见范围内**的文件卡（与提交投影同一授权判断）；返回
+    {cardId: {attachmentId, name, size, state, origin, sourceKind, sha256}}。
+    sha256 是当前真实可读内容的哈希：读不到 / 文件过大时为空串 —— 此时只能按
+    size 核对，调用方不得声称已核对内容。本函数不写库、不改卡片。
+    """
+    if not isinstance(state, dict):
+        return {}
+    service = attachments if attachments is not None else _derive_service(conn)
+    versions: dict[str, dict] = {}
+    for card in models.selectable_cards(state):
+        meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+        att_id = _attachment_id(meta, "file")
+        if str(card.get("kind") or "") != "file" or not att_id:
+            continue
+        att = _resolve_file_attachment(service, att_id)
+        fact = _material_version_fact(service, att)
+        if not fact["size"]:
+            fact["size"] = _recorded_file_size(card) or 0
+        versions[str(card.get("id") or "")] = fact
+    return versions
+
+
+def stamp_snapshot_material_versions(
+    conn: sqlite3.Connection,
+    snapshot: dict,
+    *,
+    attachments: Any = None,
+) -> dict:
+    """给提交投影补顶层 `materialVersions`（只加一个键，不改 cards、不参与前后求差）。
+
+    由提交受理方（submission.py，i-submit）在记录 visible/after_state 之前调用：
+    之后 materials 侧能区分「同大小内容替换」，从而在源内容变化时如实要求重新提交，
+    而不是把新内容悄悄当成提交当时的材料交付。旧快照没有这个键时行为与现在一致
+    （只按 size 核对）。
+    """
+    if not isinstance(snapshot, dict):
+        return {}
+    stamped = dict(snapshot)
+    stamped["materialVersions"] = material_version_facts(
+        conn, state=snapshot, attachments=attachments
+    )
+    return stamped
+
+
+def material_change_reason(
+    service: Any, att: Any, card: dict, *, recorded: dict | None = None
+) -> str:
     """提交后材料源是否已变化（变化 = 旧内容不可得，必须提示重新提交）。
 
-    只认**可核对的事实**：附件记录不存在、状态不是 ready、真实文件大小与提交快照
-    登记的 size 不一致。不猜「可能改过」，也不在没变化时报警。
+    只认**可核对的事实**，按强度从高到低：
+    1. 附件记录不存在 / 状态不是 ready；
+    2. 提交受理时冻结了 sha256 且当前能算出来 → 内容哈希不一致（同大小也能识别）；
+       冻结了 sha256 但当前算不出（读不到 / 过大）→ 如实报「无法核对」，不交付；
+    3. 提交快照登记的 size 与当前真实文件大小不一致。
+    不猜「可能改过」，也不在没变化时报警。
     """
     if att is None:
         return "这张材料在提交后已不可取得（附件记录不存在），旧内容无法确认；请重新提交后再读"
@@ -289,15 +392,29 @@ def material_change_reason(service: Any, att: Any, card: dict) -> str:
             f"这张材料在提交后的状态是 {state}，旧内容不可取得；"
             "请重新提交后再让 QIO 读取"
         )
-    recorded = _recorded_file_size(card)
-    if recorded is None:
+    recorded_sha = str((recorded or {}).get("sha256") or "").strip()
+    if recorded_sha:
+        current_sha = _material_content_sha256(service, att)
+        if not current_sha:
+            return (
+                "这张材料在提交后无法核对内容版本（源文件不可读或过大）："
+                "为避免把变化后的内容当作提交当时的材料交付，本次没有读取；请重新提交后再读"
+            )
+        if current_sha != recorded_sha:
+            return (
+                "这张材料在提交后内容已变化（内容哈希与提交时不一致，大小可能相同）："
+                "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
+            )
+        return ""
+    size_recorded = _recorded_file_size(card)
+    if size_recorded is None:
         return ""
     current = _current_material_size(service, att)
     if current is None:
         return "这张材料在提交后已读不到内容（源文件不可得）；请重新提交后再读"
-    if current != recorded:
+    if current != size_recorded:
         return (
-            f"这张材料在提交后已变化（提交时 {recorded} 字节，现在是 {current} 字节）："
+            f"这张材料在提交后已变化（提交时 {size_recorded} 字节，现在是 {current} 字节）："
             "提交当时的旧内容不可取得，不会用新内容悄悄代替；请重新提交后再读"
         )
     return ""
@@ -356,6 +473,9 @@ def submission_attachment_scope(
     if not loaded["available"]:
         return scope
     state = loaded["snapshot"]
+    recorded_versions = (
+        loaded.get("materialVersions") if isinstance(loaded.get("materialVersions"), dict) else {}
+    )
     service = attachments if attachments is not None else _derive_service(conn)
     snapshot_cards = models.selectable_cards(state)
     for card, att_id in _file_attachment_entries(snapshot_cards):
@@ -367,7 +487,12 @@ def submission_attachment_scope(
             "size": _recorded_file_size(card),
         }
         att = _resolve_file_attachment(service, att_id)
-        reason = material_change_reason(service, att, card)
+        reason = material_change_reason(
+            service,
+            att,
+            card,
+            recorded=recorded_versions.get(str(card.get("id") or "")),
+        )
         if reason:
             scope["stale"][att_id] = reason
             scope["changed"].append(
@@ -414,10 +539,15 @@ def submission_materials(
         "images": [],
         "attachmentIds": [],
         "stale": [],
+        "materialVersions": {},
     }
     if not loaded["available"]:
         return result
     state = loaded["snapshot"]
+    recorded_versions = (
+        loaded.get("materialVersions") if isinstance(loaded.get("materialVersions"), dict) else {}
+    )
+    result["materialVersions"] = dict(recorded_versions)
     service = attachments if attachments is not None else _derive_service(conn)
     cards = [dict(card) for card in models.selectable_cards(state)]
     result["state"] = state
@@ -429,7 +559,12 @@ def submission_materials(
     # 交给 resolve_materials 如实记 unreadable（不能凭文件名推断内容）。
     for card, att_id in _file_attachment_entries(cards) if service is not None else ():
         att = _resolve_file_attachment(service, att_id)
-        reason = material_change_reason(service, att, card)
+        reason = material_change_reason(
+            service,
+            att,
+            card,
+            recorded=recorded_versions.get(str(card.get("id") or "")),
+        )
         if reason:
             stale_cards.append((card, att_id, reason))
             stale_ids.add(str(card.get("id") or ""))
