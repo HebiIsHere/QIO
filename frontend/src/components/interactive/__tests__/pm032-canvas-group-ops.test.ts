@@ -6,7 +6,7 @@
  * - #72 静态组名超长省略号、悬停/聚焦读全名、编辑态完整输入。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import SelectionMenu from "../SelectionMenu.vue";
 import BoardGroupFrame from "../BoardGroupFrame.vue";
@@ -179,13 +179,18 @@ describe("#60 解除有组级连线的组：先确认，成员自己的线保留
     await menu.vm.$nextTick();
 
     expect(labels, "确认前不该提交").toHaveLength(0);
-    expect(menu.find(".qio-confirm").exists(), "没有显示受影响关系确认").toBe(true);
-    expect(menu.text()).toContain("组级关系");
-    expect(menu.text()).toContain("属于");
+    // 设置组 #82 把 QConfirm 的 layer 档统一成窗口层（Teleport 到 body，避免窄窗被顶部导航遮挡），
+    // 所以确认框仍会真实显示，但不再挂在菜单子树里 —— 断言改成查 body 上的窗口层。
+    const confirmBox = document.body.querySelector(".qio-confirm");
+    expect(confirmBox, "没有显示受影响关系确认").not.toBeNull();
+    expect(confirmBox?.textContent ?? "").toContain("组级关系");
+    expect(confirmBox?.textContent ?? "").toContain("属于");
 
     // 取消：不解除组
-    const cancel = menu.get('[data-qio-confirm-action="cancel"]');
-    await cancel.trigger("click");
+    const cancel = confirmBox?.querySelector('[data-qio-confirm-action="cancel"]') as HTMLElement | null;
+    expect(cancel, "没有取消按钮").not.toBeNull();
+    cancel?.click();
+    await flushPromises();
     await menu.vm.$nextTick();
     expect(labels).toHaveLength(0);
     expect(store.board!.groups.some((group) => group.id === "g1" && !group.deleted)).toBe(true);
@@ -203,9 +208,10 @@ describe("#60 解除有组级连线的组：先确认，成员自己的线保留
     const menu = await openMenu();
     await menu.get('[data-im="group-dissolve"]').trigger("click");
     await menu.vm.$nextTick();
-    const confirm = menu.find('[data-qio-confirm-action="confirm"]');
-    expect(confirm.exists(), "没有确认按钮").toBe(true);
-    await confirm.trigger("click");
+    const confirm = document.body.querySelector('[data-qio-confirm-action="confirm"]') as HTMLElement | null;
+    expect(confirm, "没有确认按钮").not.toBeNull();
+    confirm?.click();
+    await flushPromises();
     await menu.vm.$nextTick();
 
     expect(store.board!.groups.some((group) => group.id === "g1" && !group.deleted), "组没有被解除").toBe(false);
