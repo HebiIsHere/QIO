@@ -53,7 +53,7 @@ $env:QIO_DATA_DIR='<wt>\.tmp-test-data'; $env:QIO_DISABLE_DB_CHECK='1'
 
 结果：**全绿**（7 个文件，119 项；其中本分支新增 4 个文件 23 项）。
 早前另跑：`test_irm_b_acceptance_api.py / test_audit_f04_acceptance_receipt.py / test_p3_b_service.py / test_p3_c_intents_api.py` 全绿（基线 15 skipped 未变）。
-已知：`tests/test_event_protocol.py` 在本分支会红 2 条（前端 EVENT_TYPES / stores 消费分支在 i-state 分支，合并后转绿）。
+已知：`tests/test_event_protocol.py` 在第二轮本分支曾红 2 条（前端 EVENT_TYPES / stores 消费分支在 i-state 分支）；第三轮父分支已合并 i-state 改动，该守卫**已转绿**（见 §7）。
 
 ## 5. 新增 / 变更的对外接口（只增不改）
 
@@ -71,3 +71,32 @@ $env:QIO_DATA_DIR='<wt>\.tmp-test-data'; $env:QIO_DISABLE_DB_CHECK='1'
 3. `_record_version` 改为 UPSERT 只补非空 authorization（payload/created_at 不变）：旧库历史行不会补写，旧意图的 `authorization_invalidated` 可能为 false（宁可不显示，不误报）；新数据完整。
 4. #01 图片交付按 `adapter.supports_images` 能力位门控；音频/视频仍走既有媒体链路（不在本条目范围）。`materials.submission_materials` 的 stale 事实保留在 `materials_stale` 与材料条目 reason 里（提示重新提交）。
 5. 未跑全量 pytest / 前端类型检查（本分支只改后端；按 CONTRACT 由 Lead 统一跑）。合入 i-material 后其报告与用例一并进入本分支。
+
+## 7. 第三轮（父分支合并后复核 · E2E ①-6b / #80 / #81）
+
+### 7.1 合并
+
+- git merge fix/pm-qio032-interactive → **fast-forward 到 9f80b0cf**（父分支此前已合并本分支第二轮提交 603581b3，无冲突；工作树干净）。合并后包含 i-state 前端事件接线，tests/test_event_protocol.py 已转绿。
+
+### 7.2 ①-6b「参与项 TXT 文件正文未进入首轮请求」结论：**不是产品缺陷，是 E2E 场景自相矛盾**
+
+证据链：
+1. E2E 脚本 scripts/verify-pm-qio032/e2e.mjs：①-4（353-358 行）把 TXT 文件卡设为「显示但不参与」，①-5（359-360 行）把 PNG 卡设为「隐藏且不参与」，之后 **370 行才点提交**；TXT/PNG 在提交时就是排除项，按 #08/#54 它们本就不该进提交快照。
+2. 同一个 txtBody 标记同时被 ①-6b（394-395 行，期望**出现**）与 ①-7（400-401 行，期望**不出现**）使用 —— 两条断言互斥，不可能同时通过；exTxtBody（305 行）定义了却从未使用（疑似原本给「排除项」用的标记）。
+3. fake provider 台账 _lead-logs/pm-qio032/e2e/provider-log-s1.json 显示该轮提交事实是「本次提交范围：卡片 1 项」，interactive materials 只有文字卡 inline —— 与「TXT 卡被排除」一致；产品行为正确。
+4. 新增真实编排链路用例（见 7.3）证明：**参与的 TXT 文件卡正文确实交付**（source=attachment_text，正文逐字出现在首轮请求），只有排除/隐藏卡不交付。
+
+建议（scripts/** 属 Lead 维护，本分支不改）：把 E2E ①-6b 拆成两段——先让 TXT 卡保持「显示并参与」提交并断言正文出现（①-6b/①-9），再用独立排除卡 + exTxtBody 断言排除项不出现（①-7），或提交前把 TXT 卡恢复为参与再提交。
+
+### 7.3 本轮新增/加强的测试（定向全绿）
+
+- tests/pm_qio032_submit_first_round_materials.py 新增 1 项「参与范围」真实编排链用例（现共 4 项）：板面同时有参与文字卡 + 参与 TXT 文件卡（attachmentId 附件）+ 参与 PNG 卡 + 排除文字卡 + 隐藏文字卡 + 排除 TXT 文件卡；fake adapter 捕获首轮模型请求，断言参与文字卡正文、参与 TXT 文件正文（attachment_text）都在；排除/隐藏正文与文件名都不在；PNG 仅在 supports_images=True 时以 data:image/png 字节交付。
+- 新增 tests/pm_qio032_submit_replay_lookup.py 2 项（**活动**覆盖，替代被整文件 skip 的 test_irm_b_acceptance_api.py）：
+  - #80：同 clientRequestId 重放 → replayed=true、同一 submissionId/status/turnId，board_submissions **不增行**，turns.submit 只被调用一次（同一请求不再执行）；同身份不同内容 409；换身份 + 真实内容变化才新增一行并再受理一次。
+  - #81：未知身份查证 404 + acceptance=null + 可读原因且不写任何记录；不带身份同样未知；已有提交后未知身份仍未知（不拿最近一条冒充）。
+- 回归：pm_qio032_submit_* 5 个文件 + test_interactive_submission.py / test_audit_f04_acceptance_receipt.py / test_event_protocol.py / test_events_bus.py 共 89 项全绿（含前端事件协议守卫转绿）。
+
+### 7.4 #28 可选增强（未做，待 Lead 决定）
+
+i-material 在 materials.py 提供 stamp_snapshot_material_versions(conn, snapshot)：给提交快照加顶层 materialVersions（sha256 等），用于补齐「提交后源文件同大小内容替换」检测。按约定需在 submission.py 的成功提交流程、_record_submission 之前对 visible/after 各调一次（纯增量；不接线时行为不变）。本轮优先级在 ①-6b/#80/#81 复核，未接；如需要可 5 分钟内补上并加定向用例。
+
