@@ -1,0 +1,176 @@
+{
+  "runId": "20261113050610",
+  "base": "http://127.0.0.1:5199",
+  "api": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8807",
+  "pass": 9,
+  "total": 9,
+  "results": [
+    {
+      "name": "④-0 800×600 进入窄窗 switch 规则（按实际可用宽度）",
+      "ok": true,
+      "detail": {
+        "innerWidth": 800,
+        "rootWidth": 744,
+        "space": "switch"
+      }
+    },
+    {
+      "name": "④-1 800×600 单开提交详情：面板完整、中心命中自己、不遮提交按钮",
+      "ok": true,
+      "detail": {
+        "details": {
+          "x": 63,
+          "y": 262,
+          "w": 674,
+          "h": 122
+        },
+        "detailsHit": true,
+        "submitHit": true,
+        "overlapSubmit": false
+      }
+    },
+    {
+      "name": "④-2 800×600 组合开：任务打开时提交详情收起（switch，不重叠）",
+      "ok": true,
+      "detail": {
+        "space": "switch",
+        "task": {
+          "x": 271,
+          "y": 197,
+          "w": 480,
+          "h": 115
+        },
+        "taskHit": true,
+        "detailsOpen": false,
+        "submitHit": true
+      }
+    },
+    {
+      "name": "④-3 800×600 任务面板不遮提交按钮、中心命中自己",
+      "ok": true,
+      "detail": {
+        "overlapSubmit": false,
+        "submitHit": true
+      }
+    },
+    {
+      "name": "④-4 800×600 反向组合：详情打开时任务收起（同一时间只留最近打开的一块）",
+      "ok": true,
+      "detail": {
+        "detailsOpen": true,
+        "taskOpen": false,
+        "detailsHit": true
+      }
+    },
+    {
+      "name": "④-5 800×600 Esc 收起最上层非模态面板（提交详情）",
+      "ok": true,
+      "detail": {
+        "detailsOpen": false,
+        "taskOpen": false
+      }
+    },
+    {
+      "name": "④-6 1120/1121 实际边界：边界-1 为 switch，边界为 side-by-side",
+      "ok": true,
+      "detail": {
+        "measuredInset": 56,
+        "boundaryWindow": 1177,
+        "at": {
+          "1176": {
+            "inner": 1176,
+            "rootWidth": 1120,
+            "space": "switch",
+            "details": null,
+            "task": 480,
+            "detailsHit": null,
+            "taskHit": true,
+            "submitHit": true,
+            "overlapSubmit": false,
+            "detailsOpen": false,
+            "taskOpen": true
+          },
+          "1177": {
+            "inner": 1177,
+            "rootWidth": 1121,
+            "space": "side-by-side",
+            "details": 832,
+            "task": 480,
+            "detailsHit": true,
+            "taskHit": true,
+            "submitHit": true,
+            "overlapSubmit": false,
+            "detailsOpen": true,
+            "taskOpen": true
+          }
+        }
+      }
+    },
+    {
+      "name": "④-7 边界两侧中心与命中一致，且两块面板/提交按钮互不遮挡",
+      "ok": true,
+      "detail": {
+        "sideBySide": {
+          "inner": 1177,
+          "rootWidth": 1121,
+          "space": "side-by-side",
+          "details": 832,
+          "task": 480,
+          "detailsHit": true,
+          "taskHit": true,
+          "submitHit": true,
+          "overlapSubmit": false,
+          "detailsOpen": true,
+          "taskOpen": true
+        },
+        "switch": {
+          "inner": 1176,
+          "rootWidth": 1120,
+          "space": "switch",
+          "details": null,
+          "task": 480,
+          "detailsHit": null,
+          "taskHit": true,
+          "submitHit": true,
+          "overlapSubmit": false,
+          "detailsOpen": false,
+          "taskOpen": true
+        }
+      }
+    },
+    {
+      "name": "④-8 800×600、5 项改动时详情面板钳制、不遮提交按钮、任务入口可点（#05）",
+      "ok": true,
+      "detail": {
+        "changeItems": 6,
+        "innerHeight": 600,
+        "details": {
+          "x": 63,
+          "y": 155,
+          "w": 674,
+          "h": 237
+        },
+        "detailsHit": true,
+        "submitHit": true,
+        "overlapSubmit": false,
+        "taskOpened": true
+      }
+    }
+  ],
+  "consoleErrors": [],
+  "shotsDir": "D:\\qio-dev\\pm032-interactive\\_lead-logs\\pm-qio032\\e2e\\s4-rerun\\shots",
+  "note": "浏览器层=系统 Edge + CDP（本机没有 Playwright 包，见 README）",
+  "simulated": [
+    "③-4 延迟回执（CDP Fetch 延迟 1.5s）",
+    "③-5 重复/迟到事件（/api/events/test 注入）",
+    "③-6 草稿清理失败（Storage.removeItem 抛错）",
+    "⑤-3 首件上传失败（CDP Fetch abort 首个 /api/attachments/upload）",
+    "⑥-4 中文输入法组合态（CompositionEvent 模拟）"
+  ],
+  "unverified": [
+    "⑤ 旧卡迁移（需要旧 schema 板面 fixture）",
+    "⑤ 隐藏成员/撤销连线（画布连线手势与组成员未纳入本轮）",
+    "② 读文件一路：A/B 用例目前用文字卡，读文件（read_attachment）未取证"
+  ]
+}

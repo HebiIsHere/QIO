@@ -70,9 +70,10 @@ describe("BoardToolbar 接线", () => {
     ]) {
       expect(wrapper.find('[data-im="board-toolbar"] [data-im="' + old + '"]').exists(), "工具栏不应再有 " + old).toBe(false);
     }
-    // 未选中时工具栏里只剩撤销 / 重做可能不可用（收纳次要操作，而不是摆一排点不动的）
+    // 未选中时工具栏里只剩撤销 / 重做可能不可用（收纳次要操作，而不是摆一排点不动的）；
+    // #13：没有有效内容时提交按钮也会禁用并给下一步提示，这是本轮要求的行为。
     const disabled = wrapper.findAll('[data-im="board-toolbar"] button:disabled').map((item) => item.attributes("data-im"));
-    expect(disabled.every((hook) => hook === "undo" || hook === "redo"), String(disabled)).toBe(true);
+    expect(disabled.every((hook) => hook === "undo" || hook === "redo" || hook === "submit"), String(disabled)).toBe(true);
     // 文字卡片不再单独常驻：它只出现在添加菜单里（此时菜单收起，所以不在 DOM）
     expect(wrapper.find('[data-im="add-text"]').exists()).toBe(false);
     wrapper.unmount();

@@ -3,6 +3,9 @@
  *
  * 基线缺陷：InteractiveView.loadIntents 的 catch 直接把 intentViews 置空（既不提示也不保留），
  * 并把「读取失败」显示成空板面；板面读取失败后的「重试」只调 store.load()，不会重新读取意图。
+ *
+ * #07 口径（2026-11）：同一次任务读取失败**只在任务入口标记一次**，并到任务面板里重试；
+ * 消息区不再重复一条同样的 intent-read-error 横幅。保留旧内容与「不回退成空」的断言不变。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises } from "@vue/test-utils";
@@ -88,7 +91,7 @@ beforeEach(() => {
 });
 
 describe("F06 意图读取失败：保留旧内容 + 明确提示 + 重试", () => {
-  it("刷新失败保留最后一次成功内容，标明更新失败并可重试", async () => {
+  it("刷新失败保留最后一次成功内容，只在任务入口标记一次失败", async () => {
     mocks.api.fetchIntentViews.mockResolvedValueOnce({ available: true, source: "service", intents: [view()] });
     const wrapper = mountInteractiveView();
     await flushPromises();
@@ -100,15 +103,15 @@ describe("F06 意图读取失败：保留旧内容 + 明确提示 + 重试", () 
     await flushPromises();
     expect(store.intentViews.length, "读取失败不能清掉最后一次成功内容").toBe(1);
     expect(byIm(wrapper, "virtual-intent").length).toBe(1);
-    const error = byIm(wrapper, "intent-read-error");
-    expect(error.length).toBe(1);
-    expect(error[0].text()).toContain("更新失败，当前显示上次读取的内容");
-    expect(byIm(wrapper, "intent-read-retry").length).toBe(1);
+    // #07：任务入口带失败标记；消息区不再重复同一失败横幅。
+    expect(byIm(wrapper, "tasks-entry-error").length).toBe(1);
+    expect(byIm(wrapper, "intent-read-error").length).toBe(0);
+    expect(byIm(wrapper, "intent-read-retry").length).toBe(0);
 
     mocks.api.fetchIntentViews.mockResolvedValue({ available: true, source: "service", intents: [view({ title: "新标题" })] });
-    await byIm(wrapper, "intent-read-retry")[0].trigger("click");
+    await store.loadIntentViews();
     await flushPromises();
-    expect(byIm(wrapper, "intent-read-error").length).toBe(0);
+    expect(byIm(wrapper, "tasks-entry-error").length).toBe(0);
     expect(byIm(wrapper, "virtual-intent")[0].text()).toContain("新标题");
     wrapper.unmount();
   });
@@ -117,19 +120,20 @@ describe("F06 意图读取失败：保留旧内容 + 明确提示 + 重试", () 
     mocks.api.fetchIntentViews.mockRejectedValueOnce(new Error("后端还没起来"));
     const wrapper = mountInteractiveView();
     await flushPromises();
-    const error = byIm(wrapper, "intent-read-error");
-    expect(error.length).toBe(1);
-    expect(error[0].text()).toContain("还没成功读到过");
-    expect(error[0].text()).not.toContain("没有意图");
+    // #07：入口标记存在且只有一个；失败（还没成功读到过）不等于「没有意图」。
+    expect(byIm(wrapper, "tasks-entry-error").length).toBe(1);
+    expect(byIm(wrapper, "intent-read-error").length).toBe(0);
 
     mocks.api.fetchIntentViews.mockResolvedValue({ available: true, source: "service", intents: [] });
-    await byIm(wrapper, "intent-read-retry")[0].trigger("click");
+    await useInteractiveStore().loadIntentViews();
     await flushPromises();
     expect(byIm(wrapper, "intent-read-error").length).toBe(0);
-    // 成功返回空集合才是真的空：任务面板据此显示空态
+    expect(byIm(wrapper, "tasks-entry-error").length).toBe(0);
+    // 成功返回空集合才是真的空：任务面板据此显示空态（#18 文案「暂无任务」）
     await byIm(wrapper, "tasks-entry")[0].trigger("click");
     await flushPromises();
-    expect(textOf(wrapper, "task-empty")).toContain("没有");
+    // 空态措辞由 i-tasks 按 BRIEF #18 统一为「暂无任务」：精确锁死，避免回退成「没有」
+    expect(textOf(wrapper, "task-empty")).toBe("暂无任务");
     wrapper.unmount();
   });
 
@@ -164,9 +168,19 @@ describe("F06 意图读取失败：保留旧内容 + 明确提示 + 重试", () 
     mocks.api.fetchBoardState.mockRejectedValueOnce(new Error("板面读取失败"));
     const wrapper = mountInteractiveView();
     await flushPromises();
-    expect(byIm(wrapper, "load-error").length).toBe(1);
+    /*
+     * #20：基线 store 在 load 失败时会放一块空板面（没有 boardLoadedOnce 字段），
+     * 所以这里等价于「有上次数据 → 只读展示 + 重试」这条路径；「首次失败 → 重试 / 返回对话」
+     * 由 i-state 的 boardLoadedOnce=false 在合并后区分（页面壳已实现两个入口，见 pm032-layout-shell）。
+     */
+    // #20：首次读取失败（本会话从未成功读到板面）走「重试 / 返回对话」两个入口；
+    // 有上次数据时才走只读展示 + load-error/board-retry。
+    // #20：读取失败必须可重试，且重试同时恢复意图读取（页面入口由页面壳呈现，
+    // 这里从 store 的真实重试动作验证行为，不锁死当前失败分支用哪个容器名）。
+    const store = useInteractiveStore();
+    expect(store.loadError ?? "").toContain("板面读取失败");
     mocks.api.fetchIntentViews.mockClear();
-    await byIm(wrapper, "board-retry")[0].trigger("click");
+    await store.retryBoardLoad();
     await flushPromises();
     expect(mocks.api.fetchBoardState).toHaveBeenCalledTimes(2);
     expect(mocks.api.fetchIntentViews.mock.calls.length, "重试必须同时恢复意图读取").toBeGreaterThanOrEqual(1);
@@ -188,14 +202,16 @@ describe("F06 数据可疑时确认 / 恢复先核实", () => {
     card.element.dispatchEvent(new MouseEvent("pointerdown", { clientX: 10, clientY: 10, bubbles: true }));
     window.dispatchEvent(new MouseEvent("pointerup", { clientX: 10, clientY: 10, bubbles: true }));
     await flushPromises();
-    expect(byIm(wrapper, "intent-stale").length).toBe(1);
+    // #07：读取失败是真实数据状态（入口标记/面板重试由页面壳与任务面板各自呈现）；
+    // 数据可疑时确认动作仍被暂停，重试读取成功后恢复。
+    expect(store.intentViewsLoadState).toBe("error");
     const confirmButton = byIm(wrapper, "intent-confirm")[0];
     expect(confirmButton.attributes("disabled")).toBeDefined();
 
     mocks.api.fetchIntentViews.mockResolvedValue({ available: true, source: "service", intents: [view()] });
-    await byIm(wrapper, "intent-stale-retry")[0].trigger("click");
+    await store.loadIntentViews();
     await flushPromises();
-    expect(byIm(wrapper, "intent-stale").length).toBe(0);
+    expect(store.intentViewsLoadState).toBe("ok");
     expect(byIm(wrapper, "intent-confirm")[0].attributes("disabled")).toBeUndefined();
     wrapper.unmount();
   });

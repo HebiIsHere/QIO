@@ -1,0 +1,185 @@
+{
+  "runId": "20261113044822",
+  "base": "http://127.0.0.1:5199",
+  "api": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8807",
+  "pass": 14,
+  "total": 14,
+  "results": [
+    {
+      "name": "①-0 正常入口：对话页模式切换进入互动板面",
+      "ok": true,
+      "detail": {
+        "before": "conversation",
+        "after": "interactive",
+        "hash": "#/interactive"
+      }
+    },
+    {
+      "name": "①-1 文字卡写入唯一标记",
+      "ok": true,
+      "detail": {
+        "ok": true,
+        "body": "M1-20261113044822 参与项文字",
+        "stillEditing": false
+      }
+    },
+    {
+      "name": "①-2 上传两张 TXT 文件卡（参与项 + 排除项，正常「添加 → 文件」入口）",
+      "ok": true,
+      "detail": {
+        "participating": {
+          "before": 1,
+          "after": 2
+        },
+        "excluded": {
+          "before": 2,
+          "after": 3
+        },
+        "status": ""
+      }
+    },
+    {
+      "name": "①-3 上传两张 PNG 文件卡（参与项 + 隐藏项）",
+      "ok": true,
+      "detail": {
+        "participating": {
+          "before": 3,
+          "after": 4
+        },
+        "hidden": {
+          "before": 4,
+          "after": 5
+        }
+      }
+    },
+    {
+      "name": "①-4a 隐藏后恢复显示默认只回「显示但不参与」",
+      "ok": true,
+      "detail": {
+        "hiddenOn": {
+          "before": "card selected",
+          "after": "card selected hidden",
+          "visibilityBefore": "included",
+          "visibilityAfter": "hidden_excluded",
+          "textBefore": "文字注释 显示并参与 参与 TXT-HIDDEN-20261113044822-隐藏项正文 11-13 12:48",
+          "textAfter": "文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261113044822-隐藏项正文 已隐藏：退出讨论范围 1",
+          "hiddenNow": true
+        },
+        "restored": {
+          "before": "hidden_excluded",
+          "after": "displayed_excluded",
+          "menuOpened": 1
+        }
+      }
+    },
+    {
+      "name": "①-4 对照：排除项 TXT 卡「显示但不参与」",
+      "ok": true,
+      "detail": {
+        "before": "included",
+        "after": "displayed_excluded",
+        "menuOpened": 1
+      }
+    },
+    {
+      "name": "①-5 对照：隐藏项 PNG 卡「隐藏且不参与」",
+      "ok": true,
+      "detail": {
+        "before": "card is-cover",
+        "after": "card hidden is-cover",
+        "visibilityBefore": "included",
+        "visibilityAfter": "hidden_excluded",
+        "textBefore": "查看原图 图片 png-hide-20261113044822.png 显示并参与 参与 11-13 12:48",
+        "textAfter": "查看原图 图片 png-hide-20261113044822.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11",
+        "hiddenNow": true
+      }
+    },
+    {
+      "name": "①-5b 交付对象（参与项 TXT / PNG）保持「显示并参与」",
+      "ok": true,
+      "detail": {
+        "idxTxtPart": 1,
+        "idxPngPart": 3,
+        "txtVisibility": "included",
+        "pngVisibility": "included"
+      }
+    },
+    {
+      "name": "①-6 提交后首个互动轮次模型请求携带参与项正文",
+      "ok": true,
+      "detail": {
+        "chatRequests": 3,
+        "requestsWithTextMarker": 1,
+        "provider_log_requests": 3
+      }
+    },
+    {
+      "name": "①-6b 参与项 TXT 文件的可读正文进入首轮模型请求（同一正式提交入口）",
+      "ok": true,
+      "detail": {
+        "kind": "txt_file_body_delivered",
+        "txtMarkerSeen": true,
+        "fileNameSeen": true,
+        "note": "参与项 TXT 正文出现在模型请求里（参与项交付成立）"
+      }
+    },
+    {
+      "name": "①-6c 参与项 PNG 的交付形态：image_url 带真实字节 = 真交付；无视觉链路则如实 image_unsupported",
+      "ok": true,
+      "detail": {
+        "kind": "image_delivered",
+        "imageUrlSeen": true,
+        "bytesMatch": true,
+        "pngNameSeen": true,
+        "note": "请求里出现 image_url，且 data URL 的 base64 与本地 PNG 字节一致（字节交付成立）",
+        "submitLabel": "提交给 QIO",
+        "settled": {
+          "text": "本次提交：已提交，排队中\n\n已受理\nQIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。\n\n刷新理解状态\n\n已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。\n\n提交给 QIO",
+          "label": "提交给 QIO"
+        }
+      }
+    },
+    {
+      "name": "①-7 排除项（显示但不参与）正文不出现在模型请求里",
+      "ok": true,
+      "detail": {
+        "excludedTxtMarkerPresent": false,
+        "excludedTextMarkerPresent": false,
+        "note": "参与项 TXT 已交付 → 本项对文件正文有区分力"
+      }
+    },
+    {
+      "name": "①-8 隐藏项（隐藏且不参与）正文/文件名不出现在模型请求里",
+      "ok": true,
+      "detail": {
+        "hiddenTextMarkerPresent": false,
+        "hiddenPngNamePresent": false
+      }
+    },
+    {
+      "name": "①-10 提交后新建的未提交材料不进入本次请求",
+      "ok": true,
+      "detail": {
+        "unsubmittedPresent": false,
+        "saveStatusAfter": ""
+      }
+    }
+  ],
+  "consoleErrors": [],
+  "shotsDir": "D:\\qio-dev\\pm032-interactive\\_lead-logs\\pm-qio032\\e2e\\baseline-s1\\shots",
+  "note": "浏览器层=系统 Edge + CDP（本机没有 Playwright 包，见 README）",
+  "simulated": [
+    "③-4 延迟回执（CDP Fetch 延迟 1.5s）",
+    "③-5 重复/迟到事件（/api/events/test 注入）",
+    "③-6 草稿清理失败（Storage.removeItem 抛错）",
+    "⑤-3 首件上传失败（CDP Fetch abort 首个 /api/attachments/upload）",
+    "⑥-4 中文输入法组合态（CompositionEvent 模拟）"
+  ],
+  "unverified": [
+    "② 提交 A 后保存 B 的三路一致（板面/读卡/读文件）：依赖已提交轮次的工具读取链路，本轮未实现取证",
+    "⑤ 旧卡迁移（需要旧 schema 板面 fixture）",
+    "⑤ 隐藏成员/撤销连线（画布连线手势与组成员未纳入本轮）",
+    "① PNG 字节交付：本机模型 capability 未声明视觉；只有出现真实 image_url 才算交付"
+  ]
+}

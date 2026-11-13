@@ -18,7 +18,15 @@ import json
 import logging
 from typing import Any, Callable, Mapping
 
-from agent.interactive import board, board_store, intent_service, models, runtime, tool_models
+from agent.interactive import (
+    board,
+    board_store,
+    intent_service,
+    materials as materials_module,
+    models,
+    runtime,
+    tool_models,
+)
 from agent.prompts import TOOL_DESCRIPTIONS
 from agent.storage.db import transaction
 from agent.tools.base import TOOL_RESULT_PROTOCOL_VERSION, Tool, ToolResult, ToolStatus
@@ -125,6 +133,65 @@ def _conn(tool: "_BoardTool") -> Any:
 
 def _latest_state(tool: "_BoardTool", turn: "Any") -> dict[str, Any]:
     return board_store.current_state(_conn(tool), turn.board_id)
+
+
+def _submission_basis(tool: "_BoardTool", turn: "Any") -> tuple[dict[str, Any], dict[str, Any]]:
+    """本轮读取依据：绑定提交时只读**提交当时**的冻结快照（A 版）。
+
+    #28：正式提交的一轮只用提交当时的卡片 / 关系 / 材料版本；之后保存 B 版，
+    查看板面与读卡仍返回 A 版。返回 (state, basis)：
+
+    - basis.source = "submission"：真的读到了提交快照；
+    - basis.source = "current"：没有提交绑定，或旧记录没有可用快照 ——
+      此时 basis.fallback 写明原因（不假装 A 版，也不静默替换）。
+    """
+    sid = str(getattr(turn, "submission_id", "") or "")
+    basis: dict[str, Any] = {
+        "source": "current",
+        "submission_id": sid,
+        "fallback": "",
+    }
+    if not sid:
+        return _latest_state(tool, turn), basis
+    loaded = materials_module.load_submission_snapshot(
+        _conn(tool),
+        board_id=str(getattr(turn, "board_id", "") or ""),
+        submission_id=sid,
+    )
+    if loaded.get("available"):
+        basis["source"] = "submission"
+        basis["created_at"] = str(loaded.get("createdAt") or "")
+        return dict(loaded.get("snapshot") or {}), basis
+    basis["fallback"] = str(loaded.get("reason") or "提交快照不可用")
+    return _latest_state(tool, turn), basis
+
+
+def _submission_row_exists(conn: Any, turn: Any) -> bool:
+    """提交行是否存在且属于当前板面（显式 source=submission 的兼容判定）。"""
+    sid = str(getattr(turn, "submission_id", "") or "")
+    if not sid:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT board_id FROM board_submissions WHERE id = ?", (sid,)
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - 表不可用按不存在处理
+        return False
+    return row is not None and str(row["board_id"]) == str(getattr(turn, "board_id", "") or "")
+
+
+async def _publish_intents_changed(conn: Any, **kwargs: Any) -> None:
+    """事件旁路：intent_service 提供发布器才发（#26 页面免刷新同步）。
+
+    发布器缺失 / 抛错都只记日志，绝不改变工具结果 —— 事件不是工具成功的条件。
+    """
+    publisher = getattr(intent_service, "publish_intents_changed", None)
+    if not callable(publisher):
+        return
+    try:
+        await publisher(conn, **kwargs)
+    except Exception:  # noqa: BLE001 - 事件失败不影响工具结果
+        logger.warning("publish interactive intents changed failed", exc_info=True)
 
 
 def _visible_ids(state: Mapping[str, Any]) -> set[str]:
@@ -539,7 +606,8 @@ class BoardInspectTool(_BoardTool):
 
     async def _run(self, turn: Any, args: Any) -> ToolResult:
         conn = _conn(self)
-        state = _latest_state(self, turn)
+        # #28：绑定提交时只看提交当时的冻结快照（A 版），不是当前保存的 B 版。
+        state, basis = _submission_basis(self, turn)
         visible = _visible_ids(state)
         cards = []
         for card in state.get("cards") or []:
@@ -560,6 +628,7 @@ class BoardInspectTool(_BoardTool):
                     "title": str(meta.get("title") or ""),
                     "display": dict(display) if display else None,
                     "content_preview": str(card.get("content") or "")[:120],
+                    "file_ref": _card_file_ref(card, _attachments(self)),
                 }
             )
         groups = []
@@ -583,6 +652,8 @@ class BoardInspectTool(_BoardTool):
                 "submission_id": turn.submission_id,
                 "seq": intent_view.get("seq"),
                 "board_identity_source": "runtime_board_turn_context",
+                # 本轮读的到底是 A 版（提交快照）还是当前板面：调用方必须能看见。
+                "basis": basis,
                 "cards": cards,
                 "groups": groups,
                 "links": links,
@@ -614,20 +685,25 @@ class BoardReadCardsTool(_BoardTool):
         if source == "submission":
             if not turn.submission_id:
                 return _fail(self.name, "submission_unavailable", "当前轮没有提交身份，不能读取提交快照")
-            row = conn.execute(
-                "SELECT board_id, visible, after_state FROM board_submissions WHERE id = ?",
-                (turn.submission_id,),
-            ).fetchone()
-            if row is None or str(row["board_id"]) != turn.board_id:
+            loaded = materials_module.load_submission_snapshot(
+                conn, board_id=str(turn.board_id or ""), submission_id=str(turn.submission_id)
+            )
+            if not loaded.get("available") and not _submission_row_exists(conn, turn):
                 return _fail(self.name, "submission_not_found", "提交快照不存在或不属于当前板面")
-            snapshot = models.loads(row["visible"], None)
-            if not isinstance(snapshot, dict):
-                snapshot = models.loads(row["after_state"], {})
+            snapshot = dict(loaded.get("snapshot") or {})
+            basis = {
+                "source": "submission" if loaded.get("available") else "current",
+                "submission_id": str(turn.submission_id or ""),
+                "fallback": "" if loaded.get("available") else str(loaded.get("reason") or ""),
+            }
             raw_cards = snapshot.get("cards") or []
             allowed = {str(card["id"]) for card in raw_cards if isinstance(card, dict) and card.get("id")}
             cards = [dict(card) for card in raw_cards if isinstance(card, dict) and card.get("id")]
         else:
-            state = _latest_state(self, turn)
+            # #28：绑定提交的轮次里，latest 也是「本轮依据的 A 版」；
+            # 只有没有提交快照（历史记录 / 普通绑定）时才退回当前已保存板面，
+            # 并在 basis.fallback 里如实说明，不静默替换。
+            state, basis = _submission_basis(self, turn)
             allowed = _visible_ids(state)
             cards = [
                 dict(card)
@@ -669,6 +745,8 @@ class BoardReadCardsTool(_BoardTool):
                     "checked": bool(card.get("checked", False)),
                     "hidden": bool(card.get("hidden", False)),
                     "display": dict(display) if display else None,
+                    # 文件卡的源引用事实：模型据此决定要不要读附件正文（不是正文本身）。
+                    "file_ref": _card_file_ref(card, _attachments(self)),
                 }
             )
         return _ok(
@@ -676,6 +754,7 @@ class BoardReadCardsTool(_BoardTool):
             {
                 "board_id": turn.board_id,
                 "source": source,
+                "basis": basis,
                 "offset": offset,
                 "limit": limit,
                 "total": len(ordered),
@@ -712,6 +791,18 @@ class BoardProposeIntentsTool(_BoardTool):
         payload.pop("ok", None)
         payload["requires_confirmation"] = True
         payload["next"] = "awaiting_confirmation"
+        # #26：待确认任务生成后发事件，页面无需刷新即可同步虚线卡与任务数。
+        await _publish_intents_changed(
+            conn,
+            board_id=turn.board_id,
+            submission_id=str(turn.submission_id or ""),
+            intent_ids=[
+                str(item.get("intent_id") or "")
+                for item in (payload.get("intents") or [])
+                if isinstance(item, dict) and item.get("intent_id")
+            ],
+            reason="proposed",
+        )
         return _ok(self.name, payload, status=ToolStatus.AWAITING_APPROVAL.value, code="intents_proposed")
 
 
@@ -732,6 +823,18 @@ class BoardUpdateIntentTool(_BoardTool):
             return _from_service(self.name, payload)
         status = ToolStatus.AWAITING_APPROVAL.value if payload.get("requires_confirmation") else ToolStatus.COMPLETED.value
         payload.pop("ok", None)
+        # #26：意图更新后发同一事件（helper 缺失 / 失败都不影响工具结果）。
+        await _publish_intents_changed(
+            conn,
+            board_id=turn.board_id,
+            submission_id=str(
+                (payload.get("intent") or {}).get("submission_id")
+                if isinstance(payload.get("intent"), dict)
+                else ""
+            ),
+            intent_ids=[str(args.intent_id)],
+            reason="updated",
+        )
         return _ok(self.name, payload, status=status, code="awaiting_confirmation" if payload.get("requires_confirmation") else "intent_updated")
 
 

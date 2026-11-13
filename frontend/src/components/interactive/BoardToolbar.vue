@@ -36,16 +36,11 @@ const props = withDefaults(
 );
 const emit = defineEmits<{
   (e: "toggle-bookmarks"): void;
+  /** 提交详情 / 上次结果 / 过程面板任一被打开（页面壳据此做窄窗面板切换，#05）。 */
+  (e: "panel-open"): void;
 }>();
 
 const store = useInteractiveStore();
-
-/**
- * 标注菜单：画笔 / 橡皮本轮**尚未开放**，只保留入口说明。
- * 未开放项用 disabled 明确禁用（不是可点击后再提示「开发中」的假按钮）；
- * 该菜单不创建笔迹、不改变鼠标模式、不发出任何标注事件。
- */
-const annotateOpen = ref(false);
 
 /* --------------------------------------------------------------------------
  * 按**实际可用宽度**分档（不是视口宽度）
@@ -89,6 +84,18 @@ onMounted(() => {
 onBeforeUnmount(() => {
   observer?.disconnect();
   observer = null;
+});
+
+const submitRef = ref<InstanceType<typeof SubmitCluster> | null>(null);
+
+/** 页面壳（#05 窄窗切换 / #40 Esc 层级）用：只关提交面板，不改任何数据。 */
+defineExpose({
+  closeSubmitDetails(): void {
+    submitRef.value?.closePanel?.();
+  },
+  submitDetailsOpen(): boolean {
+    return typeof submitRef.value?.isPanelOpen === "function" ? Boolean(submitRef.value.isPanelOpen()) : false;
+  },
 });
 
 </script>
@@ -157,43 +164,7 @@ onBeforeUnmount(() => {
 
         <span class="tb-sep" aria-hidden="true"></span>
 
-        <!-- 标注：画笔 / 橡皮尚未开放。入口本身明确标注「未开放」，展开后两项禁用执行。 -->
-        <button
-          class="tb-btn tb-icon-btn"
-          type="button"
-          data-im="annotate-toggle"
-          aria-label="标注（画笔 / 橡皮，尚未开放）"
-          v-qio-tip="'标注（画笔 / 橡皮）尚未开放'"
-          :aria-expanded="annotateOpen"
-          @click="annotateOpen = !annotateOpen"
-        >
-          <svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-            <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2.8 11.2 11.9 2.1a1.5 1.5 0 0 1 2.1 2.1l-9.1 9.1-2.8.7z" />
-              <path d="M10.8 3.2 12.8 5.2" />
-            </g>
-          </svg>
-        </button>
-        <div v-if="annotateOpen" class="tb-annotate" data-im="annotate-menu" role="group" aria-label="标注工具（尚未开放）">
-          <button
-            type="button"
-            class="tb-annotate-item"
-            data-im="annotate-pen"
-            disabled
-            aria-label="画笔（尚未开放）"
-          >画笔<span class="tb-annotate-badge">未开放</span></button>
-          <button
-            type="button"
-            class="tb-annotate-item"
-            data-im="annotate-eraser"
-            disabled
-            aria-label="橡皮（尚未开放）"
-          >橡皮<span class="tb-annotate-badge">未开放</span></button>
-          <p class="tb-annotate-note" data-im="annotate-note">
-            画笔与橡皮尚未开放：这里只保留入口说明，不能用于绘制。
-          </p>
-        </div>
-
+        <!-- #14：画笔 / 橡皮入口已移除：常态工具栏只保留已开放的能力；书签栏入口紧邻编辑组。 -->
         <button
           class="tb-btn tb-icon-btn"
           type="button"
@@ -218,7 +189,7 @@ onBeforeUnmount(() => {
         这里只负责哪一档把这些区域放在哪一行哪一列。
       -->
       <div class="tb-submit">
-        <SubmitCluster :compact="floating" />
+        <SubmitCluster ref="submitRef" :compact="floating" @panel-open="emit('panel-open')" />
       </div>
     </div>
 
@@ -405,51 +376,6 @@ onBeforeUnmount(() => {
 .tb-help-pop ul { margin: 0; padding-left: 1.1em; }
 .tb-help-pop li { font-size: var(--fs-xs); line-height: 1.6; color: var(--text-secondary); }
 .tb-help-pop .help-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); }
-/* 标注占位菜单：轻量浮层，只说明尚未开发，不生成任何数据。 */
-.tb-annotate {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + var(--sp-2));
-  z-index: 22;
-  min-width: 150px;
-  padding: var(--sp-1);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--qio-ui-radius);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-2);
-}
-.tb-annotate-item {
-  display: block;
-  width: 100%;
-  padding: var(--sp-1) var(--sp-2);
-  border: 0;
-  border-radius: var(--qio-ui-radius);
-  background: none;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--fs-xs);
-  text-align: left;
-  cursor: pointer;
-}
-.tb-annotate-item:hover:not(:disabled) { background: var(--layer-hover); color: var(--text-strong); }
-/* 未开放项：明确禁用（不是「看起来能点、点完才提示开发中」的假按钮） */
-.tb-annotate-item:disabled {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  color: var(--text-muted);
-  cursor: default;
-  opacity: 1;
-}
-.tb-annotate-badge {
-  font-size: 10px;
-  color: var(--text-faint);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 0 5px;
-}
-.tb-annotate-note { margin: var(--sp-1) var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs); line-height: var(--lh-tight); }
 
 /*
   提交区容器：display: contents —— 它自己不生成盒子，内部的历史 / 统计 / 操作组

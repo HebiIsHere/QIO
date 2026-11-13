@@ -48,8 +48,12 @@ import {
   removeLink,
   renameGroup,
   selectInRect,
+  CARD_VISIBILITY_LABELS,
+  setCardVisibilityState,
+  setGroupCollapsed,
   setGroupOrdered,
   setSelection,
+  type CardVisibilityState,
   updateCard,
   updateLink,
   type DropPreview,
@@ -58,6 +62,7 @@ import {
 import {
   placeToolbarRelativeToCard,
   rectsIntersect,
+  toolbarButtonLayout,
   type OverlayRect,
 } from "../../interactive/overlayPlacement";
 import { prefersReducedMotion } from "../../utils/motion";
@@ -105,6 +110,7 @@ import {
   GROUP_PAD_X,
   CARD_ANCHOR_GAP,
   cardEdgeAnchors,
+  endpointCardName,
   groupEdgeAnchors,
   parseEndpoint,
   type CardAnchor,
@@ -230,11 +236,81 @@ const linkEditorOpen = ref(false);
 const linkEditorPos = ref<{ x: number; y: number } | null>(null);
 const linkMeaning = ref("");
 const linkDirection = ref(false);
+/**
+ * #10：本次会话里**新建**的关系 id。关系编辑框据此提供「撤销这条新连线」，
+ * 撤销按连线身份（id）删除，只撤这一条；普通关闭不动板面状态（新线保留）。
+ */
+const newLinkIds = ref<string[]>([]);
+/** #11：最近一次真正失败的建链尝试；重试绑定这次操作，先查重再建，绝不重复建同一条线。 */
+let lastLinkAttempt: { fromId: string; targetId: string } | null = null;
 /** 指针悬停的组（纯显示）：只让该组的已有锚点从圆点变短条。 */
 const hoveredGroupId = ref<string | null>(null);
 /** 指针悬停的卡片（纯显示）：只让该卡已有的锚点从圆点变短条。 */
 const hoveredCardId = ref<string | null>(null);
 const notice = ref("");
+/*
+  #11：画布提示分级。
+  - 成功 / 一般提示自动消失（约 4 秒）；
+  - 失败提示不自动消失：就地可关闭、可重试；重试绑定**原操作**（例如原这次建链），
+    重试前先查关系是否已存在，绝不重复创建同一条线。
+*/
+const noticeTone = ref<"info" | "success" | "error">("info");
+const noticeRetry = ref<{ label: string; run: () => void } | null>(null);
+const NOTICE_AUTO_DISMISS_MS = 4000;
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearNotice(): void {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  notice.value = "";
+  noticeTone.value = "info";
+  noticeRetry.value = null;
+}
+
+function showNotice(
+  text: string,
+  options: { tone?: "info" | "success" | "error"; retry?: { label: string; run: () => void } | null } = {},
+): void {
+  noticeTone.value = options.tone ?? "info";
+  noticeRetry.value = options.retry ?? null;
+  notice.value = text;
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  if (noticeTone.value !== "error") {
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null;
+      notice.value = "";
+      noticeTone.value = "info";
+      noticeRetry.value = null;
+    }, NOTICE_AUTO_DISMISS_MS);
+  }
+}
+
+function runNoticeRetry(): void {
+  const retry = noticeRetry.value;
+  clearNotice();
+  retry?.run();
+}
+
+// 直接写 notice.value 的既有代码同样享受「成功自动消失」：错误提示（noticeTone=error）保留。
+watch(notice, (value) => {
+  if (!value) return;
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  if (noticeTone.value === "error") return;
+  noticeTimer = setTimeout(() => {
+    noticeTimer = null;
+    if (noticeTone.value === "error") return;
+    notice.value = "";
+    noticeRetry.value = null;
+  }, NOTICE_AUTO_DISMISS_MS);
+});
 
 /**
  * 拖线目标按**端点类型**拆开：卡片给卡片高亮 / 「连接到卡片」，
@@ -350,6 +426,12 @@ const hiddenMemberIds = computed(() => {
 /** 真正画在板面上的卡片：收起的组只留组框概览。 */
 const renderedCards = computed(() => liveCards.value.filter((card) => !hiddenMemberIds.value.has(card.id)));
 
+/** 当前可见（真正画在板面上）的选择：#43 删除快捷键与 #58 删除都只作用于它们。 */
+const visibleSelectedIds = computed(() => {
+  const ids = new Set(renderedCards.value.map((card) => card.id));
+  return selection.value.filter((cardId) => ids.has(cardId));
+});
+
 /** 参与范围（§5.1 participation 是唯一事实源）：给连线层与卡片参与控件。 */
 const includedCardIds = computed(() =>
   liveCards.value.filter((card) => participationOf(card) === "included").map((card) => card.id),
@@ -384,18 +466,52 @@ function groupRect(group: BoardGroup): V2Rect {
   return { x: group.x, y: group.y, w: group.w, h: group.h };
 }
 
-/** 收起 / 展开一个组（纯显示状态；不改成员、顺序、材料范围）。 */
+/**
+ * 收起 / 展开一个组。
+ *
+ * #59：收起偏好按板面保存（group.collapsed 是纯显示状态，成员与提交范围不变），刷新后恢复；
+ * #58：收起后成员卡片不可见，选择里必须同步剔除它们（删除 / 工具栏 / 提交都不再作用于不可见成员）。
+ */
 function onGroupToggleCollapse(groupId: string, collapsed: boolean): void {
   const next = new Set(collapsedGroupSet.value);
   if (collapsed) next.add(groupId);
   else next.delete(groupId);
   collapsedGroupIds.value = [...next];
+  const current = boardState.value;
+  if (current) {
+    const hidden = new Set<string>();
+    if (collapsed) {
+      const group = current.groups.find((item) => item.id === groupId && !item.deleted);
+      for (const cardId of group?.members ?? []) hidden.add(cardId);
+    }
+    const visibleSelection = current.selection.filter((cardId) => !hidden.has(cardId));
+    let committed = setGroupCollapsed(current, groupId, collapsed);
+    if (visibleSelection.length !== current.selection.length) {
+      committed = setSelection(committed, visibleSelection);
+    }
+    commit(committed, collapsed ? "收起组（显示状态）" : "展开组（显示状态）");
+  }
   notice.value = collapsed ? "已收起这个组：只显示组框概览，成员没有变化。" : "已展开这个组。";
 }
 
 function isGroupCollapsed(groupId: string): boolean {
   return collapsedGroupSet.value.has(groupId);
 }
+
+/*
+  #59：刷新 / 撤销重做 / 换板后，以板面状态里的 group.collapsed 为准恢复收起显示
+  （只同步显示态；不写回板面、不触发保存）。
+*/
+watch(boardState, (next) => {
+  if (!next) return;
+  const persisted = next.groups
+    .filter((group) => !group.deleted && Boolean(group.collapsed))
+    .map((group) => group.id);
+  if (persisted.length === collapsedGroupIds.value.length && persisted.every((id) => collapsedGroupSet.value.has(id))) {
+    return;
+  }
+  collapsedGroupIds.value = persisted;
+}, { immediate: true });
 
 /** 传给连线层：收起组的成员的对外连线汇聚到组边缘（真实端点身份不变）。 */
 const foldedGroupIds = computed(() =>
@@ -837,37 +953,46 @@ const renderedCardAnchors = computed<CardAnchor[]>(() => {
   ];
 });
 
-const TOOL_COUNT = 5;
-const TOOL_STEP = 36;
-const TOOL_START = 8;
-const TOOL_MARGIN = 14;
+/** 连接点的视觉半径（px）：工具栏与卡片外框的空隙必须大于它，否则会压住连接点。 */
+const TOOLBAR_PORT_RADIUS = 9;
 
 /**
  * 逐按钮实时位置（相对卡片左上角）。
- * 上边容量用尽后，最左侧按钮移到左边并压住前一个；
- * 左边容量也用尽后自动进入第二列。
+ *
+ * #04（PM-QIO032）：不再无条件贴上边 —— 按**板面可用矩形**换边 / 沿边内收：
+ * - 卡片贴板面上沿（或放大到卡片顶边在可视区上方）→ 换到卡片下方；
+ * - 卡片贴左 / 右边 → 整排沿边滑动，按钮始终完整落在可视区里；
+ * - 卡片比可视区还大（放大查看）→ 按钮「向内调整」到可视区内，编辑按钮仍完整可点；
+ * - 可视区量不到（jsdom / 首帧）时退回既有「按卡片自身尺寸分列」的行为（逐字段不变）。
+ * 卡片外侧的按钮与卡片边缘留 12px（> 连接点半径），不压连接点；按钮不压卡片标题 / 编辑区。
  */
 function toolbarButtonPositions(card: BoardCardModel): Array<{ x: number; y: number }> {
   const rect = displayRect(card);
-  const topCapacity = Math.max(0, Math.min(TOOL_COUNT, Math.floor((rect.w / 2 - TOOL_MARGIN) / TOOL_STEP)));
-  const leftCount = TOOL_COUNT - topCapacity;
-  const leftCapacity = Math.max(1, Math.floor((rect.h / 2 - TOOL_MARGIN) / TOOL_STEP));
-  const out: Array<{ x: number; y: number }> = [];
-  for (let i = 0; i < TOOL_COUNT; i += 1) {
-    if (i < leftCount) {
-      const rank = leftCount - 1 - i;
-      const column = Math.floor(rank / leftCapacity);
-      const row = rank % leftCapacity;
-      out.push({ x: -42 - column * TOOL_STEP, y: TOOL_START + row * TOOL_STEP });
-    } else {
-      out.push({ x: TOOL_START + (i - leftCount) * TOOL_STEP, y: -42 });
-    }
-  }
-  return out;
+  const region = boardRegion.value;
+  const visible =
+    region.size.w > 0 && region.size.h > 0
+      ? { x: region.origin.x, y: region.origin.y, w: region.size.w, h: region.size.h }
+      : null;
+  const ports = [
+    { x: rect.w / 2, y: 0, r: TOOLBAR_PORT_RADIUS },
+    { x: rect.w, y: rect.h / 2, r: TOOLBAR_PORT_RADIUS },
+    { x: rect.w / 2, y: rect.h, r: TOOLBAR_PORT_RADIUS },
+    { x: 0, y: rect.h / 2, r: TOOLBAR_PORT_RADIUS },
+  ];
+  return toolbarButtonLayout({ card: rect, visible, ports }).map((box) => ({ x: box.x, y: box.y }));
 }
 
-function commit(next: BoardState, label: string) {
+/**
+ * 写板面：store 在整板读取失败期间会拒绝编辑（#20）。这里如实返回是否写入成功，
+ * 建链等「失败可重试」的路径据此给出真实的失败提示（不谎报成功）。
+ */
+function commit(next: BoardState, label: string): boolean {
+  if (store.boardEditBlockedReason) {
+    showNotice("板面当前不可编辑：" + store.boardEditBlockedReason, { tone: "error" });
+    return false;
+  }
   store.commit(next, label);
+  return true;
 }
 
 // --- 卡片尺寸调整（任务书 §3） ---------------------------------------------
@@ -2262,11 +2387,12 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
     return;
   }
   if (flag === "hidden") {
-    const hidden = !card.hidden;
-    commit(
-      updateCard(current, cardId, { hidden, participation: hidden ? "excluded" : "included" }),
-      hidden ? "隐藏卡片（退出讨论范围）" : "取消隐藏",
-    );
+    /*
+      #08/#54/#54-文案12：隐藏快捷入口同样写三态 —— 隐藏 = 隐藏且不参与；
+      恢复默认只回到「显示但不参与」，绝不自动重新授权读取。
+    */
+    const target: CardVisibilityState = card.hidden ? "displayed_excluded" : "hidden_excluded";
+    commit(setCardVisibilityState(current, cardId, target), target === "hidden_excluded" ? "隐藏卡片（隐藏且不参与）" : "恢复显示（显示但不参与）");
     return;
   }
   if (flag === "folded") {
@@ -2274,6 +2400,16 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
     return;
   }
   commit(updateCard(current, cardId, { bookmarked: !card.bookmarked }), card.bookmarked ? "取消书签" : "加书签");
+}
+
+/**
+ * #08/#54：三态入口的唯一落点。只改 hidden + participation（板面既有字段），
+ * 与选择 / 预览 / 框选 / 提交完成无关；写板面走既有 commit（含保存与撤回能力）。
+ */
+function onCardVisibility(cardId: string, state: CardVisibilityState) {
+  const current = boardState.value;
+  if (!current) return;
+  commit(setCardVisibilityState(current, cardId, state), "设置参与三态：" + CARD_VISIBILITY_LABELS[state]);
 }
 
 /**
@@ -2350,8 +2486,10 @@ function onCardJoinGroup(cardId: string, groupId: string) {
 
 function deleteSelected() {
   const current = boardState.value;
-  if (!current || !current.selection.length) return;
-  const removed = [...current.selection];
+  if (!current) return;
+  // #43/#58：只删除当前可见的对象；收起组里的成员不在删除范围内。
+  const removed = [...visibleSelectedIds.value];
+  if (!removed.length) return;
   let next = current;
   for (const cardId of removed) next = removeCard(next, cardId);
   commit(next, "删除所选卡片（撤回材料或注释）");
@@ -2873,7 +3011,9 @@ function finishLinkDraft(allowCreate: boolean) {
   const current = boardState.value;
   if (!draft || !current) return;
   if (!allowCreate || !draft.targetId || draft.targetId === draft.fromId) {
-    notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+    // 拖到无效目标 / 取消：不落盘、也不提供「重试」——没有发生过建链操作。
+    lastLinkAttempt = null;
+    showNotice("没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。", { tone: "info" });
     return;
   }
   /*
@@ -2884,22 +3024,78 @@ function finishLinkDraft(allowCreate: boolean) {
   */
   const existing = linkBetween(current, draft.fromId, draft.targetId);
   if (existing) {
+    lastLinkAttempt = null;
     openLinkEditor(existing.id);
-    notice.value =
-      "这条关系已经存在：已打开原有关系（id、方向、含义与曲线都保留），没有新建，也没有改动。";
+    showNotice("这条关系已经存在：已打开原有关系（id、方向、含义与曲线都保留），没有新建，也没有改动。", {
+      tone: "info",
+    });
     return;
   }
-  const next = addLink(current, draft.fromId, draft.targetId, false, "");
+  const created = createLinkOnce(draft.fromId, draft.targetId);
+  if (!created) {
+    // 保留原操作，提供可重试提示；重试前会再查重（不会建第二条同样的线）。
+    lastLinkAttempt = { fromId: draft.fromId, targetId: draft.targetId };
+    const reason = store.boardEditBlockedReason
+      ? "板面当前不可编辑，关系没有建立。"
+      : "端点卡片可能刚被删除，关系没有建立。";
+    showNotice(reason + "可以重试这次建链，重复的线不会被建第二次。", {
+      tone: "error",
+      retry: { label: "重试这次建链", run: retryLastLinkAttempt },
+    });
+    return;
+  }
+  lastLinkAttempt = null;
+  openLinkEditor(created.id);
+}
+
+/**
+ * 建一条新线并登记为「本次新建」。返回 null 表示端点已不可用（不落盘）。
+ * 建链前再次查重：重试 / 快速重复操作都不会创建同一条线。
+ */
+function createLinkOnce(fromId: string, targetId: string): { id: string } | null {
+  const current = boardState.value;
+  if (!current) return null;
+  if (linkBetween(current, fromId, targetId)) return null;
+  const next = addLink(current, fromId, targetId, false, "");
   const created = next.links.find(
     (link) =>
-      (link.src === draft.fromId && link.dst === draft.targetId) ||
-      (link.src === draft.targetId && link.dst === draft.fromId),
+      (link.src === fromId && link.dst === targetId) || (link.src === targetId && link.dst === fromId),
   );
-  if (!created) {
-    notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+  if (!created) return null;
+  if (!commit(next, "新建关系（方向与含义由你写明）")) {
+    // 板面只读 / 保存被拦下：关系没有建立，保留原操作给用户重试（重试前会再次查重）。
+    return null;
+  }
+  newLinkIds.value = [...newLinkIds.value, created.id];
+  showNotice("已建立新关系：方向与含义可以稍后填写；关闭编辑框不会删除这条线。", { tone: "success" });
+  return created;
+}
+
+/** #11：重试绑定原操作；先查重，已存在就打开原线（不重复创建）。 */
+function retryLastLinkAttempt(): void {
+  const attempt = lastLinkAttempt;
+  if (!attempt) return;
+  const current = boardState.value;
+  if (!current) return;
+  const existing = linkBetween(current, attempt.fromId, attempt.targetId);
+  if (existing) {
+    lastLinkAttempt = null;
+    openLinkEditor(existing.id);
+    showNotice("这条关系已经存在：已打开原关系，没有重复创建。", { tone: "info" });
     return;
   }
-  commit(next, "新建关系（方向与含义由你写明）");
+  const created = createLinkOnce(attempt.fromId, attempt.targetId);
+  if (!created) {
+    const reason = store.boardEditBlockedReason
+      ? "板面当前不可编辑，关系没有建立。"
+      : "仍然无法建立关系：端点已经不存在。";
+    showNotice(reason, {
+      tone: "error",
+      retry: { label: "重试这次建链", run: retryLastLinkAttempt },
+    });
+    return;
+  }
+  lastLinkAttempt = null;
   openLinkEditor(created.id);
 }
 
@@ -2981,6 +3177,7 @@ function saveLinkEditor() {
 function onDeleteLink(linkId: string) {
   const current = boardState.value;
   if (!current) return;
+  forgetNewLink(linkId);
   commit(removeLink(current, linkId), "删除关系（撤回这条关联）");
   if (editingLinkId.value === linkId) {
     editingLinkId.value = null;
@@ -2993,7 +3190,45 @@ function deleteEditingLink() {
   const current = boardState.value;
   const linkId = editingLinkId.value;
   if (!current || !linkId) return;
+  forgetNewLink(linkId);
   commit(removeLink(current, linkId), "删除关系（撤回这条关联）");
+  showNotice("已删除这条关系（其它关系与卡片不受影响）。", { tone: "success" });
+  editingLinkId.value = null;
+  linkEditorOpen.value = false;
+  linkEditorPos.value = null;
+}
+
+function forgetNewLink(linkId: string): void {
+  if (!newLinkIds.value.includes(linkId)) return;
+  newLinkIds.value = newLinkIds.value.filter((id) => id !== linkId);
+}
+
+/** 当前编辑的关系是否是本次会话新建的那一条（决定是否显示「撤销这条新连线」）。 */
+const editingLinkIsNew = computed(() => {
+  const linkId = editingLinkId.value;
+  return Boolean(linkId && newLinkIds.value.includes(linkId));
+});
+
+/**
+ * #10：按**连线身份**撤销本次新建的那一条；普通关闭（×/关闭按钮）不删除新线。
+ * 撤销只删这一条关系，不动两端卡片、不动其它关系。
+ */
+function undoNewLink(): void {
+  const current = boardState.value;
+  const linkId = editingLinkId.value;
+  if (!current || !linkId) return;
+  const link = current.links.find((item) => item.id === linkId);
+  if (!link || link.deleted) {
+    forgetNewLink(linkId);
+    editingLinkId.value = null;
+    linkEditorOpen.value = false;
+    linkEditorPos.value = null;
+    showNotice("这条新连线已经不在了，没有可撤销的对象。", { tone: "error" });
+    return;
+  }
+  forgetNewLink(linkId);
+  commit(removeLink(current, linkId), "撤销这条新连线");
+  showNotice("已撤销这条新连线（只撤销这一条，两端卡片与其它关系不变）。", { tone: "success" });
   editingLinkId.value = null;
   linkEditorOpen.value = false;
   linkEditorPos.value = null;
@@ -3005,12 +3240,30 @@ const editingLink = computed(() => {
   return current.links.find((link) => link.id === editingLinkId.value) ?? null;
 });
 
+/**
+ * #09：关系编辑框里的两端名字 —— 用户命名 > 真实文件名 > 正文首行；
+ * 组端点用组名。空正文不拿占位文案冒充端点名。
+ */
+function linkEndpointSummary(raw: string): string {
+  const current = boardState.value;
+  if (!current) return "（卡片）";
+  const parsed = parseEndpoint(raw);
+  if (!parsed.ok) return "（已失效的端点）";
+  if (parsed.endpoint.kind === "group") {
+    const group = current.groups.find((item) => item.id === parsed.endpoint.id && !item.deleted);
+    return "组「" + (group?.name || "未命名组") + "」";
+  }
+  const card = cardById(current, parsed.endpoint.id);
+  if (!card || card.deleted) return "（已删除的卡片）";
+  const name = endpointCardName(card);
+  return name || cardSummary(card);
+}
+
 const editingLinkSummary = computed(() => {
   const link = editingLink.value;
-  const current = boardState.value;
-  if (!link || !current) return "";
-  const src = cardSummary(cardById(current, link.src));
-  const dst = cardSummary(cardById(current, link.dst));
+  if (!link) return "";
+  const src = linkEndpointSummary(link.src);
+  const dst = linkEndpointSummary(link.dst);
   return linkDirection.value ? src + " → " + dst + "（方向由你标注）" : src + " ↔ " + dst + "（无方向）";
 });
 
@@ -3186,6 +3439,48 @@ function onLocatePreview(event: Event) {
 
 // --- 键盘 -----------------------------------------------------------------
 
+/**
+ * #43：Delete / Backspace 的隔离面。
+ * 输入框 / 可编辑区 / 工具栏 / 卡片详情 / 弹窗 / 菜单 / 关系编辑器里的删除键
+ * 是**它们自己的**（删文字、删选项），画布一律不劫持。
+ */
+const DELETE_KEY_ISOLATED_SELECTOR = [
+  "input",
+  "textarea",
+  "select",
+  "[contenteditable='true']",
+  "[data-im='card-toolbar']",
+  "[data-im='board-toolbar']",
+  "[data-im='selection-menu']",
+  "[data-im='more-panel']",
+  "[data-im='link-editor']",
+  "[data-im='impact-dialog']",
+  "[data-im='search']",
+  "[data-im='preview']",
+  "[role='dialog']",
+  "[role='menu']",
+  "[role='menuitem']",
+  "button",
+  "a",
+  "label",
+].join(",");
+
+/**
+ * 画布是否真的拥有这次删除快捷键（#43）：
+ * 焦点在画布外（其它面板 / 聊天 / 浮层）或落在任何交互控件上时一律返回 false。
+ */
+function canvasOwnsDeleteKey(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (element && typeof element.closest === "function" && element.closest(DELETE_KEY_ISOLATED_SELECTOR)) return false;
+  const active = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (active && active !== document.body && active !== document.documentElement && typeof active.closest === "function") {
+    if (active.closest(DELETE_KEY_ISOLATED_SELECTOR)) return false;
+    const root = shell.value;
+    if (root && !root.contains(active)) return false;
+  }
+  return true;
+}
+
 function onKeyDown(event: KeyboardEvent) {
   const typing = isTypingTarget(event.target);
   if (event.key === "Escape") {
@@ -3217,7 +3512,10 @@ function onKeyDown(event: KeyboardEvent) {
     return;
   }
   if (typing) return;
-  if ((event.key === "Delete" || event.key === "Backspace") && selection.value.length) {
+  if (event.key === "Delete" || event.key === "Backspace") {
+    // #43：只有画布拥有焦点、且对象当前可见时才删除；否则把按键留给当前控件。
+    if (!visibleSelectedIds.value.length) return;
+    if (!canvasOwnsDeleteKey(event.target)) return;
     event.preventDefault();
     deleteSelected();
     return;
@@ -3267,6 +3565,10 @@ onMounted(() => {
 */
 
 onBeforeUnmount(() => {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
   viewportEl.value?.removeEventListener("wheel", onWheel);
   viewportEl.value?.removeEventListener("scroll", onViewportScroll);
   window.removeEventListener("keydown", onKeyDown);
@@ -3304,15 +3606,39 @@ onBeforeUnmount(() => {
 <template>
   <section ref="shell" class="board-shell" data-im="board">
     <p v-if="dragging && dragHint" class="banner drag" role="status">{{ dragHint }}</p>
-    <p v-if="notice" class="banner" role="status">{{ notice }}</p>
+    <!-- #11：成功 / 一般提示自动消失；失败提示就地可关闭、可重试（重试绑定原操作）。 -->
+    <p
+      v-if="notice"
+      class="banner"
+      :class="'is-' + noticeTone"
+      role="status"
+      data-im="canvas-notice"
+      :data-tone="noticeTone"
+    >
+      <span class="banner-text">{{ notice }}</span>
+      <button
+        v-if="noticeRetry"
+        type="button"
+        class="banner-action"
+        data-im="canvas-notice-retry"
+        @click="runNoticeRetry"
+      >{{ noticeRetry.label }}</button>
+      <button
+        type="button"
+        class="banner-action banner-close"
+        data-im="canvas-notice-dismiss"
+        aria-label="关闭提示"
+        @click="clearNotice"
+      >关闭</button>
+    </p>
     <!--
       操作提示只在「本机还没用过查看手势」时出现一条，用过一次即永久收起。
       刻意不设 role="status"：它不是实时状态，而且文案里的缩放百分比会让 aria-live
       在每一次滚轮缩放时把整条提示重复播报一遍。
     -->
+    <!-- 文案 6（PM-QIO032）：首次手势指引只用这一句，手势含义在帮助入口里展开。 -->
     <p v-if="!hintSeen" class="banner view-hint" data-im="board-view-hint">
-      拖动空白处平移查看位置（{{ Math.round(view.scale * 100) }}%）；按住空格拖动空白处框选卡片；滚轮以指针附近为缩放中心。
-      平移与缩放只改变查看方式，不形成改动、不调用 QIO。
+      拖动空白处平移，按住空格拖动框选，滚轮缩放
     </p>
 
     <div class="board-main">
@@ -3393,6 +3719,7 @@ onBeforeUnmount(() => {
             @drag-start="onDragStart"
             @patch="onCardPatch"
             @toggle="onCardToggle"
+            @visibility="onCardVisibility"
             @remove="onCardRemove"
             @duplicate="onCardDuplicate"
             @leave-group="onCardLeaveGroup"
@@ -3518,7 +3845,15 @@ onBeforeUnmount(() => {
       </label>
       <div class="link-actions">
         <button class="btn primary" type="button" @click="saveLinkEditor">保存方向与含义</button>
-        <button class="btn danger" type="button" @click="deleteEditingLink">删除关系</button>
+        <!-- #10：本次会话新建的线，编辑框里明确给出「撤销这条新连线」（按连线身份撤销）。 -->
+        <button
+          v-if="editingLinkIsNew"
+          class="btn"
+          type="button"
+          data-im="link-undo-new"
+          @click="undoNewLink"
+        >撤销这条新连线</button>
+        <button v-else class="btn danger" type="button" @click="deleteEditingLink">删除关系</button>
         <button class="btn" type="button" @click="editingLinkId = null; linkEditorOpen = false; linkEditorPos = null">关闭</button>
       </div>
     </div>
@@ -3554,8 +3889,34 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--border-subtle);
   pointer-events: none;
 }
+.banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.banner-text { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+/* #11：失败提示不自动消失，就地可关闭 / 可重试；成功提示短暂显示后自动消失。 */
+.banner.is-error { color: var(--text-strong); border-bottom-color: var(--danger); }
+.banner.is-success { color: var(--text-secondary); }
+.banner-action {
+  pointer-events: auto;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.banner-action:hover { border-color: var(--border-strong); color: var(--text-strong); }
+.banner-close { color: var(--text-muted); }
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
-.banner.view-hint { color: var(--text-faint); }
+/* #85（PM-QIO032）：板面操作指引必须可读 —— 用次级文字色，而不是更浅的 faint。 */
+.banner.view-hint { color: var(--text-secondary); }
 .board-main { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
 /*
   工具栏宿主层：只有这一层（外加已打开菜单）接收指针事件，其余区域全部穿透。

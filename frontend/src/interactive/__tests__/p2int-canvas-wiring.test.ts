@@ -234,8 +234,9 @@ describe("组收起：成员卡片隐藏、组框概览与连线层同步", () =
     expect(view.findAll('[data-im="card"]')).toHaveLength(0);
     expect(view.findComponent(BoardGroupFrame).props("collapsed")).toBe(true);
     expect(view.findComponent(BoardLinkLayer).props("foldedGroupIds")).toEqual(["g1"]);
-    // 收起是纯显示状态：不提交、不改成员
-    expect(labels).toEqual([]);
+    // #59：收起偏好按板面保存 —— 这是一次**纯显示状态**提交（只写 group.collapsed），
+    // 不改成员 / 参与 / 提交范围（labels 只允许这一条显示状态）。
+    expect(labels).toEqual(["收起组（显示状态）"]);
     expect(store.board!.groups[0].members).toEqual(["a", "b"]);
 
     await view.get('[data-im="group-collapse-toggle"]').trigger("click");

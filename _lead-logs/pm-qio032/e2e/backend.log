@@ -1,0 +1,10 @@
+local API authentication is DISABLED (QIO_DEV_INSECURE=1): any local process can call the QIO API. Development only.
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回 JSON 对象
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回 JSON 对象
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回 JSON 对象
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回内容
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回内容
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回 JSON 对象
+summary_derivation_failed: 第 1/1 段摘要失败：摘要输出无法解析 JSON：Expecting value: line 1 column 1 (char 0)
+entity_card_extraction_failed: 实体卡输出无法解析 JSON：Expecting value: line 1 column 1 (char 0)
+要求解析/绑定异常（resolution_unavailable）：resolution_unavailable: RequirementResolutionUnavailable: 要求解析模型没有返回 JSON 对象

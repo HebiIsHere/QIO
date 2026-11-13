@@ -68,6 +68,8 @@ import {
   type IntentPreview,
   type IntentStatus,
   type Participation,
+  type PendingSubmissionChanges,
+  type Snapshot,
   type SubmissionRecord,
   type SubmissionResult,
   type Understanding,
@@ -92,6 +94,9 @@ import {
   submissionIdentityStorageKey,
   frozenViewPayload,
   readBoardScale,
+  hasEffectiveSubmissionContent,
+  cardHasEffectiveContent,
+  effectiveSubmissionChanges,
   type SubmissionIdentity,
 } from "../interactive/submission";
 import { readBoardArea } from "../interactive/viewport";
@@ -174,11 +179,126 @@ export interface RevertDecisionSummary {
   gone: string[];
 }
 
+/**
+ * #80：本机记住的「上次成功受理后的快照」（按板面；刷新后仍能精确判断是否重复提交）。
+ * 只存回执里服务端给出的 after 快照事实，不存任何推断。
+ */
+interface AcceptedBaselineRecord {
+  boardId: string;
+  submissionId: string;
+  seq: number;
+  savedAt: string;
+  after: Snapshot;
+}
+
+const ACCEPTED_BASELINE_STORAGE_PREFIX = "qio.interactive.accepted-baseline.";
+
+/** #03：提交区唯一主状态（真实轮次状态）。 */
+export type RoundStatus =
+  | "idle"
+  | "submitting"
+  | "unknown"
+  | "queued"
+  | "processing"
+  | "replied"
+  | "awaiting_confirm"
+  | "failed"
+  | "settled";
+
+/** #44/#45/#46：批次导入中单个文件的状态。 */
+export type ImportItemStatus = "pending" | "uploading" | "succeeded" | "failed" | "unreceived";
+
+export interface ImportBatchItem {
+  key: string;
+  name: string;
+  status: ImportItemStatus;
+  error: string | null;
+  attachmentId: string | null;
+  /** 这次上传绑定/落到哪张文件卡（无则为 null） */
+  cardId: string | null;
+  /** 上传发起时所属板面（迟到回执按它核对） */
+  boardId: string;
+  /** 绑定到哪条任务（如任务产物回传）；没有就是 null */
+  taskId: string | null;
+}
+
+export interface ImportBatch {
+  id: string;
+  boardId: string;
+  createdAt: string;
+  limit: number;
+  items: ImportBatchItem[];
+}
+
+/** #44-46：批次导入的汇总计数（UI 直接显示「已接收 / 未接收」明细，不自己重算）。 */
+export interface ImportBatchCounts {
+  total: number;
+  /** 成功接收并已落成卡片的文件数 */
+  received: number;
+  failed: number;
+  /** 超过单批上限 / 未开始接收的文件数（可重新导入） */
+  unreceived: number;
+  pending: number;
+  uploading: number;
+}
+
+/** #44-46：汇总一批导入的逐项状态。 */
+export function importBatchCounts(batch: ImportBatch | null | undefined): ImportBatchCounts {
+  const counts: ImportBatchCounts = {
+    total: batch?.items?.length ?? 0,
+    received: 0,
+    failed: 0,
+    unreceived: 0,
+    pending: 0,
+    uploading: 0,
+  };
+  for (const item of batch?.items ?? []) {
+    if (item.status === "succeeded") counts.received += 1;
+    else if (item.status === "failed") counts.failed += 1;
+    else if (item.status === "unreceived") counts.unreceived += 1;
+    else if (item.status === "uploading") counts.uploading += 1;
+    else counts.pending += 1;
+  }
+  return counts;
+}
+
+/** #26：后端 INTERACTIVE_INTENTS_CHANGED 事件的负载（字段新旧两种命名都接受）。 */
+export interface InteractiveIntentsChangedPayload {
+  board_id?: string;
+  boardId?: string;
+  submission_id?: string | null;
+  submissionId?: string | null;
+  intent_ids?: string[];
+  intentIds?: string[];
+  statuses?: Record<string, string>;
+  reason?: string;
+}
+
 export const useInteractiveStore = defineStore("interactive", () => {
   const boardId = ref(DEFAULT_BOARD_ID);
   const board = ref<BoardState | null>(null);
   const loading = ref(false);
   const loadError = ref<string | null>(null);
+  /**
+   * #20：整板读取失败后的只读门禁（数据层兜底，UI 再禁按钮）。
+   *
+   * - `boardLoadedOnce`：本会话是否**成功**读到过板面。首次失败时为 false
+   *   （界面据此给「重试 / 返回对话」）；true 且 loadError 非空 = 有上次成功数据可只读展示。
+   * - `boardReadOnly`：有上次成功数据、但整板读取失败 → 只读展示。
+   * - `boardEditBlockedReason`：非空时 commit/saveNow/submit 全部拒绝 —— 读取失败期间
+   *   不得对旧板面发起编辑或提交（门禁在 store，不依赖界面记得禁）。
+   * - `retryBoardLoad()`：重试整板读取（只读路径，不重建板面）。
+   */
+  const boardLoadedOnce = ref(false);
+  const boardReadOnly = computed(
+    () => loadError.value !== null && boardLoadedOnce.value && board.value !== null,
+  );
+  const boardEditBlockedReason = computed<string | null>(() => {
+    if (loadError.value === null) return null;
+    return boardLoadedOnce.value
+      ? `板面读取失败：${loadError.value}。当前显示的是上次读取成功的内容，只能查看；保存与提交已暂停，请先重试读取。`
+      : `板面读取失败：${loadError.value}。请重试读取或返回对话。`;
+  });
   const drafts = ref<Record<string, string>>({});
   /**
    * 每个草稿键的保存状态（契约 §9.5）。按 key 分别记录：
@@ -225,6 +345,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   const submissions = ref<SubmissionRecord[]>([]);
   const lastSubmission = ref<SubmissionResult | null>(null);
+  /**
+   * #80：上次成功提交的基准摘要（GET /state 的服务端事实；null = 从未成功提交）。
+   * 与服务端 pending.baselineSeq 一起判断「服务端算出的未提交改动是否仍相对当前基准」。
+   */
+  const submissionBaseline = ref<{ seq: number; submittedAt: string } | null>(null);
+  /**
+   * 服务端重算的「未提交的有效改动」（GET /state 与 PUT /state 回执；服务端求差，不进 QIO）。
+   * baselineSeq 与当前基准一致时才可信 —— 提交成功后服务端不会立刻重算，旧表达式可能已过期。
+   */
+  const pendingSubmissionChanges = ref<PendingSubmissionChanges | null>(null);
+  /**
+   * 本机记住的「上次成功受理后的快照」（按板面存本机，#80）：
+   * 刷新后没有 lastSubmission 也能精确判断「再提交是否有新改动」，不靠时间 / 近似。
+   */
+  const acceptedBaseline = ref<AcceptedBaselineRecord | null>(null);
   /**
    * 阶段三（契约 §13.3）：聊天发送的互动绑定。
    *
@@ -336,6 +471,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 最近一次理解的状态：accepted / understanding / 三态结果 / failed */
   const understandingStatus = ref<UnderstandingStatus | null>(null);
   const understandingError = ref<string | null>(null);
+  /**
+   * #41：提交详情的「读取失败 / 上次结果 / 有效空态」三态需要知道**理解过程这一次读取**本身的结果，
+   * 而不是只看理解状态。与 `understandingError`（查询失败原因）分开：
+   * - error + understandingLoadedOnce=false → 读取失败（可重试）
+   * - error + understandingLoadedOnce=true  → 上次结果（旧内容保留）
+   * - ok + 空记录 → 成功读取为空（这才是「本次没有改动 / 没有理解过程」）
+   * 读取动作：`refreshUnderstanding()` / `loadUnderstanding()`（失败可重试）。
+   */
+  const understandingLoadState = ref<"idle" | "loading" | "ok" | "error">("idle");
+  const understandingLoadError = ref<string | null>(null);
+  const understandingLoadedOnce = ref(false);
   /** 正在查询理解状态（间隔 1s；页面不可见时停止） */
   const understandingPolling = ref(false);
   /** 自动查询停下但结果还没回来时的如实说明（不是错误） */
@@ -363,6 +509,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const executions = ref<Execution[]>([]);
   const executionError = ref<string | null>(null);
   const executionPolling = ref(false);
+  /**
+   * #07：执行记录读取是**独立的一次读取**，失败状态必须与任务清单 / 意图视图分开记：
+   * - error + executionsLoadedOnce=false → 首次失败（界面说「读取失败」）
+   * - error + executionsLoadedOnce=true  → 已有上次结果（界面说「上次结果」+ 重试）
+   * 失败不清空 executions（旧记录原样保留）。
+   */
+  const executionsLoadState = ref<"idle" | "loading" | "ok" | "error">("idle");
+  const executionsLoadError = ref<string | null>(null);
+  const executionsLoadedOnce = ref(false);
 
   /** 除了最近一次之外的历史理解过程（可展开查看） */
   const understandingHistory = computed(() =>
@@ -428,6 +583,315 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (submitStatus.value === "empty") return "empty";
     if (submitStatus.value === "duplicate") return "duplicate";
     return "idle";
+  });
+
+  /**
+   * #13 与 P1 的交界：未点「完成编辑」的草稿会在提交时被提升为正文（既有语义）。
+   * 只看 board 当前内容会把「只有待提升草稿、正文还空」的合法提交误判成空提交，
+   * 所以空提交门把「本次会被提升的草稿」也算作有效内容；冲突未决的草稿不算
+   * （那种情况提交时会由 promoteDraftsBeforeSubmit 明确拦下并说明）。
+   */
+  /**
+   * #13 的「有效内容」只看板面上有没有真实内容（非空白卡 / 有效关系 / 非空组），
+   * 不是「相对上次保存有没有 diff」：板面上已有真实内容时再提交一次是合法动作
+   * （服务端仍按 submission.diff_states 判定是否空提交），不能在这里误禁。
+   */
+  function boardHasAnyEffectiveContent(): boolean {
+    const state = board.value;
+    if (!state) return false;
+    if (state.cards.some((card) => !card.deleted && cardHasEffectiveContent(card))) return true;
+    if (state.links.some((link) => !link.deleted)) return true;
+    if (state.groups.some((group) => !group.deleted && (group.members?.length ?? 0) > 0)) return true;
+    return false;
+  }
+
+  function hasPromotableDraftContent(): boolean {
+    if (!board.value) return false;
+    for (const card of board.value.cards) {
+      if (!cardSubmittedFor(card)) continue;
+      if (!hasCardDraft(card.id)) continue;
+      if (draftConflicts.value[cardDraftKey(card.id)]) continue;
+      if (boardContentConflictFor(card.id)) continue;
+      if (!draftDiffersFromContent(card.id, card.content)) continue;
+      if (!cardDraftText(card.id).trim()) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * #13：提交门（数据层）—— 按钮禁用与 submit() 用同一口径，不许两套判定。
+   * `submitBlockedReason` 为 null 才能提交；它只说明前端能确定的情况，
+   * 服务端回执仍是空提交 / 重复提交的权威。
+   */
+  const submitBlockedReason = computed<string | null>(() => {
+    if (boardEditBlockedReason.value !== null) return boardEditBlockedReason.value;
+    if (submitStatus.value === "submitting") return "正在提交，请等这次返回。";
+    // 上一次提交明确失败 / 结果未知：允许用户立即重试（服务端仍按同一身份与真实内容判定），
+    // 不能因为「当前候选看起来没有新改动」把重试入口也禁掉。
+    if (submitStatus.value === "failed" || submitStatus.value === "unknown" || submitResultUnknown.value) {
+      return null;
+    }
+    if (pendingImpact.value) return "这次改动还有待确认的影响说明，请先确认或取消。";
+    // 板面还没读到但也没有读取失败（例如只挂提交区的隔离渲染）：不臆断为空，交给服务端权威。
+    // 真正的读取失败由 boardEditBlockedReason 统一拦截（#20）。
+    if (!board.value) return null;
+    if (
+      !hasEffectiveSubmissionContent(board.value, cleanState) &&
+      !boardHasAnyEffectiveContent() &&
+      !hasPromotableDraftContent()
+    ) {
+      return "没有可提交的有效改动：空白卡片本身不算内容。请先填写文字卡、勾选要参与的注释，或建立关系 / 删除卡片。";
+    }
+    return null;
+  });
+  const canSubmit = computed(() => submitBlockedReason.value === null);
+
+  /* ------------------------------------------------------------------
+   * #80：重复提交识别（数据层）
+   *
+   * 缺陷（E2E）：第一次提交落定后，不改内容再点提交，会 POST 新请求、submissions 多一条
+   * 新受理，界面也没有「已提交过 / 没有新的改动」。
+   *
+   * 正确口径：已成功受理，且当前候选相对「上次成功提交的基准」没有有效改动时，
+   * **不发 POST**（服务端按 clientRequestId 的幂等是最后一道保险，前端不拿它当唯一防线），
+   * 状态落 duplicate，原受理记录 / 原进度入口保留。
+   * 判据必须是精确事实（不能用时间 / 近似）：
+   *  1) 本次会话上次成功回执的 after 快照（服务端给出的真实基准快照）；
+   *  2) 刷新后本机记住的、与服务器最新成功提交同 id 的 after 快照；
+   *  3) 服务端刚按当前基准算出的 pending（baselineSeq 必须与当前基准 seq 相等）。
+   * 三项都证明不了就正常提交（服务端仍会按 diff_states 判 empty / duplicate）。
+   * ------------------------------------------------------------------ */
+  function acceptedBaselineStorageKey(forBoardId: string): string {
+    return ACCEPTED_BASELINE_STORAGE_PREFIX + forBoardId;
+  }
+  function readAcceptedBaseline(forBoardId: string): AcceptedBaselineRecord | null {
+    try {
+      const raw = globalThis.localStorage?.getItem(acceptedBaselineStorageKey(forBoardId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as AcceptedBaselineRecord;
+      if (!parsed || parsed.boardId !== forBoardId || !parsed.after) return null;
+      return parsed;
+    } catch {
+      // 存储不可用 / 内容损坏：只影响刷新后的重复识别，不影响提交正确性
+      return null;
+    }
+  }
+  function rememberAcceptedBaseline(result: SubmissionResult): void {
+    const submission = result.submission;
+    if (!submission?.id || !result.after) return;
+    const record: AcceptedBaselineRecord = {
+      boardId: boardId.value,
+      submissionId: String(submission.id),
+      seq: Number(submission.seq ?? 0),
+      savedAt: String(submission.createdAt ?? ""),
+      after: result.after,
+    };
+    acceptedBaseline.value = record;
+    try {
+      globalThis.localStorage?.setItem(
+        acceptedBaselineStorageKey(boardId.value),
+        JSON.stringify(record),
+      );
+    } catch {
+      // 存不进本机：本会话的重复识别仍然可用（lastSubmission 快照）
+    }
+  }
+  /** 保存回执里的 pending 是服务端**刚重算**的（相对当前成功提交基准）。 */
+  function capturePendingFromSave(result: { pending?: PendingSubmissionChanges }): void {
+    if (!result?.pending) return;
+    pendingSubmissionChanges.value = result.pending;
+  }
+  /** 回执 / 本机快照是「投影到可见范围的快照」，还原成可求差的板面形状（只用于求差）。 */
+  function snapshotAsBoardState(snapshot: Snapshot | null | undefined): BoardState | null {
+    if (!snapshot) return null;
+    return {
+      boardId: boardId.value,
+      seq: 0,
+      updatedAt: "",
+      cards: snapshot.cards ?? [],
+      groups: snapshot.groups ?? [],
+      links: snapshot.links ?? [],
+      selection: snapshot.selection ?? [],
+    };
+  }
+  /** 用来比较「有没有新改动」的基准快照：只能是能证明是**最新一次成功受理**的那份。 */
+  function duplicateCompareBaseline(): { after: Snapshot; submissionId: string; seq: number } | null {
+    const newest = submissions.value.find((item) => item.status === "succeeded") ?? null;
+    const last = lastSubmission.value;
+    if (last && last.status === "succeeded" && last.delivery?.delivered !== false && last.after) {
+      const lastSeq = Number(last.submission?.seq ?? 0);
+      if (!newest || newest.id === last.submission?.id || lastSeq >= Number(newest.seq ?? 0)) {
+        return { after: last.after, submissionId: String(last.submission?.id ?? ""), seq: lastSeq };
+      }
+    }
+    const remembered = acceptedBaseline.value;
+    if (remembered && succeededSubmissionStillNewest(remembered, newest)) {
+      return { after: remembered.after, submissionId: remembered.submissionId, seq: remembered.seq };
+    }
+    return null;
+  }
+  function succeededSubmissionStillNewest(
+    remembered: AcceptedBaselineRecord,
+    newest: SubmissionRecord | null,
+  ): boolean {
+    if (!newest) return true;
+    if (newest.id === remembered.submissionId) return true;
+    return Number(remembered.seq ?? 0) >= Number(newest.seq ?? 0);
+  }
+  /** true = 有有效改动；false = 精确证明没有；null = 证明不了（走正常提交）。 */
+  function effectiveChangesSinceAccepted(): boolean | null {
+    const baseline = duplicateCompareBaseline();
+    if (baseline) {
+      const baselineState = snapshotAsBoardState(baseline.after);
+      if (!baselineState || !board.value) return null;
+      return effectiveSubmissionChanges(board.value, baselineState).length > 0;
+    }
+    const pending = pendingSubmissionChanges.value;
+    const currentBaseline = submissionBaseline.value;
+    if (
+      pending &&
+      !pending.error &&
+      currentBaseline &&
+      pending.baselineSeq !== null &&
+      pending.baselineSeq === currentBaseline.seq
+    ) {
+      return (pending.expressions ?? []).some((item) => item.kind !== "layout_only");
+    }
+    return null;
+  }
+  /** 原受理记录（没有新受理时也指向真正被受理的那一次；「查看原进度」用它）。 */
+  const latestAcceptedSubmission = computed<SubmissionRecord | null>(() => {
+    const last = lastSubmission.value;
+    if (last && last.status === "succeeded" && last.delivery?.delivered !== false) {
+      return last.submission ?? null;
+    }
+    return submissions.value.find((item) => item.status === "succeeded") ?? null;
+  });
+  const hasAcceptedSubmission = computed(
+    () => latestAcceptedSubmission.value !== null || submissionBaseline.value !== null,
+  );
+  function shouldShortCircuitAsDuplicate(): boolean {
+    if (!board.value) return false;
+    const status = submitStatus.value;
+    // 上一次明确失败 / 结果未知：必须允许重试（#80 语义，不能误判成重复）
+    if (status === "failed" || status === "unknown" || submitResultUnknown.value) return false;
+    if (status === "submitting") return false;
+    if (!hasAcceptedSubmission.value) return false;
+    if (pendingImpact.value || impactCheckError.value) return false;
+    if (
+      Object.keys(boardContentConflicts.value).length > 0 ||
+      Object.keys(boardRemovalConflicts.value).length > 0
+    ) {
+      return false;
+    }
+    // 未点「完成编辑」的草稿会在提交时被提升为正文：那是真实改动，不是重复
+    if (hasPromotableDraftContent()) return false;
+    return effectiveChangesSinceAccepted() === false;
+  }
+  function markDuplicateSubmit(): void {
+    submitStatus.value = "duplicate";
+    submitError.value = null;
+    submitNote.value =
+      "已提交过：这次内容与上次成功提交相同，没有新的改动；保留了原来的受理记录，没有再次提交。";
+  }
+
+  /**
+   * #03：提交区**唯一主状态**（真实轮次状态）。
+   *
+   * 取值与语义（详情按需展开时用 roundStatusDetail）：
+   * - idle 无提交 / submitting 请求在飞 / unknown 回执未知（按原请求查证）
+   * - queued 已受理、排队等理解 / processing 理解中 / replied QIO 已回复
+   * - awaiting_confirm 待确认任务（需要用户确认） / failed 明确失败 / settled 终态
+   *
+   * 单调守卫：同一 submission+attempt 一旦到达终态，迟到的理解事实不许把它倒退成
+   * 「处理中」；每次新提交 / 重试是新 attempt，可以重新推进。
+   */
+  /** 每轮（submission:attempt）已经到达过的最高阶段：迟到的低阶段事实不许倒退主状态。 */
+  const roundPeak = new Map<string, RoundStatus>();
+  function roundKey(): string {
+    const submissionId =
+      lastSubmission.value?.submission?.id ??
+      lastAcceptance.value?.submissionId ??
+      pendingSubmission.value?.clientRequestId ??
+      "";
+    const attempt = understanding.value?.attempt ?? 0;
+    return submissionId + ":" + String(attempt);
+  }
+  function roundRank(status: RoundStatus): number {
+    if (status === "idle") return 0;
+    if (status === "submitting") return 1;
+    if (status === "unknown") return 2;
+    if (status === "queued") return 3;
+    if (status === "processing") return 4;
+    if (status === "replied") return 5;
+    if (status === "awaiting_confirm") return 6;
+    if (status === "failed") return 7;
+    return 8; // settled
+  }
+  const roundStatusBase = computed<RoundStatus>(() => {
+    if (submitStatus.value === "submitting") return "submitting";
+    if (submitStatus.value === "unknown" || submitResultUnknown.value) return "unknown";
+    if (submitStatus.value === "failed") return "failed";
+    if (understandingStatus.value === "failed") return "failed";
+    if (submitStatus.value === "duplicate" || submitStatus.value === "empty") return "settled";
+    const understanding = understandingStatus.value;
+    if (understanding === "accepted") return "queued";
+    if (understanding === "understanding") return "processing";
+    if (understanding === "needs_clarification") return "replied";
+    if (understanding === "no_action") return "settled";
+    if (understanding === "understood") {
+      const counts = taskCountsValue.value;
+      if (counts.waiting > 0 || counts.needsUser > 0) return "awaiting_confirm";
+      if (counts.live > 0) return "processing";
+      if (counts.finished > 0) return "settled";
+      return "replied";
+    }
+    if (submitStatus.value === "succeeded") return "queued";
+    return "idle";
+  });
+  const roundStatus = computed<RoundStatus>(() => {
+    const base = roundStatusBase.value;
+    const key = roundKey();
+    if (key === ":") return base;
+    const remembered = roundPeak.get(key);
+    // 同一轮只升不降：刷新 / 迟到事件带来的低阶段事实不覆盖已经到达过的高阶段
+    if (remembered === undefined || roundRank(base) >= roundRank(remembered)) {
+      roundPeak.set(key, base);
+      return base;
+    }
+    return remembered;
+  });
+  const ROUND_STATUS_LABELS: Record<RoundStatus, string> = {
+    idle: "未提交",
+    submitting: "提交中",
+    unknown: "提交结果待确认",
+    queued: "已提交，排队中",
+    processing: "处理中",
+    replied: "已回复",
+    awaiting_confirm: "待确认",
+    failed: "失败",
+    settled: "已结束",
+  };
+  const roundStatusLabel = computed(() => {
+    // #80：服务端 / 前端判定的「没有新受理」必须在主状态上直接说清楚，
+    // 不能只显示笼统的「已结束」。
+    if (submitStatus.value === "duplicate") return "已提交过";
+    if (submitStatus.value === "empty") return "没有新的改动";
+    return ROUND_STATUS_LABELS[roundStatus.value];
+  });
+  const roundSettled = computed(
+    () => roundStatus.value === "settled" || roundStatus.value === "failed",
+  );
+  const roundStatusDetail = computed<string | null>(() => {
+    if (submitError.value) return submitError.value;
+    if (understandingError.value) return understandingError.value;
+    if (submitRefreshState.value === "error" && submitRefreshError.value) {
+      return `提交成功，但页面刷新失败：${submitRefreshError.value}`;
+    }
+    if (submitNote.value) return submitNote.value;
+    if (understandingNote.value) return understandingNote.value;
+    return null;
   });
 
   /**
@@ -1065,7 +1529,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
     boardContentConflicts.value = remaining;
   }
 
-  function commit(next: BoardState, label: string) {
+  function commit(next: BoardState, label: string): void {
+    /**
+     * #20：整板读取失败期间，store 自己拒绝编辑（返回 false、不动 board / 不排保存）。
+     * 界面可能还没来得及禁用按钮，数据层也必须守住「失败期间不得对旧板面发起编辑」。
+     */
+    if (boardEditBlockedReason.value !== null) return;
     const current = board.value;
     // Phase 2 §5.1：参与的旧兼容字段（checked / hidden）与 participation 同口径；
     // 对齐不补时间戳（否则等于凭空造出一次改动）。
@@ -1253,6 +1722,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   async function saveNow(): Promise<void> {
     if (!board.value) return;
+    /**
+     * #20：整板读取失败期间不许把「旧板面候选」写回服务器 —— 它可能已经过期。
+     * 返回一个明确失败的保存状态（不是静默停住），界面据此显示只读原因。
+     */
+    if (boardEditBlockedReason.value !== null) {
+      saveError.value = boardEditBlockedReason.value;
+      saveStatus.value = "error";
+      return;
+    }
     if (saveInFlight) {
       // 等旧请求结束后要看一眼：这期间用户又改了（dirty 仍为真）就必须**再存一次**，
       // 不能拿到结果就返回，把更新的候选永远忘在内存里（相邻于 N1 的真实遗漏）。
@@ -1373,6 +1851,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
           lastOpLabel.value || "op",
           confirmPayload,
         );
+        // #80：保存回执里的 pending 是服务端刚重算的「相对上次成功提交还剩下的改动」
+        capturePendingFromSave(result);
         const newerCandidate = boardLocalRev !== putRev;
         const boardReadAdvanced = boardCleanRev !== putCleanRev;
         /**
@@ -1882,6 +2362,16 @@ export const useInteractiveStore = defineStore("interactive", () => {
     statusBoardId = payload.board.id;
     submissions.value = payload.submissions ?? [];
     /*
+     * #80：接收服务端「上次成功提交基准」与「未提交改动」事实（均只用于判断重复提交，
+     * 不影响板面内容）。旧读取（比已知服务器版本旧）不覆盖它们，避免用过期基准误判重复。
+     */
+    const incomingServerSeq = Number(payload.state?.seq ?? payload.seq ?? 0);
+    if (incomingServerSeq >= knownServerSeq) {
+      submissionBaseline.value = payload.baseline ?? null;
+      pendingSubmissionChanges.value = payload.pending ?? null;
+    }
+    acceptedBaseline.value = readAcceptedBaseline(requestedBoardId);
+    /*
      * 板面候选的落地决定（M1/06）必须排在草稿合并**之前**：
      * `restoreLocalCardDrafts` 要按「这个板面上还有没有这张卡」判断本机记录的归属，
      * 所以它必须看到本次读取之后的板面；把整块落地放到合并后面会让首屏加载
@@ -2283,6 +2773,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     loadError.value = null;
     try {
       await refreshBoardFromServer();
+      boardLoadedOnce.value = true;
       await refreshVisibleRange();
       await loadIntents();
       // F02/F06：意图视图与任务清单同一处维护；读取失败保留上次内容并标「更新失败」
@@ -2304,6 +2795,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } finally {
       loading.value = false;
     }
+  }
+
+  /**
+   * #20：重试整板读取（只读路径）：不新建板面、不重建提交身份，只重新读服务端事实。
+   * 返回 true = 这次真的读到了；false = 仍然失败（loadError 保留真实原因）。
+   */
+  async function retryBoardLoad(): Promise<boolean> {
+    await load();
+    return loadError.value === null;
   }
 
   /**
@@ -3350,6 +3850,42 @@ export const useInteractiveStore = defineStore("interactive", () => {
      */
     promotedDrafts.value = [];
     draftsNotPromoted.value = [];
+    /**
+     * #20：整板读取失败期间不得提交（旧板面不能当成这次的依据）。
+     */
+    if (boardEditBlockedReason.value !== null) {
+      submitStatus.value = "failed";
+      submitError.value = boardEditBlockedReason.value;
+      return null;
+    }
+    /**
+     * #13：空提交判定分工 —— UI 用 canSubmit / submitBlockedReason 在**按钮侧**禁用
+     * 并给出下一步（真正没有有效内容时用户点不到）；这里不提前拦截，
+     * 因为服务端 submission.diff_states 才是空提交的权威判定，前端只负责如实展示回执。
+     * 这样直接调用 store.submit() 的既有链路（受理/理解/查证）语义不变。
+     */
+    /**
+     * #80：已受理、且当前候选相对「上次成功提交的基准」**没有有效改动** → 本次不发 POST、
+     * 不新建受理记录：状态落「已提交过」，原受理记录 / 原进度入口保持不变。
+     *
+     * 判据只用精确事实：会话内上次成功回执的 after 快照（最精确）、刷新后本机记住的受理快照、
+     * 或服务端刚按当前基准算出的 pending；任何一项都证明不了「没有新改动」时走正常提交，
+     * 绝不用时间 / 最近一条记录之类的近似判断。
+     * 上次失败 / 未知时 not duplicate（仍允许重试）；待提升草稿视为真实改动。
+     */
+    if (shouldShortCircuitAsDuplicate()) {
+      if (dirty.value) await saveNow();
+      if (
+        !dirty.value &&
+        saveStatus.value !== "error" &&
+        !pendingImpact.value &&
+        !impactCheckError.value
+      ) {
+        markDuplicateSubmit();
+        return null;
+      }
+      // 保存没落定（影响确认 / 失败）：继续正常路径，让既有门禁把真实原因说清楚
+    }
     submitStatus.value = "submitting";
     /**
      * P1：把未确认草稿提升为正文，**必须在 saveNow() 之前**。
@@ -3494,7 +4030,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return null;
     }
     // POST 已经明确返回：提交请求的事实到此确定，后面无论读取成败都不再改变它
-    lastSubmission.value = result;
+    /**
+     * #80：服务端判定 empty / duplicate = **没有新受理**。保留原来的受理记录与状态，
+     * 「查看原进度」仍指向真正被受理的那一次，不被这次没有新工作的回执覆盖。
+     */
+    const previousAccepted =
+      lastSubmission.value &&
+      lastSubmission.value.status === "succeeded" &&
+      lastSubmission.value.delivery?.delivered !== false
+        ? lastSubmission.value
+        : null;
+    const noNewWork = result.status === "empty" || result.status === "duplicate";
+    lastSubmission.value = noNewWork && previousAccepted ? previousAccepted : result;
     const delivery = result.delivery;
     /**
      * 受理是服务端回执说的真实事实（§14.1 / §14.4）：只有它说 `status: "accepted"` 时，
@@ -3528,11 +4075,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
      */
     applyCheckedCleared(result.checkedCleared, checkedAtSubmit);
     if (result.status === "succeeded") {
+      // #80：记住这次受理后的基准快照（刷新后仍能精确判断「再提交是否有新改动」）
+      if (!result.replayed && result.after) rememberAcceptedBaseline(result);
       // 受理回执给出的理解请求身份：还没拿到理解记录时也能据此查询 / 重试
       acceptedUnderstandingId.value = delivery?.understandingId ?? null;
       // 本次理解状态绑定到**本次**提交（旧查询的归属判定靠它）
       understandingBoundSubmissionId = result.submission?.id ?? null;
-      if (acceptedByReceipt) {
+      if (result.replayed) {
+        /**
+         * #80 / 契约 §1.3：服务端按同一个请求身份返回了**原记录**（replayed=true）：
+         * 没有新建提交、没有新建理解请求、没有重复调用模型。按原记录处理 ——
+         * 不把它显示成一次新的「已受理」，也不把理解状态重置回 accepted（那会倒退已结束轮次）。
+         */
+        submitNote.value =
+          "已提交过：服务端按原请求身份返回了原受理记录（没有新建提交，也没有重复调用模型）。";
+        if (!understandingStatus.value) {
+          understandingStatus.value = delivery?.status ?? "accepted";
+        }
+      } else if (acceptedByReceipt) {
         understandingStatus.value = "accepted";
         // 旧的理解记录（上一次提交留下的）绝不允许冒充本次理解：
         // 本次理解状态从「已受理、还没查到记录」开始，由本次的查询结果补上。
@@ -4299,6 +4859,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     understandings.value = [];
     understandingStatus.value = null;
     understandingError.value = null;
+    understandingLoadState.value = "idle";
+    understandingLoadError.value = null;
+    understandingLoadedOnce.value = false;
     understandingNote.value = null;
     acceptedUnderstandingId.value = null;
     submitNote.value = null;
@@ -4311,6 +4874,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     acceptanceLookupNote.value = null;
     lastAcceptance.value = null;
     lastSubmission.value = null;
+    submissionBaseline.value = null;
+    pendingSubmissionChanges.value = null;
+    acceptedBaseline.value = null;
     /**
      * 板面身份切换：上一个板面的意图视图不属于这里（F02.8）。
      * 代次前进让还在飞的旧读取落地不了；新板面由随后的读取重新建立事实。
@@ -4385,10 +4951,16 @@ export const useInteractiveStore = defineStore("interactive", () => {
   async function refreshUnderstanding(): Promise<Understanding | null> {
     const submissionId = understandingSubmissionId();
     let found: Understanding | null = null;
+    understandingLoadState.value = "loading";
     try {
       found = await loadUnderstanding(submissionId);
+      understandingLoadState.value = "ok";
+      understandingLoadError.value = null;
+      understandingLoadedOnce.value = true;
     } catch (err) {
       understandingError.value = (err as Error).message;
+      understandingLoadState.value = "error";
+      understandingLoadError.value = understandingError.value;
       return null;
     }
     /**
@@ -4568,8 +5140,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     try {
       // 本次提交的理解查询按**本次**受理回执的身份查（不是「最近一次 lastSubmission」）
       await loadUnderstanding(understandingSubmissionId(), epoch);
+      understandingLoadState.value = "ok";
+      understandingLoadError.value = null;
+      understandingLoadedOnce.value = true;
     } catch (err) {
       understandingError.value = (err as Error).message;
+      understandingLoadState.value = "error";
+      understandingLoadError.value = understandingError.value;
     }
     if (token !== understandingPollToken) return;
     if (understandingSettled(understandingStatus.value)) {
@@ -4766,14 +5343,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 读取本板面的执行记录；读完之后只在确有排队 / 运行的任务时才继续查询。 */
   async function loadExecutions(): Promise<void> {
     if (!apiSupports("fetchExecutions")) return;
+    executionsLoadState.value = "loading";
     try {
       const payload = await api.fetchExecutions(boardId.value);
       // 合并而不是整体替换：刚同步拿到的执行记录不该被一次旧/空的列表抹掉（记录只追加）
       mergeExecutions(payload?.executions ?? []);
       executionError.value = null;
+      executionsLoadError.value = null;
+      executionsLoadedOnce.value = true;
+      executionsLoadState.value = "ok";
       startExecutionPolling();
     } catch (err) {
       executionError.value = (err as Error).message;
+      executionsLoadError.value = executionError.value;
+      executionsLoadState.value = "error";
     }
   }
 
@@ -4832,6 +5415,181 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const resumeExecution = (intentId: string) => controlExecution(intentId, "resume");
   const cancelExecution = (intentId: string) => controlExecution(intentId, "cancel");
 
+  /* ------------------------------------------------------------------
+   * #44/#45/#46：批次导入（数据层）
+   *
+   * 边界：真正的文件上传仍由组件/服务层发起；这里**只维护可核对的批次事实**：
+   * - 单批 5 份上限，第 6 份起如实记成「未接收」（保留在 items 里，可重新导入）；
+   * - 每个文件自己的状态（pending / uploading / succeeded / failed / unreceived）；
+   * - 后续成功不覆盖前面的失败；重试只重置对应文件，不影响同批其它项；
+   * - 上传绑定原板面 / 原文件卡 / 任务身份；卡片已被删除或替换时，迟到的成功回执
+   *   不关联到任何卡片（记 failed + 原因），绝不错挂到新卡上。
+   * 批次状态放在 Pinia store：切换路由（如打开设置再回来）不会销毁，能显示真实进度或恢复入口。
+   * ------------------------------------------------------------------ */
+  const IMPORT_BATCH_LIMIT = 5;
+  const importBatches = ref<Record<string, ImportBatch>>({});
+  const latestImportBatchId = ref<string | null>(null);
+  let importBatchSeq = 0;
+  const currentImportBatch = computed<ImportBatch | null>(() =>
+    latestImportBatchId.value ? importBatches.value[latestImportBatchId.value] ?? null : null,
+  );
+  function importFileSupportedLimit(): number {
+    return IMPORT_BATCH_LIMIT;
+  }
+  /** 开始一批导入：超过 5 份的如实标成 unreceived（不是静默丢弃）。 */
+  function beginImportBatch(
+    targets: { name?: string; cardId?: string | null; taskId?: string | null }[],
+    options: { limit?: number; boardId?: string } = {},
+  ): ImportBatch {
+    const limit =
+      typeof options.limit === "number" && options.limit > 0
+        ? Math.min(Math.floor(options.limit), IMPORT_BATCH_LIMIT)
+        : IMPORT_BATCH_LIMIT;
+    const targetBoard = options.boardId ?? boardId.value;
+    const id = "imp_" + ++importBatchSeq + "_" + Date.now().toString(36);
+    const items: ImportBatchItem[] = (targets ?? []).map((target, index) => ({
+      key: "item_" + index,
+      name: String(target?.name ?? ""),
+      status: index < limit ? "pending" : "unreceived",
+      error: null,
+      attachmentId: null,
+      cardId: target?.cardId ? String(target.cardId) : null,
+      boardId: targetBoard,
+      taskId: target?.taskId ? String(target.taskId) : null,
+    }));
+    const batch: ImportBatch = { id, boardId: targetBoard, createdAt: new Date().toISOString(), limit, items };
+    importBatches.value = { ...importBatches.value, [id]: batch };
+    latestImportBatchId.value = id;
+    return batch;
+  }
+  function importBatchById(batchId: string): ImportBatch | null {
+    return importBatches.value[batchId] ?? null;
+  }
+  /** 当前批次的逐项汇总（「已接收 / 失败 / 未接收 / 进行中」；UI 直接显示）。 */
+  const currentImportBatchCounts = computed<ImportBatchCounts>(() =>
+    importBatchCounts(currentImportBatch.value),
+  );
+  /** 当前批次是否还有文件在途（上传中 / 待开始）：跨路由回来后据此显示真实进度或恢复入口。 */
+  const hasImportBatchInFlight = computed(() => {
+    const counts = currentImportBatchCounts.value;
+    return counts.pending + counts.uploading > 0;
+  });
+  /** 把某一项标记为「上传中」（UI 开始上传时调用；等价于 noteImportItem 的语义子集）。 */
+  function markImportItemUploading(batchId: string, itemKey: string): void {
+    noteImportItem(batchId, itemKey, { status: "uploading" });
+  }
+  /**
+   * 记录单个文件的结果。终态（succeeded / failed）之后不再被覆盖（后续成功不覆盖前面的失败），
+   * 迟到的成功回执若绑定的卡片已经不在了，不许挂到别处，如实记 failed。
+   */
+  function noteImportItem(
+    batchId: string,
+    itemKey: string,
+    patch: { status: ImportItemStatus; error?: string | null; attachmentId?: string | null; cardId?: string | null },
+  ): void {
+    const batch = importBatches.value[batchId];
+    if (!batch) return;
+    const items = batch.items.map((item) => {
+      if (item.key !== itemKey) return item;
+      if (item.status === "succeeded" || item.status === "failed") return item;
+      const nextStatus = patch.status ?? item.status;
+      const nextCardId = patch.cardId ?? item.cardId;
+      // 迟到绑定守卫：只对「当前板面」的批次生效（别的板面无法在这里核对卡片存在性）
+      if (
+        nextStatus === "succeeded" &&
+        nextCardId &&
+        batch.boardId === boardId.value &&
+        !(board.value?.cards ?? []).some((card) => card.id === nextCardId && !card.deleted)
+      ) {
+        return {
+          ...item,
+          status: "failed" as ImportItemStatus,
+          error: "上传回执迟到：原文件卡已被删除或被替换，这次上传没有关联到任何卡片。",
+        };
+      }
+      return {
+        ...item,
+        status: nextStatus,
+        error: nextStatus === "failed" ? patch.error ?? item.error : patch.error ?? null,
+        attachmentId: patch.attachmentId ?? item.attachmentId,
+        cardId: nextCardId,
+      };
+    });
+    importBatches.value = { ...importBatches.value, [batchId]: { ...batch, items } };
+  }
+  /** 重试只操作对应文件：把该项退回 pending；同批其它项的状态原样保留。 */
+  function retryImportItem(batchId: string, itemKey: string): void {
+    const batch = importBatches.value[batchId];
+    if (!batch) return;
+    const items = batch.items.map((item) =>
+      item.key === itemKey && (item.status === "failed" || item.status === "unreceived")
+        ? { ...item, status: "pending" as ImportItemStatus, error: null }
+        : item,
+    );
+    importBatches.value = { ...importBatches.value, [batchId]: { ...batch, items } };
+  }
+  /** 收起/关闭一批的反馈（只影响显示，不改提交范围）。 */
+  function dismissImportBatch(batchId?: string): void {
+    const id = batchId ?? latestImportBatchId.value;
+    if (!id) return;
+    const next = { ...importBatches.value };
+    delete next[id];
+    importBatches.value = next;
+    if (latestImportBatchId.value === id) {
+      const remaining = Object.keys(next);
+      latestImportBatchId.value = remaining.length ? remaining[remaining.length - 1] : null;
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * #26：待确认任务事件 → 无需刷新即可同步虚线卡与任务数
+   *
+   * 事件由后端 SSE 发出（i-submit：INTERACTIVE_INTENTS_CHANGED），订阅在页面/事件层；
+   * store 这里是**幂等应用**：按 intent_id upsert（同一 intent 后续事件覆盖状态），
+   * 不按事件数量累加，重复投递 / 重连补发不会产生重复卡。
+   * 未知 intent（还没有视图行）不编造卡片：记下来后合并刷新一次权威快照。
+   * 应用它不重置用户视图/焦点：只改数据，不碰画布视口、选择、面板开合。
+   * ------------------------------------------------------------------ */
+  let intentsEventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleIntentEventRefresh(): void {
+    if (intentsEventRefreshTimer !== null) return;
+    intentsEventRefreshTimer = setTimeout(() => {
+      intentsEventRefreshTimer = null;
+      void refreshIntentFacts();
+    }, 300);
+  }
+  /** 收到事件：返回 true = 属于当前板面且已应用（未知字段不编造，交给权威刷新）。 */
+  function applyInteractiveIntentsChanged(payload: InteractiveIntentsChangedPayload | null | undefined): boolean {
+    if (!payload) return false;
+    const eventBoard = String(payload.board_id ?? payload.boardId ?? "");
+    if (eventBoard && eventBoard !== boardId.value) return false;
+    const ids = (payload.intent_ids ?? payload.intentIds ?? []).map((id) => String(id)).filter(Boolean);
+    if (!ids.length) return false;
+    const idSet = new Set(ids);
+    let touchedKnown = false;
+    let hasUnknown = false;
+    const next = intentViews.value.map((view) => {
+      const id = String((view as { intent_id?: string; intentId?: string }).intent_id ?? (view as { intentId?: string }).intentId ?? "");
+      if (!idSet.has(id)) return view;
+      touchedKnown = true;
+      const status = payload.statuses?.[id];
+      if (!status || status === (view as { status?: string }).status) return view;
+      return { ...view, status: status as unknown as typeof view.status };
+    });
+    for (const id of idSet) {
+      const known = intentViews.value.some((view) => {
+        const viewId = String((view as { intent_id?: string; intentId?: string }).intent_id ?? (view as { intentId?: string }).intentId ?? "");
+        return viewId === id;
+      });
+      if (!known) hasUnknown = true;
+    }
+    if (touchedKnown) intentViews.value = next;
+    // 未知意图 / 任务数：用一次权威快照合并（不按事件条数累加，也不会生成重复卡）
+    if (hasUnknown) scheduleIntentEventRefresh();
+    else loadIntentViews({ throttleMs: 250 });
+    return true;
+  }
+
   function intentById(intentId: string): Intent | undefined {
     return intents.value.find((item) => item.id === intentId);
   }
@@ -4857,6 +5615,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
     board,
     loading,
     loadError,
+    /** #20：首次失败 vs 有上次成功数据（只读）与重试入口 */
+    boardLoadedOnce,
+    boardReadOnly,
+    boardEditBlockedReason,
+    retryBoardLoad,
     drafts,
     saveStatus,
     lastSavedAt,
@@ -4865,10 +5628,23 @@ export const useInteractiveStore = defineStore("interactive", () => {
     lastOpLabel,
     submissions,
     lastSubmission,
+    /** #80：原受理记录与重复提交判据（「查看原进度」/「已提交过」数据层） */
+    latestAcceptedSubmission,
+    hasAcceptedSubmission,
+    submissionBaseline,
+    pendingSubmissionChanges,
     /** 阶段三：聊天发送要携带的互动绑定（mode/boardId/submissionId） */
     chatBinding,
     submitStatus,
     submitError,
+    /** #13：提交门（与 submit() 同一口径；按钮禁用与原因提示都用它） */
+    canSubmit,
+    submitBlockedReason,
+    /** #03：提交区唯一主状态 + 详情（详情按需展开） */
+    roundStatus,
+    roundStatusLabel,
+    roundStatusDetail,
+    roundSettled,
     /** 四种状态分开的合成视图（受理 / 理解中 / 理解完成三态 / 提交失败） */
     submissionStage,
     /** 回执丢失但查询确认受理时的如实说明 */
@@ -4924,6 +5700,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     understandings,
     understandingStatus,
     understandingError,
+    /** #41：理解过程读取的独立三态（读取失败 / 上次结果 / 成功空） */
+    understandingLoadState,
+    understandingLoadError,
+    understandingLoadedOnce,
     understandingPolling,
     understandingNote,
     understandingHistory,
@@ -4941,6 +5721,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     executionsByIntent,
     executionStatus,
     executionError,
+    /** #07：执行记录读取的独立状态（首次失败 / 上次结果 / 可重试） */
+    executionsLoadState,
+    executionsLoadError,
+    executionsLoadedOnce,
     executionPolling,
     liveExecutions,
     loadExecutions,
@@ -5050,5 +5834,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
     checkMaterialImpact,
     intentById,
     statusLabel,
+    /** #26：幂等应用 INTERACTIVE_INTENTS_CHANGED（按 intent_id upsert，不重复建卡） */
+    applyInteractiveIntentsChanged,
+    /** #44/#45/#46：批次导入数据层 */
+    importBatches,
+    latestImportBatchId,
+    currentImportBatch,
+    importFileSupportedLimit,
+    beginImportBatch,
+    importBatchById,
+    noteImportItem,
+    markImportItemUploading,
+    retryImportItem,
+    dismissImportBatch,
+    currentImportBatchCounts,
+    hasImportBatchInFlight,
   };
 });

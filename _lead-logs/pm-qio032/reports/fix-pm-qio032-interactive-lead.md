@@ -1,0 +1,129 @@
+# PM-QIO032 互动模式修复 · Lead 交付报告
+
+- 父分支：`fix/pm-qio032-interactive`（worktree `D:\qio-dev\pm032-interactive`）
+- 审计基线 / 开工 SHA：`7445170d0f51756b2740eb7209d798540d8042a2`
+- 分支与 worktree 检查：开工时同名父分支与 worktree 已存在（HEAD=基线、工作区干净），按用户要求
+  **保留已有工作、未重建**；6 个子分支各自从基线新建 worktree，互不覆盖。
+- 交付纪律：所有工作提交只进入本组分支；未 push、未触发远端 CI/PR/发布。
+
+## 1. 子分支与合并
+
+| 子分支 | worktree | 分支尖端（合并前） | 合并进父分支 |
+| --- | --- | --- | --- |
+| fix/pm-qio032-i-material | pm-qio032-i-material | 32908699 | e578a531 / 978958bc |
+| fix/pm-qio032-i-submit | pm-qio032-i-submit | ab579d68 | 38e9dbdc / 603581b3 / 4174d480 带入 i-material |
+| fix/pm-qio032-i-state | pm-qio032-i-state | 5e7b244f | e6deeaf7 / 6396d2a5 |
+| fix/pm-qio032-i-canvas | pm-qio032-i-canvas | 10e20bf5 | 16235392 / 52f3831d |
+| fix/pm-qio032-i-layout | pm-qio032-i-layout | 3cd5e695 | c7d553fe / 2ff8d579 |
+| fix/pm-qio032-i-tasks | pm-qio032-i-tasks | 5fe32cd4 | 57f1c854 / 6f490059 / 3eac7fd8 |
+
+Lead 集成修复（父分支）：`1da8eb64`（BoardToolbar 样式注释缺 `/*` 导致互动页动态 import 失败 —— E2E 组发现）、
+互动数据契约的空提交门/失败重试/轮次状态口径调整（`store.interactive.ts`）、窗口帧契约
+（InteractiveView 不再用裸 `window.innerWidth`）、合并冲突（i2v2-a-intent-read-failure 断言口径）与
+5 个既有测试的「新行为断言」更新（#13 按钮禁用、#59 组收起显示状态提交、#07 失败入口迁移）。
+
+每个子分支的报告在 `_lead-logs/pm-qio032/reports/`：
+`fix-pm-qio032-i-material.md` / `...-i-submit.md` / `...-i-state.md` / `...-i-canvas.md` /
+`...-i-layout.md` / `...-i-tasks.md`。
+
+## 2. 逐项结果（按用户任务书编号）
+
+已修复（产品代码 + 定向测试证据）：
+#01（后端材料数据源 + turn_orchestrator 首轮交付/附件授权接线；浏览器级首轮请求捕获 UNVERIFIED）、
+#02（后端板面工具无绑定拒绝 + 提交轮只读 A 版；前端按基线已验证）、
+#03（后端真实轮次绑定/事件事实已有；前端 roundStatus 唯一主状态 + 单调守卫 + UI 一处呈现）、
+#04（工具栏按可用矩形换边/内收）、#06（基线已满足 + 契约说明与测试证据）、
+#07（三类读取失败独立、任务入口一处标记、面板一处可重试）、
+#08/#54（三态唯一入口：显示并参与/显示但不参与/隐藏且不参与；后端 card_access_state 唯一映射 +
+  提交/关系范围/工具读卡/附件读取同一授权；恢复隐藏默认只回显示但不参与；旧卡迁移不扩大范围）、
+#09（关系端点用户命名 > 文件名 > 非占位，同名第 N 张）、#13（后端空白卡不计/关系删除计入；
+  前端 canSubmit/submitBlockedReason 与按钮禁用提示）、#14、#15、#16、#18、#20（数据门禁 + 页面只读/重试/返回对话）、
+#26（后端 INTERACTIVE_INTENTS_CHANGED 事件 + 前端幂等订阅/虚线卡/任务数，端到端 UNVERIFIED）、
+#27（后端 authorization_invalidated/authorization_changes 真实差异 + 前端待确认/需重新确认展示）、
+#28（提交轮只读 A 版快照：board_inspect/read_cards/read_attachment 三路一致；源文件变化提示重新提交）、
+#40、#41（提交详情读取三态 + 重试）、#43、#55、#56、#58、#59（组收起偏好写显示状态、刷新恢复）、
+#71（空间纯函数与单开实测）、#73、#74、#76、#80（基线幂等/重放已满足 + 前端「已提交过/查看原进度」）、
+#81（基线查证已满足 + 前端短状态/查提交结果）、#84、#85、#86、#88；14 处文案全部落地（含精确措辞）。
+
+部分修复 / 已知边界：
+- #01 PNG 浏览器级交付取决于链路视觉能力；本机假厂商未捕获首轮聊天请求（编排级 fake adapter 测试通过，浏览器级 UNVERIFIED）。
+- #05/#71 宽窗并排未新增并排容器（几何不重叠）；800×600 单开实测 PASS，任务+提交组合开脚本未跑通（UNVERIFIED）。
+- #10/#11 画布侧交互、#17 部分、#44–46 UI 接线、#60–62、#72 静态省略号、#09 同名线索细节为部分或未做。
+- #08/#54 为兼容基线用例保留 hidden/aria-hidden 旧材料开关节点（视觉与无障碍不可达，用户只看三态入口）。
+- #28 同大小内容替换检测不到（以真实文件大小/可用性为准，界面如实提示重新提交）。
+- 恢复受阻/部分完成等文案按服务端账本口径实现；#72 未做双态省略号。
+
+## 3. 验证（命令与结果）
+
+后端（父分支，QIO_DATA_DIR 隔离）：
+```
+cd backend
+python scripts/run_backend_suite.py --workers 4 --junit-dir <...>
+```
+- 并行组：6745 passed / 39 skipped，1 failed：`tests/test_sandbox_readonly.py::test_read_only_run_program_allows_provably_readonly_argv`
+  （xdist 负载下报「本机无法核实低完整性写边界」；单文件复跑与该文件串行复跑均通过 → 环境/负载敏感波动，非本轮代码回归）。
+- 串行组：101 passed / 12 skipped（exit 0）。
+- 新增后端测试：`pm_qio032_material_scope_test.py`、`pm_qio032_submit_authorization_facts.py`、
+  `pm_qio032_submit_empty_semantics.py`、`pm_qio032_submit_intents_event.py`、`pm_qio032_submit_first_round_materials.py`。
+
+前端（父分支）：
+```
+cd frontend
+npx vue-tsc --noEmit        # exit 0（最终）
+npx vitest run              # 全量：583 个测试文件 / 5065 项，5060 passed；
+                            # 4 个文件 5 项失败：windowFramePlacement 在审计基线 worktree 上同样失败（既有问题，
+                            # 与本轮无关）；router-aliases / recovery-a-integration-n6 / settings-search 三个文件
+                            # 在隔离复跑时通过（并行负载下的超时/顺序波动）。见 _lead-logs/pm-qio032/final3-frontend.log
+```
+- 本轮新增/更新的相关测试全部通过（含专测 #03/#07/#13/#20/#26/#27/#41/#44–46/#59/#80–81、三态、工具栏几何、
+  删除隔离、组收起、任务面板三态/审批历史/恢复等）。
+
+真实界面 E2E（正常入口 + fake provider；权威明细 [e2e/README.md](../e2e/README.md)、[summary.json](../e2e/summary.json)，最终合并台账 **31/35 PASS**）：
+
+| 场景 | 结果 | 要点 |
+| --- | --- | --- |
+| ① 首轮交付/三态/不泄漏 | **12/13** | 文字卡正文进入首轮模型请求；排除/隐藏/未提交材料不泄漏；TXT/PNG 上传正常；**①-6b FAIL：参与项 TXT 文件正文未进入首轮请求（#01 已知缺口）**；PNG 本机无视觉链路 → 如实 image_unsupported（UNVERIFIED，不伪造） |
+| ② A/B 三路一致 | UNVERIFIED | 浏览器级未取证；后端冻结快照/材料单测通过 |
+| ③ 重复提交/延迟回执/迟到事件/草稿清理 | **5/6** | 双击只执行一次、延迟回执、迟到事件、清理失败[模拟]通过；**③-3 FAIL：重复提交未识别（#80 缺口）** |
+| ④ 800×600 / 1120-1121 | **8/8**（清空 fixture） | 实测 inset=28，窗口 1176/1177 ↔ 可用宽度 1120/1121；switch/双开、中心与命中通过；**压力场景：5 项改动时详情面板 305px 覆盖提交按钮并挡任务入口（#05 缺口）** |
+| ⑤ 六件/首件失败/路由往返 | **1/3** | 路由往返 PASS；**六件拖放静默丢第 6 件（#44/#45 缺口）**；**首件上传失败无可见原因/重试入口（#45/#11 缺口）**；旧卡迁移/隐藏成员/撤销连线 UNVERIFIED |
+| ⑥ 主题/Tab/Esc/IME | **5/5** | 净白/暗紫晶、连续 Tab、聊天焦点 Esc、IME 组合态 Esc、中文落字 |
+
+- 产品缺陷（E2E 复现）：#05 详情面板高度未钳制；#80 重复提交未识别；#44/#45 六件拖放静默丢第 6 件；#45/#11 首件失败无可见重试；#01 TXT 文件正文未交付。
+- 模拟标注：③-4 延迟回执（CDP Fetch 延迟）、③-5 迟到事件（/api/events/test）、③-6 草稿清理失败（Storage.removeItem 抛错）、⑤-3 首件失败（CDP Fetch abort）、⑥-4 输入法组合态（CompositionEvent）。
+- Windows 原生拖放缺环境单列待验；假厂商只证明 QIO 自身链路。
+
+## 4. 交付
+- 父分支 `fix/pm-qio032-interactive`；最终提交 SHA 见交付消息与 `git log`。
+- `docs/status.md` 已更新本轮「最后核对」；`python scripts/check_docs.py` 通过。
+- 未 push / 未 PR / 未触发远端 CI / 未发布；`fix/pm-*` 分支不在 CI push 自动矩阵内。
+
+## 5. 第三轮（E2E 遗留缺陷修复与最终复测）
+
+第三轮针对第二轮 E2E 暴露的 5 个缺陷与 ⑤/⑥ 回归项继续修复，全部提交在本组分支并合入父分支：
+
+| 子分支 | 第三轮提交 | 修复 |
+| --- | --- | --- |
+| fix/pm-qio032-i-canvas | 3440edbf / 3bf8689a / 905281f2 / 49a19e02 | #44/#45/#46 拖放批次 UI（5 份上限、已接收/未接收明细、逐文件状态与重试、跨路由恢复）、#10/#11 连线撤销与提示分级、#60/#62/#72 组级连线解除确认/加入组选择器/组名省略号 |
+| fix/pm-qio032-i-layout | 0f704016 / 11fb8a34 / 21146378 / 20110ab6 | #05 提交详情面板按可用空间钳制（内部滚动，不遮提交按钮/任务入口）、#80/#03 重复提交主状态「已提交过」 |
+| fix/pm-qio032-i-state | 1754b8b8 / e37cf86e / aa6c9bd5 | #80 未改动重复提交不发请求、保留原受理记录；ImportBatch 汇总接口；两条基线用例按新语义最小适配 |
+| fix/pm-qio032-i-submit | 690df33d | #28 受理时冻结材料内容版本（materialVersions，sha256），同大小内容替换可识别 |
+| fix/pm-qio032-i-material | facb8a84 / 457ea500 / 15ecf19a / ae7f6a3c / 5929e0f9 | #28 材料哈希核对接口与同大小替换识别；#01 TXT 文件正文数据源复核（source=attachment_text） |
+
+第三轮结论更正：② 及 ① 的上轮失败中，①-6b 是验收脚本自相矛盾（唯一 TXT 卡被设为「显示但不参与」又要求交付）；
+修正后参与 TXT 正文以 source=attachment_text 逐字进入首轮请求，参与 PNG 以 image_url 交付且 base64 与本地字节一致（①-6c）——
+不是产品缺口，不需要为 ①-6b 再等修复。
+
+最终验证：
+- E2E（`scripts/verify-pm-qio032/run.ps1`，正常入口 + Edge/CDP + fake provider 台账）：**38/40 PASS**，
+  ① 14/14、② 1/3（②-2/②-3 UNVERIFIED）、③ 6/6、④ 9/9（含 #05 压力）、⑤ 3/3、⑥ 5/5；明细见
+  [e2e/README.md](../e2e/README.md)、[e2e/summary.json](../e2e/summary.json)。
+- 后端全量 `python scripts/run_backend_suite.py --workers 4`：**RESULT OK**（并行 6752 passed / 39 skipped、
+  串行 101 passed / 12 skipped、0 failed）。
+- 前端 `npx vue-tsc --noEmit` exit 0；全量 vitest 仅 2 个文件失败：`settings-search` 隔离复跑通过（并行负载波动）、
+  `windowFramePlacement` 在审计基线上同样失败（既有问题，与本轮无关）。
+- `python scripts/check_docs.py` 通过。
+
+剩余 UNVERIFIED / 边界（不宣称通过）：②-2/②-3 A/B 工具读取链（fake provider 脚本化工具调用未执行，后端冻结快照
+单测通过）、② 读文件一路、⑤ 旧卡迁移/隐藏成员/撤销连线、Windows 原生 Tauri 拖放；历史提交（无 materialVersions）
+仍按 size 核对并如实提示，不会静默替换；>64MiB 材料哈希核对保守拒绝交付。

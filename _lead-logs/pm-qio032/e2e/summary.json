@@ -1,0 +1,636 @@
+{
+  "runId": "20261113045732",
+  "base": "http://127.0.0.1:5199",
+  "api": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8807",
+  "pass": 38,
+  "total": 40,
+  "results": [
+    {
+      "name": "①-0 正常入口：对话页模式切换进入互动板面",
+      "ok": true,
+      "detail": {
+        "before": "conversation",
+        "after": "interactive",
+        "hash": "#/interactive"
+      }
+    },
+    {
+      "name": "①-1 文字卡写入唯一标记",
+      "ok": true,
+      "detail": {
+        "ok": true,
+        "body": "M1-20261113050730 参与项文字",
+        "stillEditing": false
+      }
+    },
+    {
+      "name": "①-2 上传两张 TXT 文件卡（参与项 + 排除项，正常「添加 → 文件」入口）",
+      "ok": true,
+      "detail": {
+        "participating": {
+          "before": 1,
+          "after": 2
+        },
+        "excluded": {
+          "before": 2,
+          "after": 3
+        },
+        "status": ""
+      }
+    },
+    {
+      "name": "①-3 上传两张 PNG 文件卡（参与项 + 隐藏项）",
+      "ok": true,
+      "detail": {
+        "participating": {
+          "before": 3,
+          "after": 4
+        },
+        "hidden": {
+          "before": 4,
+          "after": 5
+        }
+      }
+    },
+    {
+      "name": "①-4a 隐藏后恢复显示默认只回「显示但不参与」",
+      "ok": true,
+      "detail": {
+        "hiddenOn": {
+          "before": "card selected",
+          "after": "card selected hidden",
+          "visibilityBefore": "included",
+          "visibilityAfter": "hidden_excluded",
+          "textBefore": "文字注释 显示并参与 参与 TXT-HIDDEN-20261113050730-隐藏项正文 11-13 13:07",
+          "textAfter": "文字注释 隐藏且不参与 不参与 TXT-HIDDEN-20261113050730-隐藏项正文 已隐藏：退出讨论范围 1",
+          "hiddenNow": true
+        },
+        "restored": {
+          "before": "hidden_excluded",
+          "after": "displayed_excluded",
+          "menuOpened": 1
+        }
+      }
+    },
+    {
+      "name": "①-4 对照：排除项 TXT 卡「显示但不参与」",
+      "ok": true,
+      "detail": {
+        "before": "included",
+        "after": "displayed_excluded",
+        "menuOpened": 1
+      }
+    },
+    {
+      "name": "①-5 对照：隐藏项 PNG 卡「隐藏且不参与」",
+      "ok": true,
+      "detail": {
+        "before": "card is-cover",
+        "after": "card hidden is-cover",
+        "visibilityBefore": "included",
+        "visibilityAfter": "hidden_excluded",
+        "textBefore": "查看原图 图片 png-hide-20261113050730.png 显示并参与 参与 11-13 13:07",
+        "textAfter": "查看原图 图片 png-hide-20261113050730.png 隐藏且不参与 不参与 已隐藏：退出讨论范围 11",
+        "hiddenNow": true
+      }
+    },
+    {
+      "name": "①-5b 交付对象（参与项 TXT / PNG）保持「显示并参与」",
+      "ok": true,
+      "detail": {
+        "idxTxtPart": 1,
+        "idxPngPart": 3,
+        "txtVisibility": "included",
+        "pngVisibility": "included"
+      }
+    },
+    {
+      "name": "①-6 提交后首个互动轮次模型请求携带参与项正文",
+      "ok": true,
+      "detail": {
+        "chatRequests": 3,
+        "requestsWithTextMarker": 1,
+        "provider_log_requests": 3
+      }
+    },
+    {
+      "name": "①-6b 参与项 TXT 文件的可读正文进入首轮模型请求（同一正式提交入口）",
+      "ok": true,
+      "detail": {
+        "kind": "txt_file_body_delivered",
+        "txtMarkerSeen": true,
+        "fileNameSeen": true,
+        "note": "参与项 TXT 正文出现在模型请求里（参与项交付成立）"
+      }
+    },
+    {
+      "name": "①-6c 参与项 PNG 的交付形态：image_url 带真实字节 = 真交付；无视觉链路则如实 image_unsupported",
+      "ok": true,
+      "detail": {
+        "kind": "image_delivered",
+        "imageUrlSeen": true,
+        "bytesMatch": true,
+        "pngNameSeen": true,
+        "note": "请求里出现 image_url，且 data URL 的 base64 与本地 PNG 字节一致（字节交付成立）",
+        "submitLabel": "提交给 QIO",
+        "settled": {
+          "text": "本次提交：已提交，排队中\n\n已受理\nQIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。\n\n刷新理解状态\n\n已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。\n\n提交给 QIO",
+          "label": "提交给 QIO"
+        }
+      }
+    },
+    {
+      "name": "①-7 排除项（显示但不参与）正文不出现在模型请求里",
+      "ok": true,
+      "detail": {
+        "excludedTxtMarkerPresent": false,
+        "excludedTextMarkerPresent": false,
+        "note": "参与项 TXT 已交付 → 本项对文件正文有区分力"
+      }
+    },
+    {
+      "name": "①-8 隐藏项（隐藏且不参与）正文/文件名不出现在模型请求里",
+      "ok": true,
+      "detail": {
+        "hiddenTextMarkerPresent": false,
+        "hiddenPngNamePresent": false
+      }
+    },
+    {
+      "name": "①-10 提交后新建的未提交材料不进入本次请求",
+      "ok": true,
+      "detail": {
+        "unsubmittedPresent": false,
+        "saveStatusAfter": ""
+      }
+    },
+    {
+      "name": "②-1 提交 A 后改成 B：板面显示 B（提交快照已不再等于板面）",
+      "ok": true,
+      "detail": {
+        "cardId": "c_mweibgqo1srde",
+        "editA": true,
+        "editB": true,
+        "boardShowsA": false,
+        "boardShowsB": true,
+        "submitLabel": "提交给 QIO",
+        "settled": "本次提交：已提交，排队中 已受理 QIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。 刷新理解状态 已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。 提交给 QIO"
+      }
+    },
+    {
+      "name": "②-2 绑定追问：board_read_cards(source=submission) 的工具结果含提交版 A（不含 B）",
+      "ok": false,
+      "detail": {
+        "warmBound": true,
+        "waited": false,
+        "requests": 2,
+        "toolRequests": 0,
+        "hasA": false,
+        "hasB": false,
+        "toolHead": "",
+        "basis": "",
+        "kind": "unverified",
+        "reason": "绑定追问轮没有执行脚本化工具调用（2 个请求、0 个 tool 消息）：板面工具在该轮是否暴露 / 标题请求是否吃掉脚本首步未定位；按 UNVERIFIED 记录，不作为产品缺陷。"
+      }
+    },
+    {
+      "name": "②-3 同一工具 source=latest 返回当前板面 B（快照 / 最新两路分开，不静默互换）",
+      "ok": false,
+      "detail": {
+        "waited": false,
+        "requests": 2,
+        "toolRequests": 0,
+        "hasA": false,
+        "hasB": false,
+        "toolHead": "",
+        "basis": "",
+        "kind": "unverified",
+        "reason": "绑定追问轮没有执行脚本化工具调用（2 个请求、0 个 tool 消息）：板面工具在该轮是否暴露 / 标题请求是否吃掉脚本首步未定位；按 UNVERIFIED 记录，不作为产品缺陷。"
+      }
+    },
+    {
+      "name": "③-1 双击提交只执行一次（provider 台账 + 提交记录数）",
+      "ok": true,
+      "detail": {
+        "providerHits": 1,
+        "chats": 4,
+        "submissionsBefore": 6,
+        "submissionsAfter": 7,
+        "label1": "提交给 QIO",
+        "settled": "本次提交：已提交，排队中 已受理 QIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。 刷新理解状态 已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。 提交给 QIO"
+      }
+    },
+    {
+      "name": "③-2 主状态停在真实受理态（不重复执行、不丢原受理记录）",
+      "ok": true,
+      "detail": {
+        "state": "本次提交：已提交，排队中 已受理 QIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。 刷新理解状态 已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。 提交给 QIO",
+        "editOk": true
+      }
+    },
+    {
+      "name": "③-3 成功后不改内容再提交：submissions 不增且界面说「已提交过 / 没有新的改动」（#80）",
+      "ok": true,
+      "detail": {
+        "label2": "提交给 QIO",
+        "disabled": false,
+        "submissionsBefore": 7,
+        "submissionsAfter": 7,
+        "uiText": "本次提交：已提交过 已受理 QIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。 刷新理解状态 已提交过：这次内容与上次成功提交相同，没有新的改动；保留了原来的受理记录，没有再次提交。 已提交过：这次请求保留了原来的受理记录，没有再次执行 查看原进度 提交给 QIO 已提交过：这次请求保留了原来的受理记录，没有再次执行",
+        "noNewWorkText": true
+      }
+    },
+    {
+      "name": "③-4 延迟回执期间先显示「正在提交」，回执到达后落到受理态",
+      "ok": true,
+      "detail": {
+        "simulated": true,
+        "beforeLabel": "提交给 QIO",
+        "during": {
+          "label": "正在提交…",
+          "disabled": true
+        },
+        "after": "本次提交：已提交，排队中 已受理 QIO 已经可靠收下这次提交，正在准备理解。受理不等于理解完成，也不等于批准执行。 刷新理解状态 已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。 提交给 QIO",
+        "providerHits": 1
+      }
+    },
+    {
+      "name": "③-5 重复/迟到事件不倒退已结束轮次、不生成重复卡（[模拟]事件）",
+      "ok": true,
+      "detail": {
+        "simulated": true,
+        "statusBefore": "accepted",
+        "statusAfter": "accepted",
+        "cardsBefore": 2,
+        "cardsAfter": 2
+      }
+    },
+    {
+      "name": "③-6 保存成功但草稿清理失败时保留原文并给可操作入口（[模拟]存储失败）",
+      "ok": true,
+      "detail": {
+        "simulated": true,
+        "patch": true,
+        "editOk": true,
+        "observed": {
+          "found": {
+            "[data-im=\"card-draft-local-removal-error\"]": 1,
+            "[data-im=\"card-draft-local-removal-retry\"]": 0,
+            "[data-im=\"card-draft-removal-error\"]": 0,
+            "[data-im=\"card-draft-error\"]": 0
+          },
+          "removeFailed": 3,
+          "cardText": "文字注释 显示并参与 参与 草稿还没保存成功；本机也没能留下恢复副本：本机存储已满，这条记录没有删掉（清理一些空间后可以重试）（现在关闭页面就恢复不到这次未完成的输入） 重试保护 这份本机副本没能删掉，重开后可能又出现：本机存储已满，这条记录没有删掉（清理一些空间后可以重试） DUP-20261113045732 清理"
+        }
+      }
+    },
+    {
+      "name": "④-0 800×600 进入窄窗 switch 规则（按实际可用宽度）",
+      "ok": true,
+      "detail": {
+        "innerWidth": 800,
+        "rootWidth": 744,
+        "space": "switch"
+      }
+    },
+    {
+      "name": "④-1 800×600 单开提交详情：面板完整、中心命中自己、不遮提交按钮",
+      "ok": true,
+      "detail": {
+        "details": {
+          "x": 63,
+          "y": 262,
+          "w": 674,
+          "h": 122
+        },
+        "detailsHit": true,
+        "submitHit": true,
+        "overlapSubmit": false
+      }
+    },
+    {
+      "name": "④-2 800×600 组合开：任务打开时提交详情收起（switch，不重叠）",
+      "ok": true,
+      "detail": {
+        "space": "switch",
+        "task": {
+          "x": 271,
+          "y": 197,
+          "w": 480,
+          "h": 115
+        },
+        "taskHit": true,
+        "detailsOpen": false,
+        "submitHit": true
+      }
+    },
+    {
+      "name": "④-3 800×600 任务面板不遮提交按钮、中心命中自己",
+      "ok": true,
+      "detail": {
+        "overlapSubmit": false,
+        "submitHit": true
+      }
+    },
+    {
+      "name": "④-4 800×600 反向组合：详情打开时任务收起（同一时间只留最近打开的一块）",
+      "ok": true,
+      "detail": {
+        "detailsOpen": true,
+        "taskOpen": false,
+        "detailsHit": true
+      }
+    },
+    {
+      "name": "④-5 800×600 Esc 收起最上层非模态面板（提交详情）",
+      "ok": true,
+      "detail": {
+        "detailsOpen": false,
+        "taskOpen": false
+      }
+    },
+    {
+      "name": "④-6 1120/1121 实际边界：边界-1 为 switch，边界为 side-by-side",
+      "ok": true,
+      "detail": {
+        "measuredInset": 56,
+        "boundaryWindow": 1177,
+        "at": {
+          "1176": {
+            "inner": 1176,
+            "rootWidth": 1120,
+            "space": "switch",
+            "details": null,
+            "task": 480,
+            "detailsHit": null,
+            "taskHit": true,
+            "submitHit": true,
+            "overlapSubmit": false,
+            "detailsOpen": false,
+            "taskOpen": true
+          },
+          "1177": {
+            "inner": 1177,
+            "rootWidth": 1121,
+            "space": "side-by-side",
+            "details": 832,
+            "task": 480,
+            "detailsHit": true,
+            "taskHit": true,
+            "submitHit": true,
+            "overlapSubmit": false,
+            "detailsOpen": true,
+            "taskOpen": true
+          }
+        }
+      }
+    },
+    {
+      "name": "④-7 边界两侧中心与命中一致，且两块面板/提交按钮互不遮挡",
+      "ok": true,
+      "detail": {
+        "sideBySide": {
+          "inner": 1177,
+          "rootWidth": 1121,
+          "space": "side-by-side",
+          "details": 832,
+          "task": 480,
+          "detailsHit": true,
+          "taskHit": true,
+          "submitHit": true,
+          "overlapSubmit": false,
+          "detailsOpen": true,
+          "taskOpen": true
+        },
+        "switch": {
+          "inner": 1176,
+          "rootWidth": 1120,
+          "space": "switch",
+          "details": null,
+          "task": 480,
+          "detailsHit": null,
+          "taskHit": true,
+          "submitHit": true,
+          "overlapSubmit": false,
+          "detailsOpen": false,
+          "taskOpen": true
+        }
+      }
+    },
+    {
+      "name": "④-8 800×600、5 项改动时详情面板钳制、不遮提交按钮、任务入口可点（#05）",
+      "ok": true,
+      "detail": {
+        "changeItems": 6,
+        "innerHeight": 600,
+        "details": {
+          "x": 63,
+          "y": 155,
+          "w": 674,
+          "h": 237
+        },
+        "detailsHit": true,
+        "submitHit": true,
+        "overlapSubmit": false,
+        "taskOpened": true
+      }
+    },
+    {
+      "name": "⑤-1 互动 → 对话 → 互动路由往返后卡片与内容仍在",
+      "ok": true,
+      "detail": {
+        "cardsBefore": 1,
+        "cardsAfter": 1,
+        "markPresent": true
+      }
+    },
+    {
+      "name": "⑤-2 六件拖放：只接收 5 件、批次清单列出第 6 件「未接收」且可重新导入（#44/#45）",
+      "ok": true,
+      "detail": {
+        "dropped": 6,
+        "cardsBefore": 1,
+        "cardsAfter": 6,
+        "batchSummary": "本批已接收 5 份 / 未接收 1 份（单批上限 5 份）",
+        "itemStatuses": [
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "unreceived"
+        ],
+        "sixth": {
+          "name": "batch-20261113045732-6.txt",
+          "status": "unreceived",
+          "retry": "重新导入",
+          "error": "",
+          "text": "batch-20261113045732-6.txt 未接收 重新导入"
+        },
+        "sixthListed": true,
+        "reimport": {
+          "ok": true,
+          "cardsAfter": 7,
+          "sixthStatus": "succeeded",
+          "chooser": {
+            "ok": false,
+            "error": "没有等到文件选择器"
+          }
+        }
+      }
+    },
+    {
+      "name": "⑤-3 首件上传失败：失败项有可见原因与重试入口，重试成功且后续文件不陪葬（[模拟]首请求失败）",
+      "ok": true,
+      "detail": {
+        "simulated": true,
+        "failedOnce": true,
+        "cardsBefore": 7,
+        "cardsAfter": 8,
+        "batchSummary": "本批已接收 1 份 / 未接收 1 份（单批上限 5 份）",
+        "items": [
+          {
+            "name": "batch-20261113045732-7.txt",
+            "status": "failed",
+            "retry": "重试",
+            "error": "Failed to fetch",
+            "text": "batch-20261113045732-7.txt 失败 Failed to fetch 重试"
+          },
+          {
+            "name": "batch-20261113045732-8.txt",
+            "status": "succeeded",
+            "retry": "",
+            "error": "",
+            "text": "batch-20261113045732-8.txt 已接收"
+          }
+        ],
+        "firstErrorVisible": true,
+        "secondSucceeded": true,
+        "retryFirst": {
+          "ok": true,
+          "cardsAfter": 9,
+          "statuses": [
+            "succeeded",
+            "succeeded"
+          ]
+        }
+      }
+    },
+    {
+      "name": "⑥-1 净白（light）/ 暗紫晶（dark）两主题真实生效且截图",
+      "ok": true,
+      "detail": {
+        "light": {
+          "applied": "light",
+          "bodyBg": "rgb(252, 252, 251)",
+          "shot": "D:\\qio-dev\\pm032-interactive\\_lead-logs\\pm-qio032\\e2e\\shots\\15-s6-theme-light.png"
+        },
+        "dark": {
+          "applied": "dark",
+          "bodyBg": "rgb(23, 16, 21)",
+          "shot": "D:\\qio-dev\\pm032-interactive\\_lead-logs\\pm-qio032\\e2e\\shots\\16-s6-theme-dark.png"
+        }
+      }
+    },
+    {
+      "name": "⑥-2 板面工具栏连续 Tab 焦点真实移动且可见",
+      "ok": true,
+      "detail": {
+        "sequence": [
+          {
+            "tag": "button",
+            "im": "bookmarks-toggle",
+            "text": "打开书签栏",
+            "visible": true
+          },
+          {
+            "tag": "button",
+            "im": "submit-details",
+            "text": "提交详情",
+            "visible": true
+          },
+          {
+            "tag": "button",
+            "im": "submit",
+            "text": "提交给 QIO",
+            "visible": true
+          },
+          {
+            "tag": "button",
+            "im": null,
+            "text": "互动模式",
+            "visible": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "⑥-3 焦点在聊天输入框时 Esc 收起提交详情且不清聊天草稿",
+      "ok": true,
+      "detail": {
+        "details": false,
+        "value": "ESC-DRAFT-20261113045732"
+      }
+    },
+    {
+      "name": "⑥-4 中文输入法组合态：Esc 不抢输入法（面板/草稿不动），组合结束中文正常落字",
+      "ok": true,
+      "detail": {
+        "simulatedComposition": true,
+        "during": {
+          "details": true,
+          "value": "ni"
+        },
+        "committed": "你好世界"
+      }
+    },
+    {
+      "name": "⑥-5 组合结束后 Esc 正常收起提交详情",
+      "ok": true,
+      "detail": {
+        "closed": true
+      }
+    }
+  ],
+  "consoleErrors": [],
+  "shotsDir": "D:\\qio-dev\\pm032-interactive\\_lead-logs\\pm-qio032\\e2e\\shots",
+  "note": "浏览器层=系统 Edge + CDP（本机没有 Playwright 包，见 README）；s1/s4 用单独复跑替换同名断言",
+  "simulated": [
+    "③-4 延迟回执（CDP Fetch 延迟 1.5s）",
+    "③-5 重复/迟到事件（/api/events/test 注入）",
+    "③-6 草稿清理失败（Storage.removeItem 抛错）",
+    "⑤-3 首件上传失败（CDP Fetch abort 首个 /api/attachments/upload）",
+    "⑥-4 中文输入法组合态（CompositionEvent 模拟）"
+  ],
+  "unverified": [
+    "②-2/②-3 A/B 三路：提交 A→改 B 与板面 B 已取证（②-1），但绑定追问轮没有执行脚本化 board_read_cards 调用（toolRequests=0）——板面工具在该轮的暴露条件/标题请求是否吃掉脚本首步未定位；按 UNVERIFIED，不作产品结论",
+    "② 读文件一路（read_attachment）未纳入本轮 A/B 取证",
+    "⑤ 旧卡迁移（需要旧 schema 板面 fixture）",
+    "⑤ 隐藏成员/撤销连线（画布连线手势与组成员选择未纳入本轮 CDP 驱动）",
+    "原生 Tauri 窗口拖放（真实路径 dropped_path）需 Windows 原生壳，本轮只覆盖浏览器字节拖放"
+  ],
+  "mergedRuns": [
+    {
+      "kind": "full",
+      "runId": "20261113045732",
+      "note": "s1,s2,s3,s4,s5,s6 全场景；s2 工具调用未执行（UNVERIFIED）；④-8 因断言取 innerHeight 的方式有 bug 误判失败"
+    },
+    {
+      "kind": "s4-only",
+      "runId": "20261113050610",
+      "note": "修正 ④-8 取视口高度后复跑：9/9，详情面板 h=237、overlapSubmit=false、任务入口可点"
+    },
+    {
+      "kind": "s1-only",
+      "runId": "20261113050730",
+      "note": "① 最终证据复跑：14/14；provider-log-s1.json 为本次请求正文台账"
+    }
+  ],
+  "defects": [
+    "#05 已修复并复验：800×600、6 项改动时提交详情面板 h=237（钳制、可内部滚动），不遮提交按钮，任务入口可点（④-8 PASS）",
+    "#80 已修复并复验：不改内容再提交 submissions 不增（7→7），界面显示「已提交过：这次内容与上次成功提交相同，没有新的改动…」（③-3 PASS）",
+    "#44/#45 已修复并复验：六件拖放接收 5、第 6 件逐项列「未接收」并可重新导入（⑤-2 PASS）；首件失败有可见原因与重试、后续不陪葬（⑤-3 PASS）",
+    "①-6b 属验收脚本设计缺陷（旧断言用排除卡验交付），已改参与项卡并在当前分支复验通过：TXT 正文以 source=attachment_text 进入请求、PNG 以 image_url 真实字节交付"
+  ]
+}

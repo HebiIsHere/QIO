@@ -252,6 +252,169 @@ def _authorization_valid(row: sqlite3.Row) -> bool:
     return version == int(_row_value(row, "version", 1) or 1)
 
 
+# -- 授权失效事实（#27） ------------------------------------------------------
+#
+# 需求：#27 只有**原授权因范围变化确实失效**时才显示「需重新确认」，并给出真实变更；
+# 首次未授权只能是「待确认」，不能用时间 / 版本变化冒充范围变化。
+#
+# 判定口径：当前无有效授权，且历史版本里确实写过非空授权快照 → 曾经被授权过、
+# 之后被实质更新作废。历史快照与当前行逐字段比较，产出可直接展示的中文差异；
+# 没有可核对差异时返回 []（宁可不显示，也不编造）。
+
+#: 历史授权快照的扫描上限（只取「最近一条非空授权」；正常意图版本很少，足够用）。
+_AUTHORIZATION_HISTORY_SCAN = 200
+
+
+def _authorization_snapshot(conn: sqlite3.Connection, intent_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """该意图最近一条**非空**授权快照 (authorization, payload)；从未授权 → None。
+
+    为什么查历史：实质更新（目标 / 范围 / 依赖 / 冲突变化）会把当前行的
+    row.authorization 清空，单看当前行无法区分「从未授权」与「原授权失效」。
+    历史表里的旧授权快照是「原授权确实存在过」的唯一证据；读不到就返回 None
+    （不拿版本号 / 时间 / 状态变化冒充授权事实）。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT authorization, payload FROM board_intent_versions WHERE intent_id = ?"
+            " ORDER BY version DESC, created_at DESC, rowid DESC LIMIT ?",
+            (str(intent_id), _AUTHORIZATION_HISTORY_SCAN),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    for row in rows:
+        authorization = _loads(row["authorization"], {})
+        if isinstance(authorization, dict) and authorization:
+            payload = _loads(row["payload"], {})
+            return authorization, payload if isinstance(payload, dict) else {}
+    return None
+
+
+def _ids_of(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _count_change(line: str, unit: str, old: list[str], new: list[str]) -> str | None:
+    if old == new:
+        return None
+    if len(old) != len(new):
+        return f"{line}：{len(old)} {unit} → {len(new)} {unit}"
+    return f"{line}：集合已变化（仍为 {len(new)} {unit}）"
+
+
+def _list_change(line: str, old: list[str], new: list[str]) -> str | None:
+    if set(old) == set(new):
+        return None
+    def show(values: list[str]) -> str:
+        return "、".join(sorted(set(values))) if values else "（无）"
+    return f"{line}：{show(old)} → {show(new)}"
+
+
+def _number_change(line: str, old: int, new: int) -> str | None:
+    if old == new:
+        return None
+    return f"{line}：{old} → {new}"
+
+
+def _short(value: Any, limit: int = 60) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "（空）"
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _int_of(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _authorization_changes(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    snapshot: tuple[dict[str, Any], dict[str, Any]] | None = None,
+) -> list[str]:
+    """原授权快照与当前意图之间的**真实**差异（可直接展示）；没有事实时返回 []。"""
+    history = snapshot if snapshot is not None else _authorization_snapshot(conn, str(row["id"]))
+    if history is None:
+        return []
+    authorization, payload = history
+    changes: list[str] = []
+
+    # 1) 目标 / 预期：历史快照的版本 payload 里有当时的目标语义。
+    goal = _short(row["goal"])
+    if payload and str(payload.get("goal") or "").strip() and _short(payload.get("goal")) != goal:
+        changes.append(f"目标：{_short(payload.get('goal'))} → {goal}")
+    expected = _short(row["expected"])
+    if payload and str(payload.get("expected") or "").strip() and _short(payload.get("expected")) != expected:
+        changes.append(f"预期：{_short(payload.get('expected'))} → {expected}")
+
+    # 2) 结构化范围：读取 / 写入 / 分组 / 允许动作 / 新建上限。
+    old_scope = authorization.get("scope") if isinstance(authorization.get("scope"), dict) else {}
+    new_scope = _loads(_row_value(row, "scope", "{}"), {})
+    if not isinstance(new_scope, dict):
+        new_scope = {}
+    for line, key, unit in (
+        ("读取范围", "read_card_ids", "张卡"),
+        ("写入范围", "write_card_ids", "张卡"),
+        ("涉及分组", "group_ids", "个组"),
+    ):
+        text = _count_change(line, unit, _ids_of(old_scope.get(key)), _ids_of(new_scope.get(key)))
+        if text:
+            changes.append(text)
+    text = _list_change("允许动作", _ids_of(old_scope.get("allowed_actions")), _ids_of(new_scope.get("allowed_actions")))
+    if text:
+        changes.append(text)
+    for line, key in (
+        ("新建卡片上限", "max_new_cards"),
+        ("新建分组上限", "max_new_groups"),
+        ("新建关系上限", "max_new_links"),
+    ):
+        text = _number_change(line, _int_of(old_scope.get(key)), _int_of(new_scope.get(key)))
+        if text:
+            changes.append(text)
+
+    # 3) 依据（引用的正式卡片集合）。
+    old_basis = _ids_of([item.get("card_id") for item in (payload.get("basis") or []) if isinstance(item, dict)])
+    new_basis = _ids_of([item.get("card_id") for item in (_loads(_row_value(row, "basis", "[]"), []) or []) if isinstance(item, dict)])
+    text = _count_change("依据卡片", "张", old_basis, new_basis)
+    if text:
+        changes.append(text)
+
+    # 4) 依赖 / 冲突：数量或身份变化。
+    for line, key in (("依赖项", "depends_on"), ("冲突项", "conflicts_with")):
+        text = _count_change(
+            line,
+            "项",
+            _ids_of(authorization.get(key)),
+            _ids_of(_loads(_row_value(row, key, "[]"), [])),
+        )
+        if text:
+            changes.append(text)
+
+    if not changes:
+        # 只有版本号不同、拿不出任何语义差异时不冒充「范围变化」。
+        return []
+    old_version = _int_of(authorization.get("version"))
+    current_version = int(_row_value(row, "version", 1) or 1)
+    if old_version and old_version != current_version:
+        changes.append(f"授权版本 v{old_version} → 当前 v{current_version}")
+    return changes
+
+
+def _authorization_facts(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, list[str]]:
+    """(authorization_invalidated, authorization_changes)：当前行是否「原授权已失效」。"""
+    if _authorization_valid(row):
+        return False, []
+    snapshot = _authorization_snapshot(conn, str(row["id"]))
+    if snapshot is None:
+        return False, []
+    return True, _authorization_changes(conn, row, snapshot=snapshot)
+
+
 def _intent_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     intent_id = str(row["id"])
     operations = _operations(conn, intent_id)
@@ -266,6 +429,7 @@ def _intent_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         )
     version = int(_row_value(row, "version", 1) or 1)
     authorization = _loads(_row_value(row, "authorization", "{}"), {})
+    authorization_invalidated, authorization_changes = _authorization_facts(conn, row)
     raw_display = _loads(_row_value(row, "display", "{}"), {})
     display = None
     if isinstance(raw_display, dict) and raw_display:
@@ -294,6 +458,10 @@ def _intent_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "conflicts": conflicts,
         "authorization": authorization,
         "authorization_valid": _authorization_valid(row),
+        # #27：只在「曾有非空授权快照、现在失效」时为 true；从未授权保持 false。
+        # authorization_changes 是原授权与当前意图的真实差异（没有事实时 []）。
+        "authorization_invalidated": authorization_invalidated,
+        "authorization_changes": authorization_changes,
         "outcome": str(_row_value(row, "outcome", "") or ""),
         "summary": str(row["summary"] or ""),
         "attempt": int(_row_value(row, "attempt", 0) or 0),
@@ -316,10 +484,19 @@ def _record_version(
     payload = _intent_view(conn, row)
     if authorization is None:
         authorization = _loads(_row_value(row, "authorization", "{}"), {})
+    # 同一版本只保留第一份 payload（提案当时的快照），但**授权快照必须补写**：
+    # 确认动作常常发生在提案的同一版本（v1），INSERT OR IGNORE 会把确认时写下的
+    # 授权快照静默丢掉 —— 之后「实质更新使原授权失效」就再也拿不到证据，
+    # 前端无法区分「从未授权」与「原授权被范围变化作废」（#27）。
+    # 因此同 (intent_id, version) 冲突时只补非空 authorization，不改 payload / created_at。
     conn.execute(
-        "INSERT OR IGNORE INTO board_intent_versions"
+        "INSERT INTO board_intent_versions"
         " (intent_id, version, payload, authorization, created_at)"
-        " VALUES (?, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(intent_id, version) DO UPDATE SET"
+        " authorization = CASE"
+        "   WHEN excluded.authorization <> '{}' THEN excluded.authorization"
+        "   ELSE board_intent_versions.authorization END",
         (str(row["id"]), version, _dumps(payload), _dumps(authorization), _now()),
     )
 
@@ -1413,6 +1590,59 @@ def get_intent(conn: sqlite3.Connection, board_id: str, intent_id: str) -> dict[
     if row is None or str(row["board_id"]) != str(board_id):
         return None
     return _intent_view(conn, row)
+
+
+# -- #26：意图清单变化事件（虚线卡 / 任务数无需刷新即可同步） -------------------
+#
+# 只发「清单可能变了」这一条事实：涉及哪些 intent、每个 intent 的当前真实状态。
+# 权威状态始终由 GET intent-views 读取；客户端按 intent_id 幂等应用，
+# 重复投递 / 重连补发都不会生成重复卡（前端消费，本模块不改前端）。
+
+async def publish_intents_changed(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    submission_id: str = "",
+    intent_ids: Iterable[str] = (),
+    reason: str = "changed",
+) -> bool:
+    """发布 EventType.INTERACTIVE_INTENTS_CHANGED；返回是否真的投递到总线。
+
+    规则（与 lead / i-state 约定一致）：
+    - 读不到 / 不属于本板面的 intent 不放进 statuses（不编造状态）；
+    - 没有宿主应用或没有 SSE 总线（例如裸连接单测）时静默跳过、返回 False；
+    - 通知失败只告警，绝不影响提案 / 确认 / 更新等主流程。
+    """
+    ids = list(dict.fromkeys(str(item) for item in intent_ids or () if str(item).strip()))
+    if not ids:
+        return False
+    try:
+        from agent.api.events import EventType, make_event
+        from agent.interactive import submission as submission_module
+
+        owner = submission_module.background_owner_for(conn)
+        bus = getattr(owner, "bus", None) if owner is not None else None
+        if bus is None or not hasattr(bus, "publish"):
+            return False
+        board = str(board_id or "")
+        statuses: dict[str, str] = {}
+        for intent_id in ids:
+            row = _get_row(conn, intent_id)
+            if row is None or str(row["board_id"]) != board:
+                continue
+            statuses[intent_id] = str(row["status"])
+        payload = {
+            "board_id": board,
+            "submission_id": str(submission_id or ""),
+            "intent_ids": ids,
+            "statuses": statuses,
+            "reason": str(reason or "changed"),
+        }
+        await bus.publish(make_event(EventType.INTERACTIVE_INTENTS_CHANGED, payload))
+        return True
+    except Exception:  # noqa: BLE001 - 通知是旁路，失败不影响主流程
+        logger.warning("publish_intents_changed failed", exc_info=True)
+        return False
 
 
 # -- 操作账本 / 授权执行 -----------------------------------------------------

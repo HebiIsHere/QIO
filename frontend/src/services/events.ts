@@ -34,6 +34,9 @@ export const EVENT_TYPES = [
   // 恢复清单可能变了（R19-B）：普通回答保存失败已提交 pending 记录，前端据此
   // 复用既有 loadRecoveryInbox 刷新；事件不是清单权威。
   "RECOVERY_INBOX_CHANGED",
+  // PM-QIO032 #26：互动待确认 / 已确认任务的真实状态变化（board_id + intent_ids + statuses）。
+  // 事件不是清单权威：前端按 intent_id 幂等应用，未知 id / 任务数走 intent-views 权威快照兜底。
+  "INTERACTIVE_INTENTS_CHANGED",
   "TOOL_START",
   "TOOL_END",
   // 模型自主决定的过程说明（announce / progress / warning / result）

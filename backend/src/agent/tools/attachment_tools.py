@@ -554,6 +554,98 @@ class ReadAttachmentTool(Tool):
             "how_to_read": "传 attachment_id 与 offset/limit 分段读取",
         }
 
+    # -- 互动提交轮次的材料范围（与提交快照同一授权判断）----------------------
+
+    def _turn_attachment_ids(self, turn: Any) -> set[str]:
+        """本轮真正附带的附件 id（用户这一条消息上传的，不属于板面材料）。"""
+        turn_id = str(getattr(turn, "turn_id", "") or "")
+        if not turn_id:
+            return set()
+        try:
+            items = self.attachments.list(turn_id=turn_id, limit=200, check=False)
+        except Exception:  # noqa: BLE001 - 列不出来就当本轮没有附带附件
+            return set()
+        return {
+            str(getattr(item, "id", ""))
+            for item in list(items or [])
+            if getattr(item, "id", None)
+        }
+
+    def _board_scope_denial(self, att: Attachment) -> ToolResult | None:
+        """互动提交轮次：附件读取必须与提交快照（A 版）用同一授权判断。
+
+        #08/#54：被排除 / 隐藏的材料不读；#28：提交后新增（B 版）的附件不读；
+        源文件已变化且旧内容不可得 → 提示重新提交，绝不读当前内容冒充旧材料。
+        普通对话轮没有板面绑定，不经过这里。
+        """
+        try:
+            from agent.interactive import materials as materials_module
+            from agent.interactive import runtime as runtime_module
+        except Exception:  # noqa: BLE001 - 互动模块不可用时不影响既有附件读取
+            return None
+        try:
+            turn = runtime_module.current_board_turn()
+        except Exception:  # noqa: BLE001 - 没有绑定按普通轮处理
+            return None
+        if turn is None:
+            return None
+        submission_id = str(getattr(turn, "submission_id", "") or "")
+        if not submission_id:
+            return None
+        # 本轮消息自带的附件是用户这次新给的上下文，不受提交快照范围限制。
+        if att.id in self._turn_attachment_ids(turn):
+            return None
+        conn = getattr(self.attachments, "conn", None)
+        if conn is None:
+            return None
+        try:
+            scope = materials_module.submission_attachment_scope(
+                conn,
+                board_id=str(getattr(turn, "board_id", "") or ""),
+                submission_id=submission_id,
+                attachments=self.attachments,
+            )
+        except Exception as exc:  # noqa: BLE001 - 核对失败按拒绝（失败关闭）
+            return ToolResult(
+                ok=False,
+                error="核对本次提交的材料范围失败：" + type(exc).__name__,
+                category="permission",
+                recoverable=True,
+                code="material_scope_unavailable",
+            )
+        if not scope.get("available"):
+            return ToolResult(
+                ok=False,
+                error="本轮没有可核对的提交材料范围："
+                + str(scope.get("reason") or "提交快照不可用")
+                + "；请重新提交后再读",
+                category="permission",
+                recoverable=False,
+                code="material_scope_unavailable",
+            )
+        stale = scope.get("stale") or {}
+        if att.id in stale:
+            return ToolResult(
+                ok=False,
+                error=str(stale.get(att.id)),
+                category="permission",
+                recoverable=True,
+                code="material_source_changed",
+            )
+        if att.id not in (scope.get("allowed") or {}):
+            return ToolResult(
+                ok=False,
+                error=(
+                    "这张附件不在本次提交允许的材料范围内"
+                    "（提交后新增 / 未参与 / 已隐藏的材料不会被读取）；"
+                    "请让用户重新提交后再读。"
+                ),
+                category="permission",
+                recoverable=False,
+                code="not_in_submission_scope",
+            )
+        return None
+
     # -- 读取 --------------------------------------------------------------
 
     async def _read(
@@ -561,6 +653,9 @@ class ReadAttachmentTool(Tool):
     ) -> ToolResult:
         described = self._describe(att)
         notes: list[str] = [f"附件来源：{described['display']}"]
+        denial = self._board_scope_denial(att)
+        if denial is not None:
+            return denial
         if att.state == "prepared":
             return ToolResult(
                 ok=False,

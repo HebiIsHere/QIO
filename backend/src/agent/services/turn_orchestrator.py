@@ -1139,6 +1139,72 @@ class TurnOrchestrator:
             logging.getLogger(__name__).warning(
                 "attachment read authorization failed", exc_info=True
             )
+        # #01（i-submit 接线）：互动提交轮还要把「提交当时的板面材料」附件 id 并入本轮
+        # READ 授权（同一 AuthorizationGateway 口径），否则板面材料的 read_attachment 会被
+        # 前置 read_allowed 拦掉。材料层（materials.submission_attachment_scope）未合入时
+        # 静默跳过 —— 普通模式行为不变。
+        if getattr(ctx, "mode", "normal") == "interactive" and getattr(ctx, "board_submission_id", ""):
+            try:
+                from agent.interactive import materials as _interactive_materials
+
+                scope_reader = getattr(_interactive_materials, "submission_attachment_scope", None)
+                if callable(scope_reader):
+                    from agent.services import attachment_access as _attachment_access
+
+                    attachment_service = (
+                        app._attachment_service()
+                        if callable(getattr(app, "_attachment_service", None))
+                        else None
+                    )
+                    scope = scope_reader(
+                        app.conn,
+                        board_id=str(getattr(ctx, "board_id", "") or ""),
+                        submission_id=str(getattr(ctx, "board_submission_id", "") or ""),
+                        attachments=attachment_service,
+                    )
+                    allowed_now = list(read_grants.get("allowed") or [])
+                    gateway = getattr(app, "authorization", None)
+                    for attachment_id in list(scope.get("allowed") or []) if isinstance(scope, dict) else []:
+                        wanted = str(attachment_id or "").strip()
+                        if not wanted or wanted in allowed_now or attachment_service is None:
+                            continue
+                        try:
+                            att = attachment_service.get(wanted, check=False)
+                            resolved = (
+                                attachment_service.resolve_source(att.id) if att is not None else None
+                            )
+                            if resolved is None or resolved.path is None:
+                                continue
+                            identity = (
+                                resolved.identity.key
+                                if resolved.identity is not None
+                                else getattr(att, "file_id", None)
+                            )
+                            decision = await _attachment_access.authorize_read(
+                                gateway,
+                                path=resolved.path,
+                                identity=identity,
+                                purpose="本轮互动材料读取",
+                                tool="interactive.materials",
+                                detail={
+                                    "attachment_id": wanted,
+                                    "turn_id": str(ctx.turn_id),
+                                    "board_id": str(getattr(ctx, "board_id", "") or ""),
+                                    "submission_id": str(getattr(ctx, "board_submission_id", "") or ""),
+                                },
+                            )
+                        except Exception:  # noqa: BLE001 - 单个附件失败不影响其它材料
+                            continue
+                        if decision.get("verdict") == "allow":
+                            allowed_now.append(wanted)
+                            read_grants["degraded"] = read_grants.get("degraded") or bool(
+                                decision.get("degraded")
+                            )
+                            _attachment_access.set_read_grants(allowed_now)
+            except Exception:  # noqa: BLE001 - 材料授权并入是旁路：失败按没有额外材料处理
+                logging.getLogger(__name__).warning(
+                    "interactive submission read grants failed", exc_info=True
+                )
         attachment_materials: list[dict] = []
         try:
             attachment_materials = app.attachment_materials_facts(ctx.turn_id)
@@ -1228,6 +1294,60 @@ class TurnOrchestrator:
                 logging.getLogger(__name__).warning(
                     "interactive waiting state unavailable", exc_info=True
                 )
+            # #01（i-submit 接线）：首轮材料交付 —— 取**这次提交当时**的 A 版允许可见正文 /
+            # 图片（materials.submission_materials 由 i-material 提供）。函数未合入时按不可用
+            # 处理，不伪造「已读」；同一轮只调用一次（结果已含全部材料）。
+            if str(getattr(ctx, "board_submission_id", "") or ""):
+                try:
+                    from agent.interactive import materials as _interactive_materials
+
+                    deliver = getattr(_interactive_materials, "submission_materials", None)
+                    vision = bool(getattr(adapter, "supports_images", False))
+                    if callable(deliver):
+                        delivered = deliver(
+                            app.conn,
+                            board_id=str(getattr(ctx, "board_id", "") or ""),
+                            submission_id=str(getattr(ctx, "board_submission_id", "") or ""),
+                            attachments=(
+                                app._attachment_service()
+                                if callable(getattr(app, "_attachment_service", None))
+                                else None
+                            ),
+                            vision=vision,
+                        )
+                        if isinstance(delivered, dict):
+                            interactive_data["materials"] = list(
+                                delivered.get("materials") or []
+                            )
+                            interactive_data["materials_available"] = bool(
+                                delivered.get("available", True)
+                            )
+                            if not delivered.get("available", True):
+                                interactive_data["materials_reason"] = str(
+                                    delivered.get("reason") or ""
+                                )
+                            stale = [
+                                dict(item)
+                                for item in (delivered.get("stale") or [])
+                                if isinstance(item, dict)
+                            ]
+                            if stale:
+                                interactive_data["materials_stale"] = stale
+                            # 能力位是唯一事实来源：没有视觉能力**不交付字节**，
+                            # 材料条目里已如实标 image_unsupported（不声称看懂）。
+                            images = list(delivered.get("images") or []) if vision else []
+                            if images:
+                                from agent.interactive import understanding as _interactive_understanding
+
+                                converter = getattr(
+                                    _interactive_understanding, "image_parts_from_context", None
+                                )
+                                if callable(converter):
+                                    media_parts.extend(converter({"imageParts": images}))
+                except Exception:  # noqa: BLE001 - 材料交付是旁路：失败时如实没有材料
+                    logging.getLogger(__name__).warning(
+                        "interactive submission materials failed", exc_info=True
+                    )
             blocks.append(ContextBlock("interactive", interactive_data))
         return _Plan(
             topic=topic,

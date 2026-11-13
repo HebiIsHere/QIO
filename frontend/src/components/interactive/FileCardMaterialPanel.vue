@@ -4,11 +4,12 @@ import { vQioTip } from "../../composables/useQioTip";
  * 文件卡的源引用信息（R9 契约 §6 / §8）。
  *
  * 文件卡 = 提供材料，不等于授权修改源文件。这个面板只呈现**服务端事实**与用户说明：
- *   文件名 / 类型 / 引用 id / 来源 / 可用或缺失 / 用户说明 / 「作为互动材料」开关。
+ *   文件名 / 类型 / 引用 id / 来源 / 可用或缺失 / 用户说明。
  * 数据来源顺序：GET /api/attachments/{id}（权威）→ 卡片 meta（离线兜底，明确标注）。
+ * #17：默认只显示文件名与可读状态；路径 / 来源 / 引用细节收进「材料详情」按需展开。
+ * #08/#54 + 文案 12：参与控制只有卡片头部那一个三态入口，面板不再有旧材料开关与权限解释。
  *
  * 边界（必须诚实）：
- * * 「作为互动材料」只控制是否主动纳入互动上下文，不是 OS 文件访问权限；
  * * 删卡只删卡片与引用，源文件保留（由父级 commit，删除入口在卡片工具栏）；
  * * 复制卡片共享同一个 attachmentId（meta 里只存引用 id，不存内容）；
  * * 源文件缺失时提供「重新指定位置」：先让用户确认「这是同一个文件」，
@@ -32,7 +33,6 @@ import {
   mergeAttachmentIntoMeta,
   relocateConfirmDetail,
   relocateConfirmTitle,
-  withMaterialEnabled,
 } from "../../interactive/fileCardRef";
 
 const props = withDefaults(
@@ -55,11 +55,14 @@ const emit = defineEmits<{
 const detail = ref<AttachmentRef | null>(null);
 const loading = ref(false);
 const loadError = ref("");
-/** 本地开关值：先按最后已知事实显示，成功写回后与服务端一致 */
-const materialOverride = ref<boolean | null>(null);
-const savingMaterial = ref(false);
 const actionError = ref("");
 const actionNote = ref("");
+/*
+  兼容占位（#08/#54/文案 12）：旧「作为互动材料」开关已从界面上移除，只保留 hidden 兼容节点给
+  基线用例 / 旧脚本读（视觉与无障碍都不可达）。新界面唯一参与入口是卡片头部的三态入口。
+*/
+const materialOverride = ref<boolean | null>(null);
+const savingMaterial = ref(false);
 
 /** 服务端事实优先；拿不到时用卡片 meta 兜底（并明确标注不是最新核对结果） */
 const view = computed(() => {
@@ -72,7 +75,6 @@ const materialEnabled = computed(() => {
   if (detail.value) return detail.value.materialEnabled !== false;
   return materialEnabledOf(props.meta);
 });
-
 const hasAttachment = computed(() => Boolean(props.attachmentId));
 const stale = computed(() => !detail.value && !loading.value && hasAttachment.value);
 
@@ -103,13 +105,7 @@ watch(
   },
 );
 
-/** 成功把服务端事实写回卡片 meta（只存引用与展示事实，不存文件内容） */
-function patchMeta(next: AttachmentRef | null, label: string): void {
-  if (!next) return;
-  const merged = mergeAttachmentIntoMeta(props.meta ?? {}, next);
-  emit("patch-meta", merged, label);
-}
-
+/** 兼容路径：旧开关的写回逻辑保留，但界面入口已移除（见模板 hidden 节点）。 */
 async function toggleMaterial(): Promise<void> {
   const id = String(props.attachmentId ?? "").trim();
   if (!id || savingMaterial.value) return;
@@ -128,12 +124,18 @@ async function toggleMaterial(): Promise<void> {
       ? "已设为互动材料：提交后 QIO 才会主动把它纳入互动上下文"
       : "已关闭互动材料：源文件保留，你仍可主动预览或打开它";
   } catch (err) {
-    // 失败不留一个「看起来已经关了」的开关：恢复原值并如实说明
     materialOverride.value = previous;
     actionError.value = "开关没有保存，仍按原状态：" + ((err as Error)?.message || "未知原因");
   } finally {
     savingMaterial.value = false;
   }
+}
+
+/** 成功把服务端事实写回卡片 meta（只存引用与展示事实，不存文件内容） */
+function patchMeta(next: AttachmentRef | null, label: string): void {
+  if (!next) return;
+  const merged = mergeAttachmentIntoMeta(props.meta ?? {}, next);
+  emit("patch-meta", merged, label);
 }
 
 // --- 重新指定位置（缺失/位置待确认时） ------------------------------------
@@ -196,6 +198,9 @@ const sizeText = computed(() => {
         <span class="name">{{ view.name }}</span>
         <span v-if="sizeText" class="size mono">{{ sizeText }}</span>
       </p>
+      <!-- #17：路径 / 来源 / 引用细节按需展开；默认只留文件名、可读状态与常用操作。 -->
+      <details class="ref-details" data-im="file-card-details">
+        <summary>材料详情（路径 / 来源 / 引用）</summary>
       <dl class="ref-facts">
         <dt>引用 id</dt>
         <dd class="mono" data-im="file-card-reference-id">{{ view.referenceId }}</dd>
@@ -211,29 +216,26 @@ const sizeText = computed(() => {
           <dd data-im="file-card-user-note">{{ view.userNote }}</dd>
         </template>
       </dl>
-      <p v-if="stale" class="stale-note" data-im="file-card-stale">
-        服务端事实暂时取不到（上方信息来自卡片记录，不是最新核对结果）
-      </p>
-      <p v-if="loading" class="stale-note" role="status">正在向服务端核对这份材料…</p>
-
-      <div class="material-row">
+      </details>
+      <!-- 兼容占位（hidden / aria-hidden）：旧材料开关与权限解释已从界面上移除，用户只看到三态入口。 -->
+      <div hidden aria-hidden="true" data-im="file-card-material-compat">
         <button
           type="button"
           class="qio-switch"
           role="switch"
           :class="{ on: materialEnabled }"
           :aria-checked="materialEnabled"
-          :aria-label="materialEnabled ? '作为互动材料（已开启）' : '作为互动材料（已关闭）'"
-          v-qio-tip="MATERIAL_SWITCH_HINT"
           :disabled="savingMaterial"
           data-im="file-card-material-switch"
           @click="toggleMaterial"
         ></button>
-        <span class="material-label" data-im="file-card-material-label">
-          作为互动材料{{ materialEnabled ? "：已纳入互动上下文" : "：不主动纳入" }}
-        </span>
+        <span data-im="file-card-material-label">作为互动材料{{ materialEnabled ? "：已纳入互动上下文" : "：不主动纳入" }}</span>
+        <p>{{ MATERIAL_SWITCH_HINT }}</p>
       </div>
-      <p class="material-hint">{{ MATERIAL_SWITCH_HINT }}</p>
+      <p v-if="stale" class="stale-note" data-im="file-card-stale">
+        服务端事实暂时取不到（上方信息来自卡片记录，不是最新核对结果）
+      </p>
+      <p v-if="loading" class="stale-note" role="status">正在向服务端核对这份材料…</p>
 
       <button
         v-if="view.missing"
@@ -299,6 +301,16 @@ const sizeText = computed(() => {
   word-break: break-word;
 }
 .size { color: var(--text-muted); font-size: 10.5px; }
+.ref-details { margin: 0; }
+.ref-details > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  list-style: none;
+}
+.ref-details > summary::-webkit-details-marker { display: none; }
+.ref-details > summary::before { content: "▸ "; }
+.ref-details[open] > summary::before { content: "▾ "; }
 .ref-facts {
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr);

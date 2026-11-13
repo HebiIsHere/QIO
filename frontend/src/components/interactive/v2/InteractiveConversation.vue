@@ -1,5 +1,5 @@
 <!--
-  底部互动对话区（Phase 3-B）：输入区在下、会话流从输入区向上展开。
+  底部互动对话区（Phase 3-B）：输入区在下、会话流朝上展开。
 
   契约：docs/interactive-page-v2-contract.md §6.4。
   - 复用现有 MessageStream / Composer / ComposerEntries / 会话 store，**不新建简化模型**：
@@ -20,6 +20,7 @@ import { useInteractiveStore } from "../../../stores/interactive";
 import { useSessionStore } from "../../../stores/session";
 import { contentViewport } from "../../../utils/windowFrame";
 import { publishChatFrame } from "../../../interactive/chatFrameState";
+import { registerEscapeLayer } from "../../../composables/useEscapeLayer";
 import type { ChatFrame } from "../../../interactive/chatFrame";
 import type { ExtraComposerEntry } from "../../conversation/ComposerEntries.vue";
 import {
@@ -29,6 +30,7 @@ import {
   CONVERSATION_MIN_HEIGHT,
   clampConversationHeight,
   conversationBindingForSend,
+  conversationComposerLayout,
   conversationStatusText,
   parseStoredConversationHeight,
   type ConversationBinding,
@@ -187,6 +189,37 @@ const expand = () => setExpanded(true);
 const collapse = () => setExpanded(false);
 const toggle = () => setExpanded(!expandedState.value);
 
+/*
+ * #40：展开时注册一层共用 Esc 层级栈（打开越晚的层越靠上）。
+ * 只收显示：不清草稿、不停止正在回复、不动排队；确认框 / 输入法选字由共用层级栈优先。
+ */
+let disposeEscape: (() => void) | null = null;
+function syncEscapeLayer(open: boolean): void {
+  if (open && !disposeEscape) {
+    disposeEscape = registerEscapeLayer({
+      id: "interactive-conversation",
+      active: () => expandedState.value,
+      onEscape: () => {
+        // 正在拖动高度时，Esc 先取消这次拖动（恢复拖动前的高度），不收起已展开的对话。
+        if (drag) {
+          onResizeCancel();
+          return true;
+        }
+        collapse();
+        return true;
+      },
+    });
+  } else if (!open && disposeEscape) {
+    disposeEscape();
+    disposeEscape = null;
+  }
+}
+watch(expandedState, (value) => syncEscapeLayer(value), { immediate: true });
+onBeforeUnmount(() => {
+  disposeEscape?.();
+  disposeEscape = null;
+});
+
 /** 收起态 / 展开态共用的一句真实状态（回复没有被收起打断时要看得见）。 */
 const statusText = computed(() =>
   conversationStatusText({
@@ -320,6 +353,15 @@ onBeforeUnmount(removeResizeListeners);
  * - 用 requestAnimationFrame 合并同一帧内的多次触发；卸载时取消待执行的测量。
  * ------------------------------------------------------------------ */
 const rootEl = ref<HTMLElement | null>(null);
+/** #88：模式入口布局按对话区**实际可用宽度**切换；首帧量不到时先按 stacked（入口完整可见）。 */
+const composerLayout = ref<"inline" | "stacked">("stacked");
+function syncComposerLayout(): void {
+  const el = rootEl.value;
+  if (!el) return;
+  const rect = typeof el.getBoundingClientRect === "function" ? el.getBoundingClientRect() : null;
+  const width = Math.round(rect?.width ?? 0);
+  if (width > 0) composerLayout.value = conversationComposerLayout(width);
+}
 /** 实际可见的组成块：消息面板（展开时）+ 输入区四块（各自居中、最大 860px）。 */
 const VISIBLE_PART_SELECTORS = ["[data-ic-bar]", ".ic-entries", "[data-ic-toolbar]", ".ic-composer"] as const;
 
@@ -388,6 +430,7 @@ let observer: ResizeObserver | null = null;
 let resizeBound = false;
 
 function onWindowResize(): void {
+  syncComposerLayout();
   schedulePublishGeometry();
 }
 
@@ -400,9 +443,13 @@ onMounted(() => {
   // 都会让它变化。元素尺寸变化不改变可见内容宽度时，下一次测量结果相同，发布幂等。
   const root = rootEl.value;
   if (root && typeof ResizeObserver !== "undefined") {
-    observer = new ResizeObserver(() => schedulePublishGeometry());
+    observer = new ResizeObserver(() => {
+      syncComposerLayout();
+      schedulePublishGeometry();
+    });
     observer.observe(root);
   }
+  syncComposerLayout();
   schedulePublishGeometry();
 });
 
@@ -443,21 +490,16 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
     class="ic"
     data-ic="conversation"
     :data-ic-expanded="expandedState ? 'true' : 'false'"
+    :data-ic-layout="composerLayout"
     :style="{ '--ic-panel-h': panelHeight + 'px' }"
     role="region"
     :aria-label="title + '（底部互动对话）'"
   >
     <!-- 会话流：第一次展开才挂载，之后只隐藏 —— 收起不等于清空阅读位置与已渲染内容 -->
     <div v-if="openedOnce" v-show="expandedState" class="ic-stream" data-ic-stream :id="panelId">
-      <button
-        class="ic-close"
-        type="button"
-        data-ic-close
-        aria-label="收起对话"
-        v-qio-tip="'收起对话（不会停止正在进行的回复）'"
-        @click="collapse"
-      >×</button>
-      <MessageStream />
+      <!-- #86：唯一的聊天开合入口在输入区旁（.ic-bar 的同一个开合按钮），
+           消息滚动区上方不再叠一个重复的关闭按钮。 -->
+      <MessageStream empty-variant="interactive" />
     </div>
 
     <!-- 高度分隔条：指针拖动 / 上下方向键；收起时不占位 -->
@@ -480,15 +522,15 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
     <div class="ic-dock">
       <!-- 收起条：状态（回复中/排队/草稿）+ 唯一的展开入口 -->
       <div class="ic-bar" data-ic-bar :id="barId">
-        <span class="ic-status mono" role="status" data-ic-status>{{ statusText }}</span>
+        <span v-if="statusText" class="ic-status mono" role="status" data-ic-status>{{ statusText }}</span>
         <button
           class="ic-toggle"
           type="button"
           data-ic-toggle
           :aria-expanded="expandedState ? 'true' : 'false'"
           :aria-controls="panelId"
-          :aria-label="expandedState ? '收起对话（不影响正在进行的回复）' : '展开对话（从输入区向上展开）'"
-          v-qio-tip="expandedState ? '收起对话（不影响正在进行的回复）' : '展开对话（从输入区向上展开）'"
+          :aria-label="expandedState ? '收起对话' : '展开对话'"
+          v-qio-tip="expandedState ? '收起对话' : '展开对话'"
           @click="toggle"
         >
           <span class="ic-toggle-mark" aria-hidden="true">{{ expandedState ? "▾" : "▴" }}</span>
@@ -628,28 +670,6 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
     background: color-mix(in srgb, var(--bg-base) 88%, transparent);
   }
 }
-/* 消息面板右上角圆形收起按钮：只收显示，不打断正在进行的回复。 */
-.ic-close {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  z-index: 4;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: 50%;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-.ic-close:hover { color: var(--accent); border-color: var(--accent); }
 .ic-stream :deep(.empty) {
   padding: 0 var(--sp-3);
 }
@@ -788,27 +808,37 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   /* FU5：再往左让 20px —— 模式切换文字不要贴到输入胶囊的圆角/描边。 */
   margin-right: 20px;
 }
-@media (max-width: 1120px) {
-  /* 窄窗：输入列铺满；模式切换放到「输入框上方的工具栏」同一行，不再单独占一行，
-     也不允许被挤出窗口（此前的消失问题）。 */
-  .ic-composer-row {
-    grid-template-columns: minmax(0, 1fr);
-    position: relative;
-  }
-  .ic-composer-input {
-    grid-column: 1;
-  }
-  .ic-composer-row :slotted(.im-mode-switch) {
-    position: absolute;
-    left: 0;
-    bottom: calc(100% + 2px);
-    margin-right: 0;
-    z-index: 2;
-  }
-  .ic-toolbar {
-    /* 让开左侧的模式切换，工具按钮仍在剩余区域居中 */
-    padding-left: 92px;
-  }
+/*
+  #88：切换依据是对话区**实际可用宽度**（conversationComposerLayout 在组件里实测后写到
+  data-ic-layout 上），不是视口宽度 —— 悬浮对话卡被最大宽度钳住时，视口再宽侧列也放不下模式入口，
+  圆点会被裁掉。stacked 时模式入口在输入框上方、与输入框共用同一条 860 列：
+  工具栏（max-width 860、居中）与输入框同轴，不再用 padding-left 硬挪工具组。
+*/
+[data-ic-layout="stacked"] .ic-composer-row {
+  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+  max-width: 860px;
+  margin: 0 auto;
+  row-gap: 4px;
+}
+[data-ic-layout="stacked"] .ic-composer-input {
+  grid-column: 1;
+}
+/* 工具组与输入框同一条 860 列：不再用 padding-left 硬挪，命中区域与视觉轴一致。 */
+[data-ic-layout="stacked"] .ic-toolbar {
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+}
+[data-ic-layout="stacked"] .ic-composer-row :slotted(.im-mode-switch) {
+  position: static;
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+  align-self: start;
+  margin-right: 0;
+  padding-bottom: 2px;
+  z-index: 2;
 }
 @media (max-width: 700px) {
   .ic-composer-row {

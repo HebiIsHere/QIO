@@ -21,7 +21,8 @@
 -->
 <script setup lang="ts">
 import { vQioTip } from "../../composables/useQioTip";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from "vue";
+import { registerEscapeLayer } from "../../composables/useEscapeLayer";
 import { useInteractiveStore } from "../../stores/interactive";
 import { fetchBoardState } from "../../services/interactive";
 import {
@@ -55,6 +56,7 @@ import {
 import BoardChangeList from "./BoardChangeList.vue";
 import { humanizeFailure, scrubInternalTerms } from "./displayText";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import { placeSubmitPanel, type SubmitPanelPlacement } from "./submitPanelPlacement";
 
 const props = withDefaults(
   defineProps<{
@@ -63,6 +65,7 @@ const props = withDefaults(
   }>(),
   { compact: false },
 );
+const emit = defineEmits<{ (e: "panel-open"): void }>();
 const store = useInteractiveStore();
 
 /**
@@ -79,6 +82,150 @@ function togglePanel(kind: PanelKind): void {
 function closePanel(): void {
   openPanel.value = null;
 }
+
+/*
+ * #40：详情 / 上次结果 / 过程面板打开时注册共用 Esc 层级栈 ——
+ * 即使焦点在聊天输入框里，Esc 也能先收起提交详情（只收面板：不清草稿、不停止回复）。
+ * 面板打开越晚，注册越晚、层级越靠上；确认框与输入法选字由共用层级栈优先处理。
+ */
+const hasPanel = computed(() => openPanel.value !== null);
+let disposeEscape: (() => void) | null = null;
+function syncEscapeLayer(open: boolean): void {
+  if (open && !disposeEscape) {
+    disposeEscape = registerEscapeLayer({
+      id: "submit-cluster-panel",
+      active: () => openPanel.value !== null,
+      onEscape: () => {
+        closePanel();
+        return true;
+      },
+    });
+  } else if (!open && disposeEscape) {
+    disposeEscape();
+    disposeEscape = null;
+  }
+}
+watch(hasPanel, (open) => syncEscapeLayer(open), { immediate: true });
+watch(openPanel, (panel) => {
+  if (panel) emit("panel-open");
+});
+
+/* ------------------------------------------------------------------------
+ * #05：提交详情面板的空间钳制（E2E：800×600 + 5 项改动时面板 305px 遮挡）
+ *
+ * 面板不再依赖 CSS 包含块与视口比例限高：打开时按**实测矩形**算出锚定位置与最大高度
+ * （纯函数 placeSubmitPanel），底边固定在工具栏顶边上方，顶边不越过任务入口；
+ * 内容再多也只内部滚动，不覆盖提交按钮、不挡任务入口。
+ * 触发：打开面板、窗口 resize、页面滚动、工具栏/定位祖先尺寸变化（聊天开合会改变位置）。
+ * ------------------------------------------------------------------------ */
+const clusterEl = ref<HTMLElement | null>(null);
+const panelEl = ref<HTMLElement | null>(null);
+const panelPlacement = ref<SubmitPanelPlacement | null>(null);
+
+function findToolbarEl(): HTMLElement | null {
+  const cluster = clusterEl.value;
+  const toolbar = cluster?.closest('[data-im="board-toolbar"]');
+  return (toolbar as HTMLElement | null) ?? null;
+}
+
+function measurePanelPlacement(): SubmitPanelPlacement | null {
+  if (!openPanel.value || typeof window === "undefined") return null;
+  const toolbar = findToolbarEl();
+  if (!toolbar) return null;
+  const toolbarRect = toolbar.getBoundingClientRect();
+  // 量不到真实几何（jsdom / 首帧）时不写死位置：保留 CSS 兜底，下一次触发再量。
+  if (!(toolbarRect.width > 0 && toolbarRect.height > 0)) return null;
+  const offsetParent = (panelEl.value?.offsetParent as HTMLElement | null) ?? null;
+  const containerRect =
+    offsetParent && typeof offsetParent.getBoundingClientRect === "function"
+      ? offsetParent.getBoundingClientRect()
+      : null;
+  const stage = document.querySelector('[data-im="interactive-stage"]');
+  const stageRect = stage ? stage.getBoundingClientRect() : null;
+  const taskEntry = document.querySelector('[data-im="tasks-entry"]');
+  const taskRect = taskEntry ? taskEntry.getBoundingClientRect() : null;
+  let safeTop = stageRect && stageRect.top > 0 ? stageRect.top + 8 : 8;
+  if (taskRect && taskRect.bottom > 0) safeTop = Math.max(safeTop, taskRect.bottom + 8);
+  return placeSubmitPanel({
+    toolbar: { left: toolbarRect.left, top: toolbarRect.top, width: toolbarRect.width },
+    container:
+      containerRect && containerRect.width > 0
+        ? { left: containerRect.left, top: containerRect.top, bottom: containerRect.bottom }
+        : null,
+    viewportHeight: window.innerHeight,
+    safeTop,
+  });
+}
+
+function syncPanelPlacement(): void {
+  panelPlacement.value = measurePanelPlacement();
+}
+
+const panelStyle = computed<CSSProperties | undefined>(() => {
+  const placement = panelPlacement.value;
+  if (!placement) return undefined;
+  return {
+    position: "absolute",
+    top: "auto",
+    right: "auto",
+    bottom: placement.bottom + "px",
+    left: placement.left + "px",
+    width: placement.width + "px",
+    maxHeight: placement.maxHeight + "px",
+  };
+});
+
+let panelResizeObserver: ResizeObserver | null = null;
+let panelTracking = false;
+
+function stopPanelTracking(): void {
+  if (!panelTracking) return;
+  panelTracking = false;
+  window.removeEventListener("resize", syncPanelPlacement);
+  document.removeEventListener("scroll", syncPanelPlacement, true);
+  panelResizeObserver?.disconnect();
+  panelResizeObserver = null;
+}
+
+function startPanelTracking(): void {
+  if (panelTracking || typeof window === "undefined") return;
+  panelTracking = true;
+  window.addEventListener("resize", syncPanelPlacement);
+  // 页面滚动 / 聊天展开都会移动工具栏：捕获阶段监听所有滚动容器。
+  document.addEventListener("scroll", syncPanelPlacement, true);
+  if (typeof ResizeObserver !== "undefined") {
+    panelResizeObserver = new ResizeObserver(() => syncPanelPlacement());
+    const toolbar = findToolbarEl();
+    const offsetParent = (panelEl.value?.offsetParent as HTMLElement | null) ?? null;
+    for (const target of [toolbar, offsetParent]) {
+      if (target) panelResizeObserver.observe(target);
+    }
+  }
+}
+
+watch(
+  hasPanel,
+  async (open) => {
+    if (!open) {
+      stopPanelTracking();
+      panelPlacement.value = null;
+      return;
+    }
+    // 先渲染再量：v-if 的节点这一帧才存在；下一帧再量一次（过渡 / 字体 / 布局稳定）。
+    await nextTick();
+    syncPanelPlacement();
+    startPanelTracking();
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => syncPanelPlacement());
+    }
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  stopPanelTracking();
+  disposeEscape?.();
+  disposeEscape = null;
+});
 
 const busy = computed(() => store.submitStatus === "submitting");
 
@@ -208,7 +355,7 @@ const outcomeLabel = computed(() => {
       succeeded: "已提交",
       failed: "提交失败",
       empty: "无内容可提交",
-      duplicate: "未重复提交",
+      duplicate: "已提交过",
     };
     return map[String(last.status ?? "")] ?? "已提交";
   }
@@ -465,6 +612,78 @@ const stateLabel = computed(() =>
 const pendingLabel = computed(() =>
   summary.value.total > 0 ? `未提交 ${summary.value.total} 项改动` : "没有未提交的改动",
 );
+
+/*
+ * 跨分支数据契约（i-state v1）：提交门禁与轮次主状态由 store 统一提供，UI 只消费，
+ * 不再自己在组件里算第二套（#03 / #13）。基线版本还没有这些字段时回退到既有状态，
+ * 字段落地后自动生效（全部可选读取，不改 store）。
+ */
+interface SubmitStateExtras {
+  canSubmit?: boolean;
+  submitBlockedReason?: string | null;
+  /** #41：上次结果（understanding）的读取状态；三个来源各自独立，失败保留旧数据。 */
+  understandingLoadState?: "idle" | "loading" | "ok" | "error";
+  understandingLoadError?: string | null;
+  understandingLoadedOnce?: boolean;
+  roundStatus?: "idle" | "submitting" | "unknown" | "queued" | "processing" | "replied" | "awaiting_confirm" | "failed" | "settled";
+  roundStatusLabel?: string;
+  roundStatusDetail?: string | null;
+  roundSettled?: boolean;
+}
+const submitState = computed(() => store as unknown as SubmitStateExtras);
+/** #13：无有效内容（空白卡不算）时禁用提交；原因优先用 store 的提示。 */
+const canSubmit = computed(() => {
+  const gate = submitState.value.canSubmit;
+  if (typeof gate === "boolean") return gate;
+  return Boolean(store.board) && !busy.value;
+});
+const submitBlockedReason = computed(() => submitState.value.submitBlockedReason || "");
+const submitTip = computed(() => {
+  if (canSubmit.value) return failure.value?.nextStep ?? "";
+  return submitBlockedReason.value || "没有可提交的有效改动：空白卡不算，先填写文字卡或建立关系 / 删除";
+});
+/** #03：提交区唯一主状态：优先用 store 的统一轮次标签（排队 / 处理中 / 已回复 / 待确认 / 失败 / 终态）。 */
+const primaryStatusLabel = computed(() => {
+  // 文案 1 / #80：这两个状态用任务书措辞优先 —— i-state 第三轮也会给同样的标签，
+  // 这里保证合并前（旧 roundStatusLabel 可能把 duplicate 说成笼统「已结束」）也不倒退。
+  if (store.submitStatus === "unknown") return "提交结果待确认";
+  if (store.submitStatus === "duplicate") return "已提交过";
+  const label = submitState.value.roundStatusLabel;
+  if (label) return label;
+  return stateLabel.value;
+});
+const roundStatusDetail = computed(() => submitState.value.roundStatusDetail || "");
+
+/*
+ * #41：提交详情里的「上次结果」读取三态（i-state 字段；基线回退为 ok，不影响既有展示）：
+ * - error + LoadedOnce=false → 读取失败（可重试，不代表没有上次结果）
+ * - error + LoadedOnce=true  → 上次结果（旧内容原样保留，只标更新失败）
+ * - ok + 服务端记录为空     → 成功读取为空，才允许显示「还没有上次记录」
+ * 数据来源不同：这里的空 ≠ 本次没有改动（本次改动由 pendingExpressions 的成功读取决定）。
+ */
+type LastResultReadState = "idle" | "loading" | "error-first" | "error-stale" | "ok-empty" | "ok";
+const lastResultReadState = computed<LastResultReadState>(() => {
+  const state = submitState.value.understandingLoadState;
+  if (!state || state === "idle" || state === "loading") return state ?? "idle";
+  if (state === "error") {
+    return submitState.value.understandingLoadedOnce === true ? "error-stale" : "error-first";
+  }
+  const hasRecord = Boolean(store.understanding) || Boolean(store.lastSubmission);
+  return hasRecord ? "ok" : "ok-empty";
+});
+const lastResultReadError = computed(
+  () => submitState.value.understandingLoadError || "原因未知",
+);
+const lastResultRetrying = ref(false);
+async function retryLastResultRead(): Promise<void> {
+  if (lastResultRetrying.value) return;
+  lastResultRetrying.value = true;
+  try {
+    await store.refreshUnderstanding();
+  } finally {
+    lastResultRetrying.value = false;
+  }
+}
 /**
  * 失败说明（契约 §11.6）：原因、保留情况、下一步全部取**本次请求**的事实。
  *
@@ -637,6 +856,12 @@ const submitLabel = computed(() => {
 function onSubmit() {
   void store.submit();
 }
+
+/** 供页面壳 / 工具栏调用（#05 窄窗切换、#40 Esc 层级）：只关面板，不改数据。 */
+defineExpose({
+  closePanel,
+  isPanelOpen: () => openPanel.value !== null,
+});
 </script>
 
 <template>
@@ -647,6 +872,7 @@ function onSubmit() {
     长说明（上次提交结果 / 本次提交范围与改动 / 上次提交过程）都进按需展开的面板。
   -->
   <div
+    ref="clusterEl"
     class="submit-cluster"
     data-im="submit-cluster"
     :data-im-failed="isFailed ? '1' : undefined"
@@ -702,7 +928,7 @@ function onSubmit() {
         class="line state-line"
         data-im="submit-status"
         role="status"
-      >本次提交：{{ stateLabel }}</p>
+      >本次提交：{{ primaryStatusLabel }}</p>
 
       <!--
         P1：提交时把「未点完成编辑」的草稿提升成了正文。这件事必须说出来（契约 4）：
@@ -877,14 +1103,9 @@ function onSubmit() {
         保留改动与勾选，明确要求先确认结果，不诱导直接重复提交。
       -->
       <p v-else-if="store.submitStatus === 'unknown'" class="blocked" role="status" data-im="submit-unknown">
-        <span class="blocked-text" data-im="submit-unknown-reason">
-          提交结果未知：没有拿到服务端回执，这次提交可能已经受理。改动与勾选都保留；请先查证结果，不要直接重复提交
-          （查证只按这次请求身份向服务端精确核对，不会自动重复提交）。
-        </span>
-        <!--
-          F10 + 契约 §1.3：未知时给的是**只读查证**入口（按请求身份精确匹配 + 重新读取），
-          不是「重新提交」—— 绝不用一次新的提交去赌原请求有没有受理。
-        -->
+        <!-- #81 / 文案 1：回执待确认时常态只留一行短状态 +「查提交结果」；
+             查证与重新读取的细节放进按需展开的「提交详情」，不在底部堆叠。 -->
+        <span class="blocked-text" data-im="submit-unknown-reason">提交结果待确认，改动已保留</span>
         <button
           class="details"
           type="button"
@@ -892,20 +1113,19 @@ function onSubmit() {
           :disabled="verifyingAcceptance"
           @click="verifyAcceptance"
         >
-          {{ verifyingAcceptance ? "查证中…" : "查证受理结果（按请求身份）" }}
+          {{ verifyingAcceptance ? "查证中…" : "查提交结果" }}
         </button>
+      </p>
+
+      <!-- #80：重复提交保留原受理记录与状态，明确说「已提交过」，可查看原进度。 -->
+      <p v-else-if="store.submitStatus === 'duplicate'" class="blocked" role="status" data-im="submit-duplicate">
+        <span class="blocked-text" data-im="submit-duplicate-text">已提交过：这次请求保留了原来的受理记录，没有再次执行</span>
         <button
           class="details"
           type="button"
-          data-im="submit-unknown-refresh"
-          :disabled="refreshRetrying"
-          @click="retryRefresh"
-        >
-          {{ refreshRetrying ? "重新读取中…" : "只重新读取页面事实" }}
-        </button>
-        <span v-if="store.acceptanceLookupNote" class="blocked-text" data-im="submit-unknown-lookup-note">
-          {{ store.acceptanceLookupNote }}
-        </span>
+          data-im="submit-duplicate-view"
+          @click="togglePanel('result')"
+        >查看原进度</button>
       </p>
 
       <!--
@@ -994,10 +1214,10 @@ function onSubmit() {
         type="button"
         data-im="submit-details"
         :data-state-tone="isFailed ? 'problem' : store.submitStatus === 'idle' ? 'plain' : 'active'"
-        :aria-label="compact ? '提交状态与详情' : undefined"
+        aria-label="提交详情"
         :aria-expanded="openPanel === 'details'"
         aria-controls="submit-details-panel"
-        v-qio-tip="compact ? '提交状态与本次提交范围（点击查看详情）' : '本次提交范围与改动（只读，不会再次提交）'"
+        v-qio-tip="'提交详情'"
         @click="togglePanel('details')"
       >
         <template v-if="compact">
@@ -1013,8 +1233,8 @@ function onSubmit() {
         class="submit"
         type="button"
         data-im="submit"
-        v-qio-tip="failure?.nextStep ?? ''"
-        :disabled="busy || !store.board"
+        v-qio-tip="submitTip"
+        :disabled="busy || !canSubmit"
         @click="onSubmit"
       >
         {{ submitLabel }}
@@ -1029,7 +1249,12 @@ function onSubmit() {
     <Transition name="sc-fade">
       <section
         v-if="openPanel"
+        ref="panelEl"
         class="sc-panels"
+        :class="{ 'is-placed': panelPlacement !== null }"
+        :style="panelStyle"
+        data-im="submit-panels"
+        :data-im-panel-max-height="panelPlacement ? panelPlacement.maxHeight : undefined"
         v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
         data-qio-fit
         @wheel.stop
@@ -1071,10 +1296,61 @@ function onSubmit() {
         >
           <p class="sc-panel-head" data-im="submit-details-head">本次提交范围与改动</p>
           <p class="sc-panel-text" data-im="submit-details-range">{{ rangeText }}</p>
+          <p v-if="roundStatusDetail" class="sc-panel-text" data-im="submit-round-detail">{{ roundStatusDetail }}</p>
+          <!-- #41：上次结果的读取失败 / 上次结果 / 成功读取为空分开说；失败处可重试。 -->
+          <p
+            v-if="lastResultReadState === 'error-first'"
+            class="sc-panel-text"
+            role="alert"
+            data-im="submit-last-read-error"
+          >
+            上次结果读取失败：{{ lastResultReadError }}（这不代表没有上次结果）
+            <button class="details" type="button" data-im="submit-last-read-retry" :disabled="lastResultRetrying" @click="retryLastResultRead">
+              {{ lastResultRetrying ? "读取中…" : "重试读取" }}
+            </button>
+          </p>
+          <p
+            v-else-if="lastResultReadState === 'error-stale'"
+            class="sc-panel-text"
+            role="status"
+            data-im="submit-last-read-error"
+          >
+            上次结果更新失败，当前显示上次读取的内容（{{ lastResultReadError }}）
+            <button class="details" type="button" data-im="submit-last-read-retry" :disabled="lastResultRetrying" @click="retryLastResultRead">
+              {{ lastResultRetrying ? "读取中…" : "重试读取" }}
+            </button>
+          </p>
+          <p
+            v-else-if="lastResultReadState === 'ok-empty'"
+            class="sc-panel-text"
+            data-im="submit-last-result-empty"
+          >服务端还没有上次提交 / 理解记录。</p>
+          <!-- #41：本次改动读取失败 / 有效空态 / 上次结果分开说；失败处可重试。 -->
+          <p v-if="pendingError" class="sc-panel-text" role="alert" data-im="submit-details-error">
+            本次改动读取失败：{{ pendingError }}（这不代表本次没有改动）
+            <button class="details" type="button" data-im="submit-details-retry" @click="refreshPending">重试读取</button>
+          </p>
+          <p
+            v-else-if="store.lastSubmission"
+            class="sc-panel-note"
+            data-im="submit-details-last"
+          >上次提交结果与本次改动分开：上面只说上次记录，下面只说本次未提交的改动。</p>
+          <!-- #81：回执待确认的查证细节按需展开（图：仍按原请求查证，绝不自动重复提交）。 -->
+          <div v-if="store.submitStatus === 'unknown'" class="sc-panel-section" data-im="submit-unknown-details">
+            <p class="sc-panel-text">没有拿到回执：这次提交可能已经受理。查证只按这次请求身份向服务端精确核对，不会自动重复提交。</p>
+            <button
+              class="details"
+              type="button"
+              data-im="submit-unknown-refresh"
+              :disabled="refreshRetrying"
+              @click="retryRefresh"
+            >{{ refreshRetrying ? "重新读取中…" : "只重新读取页面事实" }}</button>
+            <p v-if="store.acceptanceLookupNote" class="sc-panel-text" data-im="submit-unknown-lookup-note">{{ store.acceptanceLookupNote }}</p>
+          </div>
           <BoardChangeList
+            v-if="!pendingError"
             :expressions="pendingExpressions"
-            title="本次有效改动（尚未提交）"
-            empty-text="本次还没有可提交的改动（服务端在每次保存后重算）。"
+            empty-text="本次没有改动"
           />
         </div>
 
@@ -1473,6 +1749,11 @@ function onSubmit() {
   - 长文本自然换行（overflow-wrap: anywhere），不用省略号隐藏正文；
   - user-select: text：面板里的说明可以选中复制（舞台层全局是 none）。
 */
+/*
+ * #05：默认仍是「工具栏上方 + 视口比例限高」的 CSS 兜底（量不到真实几何时用）；
+ * 一旦量到工具栏矩形，组件写入 inline style（left/width/bottom/max-height），
+ * 底边固定 = 工具栏顶边 - gap，顶边不越过任务入口，内容再多只内部滚动。
+ */
 .sc-panels {
   position: absolute;
   left: 0;
