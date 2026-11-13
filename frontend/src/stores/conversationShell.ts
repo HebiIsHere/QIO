@@ -6,7 +6,14 @@
  * - 页面切换不丢（消息、草稿、附件的业务状态各自有现有持久化，不靠这里）；
  * - 窗口变窄的临时收起/临时全窗口**不写回**用户偏好，变宽自动恢复。
  *
- * 写入是防抖的；保存失败保留当前内存状态并暴露 saveError，由界面给可重试入口。
+ * 写入是防抖的，并且**串行**：同一时刻只有一个写请求在途，后发的排在它之后。
+ * 这样「拖动分隔线 → 马上进设置还原」时，还原的写入一定落在旧写入之后；
+ * 服务端回显也只在「写出去的内容仍是当前界面状态」时才落回界面（#47）——
+ * 迟到旧回执不能覆盖还原结果，也不能覆盖回到对话后新开的标签或新的阅读位置。
+ *
+ * #47 · 还原默认布局：`resetLayout()` 只重置左右栏宽 / 左栏收起 / 预览开合 / 手动全窗口；
+ * 预览标签及顺序、当前标签、各标签的搜索词与阅读位置、任务页签都保留。
+ * 保存失败保留当前内存状态并暴露 saveError，由界面给可重试入口。
  */
 import { defineStore } from "pinia";
 import { api } from "../services/api";
@@ -20,8 +27,11 @@ import {
   SPLITTER_WIDTH,
   clampLeftWidth,
   clampRightWidth,
+  cloneLayoutPrefs,
   defaultLayoutPrefs,
+  layoutPrefsFingerprint,
   resolveConversationLayout,
+  restoreDefaultLayout,
   sanitizeLayoutPrefs,
   type ConversationLayout,
 } from "../conversation/layoutPrefs";
@@ -38,11 +48,19 @@ export const useConversationShellStore = defineStore("conversationShell", {
     /** 可见内容区实际宽度（contentViewport().width）；挂载后由 installViewportTracking 同步。 */
     viewportWidth: typeof window === "undefined" ? 0 : contentViewport().width,
     loaded: false,
+    /** 是否真的从服务端读到过布局（还原默认布局前要拿到真实标签，不能拿空默认值清掉）。 */
+    layoutLoaded: false,
     saving: false,
     /** 最近一次保存失败的原因（中文、可直接展示）；空串表示没有失败。 */
     saveError: "",
     /** 页面切换后保留的当前话题阅读位置由 MessageStream 自己负责，这里只存外壳。 */
     _timer: 0 as ReturnType<typeof setTimeout> | 0,
+    /** 进行中的载入（同一次载入只发一个请求；迟到的旧读取也不能把更新状态盖回去）。 */
+    _loading: null as Promise<boolean> | null,
+    /** 保存串行链：新的写入排在它后面，保证服务端最后一次写入一定是最后的状态。 */
+    _saveChain: null as Promise<boolean> | null,
+    /** 排在队列里（含在途）的写请求数，用于 saving 展示。 */
+    _saveQueueDepth: 0,
     _disposed: false,
   }),
   getters: {
@@ -100,16 +118,32 @@ export const useConversationShellStore = defineStore("conversationShell", {
     },
   },
   actions: {
-    /** 载入服务端偏好；失败时保留默认值并给出可见原因（不是静默用默认值）。 */
-    async load() {
+    /**
+     * 载入服务端偏好；失败时保留默认值并给出可见原因（不是静默用默认值）。
+     * 返回是否成功：还原默认布局在还没读到真实标签时会先调用它（失败就不写，
+     * 否则会用空标签把服务端已保存的标签/阅读位置清掉）。
+     */
+    async load(): Promise<boolean> {
+      if (this._loading) return this._loading;
+      const promise = (async (): Promise<boolean> => {
+        try {
+          const settings = await api.getUISettings();
+          this.prefs = sanitizeLayoutPrefs(settings.conversation_layout);
+          this.layoutLoaded = true;
+          this.saveError = "";
+          return true;
+        } catch (err) {
+          this.saveError = `布局偏好读取失败：${(err as Error)?.message || "未知原因"}（当前使用默认布局）`;
+          return false;
+        } finally {
+          this.loaded = true;
+        }
+      })();
+      this._loading = promise;
       try {
-        const settings = await api.getUISettings();
-        this.prefs = sanitizeLayoutPrefs(settings.conversation_layout);
-        this.saveError = "";
-      } catch (err) {
-        this.saveError = `布局偏好读取失败：${(err as Error)?.message || "未知原因"}（当前使用默认布局）`;
+        return await promise;
       } finally {
-        this.loaded = true;
+        if (this._loading === promise) this._loading = null;
       }
     },
     /** 绑定窗口宽度跟踪（返回清理函数；组件卸载时调用）。 */
@@ -133,36 +167,83 @@ export const useConversationShellStore = defineStore("conversationShell", {
         void this.persist();
       }, SAVE_DEBOUNCE_MS);
     },
-    /** 立即写入（页面切走 / 关闭前可调用）。 */
-    async flush() {
+    /** 立即写入并等它真正结束（页面切走 / 关闭前 / 还原默认布局后可据此给反馈）。 */
+    async flush(): Promise<boolean> {
       if (this._timer) {
         clearTimeout(this._timer);
         this._timer = 0;
       }
-      await this.persist();
+      return this.persist();
     },
-    async persist() {
-      if (this.saving) {
-        // 正在写：稍后再写一次，保证最后一次修改一定落盘。
-        this.scheduleSave();
-        return;
-      }
+    /**
+     * 排队保存（串行执行）。
+     *
+     * 为什么必须串行：写请求携带整份快照，服务端按到达顺序覆盖。拖动分隔线的旧请求若在
+     * 还原的新请求之后到达，服务端就会停在旧布局。排队保证「最后发出的状态最后写入」。
+     */
+    persist(): Promise<boolean> {
+      if (this._disposed) return Promise.resolve(false);
+      this._saveQueueDepth += 1;
       this.saving = true;
+      const previous = this._saveChain ?? Promise.resolve(true);
+      const run = previous.then(
+        () => this._persistOnce(),
+        () => this._persistOnce(),
+      );
+      const settled = run.finally(() => {
+        this._saveQueueDepth = Math.max(0, this._saveQueueDepth - 1);
+        this.saving = this._saveQueueDepth > 0;
+      });
+      this._saveChain = settled.then(
+        () => true,
+        () => false,
+      );
+      return settled;
+    },
+    /** 真正的一次写入；回执只有与当前界面状态一致时才回填（#47 迟到旧回执保护）。 */
+    async _persistOnce(): Promise<boolean> {
+      // 发出时的快照：读取期间页面里继续改标签/阅读位置也不会改变这次写出的内容。
+      const sentFingerprint = layoutPrefsFingerprint(this.prefs);
+      const payload: ConversationLayoutPrefs = {
+        ...cloneLayoutPrefs(this.prefs),
+        updatedAt: nowIso(),
+      };
       try {
-        const payload: ConversationLayoutPrefs = { ...this.prefs, updatedAt: nowIso() };
         const res = await api.saveConversationLayout(payload);
         // 服务端可能夹取/规范化过：用它返回的版本，避免本地与服务端长期不一致。
         if (res && res.ok === false) {
           // 明确被拒（不是网络异常）时同样不能当成保存成功。
           throw new Error("服务端没有接受这次布局偏好");
         }
-        if (res?.conversation_layout) this.prefs = sanitizeLayoutPrefs(res.conversation_layout);
+        // 关键竞态保护：回执是「这次写出去的那份状态」。若等待期间用户又还原了布局、
+        // 开了标签或滚了位置，当前指纹已变化 —— 旧回执直接丢弃，绝不把新状态盖回去。
+        if (res?.conversation_layout && layoutPrefsFingerprint(this.prefs) === sentFingerprint) {
+          this.prefs = sanitizeLayoutPrefs(res.conversation_layout);
+        }
         this.saveError = "";
+        return true;
       } catch (err) {
         this.saveError = `布局偏好保存失败：${(err as Error)?.message || "未知原因"}（当前布局仍会保留，可重试）`;
-      } finally {
-        this.saving = false;
+        return false;
       }
+    },
+    /**
+     * #47 · 还原默认布局。
+     *
+     * 只重置左右栏宽 / 左栏收起 / 右侧预览开合 / 手动全窗口；预览标签及顺序、当前标签、
+     * 各标签的搜索词与阅读位置、任务页签原样保留。窗口太窄时的临时收起/临时全窗口由
+     * resolveConversationLayout 继续推导，不会被写成手动偏好。
+     *
+     * 返回是否**保存成功**：内存里的还原结果先生效（失败也保留，界面给重试）；
+     * 还没读过服务端布局时先读一次，避免用空默认值把未知的标签/阅读位置清掉。
+     */
+    async resetLayout(): Promise<boolean> {
+      if (!this.layoutLoaded) {
+        const ok = await this.load();
+        if (!ok) return false;
+      }
+      this.prefs = restoreDefaultLayout(this.prefs);
+      return this.flush();
     },
     setLeftWidth(width: number) {
       this.prefs.leftWidth = clampLeftWidth(width);

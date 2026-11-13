@@ -1,14 +1,18 @@
 <script setup lang="ts">
 /**
  * 常规：外观（主题 / 动画 / 滚动指示条）、输出速度、设置助手入口、
- * 窗口行为（关闭主窗口行为），以及「高级选项」里的诊断开关（基线「开发者模式」）。
+ * 窗口行为（还原默认布局 + 关闭主窗口行为），以及「高级选项」里的诊断开关（基线「开发者模式」）。
  *
  * 保存方式：全部即时保存 —— 这些设置要么只落在本地（主题 / 动画 / 指示条 / 诊断），
- * 要么一次只有一个值（输出速度 / 关闭行为）。失败时控件回滚到真实值。
+ * 要么一次只有一个值（输出速度 / 关闭行为 / 还原布局）。失败时控件回滚到真实值。
  *
  * #39（定稿 A）：星球入口固定在对话输入区旁、设置入口固定在全局顶栏，两个入口都不再是
- * 可拖动浮动组件，所以「贴靠后自动隐藏」「还原默认布局」两项设置已经失效，统一移除；
- * 也删掉对应的搜索索引与入口提示（不能让用户保存一个什么都不做的开关，再显示「已保存」）。
+ * 可拖动浮动组件，所以「贴靠后自动隐藏」两项设置已经失效，统一移除；对应的搜索索引也不再有。
+ *
+ * #47：但「还原默认布局」重新恢复 —— 它现在还原的是**对话页布局偏好**（左右栏宽、左栏收起、
+ * 右侧预览开合与手动全窗口），由 stores/conversationShell 的既有持久化通道保存；
+ * 预览标签及顺序、当前标签、各标签搜索词与阅读位置、聊天内容、草稿与当前话题都不动。
+ * 窗口太窄导致的临时收起 / 临时全窗口仍由布局逻辑推导，不是这里能改的保存值。
  */
 import { ref, watch } from "vue";
 import QSelect from "../../../components/ui/QSelect.vue";
@@ -27,6 +31,7 @@ import {
   type ScrollbarPreference,
 } from "../../../utils/scrollIndicator";
 import { useQioSettingsSave } from "../../../composables/useQioSettingsSave";
+import { useConversationShellStore } from "../../../stores/conversationShell";
 import SettingRow from "../shell/SettingRow.vue";
 import SegmentedControl from "../shell/SegmentedControl.vue";
 import AdvGroup from "../shell/AdvGroup.vue";
@@ -34,6 +39,7 @@ import SettingsNoticeLine from "../shell/SettingsNoticeLine.vue";
 
 const ui = useUiStore();
 const onboarding = useOnboardingStore();
+const conversationShell = useConversationShellStore();
 const save = useQioSettingsSave("regular");
 const { notice: regularNotice } = save;
 
@@ -134,6 +140,30 @@ function onSpeedChange(value: string): void {
 function rerunOnboarding(): void {
   onboarding.reopen();
   save.setNotice("ok", "设置助手已重新打开");
+}
+
+/* ---------------- 窗口行为：还原默认布局（#47） ---------------- */
+/**
+ * 只还原「用户可调的布局偏好」：左右栏宽、左栏收起、右侧预览开合、手动全窗口。
+ * 预览标签及顺序、当前标签、各标签搜索词与阅读位置、任务页签、聊天内容/草稿/当前话题都不动；
+ * 窄窗下的临时收起/临时全窗口由布局逻辑按实际宽度推导，不写进偏好。
+ *
+ * 成功反馈在**保存成功之后**给出（不是点一下就显示「已还原」）；失败由共享保存模型给出
+ * 明确错误 + 「重试」按钮，重试重放同一次还原（含保存）。
+ */
+function resetConversationLayout(): void {
+  void save.saveNow<boolean>({
+    key: "regular.window.reset-layout",
+    pending: "正在还原默认布局…",
+    commit: async () => {
+      const ok = await conversationShell.resetLayout();
+      // 保存失败要落到本行的失败提示（含重试），不能显示成已还原。
+      if (!ok) throw new Error(conversationShell.saveError || "布局偏好保存失败");
+      return true;
+    },
+    success: "已还原默认布局（预览标签与阅读位置保留）",
+    failure: "还原默认布局",
+  });
 }
 
 /* ---------------- 关闭主窗口行为（R9 契约 §11） ---------------- */
@@ -242,6 +272,16 @@ function toggleDiagnostics(): void {
     <header class="set-section__head">
       <h2>窗口行为</h2>
     </header>
+
+    <SettingRow
+      title="布局"
+      settings-key="regular.window.reset-layout"
+      desc="还原左右栏宽、左栏收起、预览开合与全窗口；预览标签、搜索词和阅读位置保留"
+    >
+      <button type="button" class="qio-btn" @click="resetConversationLayout">
+        还原默认布局
+      </button>
+    </SettingRow>
 
     <SettingRow
       title="关闭主窗口时"

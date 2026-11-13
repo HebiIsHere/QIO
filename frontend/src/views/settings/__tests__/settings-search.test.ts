@@ -87,24 +87,29 @@ describe("设置搜索索引", () => {
     expect(background?.fold).toBe("models.usage.background");
   });
 
-  it("失效入口的搜索结果已删除；免密钥/单段长度说明用指定文案（文案13/14/15）", () => {
+  it("失效入口隐藏项已删除、还原布局恢复（#39 + #47）；免密钥/单段长度文案与折叠不动（文案13/14/15）", () => {
     const keys = SETTINGS_SEARCH_INDEX.map((entry) => entry.key);
-    for (const key of [
-      "regular.window.planet-hide",
-      "regular.window.settings-hide",
-      "regular.window.reset-layout",
-    ]) {
+    for (const key of ["regular.window.planet-hide", "regular.window.settings-hide"]) {
       expect(keys, key).not.toContain(key);
     }
-    // 旧行为被本项否定：曾经能搜到「贴靠后自动隐藏 / 还原默认布局」这类失效设置
+    // 旧行为被本项否定：曾经能搜到「贴靠后自动隐藏」这类失效设置（入口已固定，无对应控件）
     expect(searchSettings("贴边")).toEqual([]);
-    expect(searchSettings("还原默认布局")).toEqual([]);
+
+    // #47：还原默认布局恢复为真实可用的设置（还原对话页布局偏好），搜索必须能找到它
+    expect(keys).toContain("regular.window.reset-layout");
+    expect(searchSettings("还原默认布局")[0]?.key).toBe("regular.window.reset-layout");
+    expect(searchSettings("重置布局").some((entry) => entry.key === "regular.window.reset-layout")).toBe(
+      true,
+    );
 
     // 用户定稿逐字对齐：搜索行说明不能夹带括号/分号后半句（补充信息只在 keywords）
     const keyless = SETTINGS_SEARCH_INDEX.find((entry) => entry.key === "models.search.keyless");
     expect(keyless?.description).toBe("使用免密钥搜索服务");
     const maxTokens = SETTINGS_SEARCH_INDEX.find((entry) => entry.key === "memory.fragment.max-tokens");
     expect(maxTokens?.description).toBe("单段长度上限（按估算字符数计）");
+    // 集成冲突里保留的口径：搜「单段长度」要先展开「记忆 · 高级选项」再定位到控件（#24）
+    expect(maxTokens?.fold).toBe("memory.advanced");
+    expect(searchSettings("单段长度")[0]?.key).toBe("memory.fragment.max-tokens");
   });
 
   it("搜索按标题优先并支持用途名", () => {
@@ -293,6 +298,24 @@ describe("搜索面板与定位", () => {
     expect(
       (w.find('[data-testid="settings-search-panel"]').element as HTMLElement).style.display,
     ).toBe("none");
+    w.unmount();
+  });
+
+  it("#47 搜索「还原默认布局」进入常规并定位到恢复按钮", async () => {
+    const w = await mountSettings();
+    await openSearch(w);
+    await typeQuery(w, "还原默认布局");
+    const hit = w.find('[data-search-hit="regular.window.reset-layout"]');
+    expect(hit.exists()).toBe(true);
+    expect(hit.text()).toContain("还原默认布局");
+    await hit.trigger("click");
+    await flushFrames();
+
+    expect(w.find('[data-testid="settings-page"]').attributes("data-settings-page")).toBe("regular");
+    const row = sectionById(w, "regular").find('[data-settings-key="regular.window.reset-layout"]');
+    expect(row.exists()).toBe(true);
+    expect(row.classes()).toContain("is-revealed");
+    expect(row.find("button").text()).toBe("还原默认布局");
     w.unmount();
   });
 

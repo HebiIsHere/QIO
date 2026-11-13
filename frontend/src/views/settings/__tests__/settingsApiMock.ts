@@ -52,6 +52,12 @@ export function createSettingsApiMock() {
       typewriter_cps: 50,
       close_behavior: behavior,
     })),
+    // #47：对话页布局偏好（左右栏宽/收起/预览开合/全窗口 + 标签与阅读位置）保存通道。
+    // 默认原样回显，和真实后端一致；竞态/失败用例对单次调用做延迟或拒绝。
+    saveConversationLayout: vi.fn(async (layout: unknown) => ({
+      ok: true,
+      conversation_layout: layout,
+    })),
     getComputerSettings: vi.fn(async () => ({ root_dir: "", permission_mode: "default" })),
     updateComputerSettings: vi.fn(async (body: Record<string, unknown>) => ({
       root_dir: String(body.root_dir ?? ""),

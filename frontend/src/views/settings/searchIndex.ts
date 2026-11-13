@@ -10,8 +10,11 @@
  * 点击结果时 shell 按 key 定位到控件；`fold` 指向必须自动展开的折叠组 id。
  *
  * #39（定稿 A）：星球/设置入口已固定在各自位置，不再是可拖动浮动组件，
- * 因此「入口贴靠后自动隐藏」「还原默认布局」两类索引条目已删除 ——
- * 索引里不能再搜到一个已经没有对应控件（或控件已失效）的设置。
+ * 因此「入口贴靠后自动隐藏」两条索引已删除 —— 索引里不能再搜到一个已经没有对应控件的设置。
+ *
+ * #47：「还原默认布局」恢复（控件在「常规 → 窗口行为」），但它还原的是**对话页布局偏好**
+ * （左右栏宽 / 左栏收起 / 预览开合 / 手动全窗口），由 conversationShell 的既有持久化保存；
+ * 预览标签与阅读位置保留。索引条目必须与真实控件一致，所以跟着恢复。
  */
 import type { SettingsCategoryId } from "./types";
 
@@ -102,6 +105,13 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     category: "regular",
     description: "重新运行首次引导（已设置项会预填，不产生重复记录）",
     keywords: ["引导", "onboarding", "向导", "首次设置"],
+  },
+  {
+    key: "regular.window.reset-layout",
+    title: "还原默认布局",
+    category: "regular",
+    description: "恢复左右栏宽、左栏收起、预览开合与全窗口；预览标签、搜索词和阅读位置保留",
+    keywords: ["重置", "重置布局", "布局", "栏宽", "收起", "预览", "全窗口", "reset", "layout"],
   },
   {
     key: "regular.window.close-behavior",

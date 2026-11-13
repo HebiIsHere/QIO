@@ -45,6 +45,7 @@ const A_OWNED_KEYS = [
   "regular.scrollbar",
   "regular.speed",
   "regular.onboarding",
+  "regular.window.reset-layout",
   "regular.window.close-behavior",
   "regular.advanced.diagnostics",
   "models.search.status",
@@ -82,7 +83,7 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     w.unmount();
   });
 
-  it("常规：主题/动画/滚动指示条/输出速度/引导/关闭行为/诊断（失效入口设置已删）", async () => {
+  it("常规：主题/动画/滚动指示条/输出速度/引导/还原布局/关闭行为/诊断（失效入口设置已删）", async () => {
     const w = await mountSettings();
     const regular = sectionById(w, "regular");
     expect(regular.findAll(".set-seg__opt").map((option) => option.text())).toEqual(
@@ -91,7 +92,8 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     // 旧行为被本项否定（#39）：两个贴靠隐藏开关已删，常规里只剩「开发者模式」一个开关
     expect(regular.findAll('button[role="switch"]').length).toBe(1);
     expect(regular.text()).toMatch(/继续设置|重新运行设置助手/);
-    expect(regular.text()).not.toContain("还原默认布局");
+    // #47：还原默认布局恢复（还原的是对话页布局偏好，不是已移除的浮动入口位置）
+    expect(regular.text()).toContain("还原默认布局");
     for (const label of ["每次询问", "最小化到托盘", "直接退出"]) {
       expect(regular.text()).toContain(label);
     }
@@ -271,21 +273,22 @@ describe("常规分区的即时保存语义", () => {
     w.unmount();
   });
 
-  it("窗口行为：失效的贴靠隐藏开关与还原默认布局已移除（#39）", async () => {
+  it("窗口行为：贴靠隐藏开关仍移除（#39）；还原默认布局恢复并说明保留标签/位置（#47）", async () => {
     const w = await mountSettings();
     const regular = sectionById(w, "regular");
     // 旧行为被本项否定：入口固定在输入区/全局顶栏后，这两项设置保存的是一个不存在的效果
     expect(regular.find('button[aria-label="星球入口贴靠后自动隐藏"]').exists()).toBe(false);
     expect(regular.find('button[aria-label="设置入口贴靠后自动隐藏"]').exists()).toBe(false);
-    expect(regular.text()).not.toContain("还原默认布局");
-    for (const key of [
-      "regular.window.planet-hide",
-      "regular.window.settings-hide",
-      "regular.window.reset-layout",
-    ]) {
+    for (const key of ["regular.window.planet-hide", "regular.window.settings-hide"]) {
       expect(regular.find(`[data-settings-key="${key}"]`).exists(), key).toBe(false);
     }
-    // 关闭主窗口行为仍在这里（不受 #39 影响）
+    // #47：还原默认布局重新可用，且明确它保留预览标签与阅读位置
+    const row = regular.find('[data-settings-key="regular.window.reset-layout"]');
+    expect(row.exists()).toBe(true);
+    expect(row.find("button").text()).toBe("还原默认布局");
+    expect(row.text()).toContain("预览标签");
+    expect(row.text()).toContain("阅读位置");
+    // 关闭主窗口行为仍在这里（不受 #39 / #47 影响）
     expect(regular.find('[data-settings-key="regular.window.close-behavior"]').exists()).toBe(true);
     w.unmount();
   });

@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   CENTER_MIN,
+  LEFT_DEFAULT,
   LEFT_MAX,
   LEFT_MIN,
   LEFT_RAIL_WIDTH,
+  RIGHT_DEFAULT,
   RIGHT_MAX,
   RIGHT_MIN,
   SPLITTER_WIDTH,
   clampLeftWidth,
   clampRightWidth,
+  cloneLayoutPrefs,
   defaultLayoutPrefs,
+  layoutPrefsFingerprint,
   resolveConversationLayout,
+  restoreDefaultLayout,
   sanitizeLayoutPrefs,
 } from "./layoutPrefs";
 import type { ConversationLayoutPrefs } from "./contracts";
@@ -165,6 +170,124 @@ describe("#47 布局偏好容错：读取不再用硬编码 1440 改写用户栏
     expect(clampRightWidth(9999, 1440, 292)).toBe(
       Math.min(RIGHT_MAX, 1440 - 292 - SPLITTER_WIDTH * 2 - CENTER_MIN),
     );
+  });
+
+  it("#47 restoreDefaultLayout 只重置布局字段：标签/顺序/当前标签/位置/任务页签原样保留", () => {
+    const original = prefs({
+      leftWidth: 380,
+      leftCollapsed: true,
+      rightWidth: 700,
+      rightOpen: true,
+      previewFull: true,
+      taskTab: "history",
+      previewTabs: [
+        { ...tab(), id: "attachment:a1", position: { scrollTop: 120, search: "预算" } },
+        {
+          ...tab(),
+          id: "attachment:a2",
+          target: { ...tab().target, id: "attachment:a2", title: "报告.pdf" },
+          position: { page: 3 },
+        },
+      ],
+      activePreviewTabId: "attachment:a1",
+      updatedAt: "2026-11-12T00:00:00.000Z",
+    });
+    const snapshotBefore = JSON.parse(JSON.stringify(original));
+    const next = restoreDefaultLayout(original);
+
+    // 只改这四个用户可调字段（+ 版本回默认）
+    expect(next.leftWidth).toBe(LEFT_DEFAULT);
+    expect(next.leftCollapsed).toBe(false);
+    expect(next.rightWidth).toBe(RIGHT_DEFAULT);
+    expect(next.rightOpen).toBe(false);
+    expect(next.previewFull).toBe(false);
+    expect(next.version).toBe(1);
+    // 不在还原范围：任务页签 / 标签及顺序 / 当前标签 / 阅读位置 / 写入时间
+    expect(next.taskTab).toBe("history");
+    expect(next.previewTabs.map((item) => item.id)).toEqual(["attachment:a1", "attachment:a2"]);
+    expect(next.activePreviewTabId).toBe("attachment:a1");
+    expect(next.previewTabs[0].position).toEqual({ scrollTop: 120, search: "预算" });
+    expect(next.previewTabs[1].position).toEqual({ page: 3 });
+    expect(next.updatedAt).toBe("2026-11-12T00:00:00.000Z");
+    // 纯函数：不就地改输入
+    expect(original).toEqual(snapshotBefore);
+    expect(next).not.toBe(original);
+  });
+
+  it("#47 cloneLayoutPrefs 深拷贝标签与位置（发出时的快照不被后续修改影响）", () => {
+    const original = prefs({
+      previewTabs: [{ ...tab(), position: { scrollTop: 10 } }],
+      activePreviewTabId: "attachment:a1",
+    });
+    const snapshot = cloneLayoutPrefs(original);
+    original.previewTabs[0].position.scrollTop = 999;
+    original.previewTabs[0].target.title = "改名后";
+    expect(snapshot.previewTabs[0].position.scrollTop).toBe(10);
+    expect(snapshot.previewTabs[0].target.title).toBe("方案.md");
+    expect(snapshot).not.toBe(original);
+  });
+
+  it("#47 指纹忽略 updatedAt，但布局/标签/当前标签/阅读位置任一变化都会变（迟到回执保护依据）", () => {
+    const base = prefs({
+      previewTabs: [
+        { ...tab(), id: "attachment:a1", position: { scrollTop: 120, search: "预算" } },
+        { ...tab(), id: "attachment:a2", position: { page: 3 } },
+      ],
+      activePreviewTabId: "attachment:a1",
+      rightOpen: true,
+    });
+    expect(layoutPrefsFingerprint({ ...base, updatedAt: "2026-11-12T00:00:00.000Z" })).toBe(
+      layoutPrefsFingerprint(base),
+    );
+
+    expect(layoutPrefsFingerprint({ ...base, leftWidth: 300 })).not.toBe(layoutPrefsFingerprint(base));
+    expect(layoutPrefsFingerprint({ ...base, rightOpen: false })).not.toBe(layoutPrefsFingerprint(base));
+    expect(layoutPrefsFingerprint({ ...base, previewFull: true })).not.toBe(layoutPrefsFingerprint(base));
+    expect(layoutPrefsFingerprint({ ...base, previewTabs: [...base.previewTabs].reverse() })).not.toBe(
+      layoutPrefsFingerprint(base),
+    );
+    expect(layoutPrefsFingerprint({ ...base, activePreviewTabId: "attachment:a2" })).not.toBe(
+      layoutPrefsFingerprint(base),
+    );
+    const moved = cloneLayoutPrefs(base);
+    moved.previewTabs[0].position.scrollTop = 121;
+    expect(layoutPrefsFingerprint(moved)).not.toBe(layoutPrefsFingerprint(base));
+    const searched = cloneLayoutPrefs(base);
+    searched.previewTabs[0].position.search = "新搜索";
+    expect(layoutPrefsFingerprint(searched)).not.toBe(layoutPrefsFingerprint(base));
+  });
+
+  it("#47 还原后的默认偏好仍按窄窗规则推导临时收起/临时全窗口，不写回手动偏好", () => {
+    const restored = restoreDefaultLayout(
+      prefs({
+        leftCollapsed: true,
+        rightOpen: true,
+        previewFull: true,
+        previewTabs: [{ ...tab(), position: { scrollTop: 120 } }],
+        activePreviewTabId: "attachment:a1",
+      }),
+    );
+    // 默认 rightOpen=false：预览收起，但标签/当前标签仍在
+    const wideCollapsed = resolveConversationLayout(1440, restored);
+    expect(wideCollapsed.leftVisible).toBe(true);
+    expect(wideCollapsed.rightVisible).toBe(false);
+    expect(restored.previewTabs.map((item) => item.id)).toEqual(["attachment:a1"]);
+    expect(restored.activePreviewTabId).toBe("attachment:a1");
+
+    // 用户重新打开预览（只改开合，不改手动全窗口）：窄窗放不下分栏 → 临时全窗口
+    const reopened = { ...restored, rightOpen: true };
+    const narrow = resolveConversationLayout(680, reopened);
+    expect(narrow.leftVisible).toBe(false); // 临时收起（推导），不是用户手动收起
+    expect(reopened.leftCollapsed).toBe(false);
+    expect(narrow.previewFull).toBe(true); // 临时全窗口（推导）
+    expect(reopened.previewFull).toBe(false);
+
+    // 宽窗：分栏，原标签与位置仍在
+    const split = resolveConversationLayout(1440, reopened);
+    expect(split.leftVisible).toBe(true);
+    expect(split.rightVisible).toBe(true);
+    expect(split.previewFull).toBe(false);
+    expect(reopened.previewTabs[0].position.scrollTop).toBe(120);
   });
 
   it("损坏/缺失的偏好仍回落默认值，坏标签丢弃", () => {

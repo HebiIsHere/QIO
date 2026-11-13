@@ -227,6 +227,40 @@ export function defaultLayoutPrefs(): ConversationLayoutPrefs {
   };
 }
 
+/** 深拷贝偏好（标签、目标与阅读位置各自复制），供「发出时的快照」和「只改字段的还原」使用。 */
+export function cloneLayoutPrefs(prefs: ConversationLayoutPrefs): ConversationLayoutPrefs {
+  return {
+    ...prefs,
+    previewTabs: prefs.previewTabs.map((tab) => ({
+      id: tab.id,
+      target: { ...tab.target },
+      position: { ...tab.position },
+    })),
+  };
+}
+
+/**
+ * #47 · 还原默认布局：**只重置用户可调的布局字段**。
+ *
+ * 会改：左右栏宽、左栏收起、右侧预览开合、手动全窗口（previewFull）。
+ * 不动：预览标签及顺序、当前标签、各标签的搜索词与阅读位置、任务页签（当前/历史）、
+ * 聊天内容/草稿/当前话题（它们根本不在这个结构里，由各自的 store 持久化）。
+ *
+ * 「窗口太窄导致的临时收起 / 临时全窗口」不是保存值，本来就不在这里：
+ * 还原后仍由 resolveConversationLayout 按实际宽度推导，且不会写回偏好。
+ */
+export function restoreDefaultLayout(prefs: ConversationLayoutPrefs): ConversationLayoutPrefs {
+  const defaults = defaultLayoutPrefs();
+  const next = cloneLayoutPrefs(prefs);
+  next.version = defaults.version;
+  next.leftWidth = defaults.leftWidth;
+  next.leftCollapsed = defaults.leftCollapsed;
+  next.rightWidth = defaults.rightWidth;
+  next.rightOpen = defaults.rightOpen;
+  next.previewFull = defaults.previewFull;
+  return next;
+}
+
 function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -305,4 +339,31 @@ export function sanitizeLayoutPrefs(raw: unknown): ConversationLayoutPrefs {
   const updated = stringOrNull(value.updatedAt);
   if (updated) out.updatedAt = updated;
   return out;
+}
+
+/** 键顺序无关的规范 JSON：用于比较「两次快照是不是同一份内容」。 */
+function canonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * 持久化内容指纹（排除只表示「写于何时」的顶层 updatedAt）。
+ *
+ * 用途（#47 竞态保护）：保存回执只有在「这次写出去的内容 === 当前界面状态」时才允许落回
+ * 界面。拖动分隔线后立刻还原、或回到对话后又开了标签/滚了位置时，迟到旧回执的指纹与当前
+ * 不一致，于是被忽略 —— 旧数据不能把还原结果、较新的标签或阅读位置覆盖回去。
+ */
+export function layoutPrefsFingerprint(prefs: ConversationLayoutPrefs): string {
+  const rest: Record<string, unknown> = { ...prefs };
+  delete rest.updatedAt;
+  return canonicalJson(rest);
 }
