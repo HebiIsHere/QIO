@@ -25,8 +25,9 @@
 -->
 <script setup lang="ts">
 import { vQioTip } from "../../composables/useQioTip";
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
+import type { ImportBatchItem, ImportItemStatus } from "../../stores/interactive";
 import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
 import { cardAttachmentLinked, cardAttachmentName } from "../../interactive/materials";
 import { NEW_CARD_SIZE, planNewCardSlot, rectsOverlap } from "../../interactive/cardLayout";
@@ -256,6 +257,183 @@ let pendingDroppedPath: string | null = null;
 /** 浏览器拖放进来、等待随新文件卡一起上传的文件对象（同样是消费即清）。 */
 let pendingDroppedFile: File | null = null;
 
+/* ------------------------------------------------------------------
+ * #44/#45/#46：拖放 / 多文件导入的批次反馈
+ *
+ * 数据全部来自 i-state 的 ImportBatch（stores/interactive.ts）：
+ * - 单批 5 份上限，第 6 份起由 store 记「未接收」并保留在清单里（可重新导入）；
+ * - 每个文件自己的状态（等待 / 上传中 / 已接收 / 失败 / 未接收）；
+ * - 后续成功不覆盖前面的失败；重试只重置并处理对应文件；
+ * - 上传绑定原板面（batch.boardId）、原文件卡（item.cardId）与任务身份；
+ *   迟到回执若绑定卡已删除/替换，store 记 failed 且不关联任何卡片（这里如实展示）；
+ * - 批次状态在 Pinia：打开设置再回来仍能读到真实进度（本组件挂载时按最新批次恢复）。
+ * 本组件只做两件事：把真实上传回执写回 store，以及渲染这一份批次事实。
+ * ------------------------------------------------------------------ */
+type DropBatchEntry =
+  | { name: string; token: { path: string; sourceKind: "desktop_path" | "dropped_path" } }
+  | { name: string; token: { file: File } };
+
+const IMPORT_STATUS_TEXT: Record<ImportItemStatus, string> = {
+  pending: "等待上传",
+  uploading: "上传中",
+  succeeded: "已接收",
+  failed: "失败",
+  unreceived: "未接收",
+};
+
+const activeImportBatchId = ref<string | null>(null);
+const dropBatchEntries = ref<Record<string, DropBatchEntry>>({});
+const activeImportBatch = computed(() =>
+  activeImportBatchId.value ? store.importBatchById(activeImportBatchId.value) : null,
+);
+/** 已接收 / 未接收明细：#44 要求明确列出两类，不能只报一个总数。 */
+const importSummary = computed(() => {
+  const batch = activeImportBatch.value;
+  if (!batch) return "";
+  const received = batch.items.filter((item) => item.status === "succeeded").length;
+  const unreceived = batch.items.filter(
+    (item) => item.status === "unreceived" || item.status === "failed",
+  ).length;
+  return "本批已接收 " + received + " 份 / 未接收 " + unreceived + " 份（单批上限 " + batch.limit + " 份）";
+});
+
+function batchEntryKey(batchId: string, itemKey: string): string {
+  return batchId + "\u0000" + itemKey;
+}
+
+/** 上传成功后才建文件卡（失败只在批次区留记录，不往板面留空卡）。 */
+function createFileCardForDrop(name: string): string | null {
+  const current = store.board;
+  if (!current) return null;
+  const seed = defaultCardSeed("file");
+  const area = readBoardArea();
+  const slot = area
+    ? planNewCardSlot({
+        size: NEW_CARD_SIZE,
+        area,
+        cards: current.cards.filter((card) => !card.deleted),
+      })
+    : null;
+  const before = new Set(current.cards.map((card) => card.id));
+  store.commit(
+    addCard(current, {
+      kind: "file",
+      content: seed.content,
+      // 文件名先落到卡片上：上传还没回来时卡片也认得出是哪一份材料
+      meta: { ...(seed.meta ?? {}), name: name || "未命名材料" },
+      ...(slot ? { x: slot.x, y: slot.y, w: slot.w, h: slot.h } : {}),
+    }),
+    "添加文件：" + (name || "未命名材料"),
+  );
+  return store.board?.cards.find((card) => !before.has(card.id))?.id ?? null;
+}
+
+/** 开始一批：store 负责 5 份上限与「第 6 份未接收」，这里只把真实条目记下来。 */
+async function runDropBatch(entries: DropBatchEntry[]): Promise<void> {
+  if (!entries.length) return;
+  const batch = store.beginImportBatch(entries.map((entry) => ({ name: entry.name })));
+  activeImportBatchId.value = batch.id;
+  const map = { ...dropBatchEntries.value };
+  for (const [index, item] of batch.items.entries()) {
+    const entry = entries[index];
+    if (entry) map[batchEntryKey(batch.id, item.key)] = entry;
+  }
+  dropBatchEntries.value = map;
+  await processPendingBatchItems(batch.id);
+}
+
+/** 顺序处理本批中仍为 pending 的项：单项失败只影响它自己，后面照常继续。 */
+async function processPendingBatchItems(batchId: string): Promise<void> {
+  const batch = store.importBatchById(batchId);
+  if (!batch) return;
+  for (const item of batch.items) {
+    if (!alive) return;
+    const latest = store.importBatchById(batchId)?.items.find((entry) => entry.key === item.key);
+    if (!latest || latest.status !== "pending") continue;
+    await processBatchItem(batchId, latest.key);
+  }
+}
+
+/** 处理单个文件：真实上传 → 等附件 ready → 建卡 / 关联 → 把回执写回 store。 */
+async function processBatchItem(batchId: string, itemKey: string): Promise<void> {
+  const batch = store.importBatchById(batchId);
+  const item = batch?.items.find((entry) => entry.key === itemKey);
+  const entry = dropBatchEntries.value[batchEntryKey(batchId, itemKey)];
+  if (!item || !entry) return;
+  store.noteImportItem(batchId, itemKey, { status: "uploading" });
+  try {
+    const created =
+      "path" in entry.token
+        ? await registerSourceAttachment(entry.token.path, entry.token.sourceKind)
+        : await uploadAttachment(entry.token.file, { sourceKind: "browser_upload" });
+    const settled = await waitUntilSettled(created);
+    if (!alive) return;
+    if (settled.state !== "ready") {
+      throw new Error(
+        "附件「" +
+          settled.name +
+          "」当前不可用：" +
+          stateText(settled) +
+          (settled.error ? "（" + settled.error + "）" : ""),
+      );
+    }
+    // 卡片身份：本项若已有卡就复用；否则（例如「未接收」被重新导入）现在才建卡。
+    let cardId = item.cardId;
+    if (!cardId || !store.board?.cards.some((card) => card.id === cardId && !card.deleted)) {
+      cardId = createFileCardForDrop(settled.name || item.name);
+    }
+    const current = store.board;
+    const card = current?.cards.find((candidate) => candidate.id === cardId);
+    if (!current || !card) {
+      throw new Error("原文件卡已不存在（可能被删除或替换），这次上传没有关联到任何卡片。");
+    }
+    const meta = mergeAttachmentIntoMeta(card.meta, settled, "file");
+    store.commit(updateCard(current, card.id, { meta }), "关联附件：" + settled.name);
+    store.noteImportItem(batchId, itemKey, {
+      status: "succeeded",
+      attachmentId: settled.id,
+      cardId: card.id,
+    });
+  } catch (error) {
+    if (!alive) return;
+    store.noteImportItem(batchId, itemKey, { status: "failed", error: messageOf(error) });
+  }
+}
+
+/**
+ * 重试只操作对应文件（失败 / 未接收）；同批其它项的状态原样保留。
+ * 路由往返后内存里的 File 句柄会丢（#46）：此时让用户重新选这份文件，再按同一项继续处理。
+ */
+async function retryBatchFile(item: ImportBatchItem): Promise<void> {
+  const batch = activeImportBatch.value;
+  if (!batch) return;
+  let entry = dropBatchEntries.value[batchEntryKey(batch.id, item.key)];
+  if (!entry) {
+    let picked: File | null = null;
+    try {
+      picked = await pickBrowserFile();
+    } catch (error) {
+      // 选文件失败不冒充「已处理」：批次项保持原状态，用户可再点一次
+      void messageOf(error);
+      return;
+    }
+    if (!picked || !alive) return;
+    entry = { name: picked.name || item.name || "未命名材料", token: { file: picked } };
+    dropBatchEntries.value = {
+      ...dropBatchEntries.value,
+      [batchEntryKey(batch.id, item.key)]: entry,
+    };
+  }
+  store.retryImportItem(batch.id, item.key);
+  await processBatchItem(batch.id, item.key);
+}
+
+function dismissBatch(): void {
+  const batch = activeImportBatch.value;
+  if (batch) store.dismissImportBatch(batch.id);
+  activeImportBatchId.value = null;
+}
+
 function add(kind: AddableKind): void {
   const current = store.board;
   if (!current) return;
@@ -354,34 +532,42 @@ watch(open, async (value) => {
 });
 
 /**
- * 桌面拖放：Tauri 核心事件给的是**真实路径**（不是字节）—— 每份材料新建一张文件卡，
- * 并用 registerSourceAttachment 登记源引用（source_kind=dropped_path，不复制内容）。
+ * 桌面拖放：Tauri 核心事件给的是**真实路径**（不是字节）—— 每份材料登记为源引用
+ * （source_kind=dropped_path，不复制内容），真实上传回执照常写回批次事实。
+ * 不在这里 slice(0,5)：超过上限由 store 如实记「未接收」并列出，等用户重新导入。
  */
 async function attachDroppedPaths(paths: string[]): Promise<void> {
   if (!paths.length) return;
-  for (const path of paths.slice(0, 5)) {
-    if (!alive) return;
-    pendingDroppedPath = path;
-    add("file");
-    await nextTick();
-  }
+  const entries: DropBatchEntry[] = paths.map((path) => ({
+    name: path.split(/[\\/]/).pop() || "未命名材料",
+    token: { path, sourceKind: "dropped_path" },
+  }));
+  await runDropBatch(entries);
 }
 
-/** 浏览器拖放：只有字节（没有原位置）→ 每份文件新建一张文件卡并首次落盘为工作区材料。 */
+/**
+ * 浏览器拖放：只有字节（没有原位置）→ 首次落盘为工作区材料源文件。
+ * 同一批 5 份上限与「已接收 / 未接收」明细由 store 的批次事实决定（#44/#45）。
+ */
 async function onBrowserDrop(event: DragEvent): Promise<void> {
   const files = Array.from(event.dataTransfer?.files ?? []);
   if (!files.length) return;
-  for (const file of files.slice(0, 5)) {
-    if (!alive) return;
-    pendingDroppedFile = file;
-    add("file");
-    await nextTick();
-  }
+  const entries: DropBatchEntry[] = files.map((file) => ({
+    name: file.name || "未命名材料",
+    token: { file },
+  }));
+  await runDropBatch(entries);
 }
 
 let stopPathDrop: (() => void) | null = null;
 
 onMounted(async () => {
+  /*
+    #46：批次事实在 Pinia（路由切换不销毁）。重新挂载时恢复最近一批的进度 / 恢复入口，
+    而不是把「打开设置再回来」变成一次静默丢失。
+  */
+  const latest = store.currentImportBatch;
+  if (latest) activeImportBatchId.value = latest.id;
   // 只有桌面壳会给出真实路径；浏览器由模板里的 drop 事件兜底（字节 → 首次落盘）
   stopPathDrop = await onPathDrop((paths) => {
     void attachDroppedPaths(paths);
@@ -389,6 +575,21 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  /*
+    #46：离开页面时仍在飞的上传，回执已经不在本组件手里 —— 如实记「失败：结果未知，可重试」，
+    返回后批次区能看到它并重新导入；不假装成功，也不留一个永远转圈的「上传中」。
+  */
+  const batch = activeImportBatch.value;
+  if (batch) {
+    for (const item of batch.items) {
+      if (item.status === "uploading") {
+        store.noteImportItem(batch.id, item.key, {
+          status: "failed",
+          error: "页面已离开：这次上传的结果未知，可重新导入这份文件。",
+        });
+      }
+    }
+  }
   alive = false;
   stopPathDrop?.();
   stopPathDrop = null;
@@ -419,6 +620,48 @@ onBeforeUnmount(() => {
       所以无论是长文件名还是失败提示，都不会挡住「添加」按钮或工具栏上的其它操作。
     -->
     <div class="add-float" data-im="add-float">
+      <!--
+        #44/#45：拖放 / 多文件导入的批次反馈。固定列出每个文件的真实状态、
+        已接收 / 未接收明细与失败原因；失败 / 未接收项各自有重试入口（只重试对应文件）。
+        该区域不用自动消失计时器：批次结果（尤其未接收项）要让用户看得见、点得到。
+      -->
+      <div
+        v-if="activeImportBatch"
+        class="add-batch"
+        data-im="add-material-status"
+        :data-batch-id="activeImportBatch.id"
+      >
+        <p class="batch-title" data-im="add-material-summary">{{ importSummary }}</p>
+        <ul class="batch-list">
+          <li
+            v-for="item in activeImportBatch.items"
+            :key="item.key"
+            class="batch-item"
+            data-im="add-batch-item"
+            :data-status="item.status"
+            :data-name="item.name"
+          >
+            <span class="batch-name" :title="item.name">{{ item.name || "未命名材料" }}</span>
+            <span class="batch-state">{{ IMPORT_STATUS_TEXT[item.status] }}</span>
+            <span v-if="item.error" class="batch-error" data-im="file-card-error">{{ item.error }}</span>
+            <button
+              v-if="item.status === 'failed' || item.status === 'unreceived'"
+              type="button"
+              class="batch-retry"
+              data-im="card-attach-retry"
+              @click="retryBatchFile(item)"
+            >{{ item.status === "unreceived" ? "重新导入" : "重试" }}</button>
+          </li>
+        </ul>
+        <button
+          type="button"
+          class="batch-close"
+          data-im="add-material-dismiss"
+          aria-label="关闭本批反馈"
+          @click="dismissBatch"
+        >关闭</button>
+      </div>
+
       <!-- 附件上传 / 成功 / 失败状态：渲染在菜单外面，菜单收起后仍然可见（不静默） -->
       <p
         v-if="notice"
@@ -606,4 +849,55 @@ onBeforeUnmount(() => {
 .add-status.is-busy { border-left-color: var(--link); }
 .add-status.is-ok { border-left-color: var(--success, var(--link)); }
 .add-status.is-error { border-left-color: var(--danger); color: var(--text-strong); }
+
+/* #44/#45：拖放 / 多文件导入的批次反馈（沿用状态条的外观，内部是逐文件明细） */
+.add-batch {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  width: max-content;
+  max-width: min(420px, calc(100vw - var(--sp-6)));
+  padding: var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--link);
+  border-radius: var(--qio-ui-radius);
+  box-shadow: var(--elev-floating, var(--shadow-2));
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal, 1.5);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.batch-title { margin: 0; color: var(--text-strong); }
+.batch-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.batch-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--sp-2); min-width: 0; }
+.batch-name {
+  color: var(--text-strong);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-state { color: var(--text-muted); white-space: nowrap; }
+.batch-item[data-status="succeeded"] .batch-state { color: var(--success, var(--link)); }
+.batch-item[data-status="failed"] .batch-state { color: var(--danger); }
+.batch-item[data-status="unreceived"] .batch-state { color: var(--warning, var(--text-muted)); }
+.batch-error { flex-basis: 100%; color: var(--danger); }
+.batch-retry,
+.batch-close {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.batch-retry:hover,
+.batch-close:hover { border-color: var(--border-strong); color: var(--text-strong); }
+.batch-close { align-self: flex-end; color: var(--text-muted); }
 </style>
