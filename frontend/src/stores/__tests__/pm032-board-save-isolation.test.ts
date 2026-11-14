@@ -1881,3 +1881,123 @@ describe("#46 第六轮：达到自动恢复上限后保持停止", () => {
     }
   });
 });
+
+describe("#46 第六轮补充：读取代次与撤回归属（store 层）", () => {
+  it("B 读取延迟/失败：A 仍可编辑保存；B→A→B 时旧 B 响应不盖新 B 读取", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的旧内容");
+    const cardBNew = textCard("card_b_new", "B 的新读取");
+    let bSeq = 3;
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A
+          ? boardState(BOARD_A, [cardA], 3)
+          : boardState(BOARD_B, bSeq >= 7 ? [cardB, cardBNew] : [cardB], bSeq),
+      )) as never);
+
+    await store.selectBoard(BOARD_A);
+
+    // 第一次 B 读取挂起（随后失败）
+    const oldRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => oldRead.promise as never);
+    const firstB = store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.boardId, "前提：已经切到 B").toBe(BOARD_B);
+
+    // 读取还在飞就切到 A：A 读取成功，A 可正常编辑与保存
+    await store.selectBoard(BOARD_A);
+    await settle();
+    expect(store.boardId).toBe(BOARD_A);
+    expect(liveCards(store).map((card) => card.id)).toEqual(["card_a"]);
+
+    // A 上编辑并保存：请求目标必须是 A
+    store.commit(addCard(store.board!, { kind: "text", content: "A 的新卡" }), "新增卡片");
+    await waitForDebouncedSave();
+    const aPuts = vi.mocked(api.saveBoardState).mock.calls.filter((call) => String(call[0]) === BOARD_A);
+    expect(aPuts.length, "A 的保存被 B 的在途读取挡住了").toBeGreaterThan(0);
+    expect(store.saveStatus).toBe("saved");
+
+    // 让旧的 B 读取失败：不许把错误与状态写进 A
+    oldRead.reject(new Error("B 整板读取失败"));
+    await settle();
+    await firstB;
+    await settle();
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.saveStatus, "B 的读取失败写进了 A 的保存状态").toBe("saved");
+    expect(store.loadError, "B 的读取失败写进了 A 的 loadError").toBeNull();
+    expect(liveCards(store).map((card) => card.id)).toContain("card_a");
+
+    // B → A → B：新的 B 读取先落地，旧 B 响应随后返回，不许盖掉新读取
+    bSeq = 7;
+    const staleB = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => staleB.promise as never);
+    const oldBLoad = store.selectBoard(BOARD_B);
+    await settle();
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.boardId).toBe(BOARD_B);
+    expect(store.board?.seq, "新的 B 读取没有落地").toBe(7);
+    expect(liveCards(store).map((card) => card.id)).toContain("card_b_new");
+
+    staleB.resolve(boardPayload(boardState(BOARD_B, [cardB], 2)) as never);
+    await settle();
+    await oldBLoad;
+    await settle();
+    expect(store.boardId).toBe(BOARD_B);
+    expect(store.board?.seq, "旧的 B 读取盖掉了新的 B 读取").toBe(7);
+    expect(liveCards(store).map((card) => card.id), "旧的 B 读取把新卡片抹掉了").toContain("card_b_new");
+    expect(liveCards(store).map((card) => card.id), "旧的 B 读取把旧内容塞回来了").not.toContain("card_b_old_only");
+  });
+
+  it("B 撤回读取挂起时去 A 撤回：A 只显示自己的撤回结果，B 的迟到失败归 B", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A ? boardState(BOARD_A, [cardA], 3) : boardState(BOARD_B, [cardB], 7),
+      )) as never);
+
+    await store.selectBoard(BOARD_B);
+    await store.selectBoard(BOARD_A);
+
+    // B 上发起撤回，读取挂起（此时显示的是 A：先回 B 再发起撤回）
+    await store.selectBoard(BOARD_B);
+    const bCancelRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => bCancelRead.promise as never);
+    const bCancel = store.cancelImpact();
+    await settle();
+    expect(store.cancelRecovery?.boardId).toBe(BOARD_B);
+
+    // 读取还没回来就切到 A：A 自己也发起一次撤回（读取挂起）
+    await store.selectBoard(BOARD_A);
+    const aCancelRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => aCancelRead.promise as never);
+    const aCancel = store.cancelImpact();
+    await settle();
+
+    // A 的撤回读取成功：A 的撤回结果收敛
+    aCancelRead.resolve(boardPayload(boardState(BOARD_A, [cardA], 3)) as never);
+    await aCancel;
+    await settle();
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.cancelRecovery?.boardId).toBe(BOARD_A);
+    expect(store.cancelRecovery?.active, "A 的撤回没有被确认").toBe(false);
+
+    // B 的撤回读取迟到失败：不许改写 A 的撤回结果
+    bCancelRead.reject(new Error("B 撤回读取失败"));
+    await bCancel;
+    await settle();
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.cancelRecovery?.boardId, "B 的迟到失败改写了 A 的撤回状态").toBe(BOARD_A);
+    expect(store.cancelRecovery?.active, "A 的撤回结果被 B 的失败覆盖").toBe(false);
+    expect(store.cancelRecovery?.reason).toBeNull();
+
+    // 回到 B：B 自己的撤回状态由 B 的事实决定（成功重读后收敛为已确认，不显示旧失败原因）
+    await store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.cancelRecovery?.boardId).toBe(BOARD_B);
+    expect(store.cancelRecovery?.active, "回到 B 的成功读取没有把撤回落到服务器事实").toBe(false);
+    expect(store.cancelRecovery?.reason ?? "").not.toContain("B 撤回读取失败");
+  });
+});
