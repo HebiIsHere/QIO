@@ -2162,6 +2162,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const SAVE_RECOVERY_MAX_PUTS = 4;
   const saveRecoveryRoundByBoard = new Map<string, SaveRecoveryRound>();
   /**
+   * #46（第六轮）：达到自动恢复上限后，这块板面**停止自动保存**。
+   * 单纯切板 / 重读 / 迟到回执都不许把它重新启动；只有用户明确点「重试保存」
+   * （直接调用 saveNow()）才清掉这个停止标记、开始新一轮有限恢复。
+   */
+  const saveHaltedByLimitByBoard = new Set<string>();
+  /**
    * #46（第五轮）：在途的恢复步骤（重新预判）。
    *
    * 同一板、同一恢复计划、同一候选只发一次；切回原板 / 重复进入 load / 触发保存时接回它。
@@ -2192,6 +2198,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function finishSaveRecovery(targetBoardId: string): void {
     clearSaveRecoveryPlan(targetBoardId);
     endSaveRecoveryRound(targetBoardId);
+    saveHaltedByLimitByBoard.delete(targetBoardId);
   }
   function recoveryRoundFor(targetBoardId: string): SaveRecoveryRound | null {
     return saveRecoveryRoundByBoard.get(targetBoardId) ?? null;
@@ -2279,6 +2286,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * #46（第五轮）：不是自动恢复的续存（用户新编辑 / 用户点重试 / 新一轮提交前的保存），
      * 就结束上一轮的自动恢复次数记录 —— 下一次冲突从 0 开始、整轮重新有限。
      */
+    /**
+     * 达到上限后的停止状态：自动重排 / 切回原板 / 重读都不许重新发请求；
+     * 用户明确点「重试保存」（直接调用 saveNow()，没有板面/续存参数）才解除。
+     */
+    if (saveHaltedByLimitByBoard.has(ownerBoardId)) {
+      if (ownerOverride !== undefined || options.recoveryContinuation) return;
+      saveHaltedByLimitByBoard.delete(ownerBoardId);
+    }
     if (!options.recoveryContinuation) endSaveRecoveryRound(ownerBoardId);
     /**
      * 这块板面正在做一次冲突恢复（已经读/预判，或等用户确认）：恢复流程自己会继续。
@@ -2804,6 +2819,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       const limitReason =
         "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。" +
         "请确认是否有其他窗口或页面正在同时编辑，然后点重试";
+      saveHaltedByLimitByBoard.add(owner);
       if (!isCurrent()) {
         writeSaveResultToStashedSession(owner, { saveStatus: "error", saveError: limitReason, dirty: true });
         return "stopped";
@@ -2812,6 +2828,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveError.value = limitReason;
       dirty.value = true;
       settleCardImportSaveForBoard(owner, false, limitReason);
+      saveHaltedByLimitByBoard.add(owner);
       return "stopped";
     }
     /**
@@ -3231,6 +3248,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (pendingImpact.value) {
         // 还在等用户决定影响确认：不要自作主张再排一次保存，等用户确认
         saveStatus.value = "idle";
+      } else if (saveHaltedByLimitByBoard.has(boardId.value)) {
+        // 自动恢复已达上限：单纯重读不重启保存，必须由用户明确重试
+        saveStatus.value = "error";
       } else if (recoveryPlanFor(boardId.value)) {
         // 这块板面自己的冲突恢复还没做完：由恢复流程继续，不能插进去重复发请求
         saveStatus.value = "idle";
@@ -3490,7 +3510,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * #46（第四轮）：有冲突恢复计划的板面不在这里重排 —— 回到原板后先由 load() 落定最新事实，
      * 再继续它的恢复（重读 / 重新预判 / 等待确认），避免对同一份候选重复发请求。
      */
-    if (session.dirty && !session.pendingImpact && !recoveryPlanFor(targetBoardId)) scheduleSave();
+    if (
+      session.dirty &&
+      !session.pendingImpact &&
+      !recoveryPlanFor(targetBoardId) &&
+      !saveHaltedByLimitByBoard.has(targetBoardId)
+    ) {
+      scheduleSave();
+    }
   }
 
   /** 板面已经切走时，把保存结果写回**它自己的**会话（绝不写进当前板面）。 */

@@ -1821,3 +1821,63 @@ describe("#46 第六轮：草稿按发起时的板面归属", () => {
     expect(store.board?.cards?.some((card) => card.id === "card_b"), "B 的草稿写进了 A 的板面").toBe(false);
   });
 });
+
+describe("#46 第六轮：达到自动恢复上限后保持停止", () => {
+  it("4 次 PUT 达上限后，切出切回 / 重读不再自动保存；手动重试才恢复", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    let serverSeq = 7;
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        boardState(id, id === BOARD_A ? [cardA] : [cardB], id === BOARD_A ? 3 : serverSeq),
+      )) as never);
+    const putLog: { boardId: string; seq: number }[] = [];
+    let failuresRemaining = 4;
+    vi.mocked(api.saveBoardState).mockImplementation(async (id: string, candidate: BoardState) => {
+      const state = candidate as BoardState;
+      putLog.push({ boardId: String(id), seq: Number(state.seq ?? 0) });
+      if (failuresRemaining > 0) {
+        failuresRemaining -= 1;
+        serverSeq += 1;
+        throw Object.assign(new Error("409"), {
+          status: 409,
+          payload: { error: "stale_state", reason: "版本变化", currentSeq: serverSeq },
+        });
+      }
+      return {
+        ok: true,
+        seq: Number(state.seq ?? 0) + 1,
+        savedAt: NOW,
+        state: { ...state, boardId: String(id), seq: Number(state.seq ?? 0) + 1 },
+      } as never;
+    });
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+    vi.useFakeTimers();
+    try {
+      store.commit(addCard(store.board!, { kind: "text", content: "B 新增的卡" }), "新增卡片");
+      await vi.advanceTimersByTimeAsync(4200);
+      expect(putLog.filter((item) => item.boardId === BOARD_B).length, "首次 + 自动重试不是 4 次").toBe(4);
+      expect(store.saveStatus).toBe("error");
+      // 单纯切出 / 切回 / 重读：保持停止，不重新自动保存
+      await store.selectBoard(BOARD_A);
+      await store.selectBoard(BOARD_B);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(
+        putLog.filter((item) => item.boardId === BOARD_B).length,
+        "达到上限后切板往返又自动发了保存",
+      ).toBe(4);
+      expect(putLog.filter((item) => item.boardId === BOARD_A).length).toBe(0);
+      // 用户明确点重试：开始新一轮并保存成功
+      failuresRemaining = 0;
+      await store.saveNow();
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(store.saveStatus).toBe("saved");
+      expect(store.dirty).toBe(false);
+      const finalPut = putLog.filter((item) => item.boardId === BOARD_B).pop();
+      expect(finalPut?.seq, "重试没有基于最新服务端版本").toBe(serverSeq);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
