@@ -1733,6 +1733,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 界面可能还没来得及禁用按钮，数据层也必须守住「失败期间不得对旧板面发起编辑」。
      */
     if (boardEditBlockedReason.value !== null) return;
+    /**
+     * #46（第五轮）：这是用户**真实的新编辑**（不是重读推进版本）——
+     * 上一轮自动恢复的次数到此结束，下一次冲突属于新一轮（不会把旧轮次数算到新改动上）。
+     */
+    endSaveRecoveryRound(boardId.value);
     const current = board.value;
     // Phase 2 §5.1：参与的旧兼容字段（checked / hidden）与 participation 同口径；
     // 对齐不补时间戳（否则等于凭空造出一次改动）。
@@ -1919,18 +1924,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /**
    * F3 的可恢复流程第二步：用**原板面当前候选的最新版本**重新做一次影响预判。
    *
-   * #46（第四轮）：板面身份是显式参数 —— 请求发往 targetBoardId，任何 await 之后都先核对
-   * 「还是不是原板 / 候选还是不是那一版」，再写状态或发下一次请求。返回：
+   * #46（第四/五轮）：板面身份是显式参数，请求发往 targetBoardId；任何 await 之后都先核对
+   * 「还是不是原板 / 恢复计划与步骤还是不是这一份 / 候选与服务端依据还是不是这一版」，再写状态。
+   * 返回：
    * - "confirm"：已经拿到有效说明并落到原板（等用户决定）；
    * - "ok"：这次改动不需要影响确认，可以继续保存；
    * - "blocked"：预判没做成（原因已写入原板面自己的 impactCheckError），候选保留；
-   * - "away"：预判期间已经切走 —— 结果按原归属结束，回原板后再重新核对。
+   * - "away"：预判期间已经切走，或计划 / 步骤已被更新的操作接手 —— 结果按原归属结束；
+   * - "stale"：候选或服务端依据在等待期间变了 —— 这次结果不能放行，调用方按最新事实重新核对。
    */
   async function recheckImpactForCurrentCandidate(
     targetBoardId: string,
     previousAffected?: ImpactTaskRef[],
     forceNote?: string,
-  ): Promise<"confirm" | "ok" | "blocked" | "away"> {
+    stillValid?: () => boolean,
+  ): Promise<"confirm" | "ok" | "blocked" | "away" | "stale"> {
     if (boardId.value !== targetBoardId) return "away";
     if (!board.value) return "blocked";
     if (Object.keys(boardContentConflicts.value).length > 0) {
@@ -1948,46 +1956,46 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveError.value = `本地删除了这些对象，但服务器上它们被改过（${ids}）：请选择保持删除还是恢复服务器版后再保存`;
       return "blocked";
     }
-    /**
-     * 预判在飞期间用户可能继续编辑：确认只能放行**它预判过的那一版**候选。
-     * 候选变了就按最新候选重新核对（有界：最多 3 次，之后如实停在失败上）。
-     */
-    for (let round = 0; round < 3; round += 1) {
+    const requested = cloneState(board.value);
+    const requestedKey = boardCandidateKey(requested);
+    const requestedSeq = Number(requested.seq ?? 0);
+    try {
+      const check = await runImpactCheck(targetBoardId, requestedSeq, requested);
+      /** 旧响应：原板已切走、计划 / 步骤已被更新的操作接手 → 当前状态一个字段都不写。 */
+      if (stillValid && !stillValid()) return "away";
       if (boardId.value !== targetBoardId) return "away";
-      const current = cloneState(board.value);
-      const rev = boardLocalRev;
-      try {
-        const check = await runImpactCheck(targetBoardId, current.seq, current);
-        if (boardId.value !== targetBoardId) return "away";
-        if (rev !== boardLocalRev) continue;
-        const pending = buildImpactConfirmState(
-          targetBoardId,
-          check,
-          rev,
-          current.seq,
-          current,
-          previousAffected,
-          forceNote,
-        );
-        if (pending) {
-          showImpactConfirmFor(targetBoardId, pending);
-          return "confirm";
-        }
-        if (check.ok === false) {
-          impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${check.reason || "服务端没有给出可用的影响确认记录"}）`;
-          return "blocked";
-        }
-        impactCheckError.value = null;
-        return "ok";
-      } catch (err) {
-        if (boardId.value !== targetBoardId) return "away";
-        impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${(err as Error).message || "原因未知"}）`;
+      if (!board.value) return "away";
+      /**
+       * 预判在飞期间候选或服务端依据变了：这次说明只覆盖它请求的那一版，
+       * 不能放行未说明的改动；调用方按最新事实重新核对（同板、同计划、候选不同 → 新步骤）。
+       */
+      if (boardCandidateKey(board.value) !== requestedKey) return "stale";
+      if (Number(board.value.seq ?? 0) !== requestedSeq) return "stale";
+      const pending = buildImpactConfirmState(
+        targetBoardId,
+        check,
+        boardLocalRev,
+        requestedSeq,
+        board.value,
+        previousAffected,
+        forceNote,
+      );
+      if (pending) {
+        showImpactConfirmFor(targetBoardId, pending);
+        return "confirm";
+      }
+      if (check.ok === false) {
+        impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${check.reason || "服务端没有给出可用的影响确认记录"}）`;
         return "blocked";
       }
+      impactCheckError.value = null;
+      return "ok";
+    } catch (err) {
+      if (stillValid && !stillValid()) return "away";
+      if (boardId.value !== targetBoardId) return "away";
+      impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${(err as Error).message || "原因未知"}）`;
+      return "blocked";
     }
-    impactCheckError.value =
-      "这次保存前的影响预判没有完成，保存已暂停（等待期间板面一直在变化，已按最新候选重新核对 3 次）";
-    return "blocked";
   }
 
   /**
@@ -2001,6 +2009,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const ownerBoardId = boardId.value;
     if (!ownerBoardId) return;
     scheduledSaveBoardId = ownerBoardId;
+    /**
+     * #46（第五轮）：自动重排的保存是否属于**同一轮自动恢复**。
+     * 这一轮记录还在（重读 / 合并 / 切板往返都没结束它）就继续用它计数；
+     * 用户真实编辑会先结束记录，于是这里的 false 就是合法的新一轮。
+     */
+    const isRecoveryContinuation = Boolean(recoveryRoundFor(ownerBoardId));
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       saveTimer = null;
@@ -2011,8 +2025,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
        * 真正的失败重试（saveStatus === "error"）仍然照常进入 saveNow。
        */
       if (targetBoardId === boardId.value && !dirty.value && saveStatus.value !== "error") return;
-      void saveNow(targetBoardId || undefined);
+      void saveNow(targetBoardId || undefined, { recoveryContinuation: isRecoveryContinuation });
     }, 450);
+  }
+
+  /** 取消某块板面已排上的防抖保存（达到自动恢复上限时用：不许再有自动请求）。 */
+  function cancelScheduledSaveFor(ownerBoardId: string): void {
+    if (!saveTimer) return;
+    if (scheduledSaveBoardId !== ownerBoardId) return;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    scheduledSaveBoardId = "";
   }
 
   /**
@@ -2065,6 +2088,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   interface SaveRecoveryPlan {
     boardId: string;
+    /**
+     * #46（第五轮）：这一份恢复计划的身份。重新进入 load / 切回原板 / 触发保存时，
+     * 用它核对「还是不是同一份恢复」；旧响应不许覆盖较新的计划。
+     */
+    planId: number;
     kind: SaveConflictKind;
     reason: string;
     scopeChanged: boolean;
@@ -2076,14 +2104,47 @@ export const useInteractiveStore = defineStore("interactive", () => {
     attemptToken: number;
     attemptRev: number;
     snapshotSeq: number;
+    /** 候选在预判期间反复变化时，按最新事实重新核对的有界次数（最多 3 次）。 */
+    staleRounds?: number;
   }
+  let recoveryPlanSeq = 0;
   /**
    * 按板面 id 记的恢复计划 —— 它就是那块板面的「保存会话里接下来的恢复步骤」，
    * 用板面 id 直接索引，切板时不必把计划再复制一份（也就不会出现两份不一致的计划）。
    */
   const saveRecoveryByBoard = new Map<string, SaveRecoveryPlan>();
-  /** 同一板面同一次候选的冲突恢复次数（沿用 N1/F3 的 3 次上限，按板面记账）。 */
-  const saveRecoveryBudgetByBoard = new Map<string, { rev: number; attempts: number }>();
+  /**
+   * #46（第五轮）：**整轮自动恢复**的重试记录（按板面、按本轮保存身份）。
+   *
+   * 缺陷：上一轮把重试次数和「当前恢复步骤」绑在一起（按 putRev 计数、每次
+   * clearSaveRecoveryPlan() 一起清掉），而重读 + 合并会推进本地版本、每个恢复步骤结束又会清计划，
+   * 于是持续冲突时每次都从 1 重新计数：自动 PUT 无限循环、界面一直停在「保存中」。
+   *
+   * 正确口径：一轮自动恢复（首次 PUT 失败开始）只记一次次数；同一轮里的重读、服务端 seq 推进、
+   * 合并服务端事实、防抖重排与切板往返都继续使用这一轮；只有保存成功、用户取消、
+   * 用户发起新一轮保存 / 重试（真实新编辑结束本轮）时才结束记录。
+   */
+  interface SaveRecoveryRound {
+    boardId: string;
+    /** 这一轮已经用掉的自动恢复次数：每收到一次 409 计一次（首次 PUT 失败即 1）。 */
+    attempts: number;
+  }
+  /** 首次 PUT + 最多 3 次自动重试：达到 4 次 PUT 仍未成功就停下来。 */
+  const SAVE_RECOVERY_MAX_PUTS = 4;
+  const saveRecoveryRoundByBoard = new Map<string, SaveRecoveryRound>();
+  /**
+   * #46（第五轮）：在途的恢复步骤（重新预判）。
+   *
+   * 同一板、同一恢复计划、同一候选只发一次；切回原板 / 重复进入 load / 触发保存时接回它。
+   * 候选变了才会按最新候选开启新的步骤（旧响应只处理自己的记录）。
+   */
+  interface RecoveryStepFlight {
+    boardId: string;
+    planId: number;
+    candidateKey: string;
+    done: Promise<void>;
+  }
+  const recoveryStepInFlightByBoard = new Map<string, RecoveryStepFlight>();
 
   function recoveryPlanFor(targetBoardId: string): SaveRecoveryPlan | null {
     return saveRecoveryByBoard.get(targetBoardId) ?? null;
@@ -2091,18 +2152,37 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function setSaveRecoveryPlan(plan: SaveRecoveryPlan): void {
     saveRecoveryByBoard.set(plan.boardId, plan);
   }
+  /** 只结束当前恢复步骤（计划）；**不动**整轮自动恢复的次数记录。 */
   function clearSaveRecoveryPlan(targetBoardId: string): void {
     saveRecoveryByBoard.delete(targetBoardId);
-    saveRecoveryBudgetByBoard.delete(targetBoardId);
   }
-  function bumpRecoveryAttempts(targetBoardId: string, rev: number): number {
-    const budget = saveRecoveryBudgetByBoard.get(targetBoardId);
-    if (!budget || budget.rev !== rev) {
-      saveRecoveryBudgetByBoard.set(targetBoardId, { rev, attempts: 1 });
+  function endSaveRecoveryRound(targetBoardId: string): void {
+    saveRecoveryRoundByBoard.delete(targetBoardId);
+  }
+  /** 保存成功 / 取消：这一轮自动恢复整体收尾（计划与次数一起结束）。 */
+  function finishSaveRecovery(targetBoardId: string): void {
+    clearSaveRecoveryPlan(targetBoardId);
+    endSaveRecoveryRound(targetBoardId);
+  }
+  function recoveryRoundFor(targetBoardId: string): SaveRecoveryRound | null {
+    return saveRecoveryRoundByBoard.get(targetBoardId) ?? null;
+  }
+  /**
+   * 记一次冲突（首次 PUT 失败也算一次）。有本轮记录就沿用；没有才开新一轮。
+   * 重读 / 合并 / 切板都不调用它 —— 所以服务端推进版本不会重置次数。
+   */
+  function noteRecoveryConflict(targetBoardId: string): number {
+    const round = saveRecoveryRoundByBoard.get(targetBoardId);
+    if (!round) {
+      saveRecoveryRoundByBoard.set(targetBoardId, { boardId: targetBoardId, attempts: 1 });
       return 1;
     }
-    budget.attempts += 1;
-    return budget.attempts;
+    round.attempts += 1;
+    return round.attempts;
+  }
+  /** 候选内容指纹：判断「这次重新预判针对的候选还是不是当前候选」。 */
+  function boardCandidateKey(state: BoardState | null): string {
+    return state ? JSON.stringify(candidateComparable(state)) : "";
   }
 
   /**
@@ -2146,7 +2226,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     };
   }
 
-  async function saveNow(ownerOverride?: string): Promise<void> {
+  async function saveNow(
+    ownerOverride?: string,
+    options: { recoveryContinuation?: boolean } = {},
+  ): Promise<void> {
     const ownerBoardId = ownerOverride ?? boardId.value;
     /**
      * #46（第四轮）：这次保存只对**发起它的那块板面**有效。
@@ -2164,10 +2247,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return;
     }
     /**
-     * 这块板面正在做一次冲突恢复（已经读/预判，或等用户确认）：恢复流程自己会继续，
-     * 自动保存不许插进去对同一份候选重复发请求。
+     * #46（第五轮）：不是自动恢复的续存（用户新编辑 / 用户点重试 / 新一轮提交前的保存），
+     * 就结束上一轮的自动恢复次数记录 —— 下一次冲突从 0 开始、整轮重新有限。
      */
-    if (recoveryPlanFor(ownerBoardId)) return;
+    if (!options.recoveryContinuation) endSaveRecoveryRound(ownerBoardId);
+    /**
+     * 这块板面正在做一次冲突恢复（已经读/预判，或等用户确认）：恢复流程自己会继续。
+     * 触发保存时接回这次恢复：同一候选交给在途的重新预判；候选变了按最新事实重新核对。
+     * 绝不对同一份候选并排再发一次保存 / 预判。
+     */
+    if (recoveryPlanFor(ownerBoardId)) {
+      resumeBoardRecoveryIfNeeded(ownerBoardId);
+      return;
+    }
     /** 影响确认已经在等用户决定：这里不重复预判、也不保存（点「继续」走 confirmImpact）。 */
     if (pendingImpact.value && !impactConfirmed) return;
     /**
@@ -2290,6 +2382,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
               if (!ownerIsCurrent()) {
                 setSaveRecoveryPlan({
                   boardId: ownerBoardId,
+                  planId: ++recoveryPlanSeq,
                   kind: "impact_confirmation_required",
                   reason: check.reason ?? "预判没有完成",
                   scopeChanged: false,
@@ -2416,12 +2509,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
               }
             }
           }
-          clearSaveRecoveryPlan(ownerBoardId);
+          // 服务端接受了这次写入：整轮自动恢复到此收尾（计划与次数一起结束）
+          finishSaveRecovery(ownerBoardId);
           return;
         }
         // #80：保存回执里的 pending 是服务端刚重算的「相对上次成功提交还剩下的改动」
         capturePendingFromSave(result, ownerBoardId);
-        clearSaveRecoveryPlan(ownerBoardId);
+        finishSaveRecovery(ownerBoardId);
         /**
          * #46（第三轮）：回执是否覆盖了「更新的候选」必须按**这次请求自己的候选**判断
          * （内容比较），不能用全局版本号 —— 切走再切回来会重新赋值它。
@@ -2538,6 +2632,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           if (conflictKind) {
             setSaveRecoveryPlan({
               boardId: ownerBoardId,
+              planId: ++recoveryPlanSeq,
               kind: conflictKind,
               reason: failure?.reason ?? "",
               scopeChanged: failure?.scopeChanged === true,
@@ -2646,6 +2741,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const affectedTasks = failure?.affectedTasks?.length ? failure.affectedTasks : null;
     const planBase = {
       boardId: owner,
+      planId: ++recoveryPlanSeq,
       kind,
       reason,
       scopeChanged: failure?.scopeChanged === true,
@@ -2661,10 +2757,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } else {
       writeSaveResultToStashedSession(owner, { impactConfirmed: false, pendingConfirm: null });
     }
-    // 有界重试：同一板面、同一候选最多 3 次自动恢复
-    const attempts = bumpRecoveryAttempts(owner, attempt.putRev);
-    if (attempts > 3) {
-      clearSaveRecoveryPlan(owner);
+    /**
+     * #46（第五轮）：整轮自动恢复的次数**只在这里累计**。
+     * 重读 / 合并 / 防抖重排 / 切板往返都不再调用它，所以服务端推进版本不会把次数清零；
+     * 首次 PUT 失败算 1 次，达到上限（首次 + 最多 3 次自动重试）就停下来。
+     */
+    const attempts = noteRecoveryConflict(owner);
+    if (attempts >= SAVE_RECOVERY_MAX_PUTS) {
+      finishSaveRecovery(owner);
+      cancelScheduledSaveFor(owner);
       const limitReason =
         "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。" +
         "请确认是否有其他窗口或页面正在同时编辑，然后点重试";
@@ -2708,13 +2809,22 @@ export const useInteractiveStore = defineStore("interactive", () => {
       );
       return "stopped";
     }
-    if (kind === "stale_state") {
-      if (read.status === "failed") {
+    if (read.status === "failed") {
+      /**
+       * 读取失败时如实停在失败上（候选保留、可重试）；读取成功也绝不是「保存成功」——
+       * 这里只把状态收回 idle，真正的保存结果只能由 PUT 回执决定。
+       */
+      if (kind === "stale_state") {
         saveStatus.value = "error";
         saveError.value = read.reason ?? "读取最新板面事实失败";
         dirty.value = true;
         return "stopped";
       }
+    } else {
+      saveStatus.value = "idle";
+    }
+    if (kind === "stale_state") {
+      if (read.status === "failed") return "stopped";
       clearSaveRecoveryPlan(owner);
       return "resume";
     }
@@ -2731,14 +2841,26 @@ export const useInteractiveStore = defineStore("interactive", () => {
           ? "重新核对后发现受影响的运行中任务与刚才的说明不同：下面是当前的完整范围，" +
             "这次改动还没有保存、任务也都还没被暂停，请按它重新确认。"
           : undefined;
-    const outcome = await recheckImpactForCurrentCandidate(owner, affectedTasks ?? undefined, note);
-    if (!isCurrent()) {
-      setSaveRecoveryPlan({ ...planBase, needsRead: false });
-      writeSaveResultToStashedSession(owner, {
-        saveStatus: "idle",
-        saveError: null,
-        dirty: true,
-      });
+    /**
+     * 预判在飞期间用户可能继续编辑：候选变了按最新候选重新核对（有界 3 次）；
+     * 每次结果返回都先核对原板与操作身份，旧结果不写任何状态。
+     */
+    let outcome: "confirm" | "ok" | "blocked" | "away" | "stale" = "stale";
+    for (let round = 0; round < 3 && outcome === "stale"; round += 1) {
+      outcome = await recheckImpactForCurrentCandidate(owner, affectedTasks ?? undefined, note);
+      if (!isCurrent()) {
+        setSaveRecoveryPlan({ ...planBase, needsRead: false });
+        writeSaveResultToStashedSession(owner, {
+          saveStatus: "idle",
+          saveError: null,
+          dirty: true,
+        });
+        return "stopped";
+      }
+    }
+    if (outcome === "stale") {
+      impactCheckError.value =
+        "这次保存前的影响预判没有完成，保存已暂停（等待期间候选一直在变化，已按最新候选重新核对 3 次）";
       return "stopped";
     }
     clearSaveRecoveryPlan(owner);
@@ -2754,14 +2876,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
-   * #46（第四轮）：回到原板面后继续它自己的冲突恢复。
-   * 只有「整板读取已经落定」（load() 成功）时才会调用 —— 读取本身就是恢复的第一步。
+   * #46（第四/五轮）：回到原板面后继续它自己的冲突恢复。
+   * 只有「整板读取已经落定」（load() 成功）或「触发保存」时才会调用 —— 读取本身就是恢复的第一步。
+   *
+   * 同一板、同一恢复计划、同一候选只发一次重新预判：已经在途就接回它，
+   * 重复进入 load() / 切回原板 / 触发保存都不会再发第二份。
    */
   function resumeBoardRecoveryIfNeeded(targetBoardId: string): void {
     const plan = recoveryPlanFor(targetBoardId);
     if (!plan) return;
     if (boardId.value !== targetBoardId) return;
     if (saveInFlightFor(targetBoardId)) return;
+    const candidateKey = boardCandidateKey(board.value);
+    const running = recoveryStepInFlightByBoard.get(targetBoardId);
+    if (running && running.planId === plan.planId && running.candidateKey === candidateKey) return;
     void continueBoardRecovery(plan);
   }
 
@@ -2769,13 +2897,22 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const owner = plan.boardId;
     if (boardId.value !== owner) return;
     if (saveInFlightFor(owner)) return;
+    const candidateKey = boardCandidateKey(board.value);
+    /**
+     * 接回同一份在途重新预判：不重复发请求；等它结算后由它自己收尾。
+     */
+    const running = recoveryStepInFlightByBoard.get(owner);
+    if (running && running.planId === plan.planId && running.candidateKey === candidateKey) {
+      await running.done;
+      return;
+    }
     /** 回到原板时已经没有待保存候选（例如这次冲突之前已由更新的保存收尾）：计划作废。 */
     if (!dirty.value && !pendingImpact.value) {
       clearSaveRecoveryPlan(owner);
       return;
     }
     if (plan.kind === "stale_state") {
-      // 回到原板时的整板读取已经把最新事实合并进候选：直接继续这次保存（代次/恢复预算继续生效）
+      // 回到原板时的整板读取已经把最新事实合并进候选：直接继续这次保存（整轮恢复次数继续生效）
       clearSaveRecoveryPlan(owner);
       scheduleSave();
       return;
@@ -2783,14 +2920,59 @@ export const useInteractiveStore = defineStore("interactive", () => {
     /**
      * 候选可能在离开期间被改过：不信任离开前的预判结果，
      * 先按原板**当前**候选与任务范围重新核对，再决定是否显示可操作的确认。
+     * 候选每变一次最多再核对 3 次；仍在对变就如实停在「预判没有完成」，不无界重发。
      */
+    plan.staleRounds = (plan.staleRounds ?? 0) + 1;
+    if (plan.staleRounds > 3) {
+      clearSaveRecoveryPlan(owner);
+      impactCheckError.value =
+        "这次保存前的影响预判没有完成，保存已暂停（等待期间候选一直在变化，已按最新候选重新核对 3 次）";
+      return;
+    }
     const note =
       plan.kind === "stale_check" && plan.scopeChanged
         ? "重新核对后发现受影响的运行中任务与刚才的说明不同：下面是当前的完整范围，" +
           "这次改动还没有保存、任务也都还没被暂停，请按它重新确认。"
         : undefined;
-    const outcome = await recheckImpactForCurrentCandidate(owner, plan.affectedTasks ?? undefined, note);
+    /**
+     * #46（第五轮）：**在首次 await 之前登记在途步骤** —— 切回原板 / 重复 load / 触发保存时接回它。
+     * 旧步骤的 finally 只删自己的记录，绝不覆盖较新的计划 / 确认。
+     */
+    let releaseStep!: () => void;
+    const stepDone = new Promise<void>((resolve) => {
+      releaseStep = resolve;
+    });
+    const step: RecoveryStepFlight = {
+      boardId: owner,
+      planId: plan.planId,
+      candidateKey,
+      done: stepDone,
+    };
+    recoveryStepInFlightByBoard.set(owner, step);
+    let outcome: "confirm" | "ok" | "blocked" | "away" | "stale" = "away";
+    try {
+      outcome = await recheckImpactForCurrentCandidate(
+        owner,
+        plan.affectedTasks ?? undefined,
+        note,
+        () =>
+          boardId.value === owner &&
+          recoveryPlanFor(owner)?.planId === plan.planId &&
+          recoveryStepInFlightByBoard.get(owner) === step,
+      );
+    } finally {
+      if (recoveryStepInFlightByBoard.get(owner) === step) recoveryStepInFlightByBoard.delete(owner);
+      releaseStep();
+    }
     if (boardId.value !== owner) return;
+    /** 旧响应：计划已经换了（更新的冲突 / 已显示新确认）→ 不覆盖、也不清理新记录。 */
+    const currentPlan = recoveryPlanFor(owner);
+    if (!currentPlan || currentPlan.planId !== plan.planId) return;
+    if (outcome === "stale") {
+      // 候选 / 依据在预判期间变了：按最新候选重新核对（同一轮恢复，次数不变）
+      resumeBoardRecoveryIfNeeded(owner);
+      return;
+    }
     clearSaveRecoveryPlan(owner);
     if (outcome === "blocked") return;
     if (outcome === "ok") scheduleSave();
@@ -2798,6 +2980,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   function undo() {
     if (!canUndo.value || !board.value) return;
+    endSaveRecoveryRound(boardId.value);
     const previous = undoStack.value.pop() as string;
     redoStack.value.push(JSON.stringify(board.value));
     const reverted = JSON.parse(previous) as BoardState;
@@ -2813,6 +2996,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   function redo() {
     if (!canRedo.value || !board.value) return;
+    endSaveRecoveryRound(boardId.value);
     const next = redoStack.value.pop() as string;
     undoStack.value.push(JSON.stringify(board.value));
     const reapplied = JSON.parse(next) as BoardState;
@@ -5510,6 +5694,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     });
     if (blocked.length) return { blocked, promoted: [] };
     if (!promoted.length) return { blocked, promoted: [] };
+    // 提交前的草稿提升是用户的新改动：上一轮自动恢复到此结束
+    endSaveRecoveryRound(boardId.value);
     board.value = { ...currentBoard, cards: nextCards };
     // 与 commit 同一口径：这是**新的候选**（版本代次前进、待保存、旧的影响确认授权作废）
     boardLocalRev += 1;
@@ -5571,6 +5757,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function resolveBoardContentConflict(cardId: string, choice: "local" | "server"): void {
     const conflict = boardContentConflicts.value[cardId];
     if (!conflict || !board.value) return;
+    // 用户对冲突做了新的选择（真实编辑）：上一轮自动恢复到此结束
+    endSaveRecoveryRound(boardId.value);
     const remaining = { ...boardContentConflicts.value };
     delete remaining[cardId];
     boardContentConflicts.value = remaining;
@@ -5616,6 +5804,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function resolveBoardRemovalConflict(id: string, choice: "keep-deleted" | "restore-server"): void {
     const conflict = boardRemovalConflicts.value[id];
     if (!conflict || !board.value) return;
+    // 用户对删除冲突做了新的选择（真实编辑）：上一轮自动恢复到此结束
+    endSaveRecoveryRound(boardId.value);
     const remaining = { ...boardRemovalConflicts.value };
     delete remaining[id];
     boardRemovalConflicts.value = remaining;
@@ -5717,7 +5907,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
        * impactCheckError 上 —— 否则界面会一边说「未保存未暂停」、一边还留着上一次的预判失败。
        */
       impactConfirmed = false;
-      await saveNow();
+      await saveNow(undefined, { recoveryContinuation: true });
       const recheckNote = "等待确认期间板面又有改动，已按最新版重新核实这次改动的影响，请重新确认";
       const rechecked = peekPendingImpact();
       if (rechecked && !rechecked.note) {
@@ -5736,7 +5926,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return { outcome: "check_failed", reason: "这次影响确认没有服务端编号，已暂停保存，请重新核实" };
     }
     pendingConfirm = { checkId: pending.checkId, stateVersion: pending.stateVersion };
-    await saveNow();
+    await saveNow(undefined, { recoveryContinuation: true });
     return summarizeImpactConfirm();
   }
 
@@ -5745,8 +5935,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     impactConfirmed = false;
     pendingImpact.value = null;
     impactCheckError.value = null;
-    // #46（第四轮）：取消也放弃这块板面自己的冲突恢复计划（候选整块退回已保存事实）
-    clearSaveRecoveryPlan(boardId.value);
+    // #46（第四/五轮）：取消也放弃这块板面自己的冲突恢复计划与整轮自动恢复记录（候选整块退回已保存事实）
+    finishSaveRecovery(boardId.value);
     // 07：取消 = 这次板面变更不生效，那么它带来的草稿清除也不该落地
     pendingDraftClears.clear();
     syncPendingDraftClearKeys();
