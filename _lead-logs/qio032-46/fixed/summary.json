@@ -1,0 +1,453 @@
+{
+  "runId": "20261114170639",
+  "at": "2026-11-14T17:06:39.675Z",
+  "base": "http://127.0.0.1:5199",
+  "api": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8807",
+  "cdpPort": 9333,
+  "out": "D:\\qio-dev\\pm-qio032-integration\\_lead-logs\\qio032-46\\fixed",
+  "mode": "fixed",
+  "pass": 11,
+  "fail": 0,
+  "observe": 1,
+  "total": 12,
+  "results": [
+    {
+      "name": "0) 原始路径：上传 → 打开设置 → 返回互动页（卡片/成功状态保留，不重复上传）",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "opened": true,
+        "uploads": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null
+          }
+        ],
+        "ui": null,
+        "cards": [
+          {
+            "id": "c_mwgnn3sv1yavj",
+            "kind": "file",
+            "content": "待补充文件说明",
+            "name": "settings-mwgnmwvp.txt",
+            "attachmentId": null
+          }
+        ],
+        "serverCards": [
+          {
+            "id": "c_mwgnn3sv1yavj",
+            "kind": "file",
+            "attachmentId": "att_103a15fa5158",
+            "meta": {
+              "name": "settings-mwgnmwvp.txt",
+              "file": {
+                "name": "settings-mwgnmwvp.txt",
+                "attachmentId": "att_103a15fa5158",
+                "size": 37,
+                "materialEnabled": true,
+                "referenceId": "att_103a15fa5158",
+                "filename": "settings-mwgnmwvp.txt",
+                "sourceKind": "browser_upload",
+                "origin": "user_saved_material",
+                "availability": "available"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "1) B 草稿自动保存前切 A：PUT 只写 B；回执/旧回执不覆盖新输入",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "putDrafts": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/board_b_46",
+            "s": 200,
+            "failed": null
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/board_b_46",
+            "s": 200,
+            "failed": null
+          }
+        ],
+        "boardAfterSwitch": "board_a_46",
+        "draftsB": {
+          "card:cb1": "B 草稿第一版"
+        },
+        "draftsA": {},
+        "draftTextNow": "B 草稿第三版（更新输入）",
+        "localDraft": {
+          "drafts": {
+            "card:cb1": "B 草稿第三版（更新输入）"
+          },
+          "lastDraftKey": "card:cb1",
+          "draftSaveStatus": "saving",
+          "boardId": "board_b_46"
+        }
+      }
+    },
+    {
+      "name": "2) B 保存后切 A、放回 B 的 409：PUT 只写 B，B 从 409 恢复为已保存，A 无错误",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "putCount": 2,
+        "putsB": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_b_46b/state",
+            "s": 409,
+            "failed": null
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_b_46b/state",
+            "s": 200,
+            "failed": null
+          }
+        ],
+        "putsA": [],
+        "onA": {
+          "boardId": "board_a_46b",
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "onB": {
+          "boardId": "board_b_46b",
+          "saveStatus": "saved",
+          "saveError": null,
+          "seq": 12
+        }
+      }
+    },
+    {
+      "name": "3) B 409 达上限：恰好 4 次 PUT；切出切回不新增；手动重试恢复且只写 B",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "putsAtLimit": 4,
+        "afterSwitchCount": 4,
+        "putsA": 0,
+        "retryPuts": 1,
+        "uiBeforeRetry": {
+          "text": "保存失败：服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）",
+          "tone": "err",
+          "retry": true
+        },
+        "afterRetry": {
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "st": {
+          "saveStatus": "error",
+          "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试"
+        },
+        "allPutStatuses": [
+          409,
+          409,
+          409,
+          409,
+          200
+        ]
+      }
+    },
+    {
+      "name": "4) B 旧/新两次预判反序到达：旧响应不覆盖新确认；确认归属 B，保存只写 B",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "running": {
+          "ok": true,
+          "intentId": "i_01d28593cf52",
+          "boardId": "board_b_46_r4_mwgnmwvp",
+          "card": "cb4",
+          "watchKeys": [
+            "cb4"
+          ]
+        },
+        "beforeLate": {
+          "boardId": "board_b_46_r4_mwgnmwvp",
+          "checkId": "chk_2381f550119d",
+          "rev": 3
+        },
+        "afterLate": {
+          "boardId": "board_b_46_r4_mwgnmwvp",
+          "checkId": "chk_2381f550119d",
+          "rev": 3
+        },
+        "firstImpact": false,
+        "openImpact": true,
+        "uiAfterLate": {
+          "open": true,
+          "mode": "impact",
+          "body": "这次改动还没有生效：它会影响正在执行的任务\n\n等待确认，尚未保存。 下面这些任务正在执行，而这次改动动了它们依赖的材料。选择「确认改动」才会保存并让相关任务暂停 （进度保留）；选择「取消本次改动」则这次改动不生效，任务继续。 其他独立任务不受影响；这不是对任务的重新审批。\n\n任务：B 执行中任务（预判）\n\n受影响材料：注释「B 预判版本二（新）」\n\n后果：继续保存会让这项任务暂停并保留当前进度；取"
+        },
+        "impactPosts": [
+          {
+            "m": "POST",
+            "u": "/api/interactive/boards/board_b_46_r4_mwgnmwvp/impact-check",
+            "s": 200,
+            "failed": null
+          },
+          {
+            "m": "POST",
+            "u": "/api/interactive/boards/board_b_46_r4_mwgnmwvp/impact-check",
+            "s": 200,
+            "failed": null
+          },
+          {
+            "m": "POST",
+            "u": "/api/interactive/boards/board_b_46_r4_mwgnmwvp/impact-check",
+            "s": 200,
+            "failed": null
+          }
+        ],
+        "confirmed": true,
+        "saved": {
+          "saveStatus": "saved",
+          "seq": 2
+        },
+        "putsB": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_b_46_r4_mwgnmwvp/state",
+            "s": 200,
+            "failed": null
+          }
+        ],
+        "putsA": []
+      }
+    },
+    {
+      "name": "5) B 点确认后切已保存 A、B 保存失败：B 返回失败，A 无错误/成功提示串入",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "running": {
+          "ok": true,
+          "intentId": "i_592085daafe9",
+          "boardId": "board_b_46_r5_mwgnmwvp",
+          "card": "cb5",
+          "watchKeys": [
+            "cb5"
+          ]
+        },
+        "impactShown": true,
+        "confirmed": true,
+        "onA": {
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "uiSaveOnA": {
+          "text": "已保存",
+          "tone": "ok",
+          "retry": false
+        },
+        "onB": {
+          "saveStatus": "error",
+          "saveError": "Failed to fetch"
+        },
+        "putsB": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_b_46_r5_mwgnmwvp/state",
+            "s": null,
+            "failed": "net::ERR_FAILED"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_b_46_r5_mwgnmwvp/state",
+            "s": null,
+            "failed": "net::ERR_FAILED"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_b_46_r5_mwgnmwvp/state",
+            "s": null,
+            "failed": "net::ERR_FAILED"
+          }
+        ],
+        "putsA": []
+      }
+    },
+    {
+      "name": "8) B 保存后材料范围刷新迟到（成功/失败）：A 的范围不被 B 的回执改写",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "bSaved": "saved",
+        "bSaved2": "saved",
+        "rangeA1": {},
+        "rangeA2": {},
+        "rangeA3": {}
+      }
+    },
+    {
+      "name": "9) B 任务回执迟到：A 不显示 B 的任务且能正常保存",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "seedB": {
+          "status": 200,
+          "seq": 1
+        },
+        "seedA": {
+          "status": 200,
+          "seq": 1
+        },
+        "apiCardsBeforeSeed": [
+          "cb9"
+        ],
+        "apiCardsAfterSeed": [
+          "cb9"
+        ],
+        "seeded": {
+          "ok": true,
+          "intentId": "i_cc5f27d7fc41",
+          "boardId": "board_b_46_r9_mwgnmwvp",
+          "card": "cb9",
+          "watchKeys": [
+            "cb9"
+          ]
+        },
+        "onA": {
+          "boardId": "board_a_46_r9_mwgnmwvp",
+          "intents": [],
+          "intentViews": []
+        },
+        "aSaved": "saved",
+        "putTargets": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_a_46_r9_mwgnmwvp/state",
+            "s": 200,
+            "failed": null
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/board_a_46_r9_mwgnmwvp/state",
+            "s": 200,
+            "failed": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "10) A 停留期间 B 上传完成：切回 B 立即显示真实状态/恢复入口（只上传一次）",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "uploads": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null
+          }
+        ],
+        "onA": {
+          "boardId": "board_a_46_r10",
+          "cards": [
+            {
+              "id": "ca10",
+              "kind": "text",
+              "content": "A 上传期间停留",
+              "name": null,
+              "attachmentId": null
+            }
+          ]
+        },
+        "onB": {
+          "boardId": "board_b_46_r10",
+          "cards": [
+            {
+              "id": "c_mwgnq1x21z9ob",
+              "kind": "file",
+              "content": "待补充文件说明",
+              "name": "未命名文件",
+              "attachmentId": null
+            }
+          ],
+          "jobs": [
+            {
+              "key": "1",
+              "attemptId": 1,
+              "boardId": "board_b_46_r10",
+              "cardId": "c_mwgnq1x21z9ob",
+              "fileName": "attach-mwgnmwvp.txt",
+              "phase": "failed",
+              "attachment": {},
+              "pendingAttachment": null,
+              "awaitingSave": false,
+              "acknowledged": false,
+              "error": "回执到达时当前板面不是发起上传时的原板面（board_b_46_r10），这次上传没有写进板面；回到原板面后可以重试关联。"
+            }
+          ]
+        },
+        "uiNotice": "正在保存附件「attach-mwgnmwvp.txt」…"
+      }
+    },
+    {
+      "name": "11) 已上传成功后重试关联（单卡）：只上传一次，写入第一次附件 ID",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "retryHow": "store-action-fallback",
+        "cardRetryVisible": false,
+        "failedJob": null,
+        "uploads": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null
+          }
+        ],
+        "afterSave": "saved",
+        "fileCardAttachmentId": "att_6fddfea67fe2",
+        "firstAttachment": null
+      }
+    },
+    {
+      "name": "12) 上传成功但保存关联失败 → 修复后重试：回读原板确认关联成功再显示成功",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "retryHow": "store-action-fallback",
+        "cardRetryVisible": false,
+        "failedSaveStatus": "error",
+        "readBackSeq": 9,
+        "fileCardAttachmentId": "att_55d4f09f9d26",
+        "uiText": "已关联附件「savefail-mwgnmwvp.txt」",
+        "successSeen": true,
+        "uploads": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "6) B 撤回读取挂起 → A 撤回 → 返回 B 失败",
+      "ok": false,
+      "observe": true,
+      "detail": {
+        "note": "UNVERIFIED：撤回（revert）决策读取链路未能在本轮窗口内稳定驱动；见报告"
+      }
+    }
+  ],
+  "simulated": [],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。"
+}
