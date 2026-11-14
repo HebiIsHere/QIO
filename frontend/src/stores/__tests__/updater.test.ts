@@ -108,6 +108,110 @@ describe("更新状态机", () => {
     expect(store.errorDetail).toContain("network unreachable");
     expect(store.message).not.toContain("network unreachable");
     expect(store.recovery).toBe("none");
+    // 失败阶段与重试动作是结构化事实：检查失败 → 重新检查
+    expect(store.failureStage).toBe("check");
+    expect(store.retryAction).toBe("check");
+  });
+
+  it("下载失败 → failureStage=download、retryAction=install（重试重新下载安装）", async () => {
+    const store = setup(
+      fakeApi({
+        check: vi.fn(async () => ({ version: "0.1.4" })),
+        downloadAndInstall: vi.fn(async () => {
+          throw new Error("signature verification failed");
+        }),
+      }),
+    );
+    await store.check();
+    await store.download();
+    expect(store.phase).toBe("failed");
+    expect(store.failureStage).toBe("download");
+    expect(store.retryAction).toBe("install");
+  });
+
+  it("安装失败且后端已恢复 → failureStage=install、retryAction=install", async () => {
+    const store = setup(
+      fakeApi({
+        check: vi.fn(async () => ({ version: "0.1.4" })),
+        downloadAndInstall: vi.fn(async () => {
+          throw new UpdateFailureError("更新没有安装成功；应用已恢复运行，可以重试", {
+            kind: "installer",
+            detail: "后端已重新启动；ShellExecute failed",
+            recovery: "restored",
+          });
+        }),
+      }),
+    );
+    await store.check();
+    await store.download();
+    expect(store.failureStage).toBe("install");
+    expect(store.recovery).toBe("restored");
+    expect(store.retryAction).toBe("install");
+  });
+
+  it("安装失败且后端未恢复 → retryAction=none（不能重试，只能完全退出再启动）", async () => {
+    const store = setup(
+      fakeApi({
+        check: vi.fn(async () => ({ version: "0.1.4" })),
+        downloadAndInstall: vi.fn(async () => {
+          throw new UpdateFailureError("更新没有安装成功，且后端未能自动恢复", {
+            kind: "installer",
+            detail: "后端未能自动恢复：sidecar spawn failed",
+            recovery: "unrecovered",
+          });
+        }),
+      }),
+    );
+    await store.check();
+    await store.download();
+    expect(store.failureStage).toBe("install");
+    expect(store.recovery).toBe("unrecovered");
+    expect(store.retryAction).toBe("none");
+  });
+
+  it("retry() 按 retryAction 走对应操作：检查失败重新检查，下载失败重新下载安装", async () => {
+    const check = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("failed to fetch"))
+      .mockResolvedValueOnce({ version: "0.1.4" });
+    const downloadAndInstall = vi.fn(async () => {
+      throw new Error("signature verification failed");
+    });
+    const store = setup(fakeApi({ check, downloadAndInstall }));
+
+    await store.check();
+    expect(store.retryAction).toBe("check");
+    await store.retry();
+    // 重新检查成功 → 进入 available，没有下载
+    expect(store.phase).toBe("available");
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+
+    await store.download();
+    expect(store.retryAction).toBe("install");
+    await store.retry();
+    // 重试 = 重新下载安装（不再重新检查）
+    expect(downloadAndInstall).toHaveBeenCalledTimes(2);
+    expect(check).toHaveBeenCalledTimes(2);
+  });
+
+  it("retryAction=none 时 retry() 什么都不做（不假装能重试）", async () => {
+    const check = vi.fn(async () => ({ version: "0.1.4" }));
+    const downloadAndInstall = vi.fn(async () => {
+      throw new UpdateFailureError("更新没有安装成功，且后端未能自动恢复", {
+        kind: "installer",
+        detail: "后端未能自动恢复",
+        recovery: "unrecovered",
+      });
+    });
+    const store = setup(fakeApi({ check, downloadAndInstall }));
+    await store.check();
+    await store.download();
+    expect(store.retryAction).toBe("none");
+
+    await store.retry();
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(downloadAndInstall).toHaveBeenCalledTimes(1);
+    expect(store.phase).toBe("failed");
   });
 
   it("发现新版本 → available，但不自动下载", async () => {

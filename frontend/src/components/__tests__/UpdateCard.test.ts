@@ -69,8 +69,9 @@ describe("更新卡片", () => {
     });
     await store.check();
     expect(w.text()).not.toContain("已是最新");
-    // 主界面：可理解的失败状态 + 实际可用的下一步（重试）
-    expect(w.find("[data-update-failure]").text()).toContain("更新源请求失败");
+    // 主界面：按阶段说「检查更新失败」+ 原因 + 实际可用的下一步（重试重新检查）
+    expect(w.find("[data-update-failure]").text()).toBe("检查更新失败");
+    expect(w.find("[data-update-reason]").text()).toContain("更新源请求失败");
     expect(w.find("[data-update-next]").exists()).toBe(true);
     expect(w.find("[data-action='check']").text()).toContain("重试");
     // 原始错误不铺在常态失败行里，但也不丢：在默认折叠的诊断里
@@ -123,7 +124,7 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     expect(w.find("[data-update-next]").text()).not.toContain("qio.log");
   });
 
-  it("下载失败：停在结果页并给出「完全退出 QIO 后重试安装」，代理与日志进失败详情", async () => {
+  it("下载失败：停在结果页并给出「重试下载安装」，代理与日志进失败详情", async () => {
     const { w, store } = mountCard({
       check: vi.fn(async () => ({ version: "0.1.4" })),
       downloadAndInstall: vi.fn(async () => {
@@ -132,8 +133,9 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     });
     await store.check();
     await store.download();
-    expect(w.find("[data-update-failure]").text()).toContain("更新包校验未通过");
-    expect(w.find("[data-update-next]").text()).toContain("完全退出 QIO 后重试安装");
+    expect(w.find("[data-update-failure]").text()).toBe("下载更新失败");
+    expect(w.find("[data-update-reason]").text()).toContain("更新包校验未通过");
+    expect(w.find("[data-update-next]").text()).toContain("重试下载安装");
     const diagnostics = w.find("[data-update-diagnostics]");
     expect(diagnostics.text()).toContain("updater-proxy.txt");
     expect(diagnostics.text()).toContain("qio.log");
@@ -172,9 +174,11 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     await store.check();
     await store.download();
 
-    expect(w.find("[data-update-failure]").text()).toBe("更新没有安装成功；应用已恢复运行，可以重试");
+    expect(w.find("[data-update-failure]").text()).toBe("安装更新失败");
+    // 安装失败：下一步那句已经说清「没装上 + 已恢复 + 该做什么」，不再重复一行原因
+    expect(w.find("[data-update-reason]").exists()).toBe(false);
     expect(w.find("[data-update-next]").text()).toContain("应用已恢复运行");
-    expect(w.find("[data-update-next]").text()).toContain("重试");
+    expect(w.find("[data-update-next]").text()).toContain("重试下载安装");
     // 原始原因只在诊断里
     expect(w.find("[data-update-failure]").text()).not.toContain("ShellExecute");
     expect(w.find("[data-update-diagnostics]").text()).toContain("ShellExecute failed");
@@ -196,7 +200,8 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     await store.check();
     await store.download();
 
-    expect(w.find("[data-update-failure]").text()).toBe("更新没有安装成功，且后端未能自动恢复");
+    expect(w.find("[data-update-failure]").text()).toBe("安装更新失败");
+    expect(w.find("[data-update-reason]").exists()).toBe(false);
     expect(w.find("[data-update-next]").text()).toContain("完全退出 QIO 再重新启动");
     expect(w.find("[data-update-diagnostics]").text()).toContain("sidecar spawn failed");
     const issue = useGlobalIssuesStore().issueById("updater_install_failed");
@@ -216,6 +221,10 @@ describe("更新卡片文案与安装路径（#19 / #25）", () => {
     await checkFail.store.check();
     expect(checkFail.w.find("[data-update-next]").text()).toContain("重试");
     expect(checkFail.w.find("[data-update-next]").text()).not.toContain("完全退出 QIO 再重新启动");
+    // 检查失败不出现安装失败 / 退出应用 / 文件写入示例
+    expect(checkFail.w.find("[data-update-failure]").text()).toBe("检查更新失败");
+    expect(checkFail.w.find("[data-update-next]").text()).not.toContain("安装");
+    expect(checkFail.w.text()).not.toContain("Can't write");
     checkFail.w.unmount();
 
     const installFail = mountCard({

@@ -36,7 +36,8 @@ onMounted(() => {
 
 const checkLabel = computed(() => {
   if (updater.phase === "checking") return "正在检查…";
-  if (updater.phase === "failed") return "重试";
+  // 安装失败且后端未恢复：不能重试安装，按钮只做它真正会做的事（重新检查）
+  if (updater.phase === "failed") return updater.retryAction === "none" ? "重新检查更新" : "重试";
   return "检查更新";
 });
 
@@ -68,8 +69,40 @@ const progressText = computed(() => {
 const backendRecovered = computed(() => updater.phase === "failed" && updater.recovery === "restored");
 const backendBroken = computed(() => updater.phase === "failed" && updater.recovery === "unrecovered");
 
-/** 失败主行的人话：store 的 message 已经是人话，不再夹带原始错误。 */
-const failureText = computed(() => updater.message || "更新失败");
+/**
+ * 失败主行：**按真实失败阶段**说清是哪一步没成（检查 / 下载 / 安装），
+ * 不再把「检查更新失败」说成「更新没有安装」。
+ */
+const failureText = computed(() => {
+  if (updater.failureStage === "check") return "检查更新失败";
+  if (updater.failureStage === "download") return "下载更新失败";
+  if (updater.failureStage === "install") return "安装更新失败";
+  // 兜底：只有安装阶段才可能产生 recovery，所以有恢复结论就一定是安装失败
+  if (updater.recovery !== "none") return "安装更新失败";
+  return updater.message || "更新失败";
+});
+
+/**
+ * 失败原因的人话（store 的 message 已经是人话，不含原始错误）。
+ *
+ * 两种情况不单独占一行，避免同一句话在卡片里说两遍：
+ * - 分类兜底文案「更新失败」与阶段行重复；
+ * - 安装失败：下一步那句已经说清「没装上 + 后端是否恢复 + 该做什么」，真因在诊断里。
+ */
+const failureReason = computed(() => {
+  if (updater.failureStage === "install" || updater.recovery !== "none") return "";
+  const message = updater.message || "";
+  return message === "更新失败" ? "" : message;
+});
+
+/** 重试动作必须与界面所说的操作一致（store 的 retryAction 是结构化事实）。 */
+const retryAction = computed(() => updater.retryAction);
+
+/** 失败后主按钮的文案：检查失败 → 重试；下载/安装失败 → 重试下载安装；未恢复 → 重新检查。 */
+const retryLabel = computed(() => {
+  if (retryAction.value === "install") return "重试下载安装";
+  return "重试";
+});
 
 /**
  * 按需展开的诊断：原始错误 + 代理配置 + 日志路径。
@@ -142,15 +175,22 @@ watch(
     </p>
     <div v-else-if="updater.phase === 'failed'" class="line err" role="alert">
       <span class="err-reason" data-update-failure>{{ failureText }}</span>
+      <span v-if="failureReason" class="hint err-reason" data-update-reason>{{ failureReason }}</span>
+      <!-- 安装失败且后端未恢复：唯一不能重试的情况，给真实动作（完全退出再启动） -->
       <span v-if="backendBroken" class="hint err-action" data-update-next>
         更新没有装上，且后端未能自动恢复。请完全退出 QIO 再重新启动；重启后可在设置里重新检查更新。
       </span>
+      <!-- 安装失败但应用已恢复：确实恢复过才说「可以继续使用」 -->
       <span v-else-if="backendRecovered" class="hint err-action" data-update-next>
-        应用已恢复运行，可以继续使用。更新没有安装，可以点「重试」重新下载安装。
+        应用已恢复运行，可以继续使用。更新没有安装，可以点「重试下载安装」重新下载安装。
       </span>
+      <!-- 检查失败：只说检查，不出现安装 / 退出 / 文件写入示例 -->
+      <span v-else-if="retryAction === 'check'" class="hint err-action" data-update-next>
+        可以点「重试」重新检查；更新设置与当前版本不受影响。
+      </span>
+      <!-- 下载 / 校验失败：重试就是重新下载安装（下载阶段没有停过后端，不宣称「已恢复」） -->
       <span v-else class="hint err-action" data-update-next>
-        更新没有安装。可以点「重试」重新检查；若安装被中止（例如 "Can't write …qio-backend.exe"），
-        请完全退出 QIO 后重试安装。
+        可以点「重试下载安装」重新下载并安装。
       </span>
       <!-- 原始错误 / 代理配置 / 日志路径：按需展开，不铺在常态失败行里 -->
       <details class="err-diagnostics" data-update-diagnostics>
@@ -198,12 +238,22 @@ watch(
         立即重启
       </button>
       <button
+        v-else-if="updater.phase === 'failed' && retryAction === 'install'"
+        class="qio-btn primary"
+        data-action="retry-install"
+        type="button"
+        :disabled="updater.busy"
+        @click="updater.retry()"
+      >
+        {{ retryLabel }}
+      </button>
+      <button
         v-else
         class="qio-btn"
         data-action="check"
         type="button"
         :disabled="updater.busy"
-        @click="updater.check()"
+        @click="updater.phase === 'failed' && retryAction !== 'none' ? updater.retry() : updater.check()"
       >
         {{ checkLabel }}
       </button>

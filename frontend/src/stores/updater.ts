@@ -16,7 +16,9 @@ import {
   describeUpdateError,
   tauriUpdaterApi,
   type UpdateErrorKind,
+  type UpdateFailureStage,
   type UpdateRecovery,
+  type UpdateRetryAction,
   type UpdateStage,
   type UpdaterApi,
 } from "../services/updater";
@@ -42,6 +44,8 @@ interface ActiveOperation {
   errorDetailBefore: string;
   recoveryBefore: UpdateRecovery;
   errorKindBefore: UpdateErrorKind;
+  failureStageBefore: UpdateFailureStage | "none";
+  retryActionBefore: UpdateRetryAction;
 }
 
 /** 启动后多久做第一次静默检查；之后每 24 小时一次。 */
@@ -71,6 +75,13 @@ export const useUpdaterStore = defineStore("updater", {
     /** 安装失败后本实例后端是否已恢复（决定主界面给哪一条下一步） */
     recovery: "none" as UpdateRecovery,
     errorKind: "unknown" as UpdateErrorKind,
+    /**
+     * 失败发生在哪个阶段（check / download / install）：主界面据此说
+     * 「检查更新失败 / 下载更新失败 / 安装更新失败」，不再把检查失败说成安装失败。
+     */
+    failureStage: "none" as UpdateFailureStage | "none",
+    /** 界面该给的重试动作（与界面所说的操作一致）；none = 只能完全退出再启动 */
+    retryAction: "check" as UpdateRetryAction,
     lastCheckedAt: "" as string,
     autoCheck: true,
     _api: null as UpdaterApi | null,
@@ -125,6 +136,8 @@ export const useUpdaterStore = defineStore("updater", {
         errorDetailBefore: this.errorDetail,
         recoveryBefore: this.recovery,
         errorKindBefore: this.errorKind,
+        failureStageBefore: this.failureStage,
+        retryActionBefore: this.retryAction,
       };
       return seq;
     },
@@ -145,6 +158,8 @@ export const useUpdaterStore = defineStore("updater", {
       this.errorDetail = active.errorDetailBefore;
       this.recovery = active.recoveryBefore;
       this.errorKind = active.errorKindBefore;
+      this.failureStage = active.failureStageBefore;
+      this.retryAction = active.retryActionBefore;
     },
     /**
      * 只读当前版本（本地调用，不联网、不改状态机）。
@@ -169,6 +184,8 @@ export const useUpdaterStore = defineStore("updater", {
       this.message = "";
       this.errorDetail = "";
       this.recovery = "none";
+      this.failureStage = "none";
+      this.retryAction = "check";
       this.stage = "idle";
       try {
         const api = await this._apiOrLoad();
@@ -192,9 +209,12 @@ export const useUpdaterStore = defineStore("updater", {
         this.notes = update.notes ?? "";
       } catch (error) {
         if (!this._isOperationActive(seq)) return;
-        const described = describeUpdateError(error);
+        // 检查阶段失败：主界面只说「检查更新失败」，重试 = 重新检查
+        const described = describeUpdateError(error, "check");
         this.phase = "failed";
         this.errorKind = described.kind;
+        this.failureStage = described.stage;
+        this.retryAction = described.retry;
         this.message = described.message;
         this.errorDetail = described.detail;
         this.recovery = described.recovery;
@@ -211,6 +231,8 @@ export const useUpdaterStore = defineStore("updater", {
       this.message = "";
       this.errorDetail = "";
       this.recovery = "none";
+      this.failureStage = "none";
+      this.retryAction = "install";
       this.progressPercent = null;
       // 先标「下载中」：api 的 onStage 会随真实进度推进到校验/安装；
       // 即使测试替身不实现 onStage，界面也不会停在「未开始」。
@@ -242,9 +264,13 @@ export const useUpdaterStore = defineStore("updater", {
         this.stage = "done";
       } catch (error) {
         if (!this._isOperationActive(seq)) return;
-        const described = describeUpdateError(error);
+        // 下载 / 安装阶段失败：阶段由 services 侧按真实编排标注（下载失败 = download，
+        // 结束后端或安装器失败 = install）；没标注时按「下载」处理，重试 = 重新下载安装。
+        const described = describeUpdateError(error, "download");
         this.phase = "failed";
         this.errorKind = described.kind;
+        this.failureStage = described.stage;
+        this.retryAction = described.retry;
         this.message = described.message;
         this.errorDetail = described.detail;
         this.recovery = described.recovery;
@@ -257,6 +283,30 @@ export const useUpdaterStore = defineStore("updater", {
       if (this.phase !== "ready") return;
       const api = await this._apiOrLoad();
       await api.relaunch();
+    },
+    /**
+     * 失败后的「重试」：动作必须与界面所说的操作一致（由 `retryAction` 决定）。
+     *
+     * * `check`：重新检查更新（检查失败 / 更新源已变化）；
+     * * `install`：重新下载并安装（下载或安装失败，应用仍可用）；
+     * * `none`：不能重试（安装失败且后端未恢复）—— 什么都不做，界面给的是「完全退出再启动」。
+     */
+    async retry(): Promise<void> {
+      if (this.phase !== "failed") return;
+      if (this._activeOperation) return; // 已有操作在飞：不叠加第二个
+      if (this.retryAction === "check") {
+        await this.check();
+        return;
+      }
+      if (this.retryAction !== "install") return; // none：界面给的是「完全退出再启动」
+      if (!this.availableVersion) {
+        // 没有可安装的版本（例如更新源已下线）：退回重新检查，不假装能装
+        await this.check();
+        return;
+      }
+      // 重新下载安装：回到「发现新版本」再走同一条下载安装路径（版本仍是界面上那个）
+      this.phase = "available";
+      await this.download();
     },
     /** 启动后的静默检查：10 秒首检 + 24 小时周期；用户关掉开关就不再请求更新源。 */
     startAutoCheck() {

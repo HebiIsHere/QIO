@@ -119,19 +119,39 @@ const ERROR_TEXT: Record<UpdateErrorKind, string> = {
 export type UpdateRecovery = "none" | "restored" | "unrecovered";
 
 /**
+ * 失败发生在哪个阶段 —— 主界面据此说「检查更新失败 / 下载更新失败 / 安装更新失败」。
+ *
+ * 只由**真实操作**决定（检查走 check、下载与安装走 downloadAndInstall），不从错误文本里猜：
+ * 同一条网络错误在检查阶段和下载阶段是两件不同的事，下一步也不同。
+ */
+export type UpdateFailureStage = "check" | "download" | "install";
+
+/**
+ * 失败后界面该给的重试动作 —— 必须与界面所说的操作一致：
+ * * `check`：重新检查更新（检查失败、或更新源已变化需要重新检查）；
+ * * `install`：重新下载并安装（下载 / 安装失败，应用仍可用）；
+ * * `none`：不能重试（安装失败且后端未恢复，必须完全退出 QIO 再启动）。
+ */
+export type UpdateRetryAction = "check" | "install" | "none";
+
+/**
  * 一次更新失败的结构化事实。
  *
- * 主界面只用人话（message）与下一步（recovery）；**原始错误（detail）只进按需展开的诊断**，
- * 不铺在常态失败行里 —— 但也不丢：用户排查时仍能看到真因。
+ * 主界面只用「阶段 + 人话 + 下一步」（stage / message / retry / recovery）；
+ * **原始错误（detail）只进按需展开的诊断**，不铺在常态失败行里 —— 但也不丢：用户排查时仍能看到真因。
  */
 export interface UpdateFailure {
   kind: UpdateErrorKind;
+  /** 失败阶段：决定主界面说「检查 / 下载 / 安装」哪一句 */
+  stage: UpdateFailureStage;
   /** 主界面的人话（不含原始错误文本） */
   message: string;
   /** 原始错误（诊断区用；可能为空） */
   detail: string;
   /** 安装失败后本实例后端的恢复结果；检查失败 / 下载失败恒为 none */
   recovery: UpdateRecovery;
+  /** 界面该给的重试动作（与界面所说的操作一致） */
+  retry: UpdateRetryAction;
 }
 
 /**
@@ -144,17 +164,39 @@ export class UpdateFailureError extends Error {
   readonly kind: UpdateErrorKind;
   readonly detail: string;
   readonly recovery: UpdateRecovery;
+  /** 失败阶段（不传时由调用方按操作补：检查 / 下载 / 安装） */
+  readonly stage: UpdateFailureStage | null;
+  /** 界面该给的重试动作；不传时按阶段与恢复结果推导 */
+  readonly retry: UpdateRetryAction | null;
 
   constructor(
     message: string,
-    options: { kind?: UpdateErrorKind; detail?: string; recovery?: UpdateRecovery } = {},
+    options: {
+      kind?: UpdateErrorKind;
+      detail?: string;
+      recovery?: UpdateRecovery;
+      stage?: UpdateFailureStage;
+      retry?: UpdateRetryAction;
+    } = {},
   ) {
     super(message);
     this.name = "UpdateFailureError";
     this.kind = options.kind ?? "unknown";
     this.detail = options.detail ?? "";
     this.recovery = options.recovery ?? "none";
+    this.stage = options.stage ?? null;
+    this.retry = options.retry ?? null;
   }
+}
+
+/** 按阶段与恢复结果推导重试动作：只有「安装失败且后端未恢复」不能重试。 */
+export function retryActionFor(
+  stage: UpdateFailureStage,
+  recovery: UpdateRecovery,
+): UpdateRetryAction {
+  if (stage === "check") return "check";
+  if (stage === "download") return "install";
+  return recovery === "unrecovered" ? "none" : "install";
 }
 
 /**
@@ -165,13 +207,22 @@ export class UpdateFailureError extends Error {
  * 清单解析失败共用这一句。所以分类只用来决定措辞，**原始文本必须保留**（进 detail），
  * 否则用户看到的是我们猜的原因，而不是真实原因。
  */
-export function describeUpdateError(error: unknown): UpdateFailure {
+export function describeUpdateError(
+  error: unknown,
+  stage: UpdateFailureStage = "check",
+): UpdateFailure {
   if (error instanceof UpdateFailureError) {
+    // 阶段优先用抛出方标注的真实阶段；没标注时按结构化事实兜底：
+    // 只有「结束后端 / 安装」阶段才可能产生 recovery，所以 recovery 非 none 一定是安装阶段。
+    const resolvedStage: UpdateFailureStage =
+      error.stage ?? (error.recovery === "none" ? stage : "install");
     return {
       kind: error.kind,
+      stage: resolvedStage,
       message: error.message,
       detail: error.detail,
       recovery: error.recovery,
+      retry: error.retry ?? retryActionFor(resolvedStage, error.recovery),
     };
   }
   const raw = error instanceof Error ? error.message : String(error ?? "");
@@ -193,9 +244,11 @@ export function describeUpdateError(error: unknown): UpdateFailure {
   }
   return {
     kind,
+    stage,
     message: ERROR_TEXT[kind],
     detail: raw.trim().replace(/\s+/g, " ").slice(0, 200),
     recovery: "none",
+    retry: retryActionFor(stage, "none"),
   };
 }
 
@@ -397,6 +450,9 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
       if (!update) {
         throw new UpdateFailureError("更新源上没有可用的新版本（版本可能已下线），请重新检查更新", {
           kind: "network",
+          // 下载前重新取了一次更新源：这时还没开始下载，重试要重新检查
+          stage: "check",
+          retry: "check",
         });
       }
       // 从拿到 Update 起，所有出口（版本不匹配 / 下载失败 / 停止后端失败 / 安装失败 /
@@ -407,7 +463,7 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
         if (expected && compareVersions(update.version, expected) !== 0) {
           throw new UpdateFailureError(
             `更新源上的版本已变化（界面显示 ${expected}，实际 ${update.version}），已放弃安装；请重新检查更新`,
-            { kind: "network" },
+            { kind: "network", stage: "check", retry: "check" },
           );
         }
 
@@ -439,6 +495,7 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
               : "更新没有安装成功，且后端未能自动恢复",
             {
               kind: "installer",
+              stage: "install",
               detail: [recovery.detail, errorText(error)].filter(Boolean).join("；"),
               recovery: recovery.recovery,
             },

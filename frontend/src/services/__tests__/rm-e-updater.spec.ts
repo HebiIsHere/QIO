@@ -28,7 +28,18 @@ vi.mock("@tauri-apps/plugin-updater", () => ({ check: mocks.check }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: mocks.relaunch }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: mocks.getVersion }));
 
-import { tauriUpdaterApi } from "../updater";
+import { UpdateFailureError, tauriUpdaterApi } from "../updater";
+
+/** 抓住失败的结构化事实（主界面人话 / 原始原因 / 后端恢复结果 / 失败阶段）。 */
+async function failureOf(run: Promise<unknown>): Promise<UpdateFailureError> {
+  try {
+    await run;
+  } catch (error) {
+    if (error instanceof UpdateFailureError) return error;
+    throw error;
+  }
+  throw new Error("这次操作本应失败，但它成功了");
+}
 
 const PREP_OK = {
   alreadyStopped: false,
@@ -200,7 +211,11 @@ describe("downloadAndInstall()：每个出口释放一次", () => {
     mocks.check.mockResolvedValue(update);
 
     const api = await tauriUpdaterApi();
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(/仍有进程存活/);
+    // 主界面人话与原始原因分开：原因进 detail（诊断区），不铺在主行
+    const failure = await failureOf(api.downloadAndInstall(() => {}));
+    expect(failure.stage).toBe("install");
+    expect(failure.message).toContain("更新没有安装成功");
+    expect(failure.detail).toContain("仍有进程存活");
 
     expect(update.closeCalls).toBe(1);
     expect(update.installCalls).toBe(0);
@@ -214,12 +229,15 @@ describe("downloadAndInstall()：每个出口释放一次", () => {
     mocks.check.mockResolvedValue(update);
 
     const api = await tauriUpdaterApi();
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(/后端已恢复/);
-    // 原始原因不能被恢复文案顶掉
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(/ShellExecute failed/);
+    const failure = await failureOf(api.downloadAndInstall(() => {}));
+    // 恢复状态是结构化事实（recovery），主行人话里说「应用已恢复运行」
+    expect(failure.recovery).toBe("restored");
+    expect(failure.message).toContain("应用已恢复运行");
+    // 原始原因不能被恢复文案顶掉：它在 detail 里
+    expect(failure.detail).toContain("ShellExecute failed");
 
-    expect(update.closeCalls).toBe(2); // 两次独立操作 → 每次各释放一次
-    expect(commandCalls("qio_restore_backend")).toBe(2);
+    expect(update.closeCalls).toBe(1);
+    expect(commandCalls("qio_restore_backend")).toBe(1);
   });
 
   it("安装成功：释放一次；已被 SDK 消费的下载资源不重复关闭", async () => {
@@ -264,9 +282,13 @@ describe("downloadAndInstall()：每个出口释放一次", () => {
     mocks.check.mockResolvedValue(update);
 
     const api = await tauriUpdaterApi();
-    await expect(api.downloadAndInstall(() => {})).rejects.toThrow(
-      /请完全退出 QIO 后重新启动.*ShellExecute failed/s,
-    );
+    const failure = await failureOf(api.downloadAndInstall(() => {}));
+    // 未恢复：主行人话如实说后端没恢复（下一步「完全退出再启动」由卡片给出），
+    // 原始原因（含恢复失败细节）仍在 detail 里，不被恢复文案顶掉。
+    expect(failure.recovery).toBe("unrecovered");
+    expect(failure.message).toContain("后端未能自动恢复");
+    expect(failure.detail).toContain("sidecar spawn failed");
+    expect(failure.detail).toContain("ShellExecute failed");
 
     expect(update.closeCalls).toBe(1);
   });
