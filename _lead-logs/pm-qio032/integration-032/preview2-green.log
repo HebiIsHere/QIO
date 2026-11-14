@@ -1,0 +1,45 @@
+# task-6 预览b · 修复后绿证据
+# 命令：cd frontend; npx --no-install vitest run <显式文件列表>
+# 结果：Test Files 19 passed (19) / Tests 169 passed (169)
+
+ ✓ src/conversation/__tests__/cv-c-preview-store.test.ts (14 tests)
+ ✓ src/components/conversation/__tests__/cv-c-preview-resources.test.ts (6 tests)
+ ✓ src/components/conversation/__tests__/cv-c-preview-panel.test.ts (4 tests)
+ ✓ src/components/conversation/__tests__/d-preview-52-tab-focus.test.ts (3 tests)
+ ✓ src/components/conversation/__tests__/d-preview-tabs-keyboard.test.ts (5 tests)
+ ✓ src/components/conversation/__tests__/cv-c-preview-feedback.test.ts (5 tests)
+ ✓ src/components/conversation/__tests__/d-preview-esc-layers.test.ts (8 tests)
+ ✓ src/components/conversation/__tests__/cv-c-preview-identity.test.ts (12 tests)
+ ✓ src/components/conversation/__tests__/cv-c-preview-reader.test.ts (3 tests)
+ ✓ src/components/conversation/__tests__/cv-c-preview-50-53-state.test.ts (9 tests)
+ ✓ src/__tests__/pmqio032-shell-acceptance.test.ts (7 tests)
+ ✓ src/views/settings/__tests__/settings-reset-layout.test.ts (7 tests)
+ ✓ src/views/__tests__/ConversationViewShell.test.ts (11 tests)
+ ✓ src/components/conversation/__tests__/cv-c-preview-remount.test.ts (17 tests)
+ ✓ src/views/__tests__/ConversationViewLayers.test.ts (13 tests)
+ ✓ src/components/conversation/__tests__/d-preview-pdf-search.test.ts (5 tests)
+ ✓ src/conversation/__tests__/cv-c-preview-logic.test.ts (26 tests)
+ ✓ src/components/__tests__/MessageItemPreviewFeedback.test.ts (4 tests)
+ ✓ src/components/conversation/__tests__/bridges.test.ts (10 tests)
+ Test Files  19 passed (19)
+      Tests  169 passed (169)
+   Duration  18.35s
+
+## 整目录回归（改动会波及的全部范围）
+# npx --no-install vitest run src/components/conversation/__tests__ src/conversation/__tests__
+#   → Test Files 23 passed (23) / Tests 218 passed (218)
+# npx --no-install vitest run src/views/__tests__
+#   → Test Files 31 passed (31) / Tests 237 passed (237)   （连跑 3 次，见下方抖动说明）
+
+## 类型检查（只对改动范围）
+# npx --no-install vue-tsc --noEmit
+#   我的文件（conversationPreview.ts / components/conversation/** / conversation/preview*.ts）：0 error
+#   仓库里另有 5 条 error，全部在他人写入范围（stores/interactive.ts、stores/__tests__/pm032-board-save-isolation.test.ts），
+#   与本次改动无关（改动前即存在，属 task-2 / #46 的并行改动）。
+
+## 抖动说明（如实记录）
+# src/views/__tests__ 整目录第一次跑出现 1 failed（i2v2-a-intent-read-failure），
+# 第二次跑出现 2 failed（ConversationViewNotices / i2v2-a-recovery-entry），
+# 单独跑这些文件全部通过，随后连跑 3 次整目录均 237 passed。
+# 这些用例不 import 预览 store（grep 确认），失败点在意图/恢复入口的时序断言，
+# 属既有并发抖动，不是本次改动引入；未修改它们。

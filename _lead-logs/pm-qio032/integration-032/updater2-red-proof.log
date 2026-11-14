@@ -1,0 +1,118 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ × src/components/__tests__/UpdateCard-failure-stage.test.ts > 仅检查更新失败：只说检查，不出现安装说明 > 主行说「检查更新失败」，下一步是重试重新检查 27ms
+   → expected '更新源请求失败：可能是网络或代理问题' to be '检查更新失败' // Object.is equality
+ ✓ src/components/__tests__/UpdateCard-failure-stage.test.ts > 仅检查更新失败：只说检查，不出现安装说明 > 点「重试」真的重新检查（不是重新下载安装） 6ms
+ ✓ src/components/__tests__/UpdateCard-failure-stage.test.ts > 仅检查更新失败：只说检查，不出现安装说明 > 诊断默认折叠，原始错误只在里面 6ms
+ × src/components/__tests__/UpdateCard-failure-stage.test.ts > 下载 / 校验失败：应用仍可用，重试重新下载安装 > 主行说「下载更新失败」，下一步给重试下载安装，不说完全退出 6ms
+   → expected '更新包校验未通过，已放弃安装（不会安装未经签名的包）' to be '下载更新失败' // Object.is equality
+ × src/components/__tests__/UpdateCard-failure-stage.test.ts > 下载 / 校验失败：应用仍可用，重试重新下载安装 > 点「重试下载安装」真的重新下载安装（不重新检查） 5ms
+   → Cannot call trigger on an empty DOMWrapper.
+ × src/components/__tests__/UpdateCard-failure-stage.test.ts > 安装失败且应用已恢复 > 主行说「安装更新失败」，下一步说可以继续使用并重试下载安装 4ms
+   → expected '更新没有安装成功；应用已恢复运行，可以重试' to be '安装更新失败' // Object.is equality
+ × src/components/__tests__/UpdateCard-failure-stage.test.ts > 安装失败且后端未恢复 > 主行说「安装更新失败」，下一步说完全退出再启动，并进全局异常入口 3ms
+   → expected '更新没有安装成功，且后端未能自动恢复' to be '安装更新失败' // Object.is equality
+ × src/components/__tests__/UpdateCard-failure-stage.test.ts > 安装失败且后端未恢复 > 未恢复时不给「重试下载安装」：按钮只做它真正会做的事（重新检查） 4ms
+   → expected '重试' to be '重新检查更新' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/__tests__/UpdateCard-failure-stage.test.ts > 仅检查更新失败：只说检查，不出现安装说明 > 主行说「检查更新失败」，下一步是重试重新检查
+AssertionError: expected '更新源请求失败：可能是网络或代理问题' to be '检查更新失败' // Object.is equality
+
+Expected: "检查更新失败"
+Received: "更新源请求失败：可能是网络或代理问题"
+
+ ❯ src/components/__tests__/UpdateCard-failure-stage.test.ts:71:52
+     69|     await store.check();
+     70|
+     71|     expect(w.find("[data-update-failure]").text()).toBe("检查更新失败");
+       |                                                    ^
+     72|     // 失败原因的人话单独一行（store 的 message），下一步只说检查与重试
+     73|     expect(w.find("[data-update-reason]").text()).toContain("更新源请求失败");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  src/components/__tests__/UpdateCard-failure-stage.test.ts > 下载 / 校验失败：应用仍可用，重试重新下载安装 > 主行说「下载更新失败」，下一步给重试下载安装，不说完全退出
+AssertionError: expected '更新包校验未通过，已放弃安装（不会安装未经签名的包）' to be '下载更新失败' // Object.is equality
+
+Expected: "下载更新失败"
+Received: "更新包校验未通过，已放弃安装（不会安装未经签名的包）"
+
+ ❯ src/components/__tests__/UpdateCard-failure-stage.test.ts:125:52
+    123|     await store.download();
+    124|
+    125|     expect(w.find("[data-update-failure]").text()).toBe("下载更新失败");
+       |                                                    ^
+    126|     expect(w.find("[data-update-reason]").text()).toContain("更新包校验未通过"…
+    127|     const next = w.find("[data-update-next]").text();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  src/components/__tests__/UpdateCard-failure-stage.test.ts > 下载 / 校验失败：应用仍可用，重试重新下载安装 > 点「重试下载安装」真的重新下载安装（不重新检查）
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ Object.get ../../qio/frontend/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:1482:27
+ ❯ src/components/__tests__/UpdateCard-failure-stage.test.ts:146:49
+    144|     expect(downloadAndInstall).toHaveBeenCalledTimes(1);
+    145|
+    146|     await w.find("[data-action='retry-install']").trigger("click");
+       |                                                 ^
+    147|     await flushPromises();
+    148|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  src/components/__tests__/UpdateCard-failure-stage.test.ts > 安装失败且应用已恢复 > 主行说「安装更新失败」，下一步说可以继续使用并重试下载安装
+AssertionError: expected '更新没有安装成功；应用已恢复运行，可以重试' to be '安装更新失败' // Object.is equality
+
+Expected: "安装更新失败"
+Received: "更新没有安装成功；应用已恢复运行，可以重试"
+
+ ❯ src/components/__tests__/UpdateCard-failure-stage.test.ts:165:52
+    163|     await store.download();
+    164|
+    165|     expect(w.find("[data-update-failure]").text()).toBe("安装更新失败");
+       |                                                    ^
+    166|     // 安装失败不再重复一行原因：下一步那句已经说清「没装上 + 已恢复 + 该做什么」
+    167|     expect(w.find("[data-update-reason]").exists()).toBe(false);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  src/components/__tests__/UpdateCard-failure-stage.test.ts > 安装失败且后端未恢复 > 主行说「安装更新失败」，下一步说完全退出再启动，并进全局异常入口
+AssertionError: expected '更新没有安装成功，且后端未能自动恢复' to be '安装更新失败' // Object.is equality
+
+Expected: "安装更新失败"
+Received: "更新没有安装成功，且后端未能自动恢复"
+
+ ❯ src/components/__tests__/UpdateCard-failure-stage.test.ts:192:52
+    190|     await store.download();
+    191|
+    192|     expect(w.find("[data-update-failure]").text()).toBe("安装更新失败");
+       |                                                    ^
+    193|     expect(w.find("[data-update-reason]").exists()).toBe(false);
+    194|     const next = w.find("[data-update-next]").text();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  src/components/__tests__/UpdateCard-failure-stage.test.ts > 安装失败且后端未恢复 > 未恢复时不给「重试下载安装」：按钮只做它真正会做的事（重新检查）
+AssertionError: expected '重试' to be '重新检查更新' // Object.is equality
+
+Expected: "重新检查更新"
+Received: "重试"
+
+ ❯ src/components/__tests__/UpdateCard-failure-stage.test.ts:214:27
+    212|     expect(w.find("[data-action='retry-install']").exists()).toBe(fals…
+    213|     const button = w.find("[data-action='check']");
+    214|     expect(button.text()).toBe("重新检查更新");
+       |                           ^
+    215|     await button.trigger("click");
+    216|     await flushPromises();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  6 failed | 2 passed (8)
+   Start at  13:42:20
+   Duration  2.57s (transform 185ms, setup 23ms, import 312ms, tests 63ms, environment 1.90s)

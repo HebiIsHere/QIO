@@ -1,0 +1,46 @@
+== QIO updater2 ui-verify == runId=20261114054908
+base=http://127.0.0.1:5199 cdp=9334
+onboarding={"wasOpen":true}
+
+---- A 真实浏览器：只点检查更新 ----
+
+---- A 真实浏览器（无 Tauri 更新器）：只点检查更新 ----
+[PASS] A-1 主行只说「检查更新失败」 :: {"failure":"检查更新失败","reason":null,"next":"可以点「重试」重新检查；更新设置与当前版本不受影响。","hasDiagnostics":true,"diagnosticsOpen":false,"diagnosticsText":"诊断信息（原始错误 / 代理 / 日志）","retryInstall":null,"checkButton":"重试","cardHasInstallFailureCopy":false,"cardHasQuitCopy":false,"cardHasWriteExample":false,"cardText":"应用更新\n当前版本 —\n检查更新失败\n可以点「重试」重新检查；更新设置与当前版本不受影响。\n诊断信息（原始错误 / 代理 / 日志）\n重试\n启动时检查更新\n\n启动时只检查更新，不会自动下载或安装。"}
+[PASS] A-2 失败块不出现安装失败 / 完全退出 / 文件写入示例 :: {"install":false,"quit":false,"write":false}
+[PASS] A-3 下一步是重试重新检查 :: {"next":"可以点「重试」重新检查；更新设置与当前版本不受影响。"}
+[PASS] A-4 诊断默认折叠且含原始错误 :: {"open":false,"text":"诊断信息（原始错误 / 代理 / 日志）"}
+
+---- B 模拟检查请求失败 ----
+
+---- B 模拟检查请求失败 ----
+[PASS] B-1 主行「检查更新失败」+ 原因「更新源请求失败」 :: {"failure":"检查更新失败","reason":"更新源请求失败：可能是网络或代理问题"}
+[PASS] B-2 失败块不出现安装失败 / 完全退出 / 文件写入示例 :: {"install":false,"quit":false,"write":false}
+[PASS] B-3 诊断默认折叠，原始错误只在里面 :: {"open":false,"diagBody":{"open":false,"lines":["原始错误：failed to fetch: network unreachable","代理：连不上更新源时，可在 %APPDATA%\\qio\\updater-proxy.txt 写一行代理地址。","日志：排查记录在 %APPDATA%\\qio\\logs\\qio.log。"]}}
+[PASS] B-4 点「重试」真的重新检查（check 调用 +1，没有下载安装） :: {"beforeCheck":1,"afterCheck":2,"calls":{"check":2}}
+[PASS] B-5 重试后仍是「检查更新失败」（不跳到安装说明） :: {"failure":"检查更新失败"}
+
+---- C 模拟下载 / 校验失败 ----
+
+---- C 模拟下载 / 校验失败 ----
+[PASS] C-1 主行「下载更新失败」+ 原因「更新包校验未通过」 :: {"failure":"下载更新失败","reason":"更新包校验未通过，已放弃安装（不会安装未经签名的包）"}
+[PASS] C-2 下一步给「重试下载安装」，不说完全退出 / 不说已恢复 :: {"next":"可以点「重试下载安装」重新下载并安装。"}
+[PASS] C-3 主按钮是「重试下载安装」（不是重新检查） :: {"retryInstall":"重试下载安装","checkButton":null}
+[PASS] C-4 点「重试下载安装」真的重新下载安装（downloadAndInstall +1） :: {"beforeDl":1,"afterDl":2,"calls":{"check":1,"downloadAndInstall":2}}
+
+---- D 模拟安装失败且后端已恢复 ----
+
+---- D 模拟安装失败且后端已恢复 ----
+[PASS] D-1 主行「安装更新失败」 :: {"failure":"安装更新失败","reason":null}
+[PASS] D-2 下一步说「应用已恢复运行，可以继续使用」并给重试下载安装 :: {"next":"应用已恢复运行，可以继续使用。更新没有安装，可以点「重试下载安装」重新下载安装。"}
+[PASS] D-3 诊断默认折叠，原始原因（ShellExecute）只在里面 :: {"open":false,"diagBody":{"open":false,"lines":["原始错误：后端已重新启动；ShellExecute failed","代理：连不上更新源时，可在 %APPDATA%\\qio\\updater-proxy.txt 写一行代理地址。","日志：排查记录在 %APPDATA%\\qio\\logs\\qio.log。"]}}
+
+---- E 模拟安装失败且后端未恢复 ----
+
+---- E 模拟安装失败且后端未恢复 ----
+[PASS] E-1 主行「安装更新失败」 :: {"failure":"安装更新失败","reason":null}
+[PASS] E-2 下一步说「完全退出 QIO 再重新启动」，不说可以继续使用 :: {"next":"更新没有装上，且后端未能自动恢复。请完全退出 QIO 再重新启动；重启后可在设置里重新检查更新。"}
+[PASS] E-3 没有「重试下载安装」按钮；主按钮只做它真正会做的事（重新检查更新） :: {"retryInstall":null,"checkButton":"重新检查更新"}
+[PASS] E-4 进全局异常入口（store 里有 updater_install_failed，带原因与诊断） :: {"issueState":{"title":"更新没有安装成功，后端仍未恢复","reason":"更新没有安装成功，且后端未能自动恢复","severity":"error","diagnostics":["后端未能自动恢复：sidecar spawn failed；ShellExecute failed"]}}
+[PASS] E-5 对话页顶部栏出现「问题」入口（数量与可访问名称完整） :: {"entry":{"text":"问题\n1","label":"1 个独立问题（1 个需要处理），打开问题列表（每个问题都有原因与处理方式）"}}
+
+== 结果：PASS 21 / FAIL 0 / TOTAL 21 ==

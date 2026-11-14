@@ -1,5 +1,5 @@
 # 真实浏览器验收（系统 Edge + CDP，本机 fake provider）
-# runId=20261113211938  base=http://127.0.0.1:5199  api=http://127.0.0.1:8734  provider=http://127.0.0.1:8807
+# runId=20261114060610  base=http://127.0.0.1:5199  api=http://127.0.0.1:8734  provider=http://127.0.0.1:8807
 # 驱动脚本：_lead-logs/pm-qio032/e2e-round2/ui-verify-round2.mjs（只读驱动，不改产品代码）
 # 数据域：隔离目录 _lead-logs/pm-qio032/e2e-round2/data（跑完已删除，不碰用户真实数据）
 # 结果：PASS 19 / FAIL 0 / UNVERIFIED 0 / TOTAL 19
@@ -11,16 +11,43 @@
 ## 代码预览：设置返回后恢复可用（p1）
 
 [PASS] p1-1 首次打开回复代码：正文可读（不是停在读取中）
-        {"tabId": "replycode:local_1794604785208_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+        {"tabId": "replycode:local_1794636378220_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
 [PASS] p1-2 首次打开：搜索框可用（有命中计数）且正文可滚动
         {"searchCount": "— / 2", "scrollTop": 300}
 [PASS] p1-3 关闭预览标签
         {"tabCount": 0}
 [PASS] p1-4 设置返回后重开同一代码块：直接可读（不再停在「正在读取这个文件…」）
-        {"tabId": "replycode:local_1794604785208_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+        {"tabId": "replycode:local_1794636378220_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
 [PASS] p1-5 设置返回后重开：搜索框与滚动容器都在
-        {"tabId": "replycode:local_1794604785208_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+        {"tabId": "replycode:local_1794636378220_2:0", "tabCount": 1, "readerKind": "code", "loading": false, "loadingText": null, "problem": null, "search": true, "scroll": true, "lineCount": 70, "bodyHead": "Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
 [PASS] p1-6 设置返回后重开：搜索与滚动真实可用
         {"searchCount": "— / 1", "scrollTop": 240}
 [PASS] p1-7 同一代码块重开不重复开标签
         {"tabCount": 1}
+
+## 第二轮：预览标签只在确认同一回复时迁移（组件测试 + 浏览器）
+
+# 组件测试：cd frontend; npx --no-install vitest run src/components/conversation/__tests__/cv-c-preview-identity.test.ts
+#   → 12 passed（先红后绿：修复前 5 failed，第 1 条正是「正式 id 的标签被改绑」）
+# 定向批次：19 个显式文件 169 passed（见 preview2-green.log）
+
+## 第一组：不同回复 / 话题含同一段代码，原消息离开列表后标签身份与位置仍正确
+
+[PASS] 已绑定正式消息 id 的标签：原消息离开列表后仍指向原消息（不迁移、不关闭）
+[PASS] 临时标签：从未观察到这条消息的轮次身份时不猜（保留原标签与正文）
+[PASS] 临时标签：候选属于另一轮（轮次身份对不上）时不迁移
+[PASS] 一轮里有多条助手消息含同一段代码（候选不唯一）时不迁移
+
+## 第二组：同一回复从临时 ID 转为正式 ID
+
+[PASS] 同轮同 blockIndex 正文逐字相同 → 迁移标签，正文 / 搜索词 / 滚动位置保留
+[PASS] 正式标签已经打开时合并成一个，保住用户刚操作的那个标签的位置
+[PASS] 正式标签是当前标签时合并：保留正式标签自己的位置，不被旧临时位置覆盖
+[PASS] 正式标签没有正文（刷新后从布局恢复）时，把临时标签的正文交给它并重新准备运行时
+
+# 重新挂载行为（第一轮已通过）未改动：cv-c-preview-remount.test.ts 17 passed 仍全绿。
+# 预览焦点 / 读屏 / 布局还原定向：cv-c-preview-50-53-state(9) / d-preview-52-tab-focus(3) /
+#   cv-c-preview-feedback(5) / settings-reset-layout(7) 全绿。
+
+# 边界：真机时序未观察（临时消息出现时若 activeTurnId 还是 null，轮次身份观察不到 → 保守不迁移，
+#   标签保留且仍可读，代价是可能留两个标签）；观察表有界 400 条。

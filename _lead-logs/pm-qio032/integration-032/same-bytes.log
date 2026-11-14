@@ -24,3 +24,30 @@ PM-QIO032-28-SUMMARY {"case": "first-round-missing-snapshot", "markers": {"CURRE
 
 # 返修前基线（material_scope + submit_version_basis）：30 passed；返修后：34 passed
 # 8 个 pm_qio032 文件一起跑（显式列文件名）：62 passed, 1 warning in 18.32s（见 evidence-28b-pytest.txt）
+
+## 受控 A→B→A 竞态回归（pytest，直接走 ReadAttachmentTool.run）
+
+# 命令：backend\.venv\Scripts\python.exe -m pytest tests\pm_qio032_material_scope_test.py -p no:cacheprovider -q
+# 新增 4 例（第一轮）：
+[PASS] test_parse_reads_verified_bytes_not_source_path —— 解析器入口把源文件换成同大小 B、解析后换回 A；
+        断言结果不含 B；成功时含 A 正文；失败必须是 material_source_changed + 短文案 + next_step=resubmit；
+        解析器读的路径不是源路径；核验临时目录已清理
+[PASS] test_stable_same_size_change_is_rejected —— 稳定变化的同大小文件 → 明确失败，不交付 B
+[PASS] test_verified_temp_dir_is_cleaned_on_parse_failure —— 异常路径清理
+[PASS] test_verified_temp_dir_is_cleaned_on_cancel —— 取消路径清理
+
+## 第二轮：取消核验时清理临时文件（新增 9 例，见 evidence-28c.md）
+
+# 命令：backend\.venv\Scripts\python.exe -m pytest tests\pm_qio032_material_scope_test.py -p no:cacheprovider
+# 结果：38 passed（连跑 3 次无抖动）；8 个 pm_qio032 文件一起 71 passed
+[PASS] cancelled_before_handoff —— 阶段①：临时目录已创建、尚未交接时取消 → 目录与文件均清理、原附件字节不变、无成功结果
+[PASS] cancelled_while_writing —— 阶段②：verified.txt 已落盘、尚未交接时取消 → 同上
+[PASS] cancelled_during_parse —— 阶段③：解析已开始后取消 → 同上
+[PASS] write_fails / worker_raises —— 写盘 OSError / 线程内非 OSError：线程自己清理
+[PASS] run_worker_discards_result_when_waiter_already_cancelled —— 等待方已取消时结果被丢弃并收尾
+[PASS] abandoned_worker_result_is_cleaned_after_late_finish —— 等待上限压到 0.05s：线程晚到结束时临时目录仍被清理
+[PASS] temp_dir_cleanup_defers_while_parser_still_holds_file —— Windows 上解析仍持有文件时不假装删掉（登记延迟清理）
+[PASS] verified_temp_dir_is_swept_after_parser_releases_file —— 解析释放文件后延迟清理真的执行
+
+# 端到端残留检查：清空 %TEMP%\qio-verified-material-* 后跑本文件 → 38 passed，跑完 count=0（一个临时目录都不剩）。
+# 反证：修复前（stash 掉源码修复）同一批新用例 7 failed，且跑完确实留下 15 个残留目录。

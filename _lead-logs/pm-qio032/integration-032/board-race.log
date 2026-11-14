@@ -1,5 +1,5 @@
 # 真实浏览器验收（系统 Edge + CDP，本机 fake provider）
-# runId=20261113211938  base=http://127.0.0.1:5199  api=http://127.0.0.1:8734  provider=http://127.0.0.1:8807
+# runId=20261114060610  base=http://127.0.0.1:5199  api=http://127.0.0.1:8734  provider=http://127.0.0.1:8807
 # 驱动脚本：_lead-logs/pm-qio032/e2e-round2/ui-verify-round2.mjs（只读驱动，不改产品代码）
 # 数据域：隔离目录 _lead-logs/pm-qio032/e2e-round2/data（跑完已删除，不碰用户真实数据）
 # 结果：PASS 19 / FAIL 0 / UNVERIFIED 0 / TOTAL 19
@@ -11,22 +11,34 @@
 ## 上传中 → 设置 → 返回（p2）
 
 [PASS] p2-1 上传中进设置、返回后文件卡只多一张（无重复卡）
-        {"before": 2, "after": 3, "cardText": "文本\nround2-20261113211938.txt\n显示并参与\n参与\n\n文本\nround2-20261113211938.txt\n137 B\n\n材料详情（路径 / 来源 / 引用）\n11-14 05:20"}
+        {"before": 4, "after": 5, "cardText": "文本\nround2-20261114060610.txt\n显示并参与\n参与\n\n文本\nround2-20261114060610.txt\n137 B\n\n材料详情（路径 / 来源 / 引用）\n11-14 14:06"}
 [PASS] p2-2 返回后成功提示只有一句「已关联附件『文件名』」
-        {"notice": {"text": "已关联附件「round2-20261113211938.txt」", "retry": false}, "expected": "已关联附件「round2-20261113211938.txt」"}
+        {"notice": {"text": "已关联附件「round2-20261114060610.txt」", "retry": false}, "expected": "已关联附件「round2-20261114060610.txt」"}
 [PASS] p2-3 返回后没有要求重新选文件 / 重新上传
-        {"notice": {"text": "已关联附件「round2-20261113211938.txt」", "retry": false}}
+        {"notice": {"text": "已关联附件「round2-20261114060610.txt」", "retry": false}}
 [PASS] p2-4 卡片数量稳定（不重复结算）
-        {"after": 3, "stable": 3}
+        {"after": 5, "stable": 5}
 
 ## 受控竞态测试（vitest，jsdom；不是真实浏览器）
 
-# 命令：cd frontend; npx --no-install vitest run src/stores/__tests__/pm032-import-board-identity.test.ts
-# 结果：Test Files 1 passed (1) / Tests 7 passed (7)（完整输出见 46b-vitest-new.log）
+# 命令：cd frontend; npx --no-install vitest run src/stores/__tests__/pm032-board-save-isolation.test.ts src/stores/__tests__/pm032-import-board-identity.test.ts
+# 结果：Test Files 2 passed (2) / Tests 11 passed (11)（保存隔离 4 例 + 回执身份 7 例）
+
+## 第二轮：板面切换时隔离待保存数据（pm032-board-save-isolation.test.ts，4 例）
+
+[PASS] B 的保存尚未发出就切回 A：A 的保存请求只含 A 的卡片，B 的候选只归 B
+        断言：A 加载前不写板面；发往 A 的每个保存请求 cardIds 不含 card_b / B 的新增卡；
+        最后一个 A 请求含 card_a；发往 B 的请求不含 card_a；上传只调用 1 次
+[PASS] B 的保存已发出但回执迟到：迟到回执不写进 A，A 的保存请求仍只含 A 的卡片
+        断言：B 的 PUT 已发出（cardIds 含 card_b）→ 切回 A 并延迟 A 读取 → 上传先成功、A 读取后完成
+        → B 的迟到回执才回来：A 的板面仍只有 card_a，发往 A 的请求不含 card_b
+[PASS] 批次新建卡（无预建卡）：跨板等待后建卡与保存都归原板面
+        断言：A 上只建 1 张文件卡、附件 att_batch、发往 A 的请求不含 card_b
+[PASS] 重读两板：A 只有 A 的卡片，B 只有 B 的卡片（含 B 的新增卡）
+
+## 第一轮（保留）：跨板回执只关联已加载的原板面（pm032-import-board-identity.test.ts，7 例）
 
 [PASS] A 上传 → 切到 B → 切回 A 且延迟 A 的读取：A 加载前不写板面，加载后只关联一次且都属于 A
-        断言：A 加载前保存请求数不变、无 card_b、板面仍是 B 内容；A 加载后 result.ok、上传只调用 1 次、
-        保存请求板面 ID 全为 A、卡片 card_a、附件 att_a
 [PASS] 原板面读取失败（空占位）不写板面
 [PASS] 原卡删除不重建
 [PASS] 原卡换绑不覆盖
@@ -34,8 +46,10 @@
 [PASS] 批次新建卡跨板等待后只建一张、保存请求全属 A
 [PASS] 刷新/重读两块板：B 完整、A 无混入
 
-# 反证（用例确实抓得住原缺陷）：把新增两道门禁临时改成 if (false && …) 后重跑 → 3 failed
-#   （含「批次新建卡」原板面建了 2 张卡、B 的 card_b 混入）；恢复后 7/7 全绿。
+# 反证（第一轮）：把新增两道门禁临时改成 if (false && …) 后重跑 → 3 failed（含 B 的 card_b 混入、批次建了 2 张卡）。
+# 反证（第二轮）：修复前同一份新用例 4 failed（A 上出现 card_b 与 B 的新增卡、批次建了 3 张卡）。
 
 # 受影响既有用例复跑：pm032-canvas-import-batch + fix025-attach-notice + fix025-card-attach-notice
 #   → Test Files 3 passed (3) / Tests 44 passed (44)（见 46b-vitest-existing.log）
+# 整目录回归：src/stores + src/components/interactive + src/components/conversation + src/conversation
+#   + src/views/__tests__ + src/views/settings/__tests__ + src/components/__tests__ → 381 files / 3185 tests passed

@@ -1,0 +1,33 @@
+﻿# RED PROOF: 旧实现（git stash 掉 attachment_tools.py 修复）跑 #28b 新增用例
+# 命令: python -m pytest backend\tests\pm_qio032_material_scope_test.py -p no:cacheprovider -q -k '<新增用例>'
+
+FF..FFFFF                                                                [100%]
+================================== FAILURES ===================================
+_______ test_verified_temp_dir_is_cleaned_when_cancelled_before_handoff _______
+
+... (完整输出已裁剪，仅保留失败摘要) ...
+
+E       AssertionError: 取消后临时目录必须清理干净（线程退出时仍未交接的由线程自己清理）
+E       assert False
+E        +  where False = <function test_verified_temp_dir_is_cleaned_when_cancelled_before_handoff.<locals>.<lambda> at 0x000001E9880DC040>()
+E       AssertionError: 取消后临时目录必须清理干净（含已写入的 verified 文件）
+E       assert False
+E        +  where False = <function test_verified_temp_dir_is_cleaned_when_cancelled_while_writing.<locals>.<lambda> at 0x000001E9812A1E40>()
+E       AssertionError: [WindowsPath('C:/Users/zxy/AppData/Local/Temp/qio-verified-material-bh5ig4rl')]
+E       assert False
+E        +  where False = all(<generator object test_verified_temp_dir_is_cleaned_when_worker_raises.<locals>.<genexpr> at 0x000001E9880D0BA0>)
+E       AssertionError: 解析线程释放文件后，延迟清理的临时目录必须被删掉
+E       assert False
+E        +  where False = <function test_verified_temp_dir_is_swept_after_parser_releases_file.<locals>.<lambda> at 0x000001E98808FD80>()
+E       TypeError: ReadAttachmentTool._run_worker() got an unexpected keyword argument 'on_abandoned'
+E       AssertionError: 线程晚到的交接结果必须被收尾（临时目录清理干净）
+E       assert False
+E        +  where False = <function test_abandoned_worker_result_is_cleaned_after_late_finish.<locals>.<lambda> at 0x000001E98808D1C0>()
+E               AttributeError: module 'agent.tools.attachment_tools' has no attribute '_deferred_verified_dirs'
+FAILED backend\tests\pm_qio032_material_scope_test.py::test_verified_temp_dir_is_cleaned_when_cancelled_before_handoff
+FAILED backend\tests\pm_qio032_material_scope_test.py::test_verified_temp_dir_is_cleaned_when_cancelled_while_writing
+FAILED backend\tests\pm_qio032_material_scope_test.py::test_verified_temp_dir_is_cleaned_when_worker_raises
+FAILED backend\tests\pm_qio032_material_scope_test.py::test_verified_temp_dir_is_swept_after_parser_releases_file
+FAILED backend\tests\pm_qio032_material_scope_test.py::test_run_worker_discards_result_when_waiter_already_cancelled
+FAILED backend\tests\pm_qio032_material_scope_test.py::test_abandoned_worker_result_is_cleaned_after_late_finish
+FAILED backend\tests\pm_qio032_material_scope_test.py::test_temp_dir_cleanup_defers_while_parser_still_holds_file

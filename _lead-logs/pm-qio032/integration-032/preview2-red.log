@@ -1,0 +1,23 @@
+# task-6 预览b · 反例（修复前）红证据
+# 命令：cd frontend; npx --no-install vitest run src/components/conversation/__tests__/cv-c-preview-identity.test.ts
+# 结果：Test Files 1 failed (1) / Tests 5 failed | 6 passed (11)
+
+  × 已绑定正式消息 id 的标签：原消息离开列表后仍指向原消息，正文与阅读位置不变
+    AssertionError: 正式 id 的标签永远不迁移: expected 1 to be +0
+    ❯ cv-c-preview-identity.test.ts:93:37
+  × 临时标签：从未观察到这条消息的轮次身份时不猜（不迁移、不关闭，正文仍可读）
+    AssertionError: 确认不了身份就不迁移: expected 1 to be +0
+    ❯ cv-c-preview-identity.test.ts:117:33
+  × 临时标签：候选属于另一轮（轮次身份对不上）时不迁移
+    AssertionError: expected 1 to be +0
+    ❯ cv-c-preview-identity.test.ts:132:19
+  × 正式标签已经打开时合并成一个，保住用户刚操作的那个标签的位置
+    AssertionError: expected 1 to be +0
+    ❯ cv-c-preview-identity.test.ts:213:94
+  × 正式标签是当前标签时合并：保留正式标签自己的位置，不被旧临时位置覆盖
+    AssertionError: expected 1 to be +0
+    ❯ cv-c-preview-identity.test.ts:232:94
+
+# 结论：旧实现 reconcileReplyCodeIdentities() 只看「正文逐字相同 + 候选唯一」，
+#       会把已绑定正式 msg_ id 的标签改绑到另一条回复（第 1 条失败即用户报的「标签绑错回复」），
+#       也会把临时标签挂到别的轮次上（第 3 条失败）。

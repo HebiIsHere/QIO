@@ -1,21 +1,21 @@
-== QIO round2 ui-verify == runId=20261113211938
+== QIO round2 ui-verify == runId=20261114060610
 base=http://127.0.0.1:5199 api=http://127.0.0.1:8734 provider=http://127.0.0.1:8807 cdp=9333
 onboarding={"wasOpen":false}
 
 ---- p1 代码预览：设置返回后恢复可用 ----
-[PASS] p1-1 首次打开回复代码：正文可读（不是停在读取中） :: {"tabId":"replycode:local_1794604785208_2:0","tabCount":1,"readerKind":"code","loading":false,"loadingText":null,"problem":null,"search":true,"scroll":true,"lineCount":70,"bodyHead":"Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+[PASS] p1-1 首次打开回复代码：正文可读（不是停在读取中） :: {"tabId":"replycode:local_1794636378220_2:0","tabCount":1,"readerKind":"code","loading":false,"loadingText":null,"problem":null,"search":true,"scroll":true,"lineCount":70,"bodyHead":"Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
 [PASS] p1-2 首次打开：搜索框可用（有命中计数）且正文可滚动 :: {"searchCount":"— / 2","scrollTop":300}
 [PASS] p1-3 关闭预览标签 :: {"tabCount":0}
-[PASS] p1-4 设置返回后重开同一代码块：直接可读（不再停在「正在读取这个文件…」） :: {"tabId":"replycode:local_1794604785208_2:0","tabCount":1,"readerKind":"code","loading":false,"loadingText":null,"problem":null,"search":true,"scroll":true,"lineCount":70,"bodyHead":"Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
-[PASS] p1-5 设置返回后重开：搜索框与滚动容器都在 :: {"tabId":"replycode:local_1794604785208_2:0","tabCount":1,"readerKind":"code","loading":false,"loadingText":null,"problem":null,"search":true,"scroll":true,"lineCount":70,"bodyHead":"Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+[PASS] p1-4 设置返回后重开同一代码块：直接可读（不再停在「正在读取这个文件…」） :: {"tabId":"replycode:local_1794636378220_2:0","tabCount":1,"readerKind":"code","loading":false,"loadingText":null,"problem":null,"search":true,"scroll":true,"lineCount":70,"bodyHead":"Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
+[PASS] p1-5 设置返回后重开：搜索框与滚动容器都在 :: {"tabId":"replycode:local_1794636378220_2:0","tabCount":1,"readerKind":"code","loading":false,"loadingText":null,"problem":null,"search":true,"scroll":true,"lineCount":70,"bodyHead":"Python · 共 70 行 · 编码 未说明\n\n1\nline_001 = \"alpha payload 1\"\n2\nline_002 = \"alpha payload 2\"\n3\nline_003 = \"alpha payload 3\"\n4"}
 [PASS] p1-6 设置返回后重开：搜索与滚动真实可用 :: {"searchCount":"— / 1","scrollTop":240}
 [PASS] p1-7 同一代码块重开不重复开标签 :: {"tabCount":1}
 
 ---- p2 上传中→设置→返回 ----
-[PASS] p2-1 上传中进设置、返回后文件卡只多一张（无重复卡） :: {"before":2,"after":3,"cardText":"文本\nround2-20261113211938.txt\n显示并参与\n参与\n\n文本\nround2-20261113211938.txt\n137 B\n\n材料详情（路径 / 来源 / 引用）\n11-14 05:20"}
-[PASS] p2-2 返回后成功提示只有一句「已关联附件『文件名』」 :: {"notice":{"text":"已关联附件「round2-20261113211938.txt」","retry":false},"expected":"已关联附件「round2-20261113211938.txt」"}
-[PASS] p2-3 返回后没有要求重新选文件 / 重新上传 :: {"notice":{"text":"已关联附件「round2-20261113211938.txt」","retry":false}}
-[PASS] p2-4 卡片数量稳定（不重复结算） :: {"after":3,"stable":3}
+[PASS] p2-1 上传中进设置、返回后文件卡只多一张（无重复卡） :: {"before":4,"after":5,"cardText":"文本\nround2-20261114060610.txt\n显示并参与\n参与\n\n文本\nround2-20261114060610.txt\n137 B\n\n材料详情（路径 / 来源 / 引用）\n11-14 14:06"}
+[PASS] p2-2 返回后成功提示只有一句「已关联附件『文件名』」 :: {"notice":{"text":"已关联附件「round2-20261114060610.txt」","retry":false},"expected":"已关联附件「round2-20261114060610.txt」"}
+[PASS] p2-3 返回后没有要求重新选文件 / 重新上传 :: {"notice":{"text":"已关联附件「round2-20261114060610.txt」","retry":false}}
+[PASS] p2-4 卡片数量稳定（不重复结算） :: {"after":5,"stable":5}
 
 ---- c1 联网搜索通道状态 ----
 [PASS] c1-1 联网搜索不再有常驻「已配置不代表检查通过」判据说明 :: {"hint":null,"bodyHasOldSentence":false}
@@ -26,8 +26,8 @@ onboarding={"wasOpen":false}
 [PASS] c2-1 附件关联成功提示不含来源说明与「本地改动」复述 :: {"text":"","hasSourceNote":false,"hasLocalNote":false}
 
 ---- c3 更新失败诊断 ----
-[PASS] c3-1 更新失败主行只给可理解的失败状态（不含代理/日志路径） :: {"phaseText":"应用更新\n当前版本 —\n更新失败\n更新没有安装。可以点「重试」重新检查；若安装被中止（例如 \"Can't write …qio-backend.exe\"）， 请完全退出 QIO 后重试安装。\n诊断信息（原始错误 / 代理 / 日志）\n重试\n启动时检查更新\n\n启动时只检查更新，不会自动下载或安装。","failure":"更新失败","next":"更新没有安装。可以点「重试」重新检查；若安装被中止（例如 \"Can't write …qio-backend.exe\"）， 请完全退出 QIO 后重试安装。","hasDiagnostics":true,"diagnosticsOpen":false,"diagnosticsText":"诊断信息（原始错误 / 代理 / 日志）","mainHasProxy":false,"mainHasLog":false}
-[PASS] c3-2 更新失败给出实际可用的下一步 :: {"next":"更新没有安装。可以点「重试」重新检查；若安装被中止（例如 \"Can't write …qio-backend.exe\"）， 请完全退出 QIO 后重试安装。"}
+[PASS] c3-1 更新失败主行只给可理解的失败状态（不含代理/日志路径） :: {"phaseText":"应用更新\n当前版本 —\n检查更新失败\n可以点「重试」重新检查；更新设置与当前版本不受影响。\n诊断信息（原始错误 / 代理 / 日志）\n重试\n启动时检查更新\n\n启动时只检查更新，不会自动下载或安装。","failure":"检查更新失败","next":"可以点「重试」重新检查；更新设置与当前版本不受影响。","hasDiagnostics":true,"diagnosticsOpen":false,"diagnosticsText":"诊断信息（原始错误 / 代理 / 日志）","mainHasProxy":false,"mainHasLog":false}
+[PASS] c3-2 更新失败给出实际可用的下一步 :: {"next":"可以点「重试」重新检查；更新设置与当前版本不受影响。"}
 [PASS] c3-3 原始错误/代理/日志在按需展开的诊断里（默认折叠） :: {"hasDiagnostics":true,"open":false,"text":"诊断信息（原始错误 / 代理 / 日志）"}
 [PASS] c3-4 展开诊断后能看到原始错误与代理/日志路径 :: {"opened":"诊断信息（原始错误 / 代理 / 日志）\n\n原始错误：Cannot read properties of undefined (reading 'invoke')\n\n代理：连不上更新源时，可在 %APPDATA%\\qio\\updater-proxy.txt 写一行代理地址。\n\n日志：排查记录在 %APPDATA%\\qio\\logs\\qio.log。"}
 
