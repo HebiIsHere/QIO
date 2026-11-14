@@ -1134,7 +1134,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   /** 保存前的影响确认：这次改动会影响这些执行中的任务，等用户决定 */
   const pendingImpact = ref<{
+    /**
+     * #46（第四轮）：这份确认属于**哪块板面**、哪一次候选。
+     * 消费确认（confirmImpact）时必须仍是当前板面，别的板面暂存的确认不能被当前板面消费。
+     */
+    boardId: string;
     affected: { intentId: string; title: string; materials: string[]; consequence: string }[];
+    /** 这次预判针对的候选内容（确认消费时按内容核对，切板/合并后版本号会被重新赋值）。 */
+    candidateKey?: string;
     /** 这次预判针对的候选版本（M4/08 路径2）：确认只对这一版有效 */
     previewRev: number;
     /** 这次预判针对的已保存板面版本 */
@@ -1225,6 +1232,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     dirty: boolean;
     saveStatus: SaveStatus;
     saveError: string | null;
+    /** 这块板面自己的「保存前预判失败」原因（别的板面的预判失败不许显示在这里）。 */
+    impactCheckError: string | null;
     lastSavedAt: string | null;
     lastOpLabel: string;
     undoStack: string[];
@@ -1232,7 +1241,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     boardContentConflicts: Record<string, { local: string; server: string }>;
     boardRemovalConflicts: Record<string, { kind: "group" | "link"; id: string; server: Record<string, unknown> }>;
     pendingImpact: {
+      boardId: string;
       affected: { intentId: string; title: string; materials: string[]; consequence: string }[];
+      candidateKey?: string;
       previewRev: number;
       stateVersion: number;
       checkId?: string;
@@ -1305,13 +1316,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   let serverDraftRev: number | null = null;
   const serverDraftKeyVersions = new Map<string, number>();
-
-  /**
-   * N1/F3：同一次候选的「旧版本写入被拒 → 读最新事实 → 重试」次数上限。
-   * 服务端版本一直在被别人推进时，绝不做无界重试：停在明确失败上，让用户看见原因。
-   */
-  let saveRecoveryRev = -1;
-  let saveRecoveryAttempts = 0;
 
   /**
    * 「勾选」是按对象记录的修改代次（N5）：提交成功回报 checkedCleared 时，
@@ -1754,6 +1758,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 回退到旧接口，保证既有测试的 mock 仍能用（生产路径走新接口）。
    */
   async function runImpactCheck(
+    targetBoardId: string,
     stateVersion: number,
     state: BoardState,
   ): Promise<import("../services/interactive").ImpactCheckResult> {
@@ -1773,9 +1778,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
       checker = undefined;
     }
     if (typeof checker === "function") {
-      return checker(boardId.value, stateVersion, state);
+      return checker(targetBoardId, stateVersion, state);
     }
-    const legacy = await api.previewMaterialImpact(boardId.value, state);
+    const legacy = await api.previewMaterialImpact(targetBoardId, state);
     return {
       ok: true,
       affected: legacy.affected,
@@ -1794,26 +1799,39 @@ export const useInteractiveStore = defineStore("interactive", () => {
       .join("|");
   }
 
+  /** 影响预判里的一条受影响任务（服务端事实，只用于展示与范围核对）。 */
+  interface ImpactTaskRef {
+    intentId: string;
+    title: string;
+    materials: string[];
+    consequence: string;
+  }
+  type PendingImpactState = NonNullable<typeof pendingImpact.value>;
   /**
-   * 把一次影响预判落到「等用户决定」的候选说明上（R5 兜底分支与确认过期后的重新说明共用）。
+   * 把一次影响预判整理成「等用户决定」的说明（R5 兜底分支与确认过期后的重新说明共用）。
    *
    * 只有拿到服务端 checkId 才算一次**有效**的说明：没有 checkId 的说明，用户确认后必然
    * 被服务端再拒一次（基线的真实缺陷：兜底分支拿不到 checkId，确认后重复弹同一说明）。
-   * 返回 false 表示这次没拿到有效说明，调用方要如实说明原因并保留候选。
+   * 返回 null 表示这次没拿到有效说明，调用方要如实说明原因并保留候选。
+   *
+   * #46（第四轮）：说明里带上**归属板面**（boardId）与候选版本（previewRev）——
+   * 消费确认时要核对它们，别的板面不能消费这份说明。
    *
    * 传了 previousAffected 时，如果新范围与刚才展示的不同，必须**先展示变化**、
    * 由用户按新范围重新确认，不能在用户只确认旧说明时就自动批准新增后果（R5/R6）。
    */
-  function openImpactConfirm(
+  function buildImpactConfirmState(
+    targetBoardId: string,
     check: import("../services/interactive").ImpactCheckResult,
     putRev: number,
     fallbackStateVersion: number,
-    previousAffected?: { intentId: string; title: string; materials: string[]; consequence: string }[],
+    candidate: BoardState,
+    previousAffected?: ImpactTaskRef[],
     /** 明确要写给用户看的说明（例如服务端说「真实范围变了」） */
     forceNote?: string,
-  ): boolean {
-    if (check.ok === false || !check.checkId) return false;
-    const affected = (check.affected ?? check.affectedTasks ?? []).map((item) => ({
+  ): PendingImpactState | null {
+    if (check.ok === false || !check.checkId) return null;
+    const affected: ImpactTaskRef[] = (check.affected ?? check.affectedTasks ?? []).map((item) => ({
       intentId: String(item.intentId),
       title: String(item.title ?? ""),
       materials: (item.materials ?? []).map((name) => String(name)),
@@ -1824,13 +1842,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 显示它们的并集（至少有一份服务端判断说有影响，就不能少报给用户看）。
      */
     for (const item of previousAffected ?? []) {
-      if (!affected.some((entry) => entry.intentId === item.intentId)) affected.push(item);
+      if (!affected.some((entry) => entry.intentId === item.intentId)) affected.push({ ...item });
     }
     const scopeChanged = previousAffected
       ? affectedSignature(previousAffected) !== affectedSignature(affected)
       : false;
-    pendingImpact.value = {
+    return {
+      boardId: targetBoardId,
       affected,
+      candidateKey: JSON.stringify(candidateComparable(candidate)),
       previewRev: putRev,
       stateVersion: check.stateVersion ?? fallbackStateVersion,
       checkId: check.checkId,
@@ -1842,9 +1862,25 @@ export const useInteractiveStore = defineStore("interactive", () => {
             : "影响范围已经重新核对：下面是当前候选的真实影响，确认后才会保存生效。"
           : undefined),
     };
-    // N2：一次**有效**的说明已经拿到，上一次「预判没做成」的原因不再是当前事实
-    impactCheckError.value = null;
-    return true;
+  }
+  /**
+   * 把一份待确认说明落到**它所属的板面**：
+   * 当前就是原板 → 直接显示；已经切走 → 存进原板自己的会话，切回来再显示。
+   * 绝不把别的板面的检查结果写进当前板面的待确认状态（这是串板的直接原因）。
+   */
+  function showImpactConfirmFor(targetBoardId: string, pending: PendingImpactState): void {
+    if (boardId.value === targetBoardId) {
+      pendingImpact.value = pending;
+      // N2：一次**有效**的说明已经拿到，上一次「预判没做成」的原因不再是当前事实
+      impactCheckError.value = null;
+      saveStatus.value = "idle";
+      return;
+    }
+    const stashed = boardSaveSessions.get(targetBoardId);
+    if (!stashed) return;
+    stashed.pendingImpact = pending;
+    stashed.impactCheckError = null;
+    stashed.saveStatus = "idle";
   }
 
   /**
@@ -1853,28 +1889,49 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 返回 null 表示成功（版本事实已接收）；否则返回一句给用户看的真实原因。
    * 注意这里**保留用户自己的候选**（合并口径见 serverFacts.ts），只协调服务器上的独立变化。
    */
-  async function recoverCandidateFromServer(reason: string): Promise<string | null> {
+  async function recoverCandidateFromServer(
+    targetBoardId: string,
+    reason: string,
+  ): Promise<{ status: "ok" | "failed" | "away"; reason?: string }> {
     try {
-      const applied = await refreshBoardFromServer();
-      if (!applied) return `${reason}；但没有取到当前板面的最新事实（板面已经切换）`;
-      return null;
+      const applied = await refreshBoardFromServer(targetBoardId);
+      /**
+       * #46（第四轮）：读取的归属由**发起时的板面**决定。切走了就不再往当前板面写任何东西；
+       * 已经发出的读取按原归属结算 —— 回原板时重新读一次（那才是「基于该板最新状态继续」）。
+       */
+      if (boardId.value !== targetBoardId || !applied) return { status: "away" };
+      return { status: "ok" };
     } catch (err) {
-      return `${reason}；读取最新板面事实也失败了（${(err as Error).message || "原因未知"}）`;
+      /**
+       * 失败按**原板的这次请求**归属：即使此刻已经切走，这也是原板那次重读的真实失败，
+       * 由调用方写回原板面自己的会话（当前板面不受影响）。
+       */
+      return {
+        status: "failed",
+        reason: `${reason}；读取最新板面事实也失败了（${(err as Error).message || "原因未知"}）`,
+      };
     }
   }
 
+  /** 一次保存冲突的种类（服务端 409 的三种可恢复情况）。 */
+  type SaveConflictKind = "stale_state" | "impact_confirmation_required" | "stale_check";
+
   /**
-   * F3 的可恢复流程第二步：用**当前候选的最新版本**重新做一次影响预判。
+   * F3 的可恢复流程第二步：用**原板面当前候选的最新版本**重新做一次影响预判。
    *
-   * 返回：
-   * - "confirm"：已经拿到有效说明并打开确认框，等用户决定；
+   * #46（第四轮）：板面身份是显式参数 —— 请求发往 targetBoardId，任何 await 之后都先核对
+   * 「还是不是原板 / 候选还是不是那一版」，再写状态或发下一次请求。返回：
+   * - "confirm"：已经拿到有效说明并落到原板（等用户决定）；
    * - "ok"：这次改动不需要影响确认，可以继续保存；
-   * - "blocked"：预判没做成（原因已写入 impactCheckError），候选保留。
+   * - "blocked"：预判没做成（原因已写入原板面自己的 impactCheckError），候选保留；
+   * - "away"：预判期间已经切走 —— 结果按原归属结束，回原板后再重新核对。
    */
   async function recheckImpactForCurrentCandidate(
-    previousAffected?: { intentId: string; title: string; materials: string[]; consequence: string }[],
+    targetBoardId: string,
+    previousAffected?: ImpactTaskRef[],
     forceNote?: string,
-  ): Promise<"confirm" | "ok" | "blocked"> {
+  ): Promise<"confirm" | "ok" | "blocked" | "away"> {
+    if (boardId.value !== targetBoardId) return "away";
     if (!board.value) return "blocked";
     if (Object.keys(boardContentConflicts.value).length > 0) {
       const ids = Object.keys(boardContentConflicts.value).join("、");
@@ -1891,68 +1948,173 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveError.value = `本地删除了这些对象，但服务器上它们被改过（${ids}）：请选择保持删除还是恢复服务器版后再保存`;
       return "blocked";
     }
-    const current = cloneState(board.value);
-    const rev = boardLocalRev;
-    try {
-      const check = await runImpactCheck(current.seq, current);
-      if (openImpactConfirm(check, rev, current.seq, previousAffected, forceNote)) return "confirm";
-      if (check.ok === false) {
-        impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${check.reason || "服务端没有给出可用的影响确认记录"}）`;
+    /**
+     * 预判在飞期间用户可能继续编辑：确认只能放行**它预判过的那一版**候选。
+     * 候选变了就按最新候选重新核对（有界：最多 3 次，之后如实停在失败上）。
+     */
+    for (let round = 0; round < 3; round += 1) {
+      if (boardId.value !== targetBoardId) return "away";
+      const current = cloneState(board.value);
+      const rev = boardLocalRev;
+      try {
+        const check = await runImpactCheck(targetBoardId, current.seq, current);
+        if (boardId.value !== targetBoardId) return "away";
+        if (rev !== boardLocalRev) continue;
+        const pending = buildImpactConfirmState(
+          targetBoardId,
+          check,
+          rev,
+          current.seq,
+          current,
+          previousAffected,
+          forceNote,
+        );
+        if (pending) {
+          showImpactConfirmFor(targetBoardId, pending);
+          return "confirm";
+        }
+        if (check.ok === false) {
+          impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${check.reason || "服务端没有给出可用的影响确认记录"}）`;
+          return "blocked";
+        }
+        impactCheckError.value = null;
+        return "ok";
+      } catch (err) {
+        if (boardId.value !== targetBoardId) return "away";
+        impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${(err as Error).message || "原因未知"}）`;
         return "blocked";
       }
-      return "ok";
-    } catch (err) {
-      impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${(err as Error).message || "原因未知"}）`;
-      return "blocked";
     }
+    impactCheckError.value =
+      "这次保存前的影响预判没有完成，保存已暂停（等待期间板面一直在变化，已按最新候选重新核对 3 次）";
+    return "blocked";
   }
 
-  function scheduleSave() {
+  /**
+   * 防抖安排一次保存。
+   *
+   * #46（第四轮）：**在安排时记录所属板面** —— 定时器触发时如果已经切到别的板面，
+   * 这次保存不许按新板面的身份发出（候选已经随板面存进会话，切回来再由那块板面重排）。
+   */
+  let scheduledSaveBoardId = "";
+  function scheduleSave(): void {
+    const ownerBoardId = boardId.value;
+    if (!ownerBoardId) return;
+    scheduledSaveBoardId = ownerBoardId;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      void saveNow();
+      saveTimer = null;
+      const targetBoardId = scheduledSaveBoardId;
+      scheduledSaveBoardId = "";
+      /**
+       * 防抖期间这次候选已经保存成功（没有未保存内容）：不再多发一次相同的 PUT。
+       * 真正的失败重试（saveStatus === "error"）仍然照常进入 saveNow。
+       */
+      if (targetBoardId === boardId.value && !dirty.value && saveStatus.value !== "error") return;
+      void saveNow(targetBoardId || undefined);
     }, 450);
   }
 
   /**
-   * #46（第三轮）：一次保存的**归属**。
+   * #46（第三/四轮）：一次保存的**归属**。
    *
    * 缺陷：保存从防抖、影响预判、发送 PUT 到处理回执，用的都是「此刻的 boardId / 全局版本记账」。
    * 于是 B 的保存回执迟到时，它把 B 的 pending / 服务端版本 / 保存状态写进了正在显示的 A；
    * 而 B 的请求还在飞时切回 B，restoreBoardSession() 又把在飞记录清成 null，前端对同一份候选
    * 再发一次 PUT。
    *
-   * 正确口径：一次保存从发起到回执，始终使用**发起时**的板面 id、候选版本与请求身份；
-   * 任何 await 之后先确认这次操作仍归谁，再写状态。回执只落在请求所属板面。
+   * 正确口径：一次保存从防抖发起（**含首次网络请求之前**）就登记归属 —— 板面 id、操作身份、
+   * 候选快照与服务端版本；在途记录覆盖预判、写入与冲突恢复；任何 await 之后先确认这次操作
+   * 仍归谁，再写状态或发下一次请求。回执只落在请求所属板面。
    */
   interface SaveAttempt {
-    /** 这次保存属于哪块板面（PUT 的目标板面就是它）。 */
+    /** 这次保存属于哪块板面（PUT / 预判 / 恢复读取的目标板面都是它）。 */
     boardId: string;
     /** 发起时的候选版本（boardLocalRev）与「与服务器一致」版本（boardCleanRev）。 */
     putRev: number;
     putCleanRev: number;
     /** 这次保存的生命周期代次（同一块板面内判断「是否已被更新的保存接手」）。 */
     token: number;
-    /** 发起时的候选快照（PUT 的正文）。 */
+    /** 发起时的候选快照（PUT 的正文、预判的候选）。 */
     snapshot: BoardState;
+    /** 发起时的操作身份（操作标签 / 影响确认句柄）：任何 await 之后都不再读全局值。 */
+    opLabel: string;
+    confirmPayload?: { checkId: string; stateVersion?: number };
+    /** 发起时的服务器版本（PUT 正文的 seq）：冲突恢复与重新预判都以它为基准核对。 */
+    serverSeq: number;
+    /** 这次保存现在走到哪一步：预判 / 写入 / 冲突恢复。 */
+    stage: "impact" | "put" | "recovery";
+  }
+  interface SaveFlight {
+    attempt: SaveAttempt;
+    done: Promise<void>;
   }
 
   /** 这块板面当前在飞的保存（按板面记录：切走时不清，切回来要接回原请求）。 */
-  const saveInFlightByBoard = new Map<string, Promise<void>>();
+  const saveInFlightByBoard = new Map<string, SaveFlight>();
 
-  function saveInFlightFor(targetBoardId: string): Promise<void> | null {
+  function saveInFlightFor(targetBoardId: string): SaveFlight | null {
     return saveInFlightByBoard.get(targetBoardId) ?? null;
+  }
+
+  /**
+   * #46（第四轮）：一次保存冲突恢复的归属与进度。
+   *
+   * 它属于发起保存的板面：离开原板时把「接下来要做什么」留在这里，
+   * 切回来后基于该板最新状态继续（重读 → 重新预判 → 等待用户确认）。
+   */
+  interface SaveRecoveryPlan {
+    boardId: string;
+    kind: SaveConflictKind;
+    reason: string;
+    scopeChanged: boolean;
+    /** 服务端在 409 里给出的受影响任务（重新核对时作为「刚才的说明」参与范围比较）。 */
+    affectedTasks: ImpactTaskRef[] | null;
+    /** 服务端最新事实是否还需要重新读取（离开时读取未落定 / 失败）。 */
+    needsRead: boolean;
+    /** 发起这次恢复的保存代次与候选版本（用于核对「还是不是同一次操作」）。 */
+    attemptToken: number;
+    attemptRev: number;
+    snapshotSeq: number;
+  }
+  /**
+   * 按板面 id 记的恢复计划 —— 它就是那块板面的「保存会话里接下来的恢复步骤」，
+   * 用板面 id 直接索引，切板时不必把计划再复制一份（也就不会出现两份不一致的计划）。
+   */
+  const saveRecoveryByBoard = new Map<string, SaveRecoveryPlan>();
+  /** 同一板面同一次候选的冲突恢复次数（沿用 N1/F3 的 3 次上限，按板面记账）。 */
+  const saveRecoveryBudgetByBoard = new Map<string, { rev: number; attempts: number }>();
+
+  function recoveryPlanFor(targetBoardId: string): SaveRecoveryPlan | null {
+    return saveRecoveryByBoard.get(targetBoardId) ?? null;
+  }
+  function setSaveRecoveryPlan(plan: SaveRecoveryPlan): void {
+    saveRecoveryByBoard.set(plan.boardId, plan);
+  }
+  function clearSaveRecoveryPlan(targetBoardId: string): void {
+    saveRecoveryByBoard.delete(targetBoardId);
+    saveRecoveryBudgetByBoard.delete(targetBoardId);
+  }
+  function bumpRecoveryAttempts(targetBoardId: string, rev: number): number {
+    const budget = saveRecoveryBudgetByBoard.get(targetBoardId);
+    if (!budget || budget.rev !== rev) {
+      saveRecoveryBudgetByBoard.set(targetBoardId, { rev, attempts: 1 });
+      return 1;
+    }
+    budget.attempts += 1;
+    return budget.attempts;
   }
 
   /**
    * 这次保存是否已经被**同一块板面**上更新的保存接手。
    *
-   * 只看同一块板面的代次与候选版本：别的板面的保存与它无关（切走再切回来不许把它判成被取代）。
+   * 只看同一块板面的代次与**候选内容**：别的板面的保存与它无关（切走再切回来不许把它判成被取代）；
+   * 版本号会在切板 / 恢复会话 / 服务器事实合并时被重新赋值，拿它判断会把正常结果误判成「有更新候选」。
    */
   function saveAttemptSuperseded(attempt: SaveAttempt): boolean {
     if (boardId.value !== attempt.boardId) return false;
     if (attempt.token !== saveTokenFor(attempt.boardId)) return true;
-    return boardLocalRev !== attempt.putRev;
+    return boardCandidateMovedSince(attempt);
   }
 
   /**
@@ -1984,11 +2146,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
     };
   }
 
-  async function saveNow(): Promise<void> {
+  async function saveNow(ownerOverride?: string): Promise<void> {
+    const ownerBoardId = ownerOverride ?? boardId.value;
+    /**
+     * #46（第四轮）：这次保存只对**发起它的那块板面**有效。
+     * 定时器 / 手动重试在板面切换后才触发时，候选已经随板面存进会话；
+     * 切回来由那块板面自己重排，绝不按新板面的身份把旧候选发出去。
+     */
+    if (boardId.value !== ownerBoardId) return;
     if (!board.value) return;
     /**
      * #20：整板读取失败期间不许把「旧板面候选」写回服务器 —— 它可能已经过期。
-     * 返回一个明确失败的保存状态（不是静默停住），界面据此显示只读原因。
      */
     if (boardEditBlockedReason.value !== null) {
       saveError.value = boardEditBlockedReason.value;
@@ -1996,53 +2164,68 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return;
     }
     /**
-     * #46（第二轮）：保存请求的目标板面来自**待保存内容的真实归属**，不是「此刻的 boardId」。
-     *
-     * 候选只在「它被编辑时的那块板面」下才允许发出：切换板面时当前候选已经被存进
-     * boardSaveSessions，board.value 换成了目标板面的内容 —— 这时如果还有一次迟到的
-     * saveNow 被排上，它必须按内容归属发，或者干脆不发（内容已经不在当前板面）。
+     * 这块板面正在做一次冲突恢复（已经读/预判，或等用户确认）：恢复流程自己会继续，
+     * 自动保存不许插进去对同一份候选重复发请求。
      */
-    const ownerBoardId = boardId.value;
+    if (recoveryPlanFor(ownerBoardId)) return;
+    /** 影响确认已经在等用户决定：这里不重复预判、也不保存（点「继续」走 confirmImpact）。 */
+    if (pendingImpact.value && !impactConfirmed) return;
     /**
-     * #46（第三轮）：这块板面已经有保存在飞 —— **接回原请求**，不再发第二份相同的候选。
-     *
-     * 缺陷：在飞记录是全局的，切走时被 stash 带走、切回来又被 restore 清成 null，
-     * 于是「B 保存 → A → B」会对同一份候选再发一次 PUT。
-     * 正确口径：按板面记在飞请求；切回来沿用它的保存状态，等它结算。
+     * #46（第三/四轮）：这块板面已经有保存在飞 —— **接回原操作**，不再发第二份相同的候选。
+     * - 候选没有变化：继续等同一份预判 / 保存；
+     * - 旧请求已经进入写入或恢复阶段：等它结算，再基于服务端确认的版本处理新候选；
+     * - 旧请求还停在预判阶段且候选已经更新：这次按最新候选接手（旧结果会因代次过期被丢弃）。
      */
     const inFlight = saveInFlightFor(ownerBoardId);
     if (inFlight) {
-      await inFlight;
-      // 等旧请求结束后要看一眼：这期间用户又改了（dirty 仍为真）就必须**再存一次**，
-      // 不能拿到结果就返回，把更新的候选永远忘在内存里（相邻于 N1 的真实遗漏）。
-      if (boardId.value === ownerBoardId && dirty.value && !pendingImpact.value) scheduleSave();
-      return;
+      const candidateMoved = boardCandidateMovedSince(inFlight.attempt);
+      if (!candidateMoved || inFlight.attempt.stage !== "impact") {
+        await inFlight.done;
+        if (
+          boardId.value === ownerBoardId &&
+          dirty.value &&
+          !pendingImpact.value &&
+          !recoveryPlanFor(ownerBoardId) &&
+          saveStatus.value !== "error"
+        ) {
+          scheduleSave();
+        }
+        return;
+      }
     }
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
     const snapshot = cloneState(board.value);
-    // 本次 PUT 对应的候选版本与「上次与服务器一致」版本（M1）：回执落地时用来判断
-    // 「回执期间有没有出现更新的候选 / 更新的读取」。旧回执不许覆盖新候选（06 反例 A）。
+    /**
+     * 本次 PUT 对应的候选版本与「上次与服务器一致」版本（M1）：回执落地时用来判断
+     * 「回执期间有没有出现更新的候选 / 更新的读取」。旧回执不许覆盖新候选（06 反例 A）。
+     */
     const putRev = boardLocalRev;
     const putCleanRev = boardCleanRev;
     /**
      * N1：这次保存的生命周期代次。影响检查、写入、回执**整段**都要用它判断
-     * 「是不是已经有更新的保存接手了」—— 只要发现被取代，就绝不把旧候选发出去。
+     * 「是不是已经有更新的保存接手了」。
      */
     const token = nextSaveTokenFor(ownerBoardId);
-    const attempt: SaveAttempt = { boardId: ownerBoardId, putRev, putCleanRev, token, snapshot };
-    const superseded = () => saveAttemptSuperseded(attempt);
     /**
-     * #46（第三轮）：**发起时固定请求身份**。
-     *
-     * 操作标签与影响确认句柄都属于「这次保存」：影响预判 / 网络请求期间用户可能切走，
-     * 那时全局 pendingConfirm / lastOpLabel 已经是另一块板面的。必须在任何 await 之前取定。
+     * #46（第四轮）：**发起时固定请求身份** —— 操作标签与影响确认句柄都属于「这次保存」：
+     * 影响预判 / 网络请求期间用户可能切走，那时全局值已经是另一块板面的。
      */
     const opLabel = lastOpLabel.value || "op";
-    const confirmPayload =
-      impactConfirmed && pendingConfirm ? { ...pendingConfirm } : undefined;
+    const confirmPayload = impactConfirmed && pendingConfirm ? { ...pendingConfirm } : undefined;
+    const attempt: SaveAttempt = {
+      boardId: ownerBoardId,
+      putRev,
+      putCleanRev,
+      token,
+      snapshot,
+      opLabel,
+      confirmPayload,
+      serverSeq: Number(snapshot.seq ?? 0),
+      stage: "impact",
+    };
     /** 这次保存的归属板面此刻是不是当前板面（任何 await 之后写状态前先问一句）。 */
     const ownerIsCurrent = () => boardId.value === ownerBoardId;
     /** 回执之后是否还要再存一次（服务端要求用最新版本重来）。 */
@@ -2054,7 +2237,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (Object.keys(boardContentConflicts.value).length > 0) {
       const ids = Object.keys(boardContentConflicts.value).join("、");
       saveStatus.value = "error";
-      saveError.value = `本页候选与服务器上同一张卡片的正文都有改动（${ids}），请选择保留哪一份后再保存`;
+      saveError.value = "本页候选与服务器上同一张卡片的正文都有改动（" + ids + "），请选择保留哪一份后再保存";
       dirty.value = true;
       return;
     }
@@ -2065,134 +2248,135 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (Object.keys(boardRemovalConflicts.value).length > 0) {
       const ids = Object.keys(boardRemovalConflicts.value).join("、");
       saveStatus.value = "error";
-      saveError.value = `本地删除了这些对象，但服务器上它们被改过（${ids}）：请选择保持删除还是恢复服务器版后再保存`;
+      saveError.value = "本地删除了这些对象，但服务器上它们被改过（" + ids + "）：请选择保持删除还是恢复服务器版后再保存";
       dirty.value = true;
       return;
     }
-    // 保存前先问服务端一句：这次改动会不会碰到正在执行任务依赖的材料？
-    // 会 → 不保存，把影响说明交给用户决定（继续=保存并暂停相关任务；取消=不改动，任务继续）。
-    if (!impactConfirmed && activeIntents.value.length > 0) {
-      try {
-        const check = await runImpactCheck(snapshot.seq, snapshot);
-        // N1：预判在飞期间用户完成了更新的一版（更晚的保存已经接手）——
-        // 这一次的旧候选**不许再发出去**，否则旧写入会把已保存的新版覆盖掉。
-        if (superseded()) {
-          if (dirty.value && !pendingImpact.value) scheduleSave();
-          return;
-        }
-        // 只有**执行中**的任务才需要「先说明影响再让用户决定」。
-        // 已经暂停的任务不该拦住保存：它的依据已经失效是历史事实，用户每次编辑都被拦
-        // 会让板面根本存不下去（复核实测过这个后果）。暂停的影响只作为提示显示。
-        const running = new Set(
-          intents.value.filter((item) => item.status === "running").map((item) => item.id),
-        );
-        const affected = (check.affected ?? check.affectedTasks ?? []) as {
-          intentId: string;
-          title: string;
-          materials: string[];
-          consequence: string;
-        }[];
-        if (check.ok === false) {
-          // 服务端如实说明「为什么这次预判没做成」（版本过期 / 无法预判）：不改任何状态
-          // #46（第三轮）：预判期间已经切走 → 原因只属于原板面，等它自己切回来再重算
-          if (!ownerIsCurrent()) return;
-          impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${check.reason || "原因未知"}）`;
-          saveStatus.value = "idle";
-          return;
-        }
-        const blocking = affected.filter((item) => running.has(item.intentId));
-        const needsConfirm =
-          check.impactConfirmationRequired === true ? affected.length > 0 : blocking.length > 0;
-        if (needsConfirm) {
-          // 确认必须绑定这次预判的候选版本与范围（M4/08 路径2）：
-          // 等待期间又改了别处，确认时要重新核实，不能放行未说明的改动。
-          //
-          // R6：确认框展示的是**服务端给出的完整受影响范围**，而不是「客户端自己知道在运行的那几个」。
-          // 客户端的任务清单可能滞后（刚被批准并运行的任务它还看不到），按交集展示会让用户在
-          // 不知情的情况下确认一份更小的范围。是否需要确认仍以服务端 impactConfirmationRequired 为准
-          // （已暂停任务只作为说明展示，不额外拦住保存）。
-          /**
-           * #46（第三轮）：确认句柄必须属于**同一板面和该次候选**。
-           *
-           * 预判期间切走了：这次说明写进原板面自己的会话（切回去再让用户决定），
-           * 绝不弹到当前显示的板面上，也绝不把当前板面的 pendingImpact 改掉。
-           */
-          const pending = {
-            affected: affected.length ? affected : blocking,
-            previewRev: putRev,
-            stateVersion: check.stateVersion ?? snapshot.seq,
-            checkId: check.checkId,
-          };
-          if (!ownerIsCurrent()) {
-            const stashed = boardSaveSessions.get(ownerBoardId);
-            if (stashed) {
-              stashed.pendingImpact = pending;
-              stashed.saveStatus = "idle";
-            }
-            return;
-          }
-          pendingImpact.value = pending;
-          // N2：新的说明已经取到，上一次「预判没做成」的原因不再是当前事实
-          impactCheckError.value = null;
-          saveStatus.value = "idle";
-          return;
-        }
-      } catch (err) {
-        // N1：这次预判已经被更新的保存取代：它的失败不属于当前候选，不许据此报错/停住
-        if (superseded()) {
-          if (dirty.value && !pendingImpact.value) scheduleSave();
-          return;
-        }
-        // #46（第三轮）：预判期间已经切走 → 失败原因只属于原板面，当前板面不动
-        if (!ownerIsCurrent()) return;
-        // 影响预判失败（08 路径1）：保存暂停、候选保留、真实原因可见，不阻塞在无解释的等待里。
-        impactCheckError.value = `这次保存前的影响预判没有完成，保存已暂停（${(err as Error).message || "原因未知"}）`;
-        saveStatus.value = "idle";
-        return;
-      }
-    }
-    if (ownerIsCurrent()) impactCheckError.value = null;
-    /** 这条在飞请求的句柄（finally 里据此只清理自己的记录）。 */
-    let flight: Promise<void> | null = null;
+    /**
+     * #46（第四轮）：**在首次网络请求前**登记这次保存 —— 预判、写入与冲突恢复共用同一条
+     * 在途记录（切走时不清、切回接回；旧操作的 finally 只清理自己的记录）。
+     */
+    let releaseFlight!: () => void;
+    const flightGate = new Promise<void>((resolve) => {
+      releaseFlight = resolve;
+    });
+    const flight: SaveFlight = { attempt, done: flightGate };
+    saveInFlightByBoard.set(ownerBoardId, flight);
     const run = (async () => {
       try {
+        // 保存前先问服务端一句：这次改动会不会碰到正在执行任务依赖的材料？
+        // 会 → 不保存，把影响说明交给用户决定（继续=保存并暂停相关任务；取消=不改动，任务继续）。
+        if (!impactConfirmed && activeIntents.value.length > 0) {
+          attempt.stage = "impact";
+          try {
+            const check = await runImpactCheck(ownerBoardId, snapshot.seq, snapshot);
+            // N1：预判在飞期间用户完成了更新的一版 —— 这一次的旧候选**不许再发出去**，
+            // 否则旧写入会把已保存的新版覆盖掉。
+            if (saveAttemptSuperseded(attempt)) {
+              if (ownerIsCurrent() && dirty.value && !pendingImpact.value) scheduleSave();
+              return;
+            }
+            // 只有**执行中**的任务才需要「先说明影响再让用户决定」。
+            // 已经暂停的任务不该拦住保存：它的依据已经失效是历史事实。
+            const running = new Set(
+              intents.value.filter((item) => item.status === "running").map((item) => item.id),
+            );
+            const affected = (check.affected ?? check.affectedTasks ?? []) as ImpactTaskRef[];
+            if (check.ok === false) {
+              /**
+               * #46（第四轮）：预判失败同样归原板面。已经切走时不写当前板面，
+               * 把「回原板要重新核对」的事实留在原板面的会话里。
+               */
+              if (!ownerIsCurrent()) {
+                setSaveRecoveryPlan({
+                  boardId: ownerBoardId,
+                  kind: "impact_confirmation_required",
+                  reason: check.reason ?? "预判没有完成",
+                  scopeChanged: false,
+                  affectedTasks: null,
+                  needsRead: false,
+                  attemptToken: token,
+                  attemptRev: putRev,
+                  snapshotSeq: attempt.serverSeq,
+                });
+                writeSaveResultToStashedSession(ownerBoardId, {
+                  saveStatus: "idle",
+                  impactCheckError: "这次保存前的影响预判没有完成，保存已暂停（" + (check.reason || "原因未知") + "）",
+                  dirty: true,
+                });
+                return;
+              }
+              impactCheckError.value = "这次保存前的影响预判没有完成，保存已暂停（" + (check.reason || "原因未知") + "）";
+              saveStatus.value = "idle";
+              return;
+            }
+            const blocking = affected.filter((item) => running.has(item.intentId));
+            const needsConfirm =
+              check.impactConfirmationRequired === true ? affected.length > 0 : blocking.length > 0;
+            if (needsConfirm) {
+              /**
+               * 确认必须绑定这次预判的候选版本与范围（M4/08 路径2），
+               * 并且**只落到发起保存的板面**（切走后写进它自己的会话，切回来再显示）。
+               */
+              const pending = buildImpactConfirmState(ownerBoardId, check, putRev, snapshot.seq, snapshot);
+              if (!pending) {
+                if (!ownerIsCurrent()) return;
+                impactCheckError.value =
+                  "这次保存前的影响预判没有完成，保存已暂停（服务端没有给出可用的影响确认记录）";
+                saveStatus.value = "idle";
+                return;
+              }
+              showImpactConfirmFor(ownerBoardId, pending);
+              return;
+            }
+            // 预判在离开期间才回来：结果仍属原板面，切回来再按它的最新状态继续（不在这里发 PUT）
+            if (!ownerIsCurrent()) return;
+            impactCheckError.value = null;
+          } catch (err) {
+            // N1：这次预判已经被更新的保存接手：它的失败不属于当前候选，不许据此报错/停住
+            if (saveAttemptSuperseded(attempt)) {
+              if (ownerIsCurrent() && dirty.value && !pendingImpact.value) scheduleSave();
+              return;
+            }
+            if (!ownerIsCurrent()) {
+              writeSaveResultToStashedSession(ownerBoardId, {
+                saveStatus: "idle",
+                impactCheckError: "这次保存前的影响预判没有完成，保存已暂停（" + ((err as Error).message || "原因未知") + "）",
+                dirty: true,
+              });
+              return;
+            }
+            // 影响预判失败（08 路径1）：保存暂停、候选保留、真实原因可见，不阻塞在无解释的等待里。
+            impactCheckError.value = "这次保存前的影响预判没有完成，保存已暂停（" + ((err as Error).message || "原因未知") + "）";
+            saveStatus.value = "idle";
+            return;
+          }
+        }
+        if (ownerIsCurrent()) impactCheckError.value = null;
         /**
          * #46（第二轮）：PUT 的目标板面 = 这份候选的归属（ownerBoardId），
          * 不是「请求发出这一刻的 boardId」—— 影响预判期间用户可能已经切走。
-         * 操作标签与确认句柄同样取发起时的身份（见上面的 opLabel / confirmPayload）。
          */
-        const result = await api.saveBoardState(
-          ownerBoardId,
-          snapshot,
-          opLabel,
-          confirmPayload,
-        );
+        attempt.stage = "put";
+        const result = await api.saveBoardState(ownerBoardId, snapshot, opLabel, confirmPayload);
         /**
          * #46（第三轮）：**处理回执前先定位归属**。
          *
          * 保存期间用户可能已经切走：这时当前 board.value 是另一块板面的内容，
          * 把这次回执的 pending / 服务端版本 / 保存状态写上去就是串数据。
-         * 归属判定必须排在**任何**状态写入之前（包括 capturePendingFromSave 与 knownServerSeq）。
          */
         const stillOwner = boardId.value === ownerBoardId;
-        /**
-         * #46（第三轮）：已经切走时，回执只写进**它自己的会话**，当前板面一个字段都不动。
-         *
-         * 迟到回执可以推进原板的已保存事实（board / cleanState / 版本 / 保存状态），
-         * 但不能盖掉原板较新的候选：候选正文在飞期间又被改过时，只吸收版本事实，
-         * 保留候选与「未保存」状态，切回原板后再按最新候选保存。
-         */
         if (!stillOwner) {
           const stashed = boardSaveSessions.get(ownerBoardId);
           if (stashed) {
             const acceptedSeq = Number(result.seq);
-            // 回执里的 pending 只更新它自己的板面（不碰当前板面的待提交改动）
             if (result.pending) stashed.pendingSubmissionChanges = result.pending;
             if (Number.isFinite(acceptedSeq)) {
               stashed.knownServerSeq = Math.max(stashed.knownServerSeq, acceptedSeq);
             }
             stashed.lastSavedAt = result.savedAt;
             stashed.saveError = null;
+            stashed.impactCheckError = null;
             const stashedCandidateMoved = !sameBoardCandidate(stashed.board, attempt.snapshot);
             if (stashedCandidateMoved) {
               // 候选更新过：只吸收版本事实（seq / updatedAt / 权威 version），不覆盖正文
@@ -2210,7 +2394,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
                     seq: Number.isFinite(acceptedSeq) ? acceptedSeq : stashed.board.seq,
                     updatedAt: result.savedAt ?? stashed.board.updatedAt,
                   };
-              // 这块板面的候选仍在（还没存）：切回来接着存
               stashed.dirty = true;
               stashed.saveStatus = "saving";
             } else {
@@ -2233,50 +2416,36 @@ export const useInteractiveStore = defineStore("interactive", () => {
               }
             }
           }
+          clearSaveRecoveryPlan(ownerBoardId);
           return;
         }
         // #80：保存回执里的 pending 是服务端刚重算的「相对上次成功提交还剩下的改动」
         capturePendingFromSave(result, ownerBoardId);
+        clearSaveRecoveryPlan(ownerBoardId);
         /**
-         * #46（第三轮）：回执是否覆盖了「更新的候选」必须按**这次请求自己的候选**判断。
-         *
-         * 缺陷：这里比的是全局 boardLocalRev —— 切走再切回来（restoreBoardSession 把
-         * boardLocalRev 恢复成会话里的值）会让它看起来「变了」，于是一次正常的成功回执
-         * 被当成「有更新候选」，界面停在保存中、还会再发一次相同候选。
-         * 正确口径：候选是否更新，看它相对**这次 PUT 的正文**有没有变化。
+         * #46（第三轮）：回执是否覆盖了「更新的候选」必须按**这次请求自己的候选**判断
+         * （内容比较），不能用全局版本号 —— 切走再切回来会重新赋值它。
          */
         const newerCandidate = boardCandidateMovedSince(attempt);
         const boardReadAdvanced = boardCleanRev !== putCleanRev;
         /**
          * F08：服务器**已经确认**的这一版是独立的版本事实，与「用户正在编辑哪个候选」无关，
-         * 必须一直单调推进。基线只在「没有更新候选」时才记它：被更新候选接手的那次保存
-         * 服务端其实已经接受了（seq 前进），已知服务器版本却停在旧值上，于是更旧的 GET
-         * 会被当成「更新的读取」，把板面退回旧版本并造出针对旧正文的假冲突。
+         * 必须一直单调推进。
          */
         const acceptedServerSeq = Number(result.seq);
         if (Number.isFinite(acceptedServerSeq)) {
           knownServerSeq = Math.max(knownServerSeq, acceptedServerSeq);
         }
         if (newerCandidate || boardReadAdvanced) {
-          // 回执在飞期间出现了更新的候选（用户继续编辑）/ 或一次更新的读取已经落地：
-          // 服务器已接受的是旧版本，板面（新候选）不被这次旧回执覆盖。
           /**
-           * R3（本轮修复）：必须把两件事**分开接收** ——
-           * 「服务器已经接受了这一版」是一个已经发生的版本事实；「用户正在编辑的是更新的候选」
-           * 是另一件事。基线把两者绑在一起：既不把服务器接受的新 seq 记到候选上，也不推进
-           * 「与服务器一致」的版本，于是候选仍带旧 seq，下一轮保存被服务端预判判为过期版本、
-           * 一般回读又被候选保护阻断 —— 第二版再也存不下去。
-           * 这里只吸收版本事实（seq / updatedAt），绝不整块替换用户正在写的候选正文。
+           * R3：必须把两件事**分开接收** ——「服务器已经接受了这一版」是已经发生的版本事实；
+           * 「用户正在编辑的是更新的候选」是另一件事。这里只吸收版本事实（seq / updatedAt），
+           * 绝不整块替换用户正在写的候选正文。
            */
           const cleanUnchanged = boardCleanRev === putCleanRev;
           if (newerCandidate && cleanUnchanged && board.value) {
             boardCleanRev = putRev;
             if (Number.isFinite(acceptedServerSeq)) {
-              /*
-                Phase 2 §5.4：服务器接受的这一版带着权威 version。候选被更新的编辑接手时，
-                旧回执**不覆盖正文**，但必须吸收这些版本号 —— 否则下一次保存会拿过期 version
-                去写，CAS 退化（后端权威自增的版本被前端旧值覆盖）。
-              */
               const aligned = applyParticipation({
                 ...board.value,
                 seq: acceptedServerSeq,
@@ -2307,8 +2476,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
         }
         // 服务器接受了这次写入：这是**已保存事实**（F1 的撤回也由它确认）
         settleCancelRecovery(true, null);
-        saveRecoveryRev = putRev;
-        saveRecoveryAttempts = 0;
         /*
           Phase 2：保存回执同样是服务器事实 —— 对齐参与口径，并把还没被服务器确认的
           用户参与选择保留下来（旧后端的回执里没有 participation 时不能把它抹掉）。
@@ -2336,8 +2503,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
         pendingConfirm = null;
         /*
          * 07：正式变更真的落地了，才执行登记的草稿清除。
-         * 版本守卫：登记之后用户又输入了更新版本（draftKeySeq 前进）→ 该次登记作废，
-         * 绝不为了清旧稿误删后来的输入。
+         * 版本守卫：登记之后用户又输入了更新版本（draftKeySeq 前进）→ 该次登记作废。
          */
         for (const [key, version] of pendingDraftClears) {
           if (Object.prototype.hasOwnProperty.call(drafts.value, key) && (draftKeySeq.get(key) ?? 0) !== version) {
@@ -2356,136 +2522,57 @@ export const useInteractiveStore = defineStore("interactive", () => {
           void loadIntents();
         }
         // 保存只落到本机板面；顺手刷新「本次互动材料的范围」让提交前预览是新的。
-        // 这一步同样不调用 QIO。
         void refreshVisibleRange();
       } catch (err) {
         const status = (err as { status?: number }).status;
-        const failure = (err as { payload?: { error?: string; reason?: string; scopeChanged?: boolean; affectedTasks?: { intentId: string; title: string; materials: string[]; consequence: string }[] } }).payload;
+        const failure = (err as { payload?: SaveFailurePayload }).payload;
+        const conflictKind = conflictKindOf(status, failure?.error);
         /**
-         * #46（第三轮）：失败同样**先定位归属**。
+         * #46（第四轮）：失败同样**先定位归属**。
          *
-         * B 的请求在 A 打开时失败：A 继续显示自己的状态；B 的候选、失败原因与恢复/重试
-         * 只写进 B 自己的会话。版本冲突与过期确认也走原板的重新读取、合并与确认流程。
+         * - 已经切走、普通失败：写进原板自己的会话（当前板面一个字段都不动）；
+         * - 已经切走、可恢复冲突：把恢复计划留给原板（回原板再「重读 → 重新预判 → 等确认」）。
          */
         if (boardId.value !== ownerBoardId) {
-          writeSaveResultToStashedSession(ownerBoardId, {
-            saveStatus: "error",
-            saveError: (err as Error).message,
-            dirty: true,
-          });
+          if (attempt.token !== saveTokenFor(ownerBoardId)) return;
+          if (conflictKind) {
+            setSaveRecoveryPlan({
+              boardId: ownerBoardId,
+              kind: conflictKind,
+              reason: failure?.reason ?? "",
+              scopeChanged: failure?.scopeChanged === true,
+              affectedTasks: failure?.affectedTasks ?? null,
+              needsRead: true,
+              attemptToken: token,
+              attemptRev: putRev,
+              snapshotSeq: attempt.serverSeq,
+            });
+            writeSaveResultToStashedSession(ownerBoardId, {
+              saveStatus: "idle",
+              saveError: null,
+              dirty: true,
+              impactConfirmed: false,
+              pendingConfirm: null,
+            });
+          } else {
+            writeSaveResultToStashedSession(ownerBoardId, {
+              saveStatus: "error",
+              saveError: (err as Error).message,
+              dirty: true,
+            });
+          }
           return;
         }
         // N1：已经有更新的保存接手 —— 这次的结果不属于当前候选，不许据此改写状态或报错
-        if (superseded()) return;
+        if (saveAttemptSuperseded(attempt)) return;
         /**
-         * N1 服务端保护：这是一次**旧版本**的整板写入，服务端拒绝落库。
-         * 不能只把 seq 改大了重发（那会覆盖另一页面的成果），也不能假装保存成功：
-         * 先读最新事实合并进候选（保留本页候选与独立变化），再用最新版本重新走一遍保存
-         * （含影响预判与影响确认 —— 于是自动接回 F3 的可恢复流程）。
+         * N1 服务端保护：旧版本的整板写入被拒。先读最新事实合并进候选，再用最新版本重走
+         * 保存（含影响预判与影响确认），即 F3 的可恢复流程。
          */
-        if (status === 409 && failure?.error === "stale_state") {
-          impactConfirmed = false;
-          pendingConfirm = null;
-          saveStatus.value = "idle";
-          saveError.value = null;
-          // 有界重试：同一次候选最多重来 3 次，之后如实停在失败上（不做无界自动重试）
-          if (saveRecoveryRev !== putRev) {
-            saveRecoveryRev = putRev;
-            saveRecoveryAttempts = 0;
-          }
-          saveRecoveryAttempts += 1;
-          if (saveRecoveryAttempts > 3) {
-            saveStatus.value = "error";
-            saveError.value =
-              "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。" +
-              "请确认是否有其他窗口或页面正在同时编辑，然后点重试";
-            dirty.value = true;
-            return;
-          }
-          const readError = await recoverCandidateFromServer(
-            "服务端已有更新的已保存版本（" + (failure.reason ?? "板面版本已经变化") + "）",
-          );
-          if (readError) {
-            saveStatus.value = "error";
-            saveError.value = readError;
-            dirty.value = true;
-            return;
-          }
-          resumeSave = true;
-          return;
-        }
-        if (status === 409 && failure?.error === "impact_confirmation_required") {
-          /**
-           * 服务端门（M4）：这次保存会改动运行任务依赖的材料，必须先做影响确认。
-           * 候选与勾选保留，不落库。
-           *
-           * R5（本轮修复）：兜底分支**必须补取**与当前候选、服务器版本一致的影响预判（含 checkId）。
-           * 基线在这里只把服务端列的 affectedTasks 放进对话框、没有 checkId，
-           * 用户点确认后仍发不带确认句柄的 PUT，被服务端再拒一次 —— 反复弹同一说明、存不进去。
-           * 补取后如果范围与刚才的服务端说明不同，先展示变化、由用户按新范围确认（绝不自动放行）。
-           */
-          impactConfirmed = false;
-          pendingConfirm = null;
-          const gatedTasks = failure.affectedTasks?.length ? failure.affectedTasks : undefined;
-          // F3：先接收最新服务器事实（保留本页候选），再用**最新版本**重新预判 ——
-          // 只有这样才能拿到有效的 checkId，而不是拿旧 seq 反复被拒（基线的真实缺陷）。
-          const readError = await recoverCandidateFromServer("这次保存需要先做影响确认，但板面版本已经变化");
-          // 读取失败**不能**让用户连确认说明都看不到：仍然按当前候选重新预判，
-          // 把「最新事实没取到」如实写在说明里；万一版本真的变了，保存时会被服务端再拦一次。
-          const outcome = await recheckImpactForCurrentCandidate(
-            gatedTasks,
-            readError ? "板面最新事实没有取到：" + readError + "。下面是按当前候选重新预判的范围；若版本已经变化，保存时会再要求你确认。" : undefined,
-          );
-          if (outcome === "blocked") {
-            if (readError && impactCheckError.value) {
-              impactCheckError.value = readError + "；重新预判也没有完成（" + impactCheckError.value + "）";
-            }
-            return;
-          }
-          if (outcome === "ok") resumeSave = true;
-          saveStatus.value = "idle";
-          saveError.value = null;
-          return;
-        }
-        if (status === 409 && failure?.error === "stale_check") {
-          /**
-           * 确认句柄过期（板面版本变了，或服务端重新核对后发现范围变了）：重新核实，不落库。
-           * R5/R6：保留候选，把**重新预判后的完整范围**交回用户重新确认；
-           * 不自动批准、不无条件重发、不绕过服务端校验。
-           */
-          impactConfirmed = false;
-          pendingConfirm = null;
-          const gatedTasks = failure.affectedTasks?.length ? failure.affectedTasks : undefined;
-          // R6：服务端明确说「拒绝是因为真实受影响范围变了」——先把变化讲清楚，再让用户确认
-          const scopeNote =
-            failure.scopeChanged === true
-              ? "重新核对后发现受影响的运行中任务与刚才的说明不同：下面是当前的完整范围，" +
-                "这次改动还没有保存、任务也都还没被暂停，请按它重新确认。"
-              : undefined;
-          /**
-           * F3：确认过期多半是因为另一页面已经保存了更新的版本。
-           * 先接收最新事实（seq 前进、独立变化被协调进候选），再用最新版本重新预判，
-           * 然后重新展示完整范围交给用户重新确认 —— 不自动确认、不无条件重发、不改大 seq 蒙过去。
-           */
-          const readError = await recoverCandidateFromServer(
-            "这次改动的影响确认已经过期（" + (failure.reason ?? "板面版本已变化") + "）",
-          );
-          // 读取失败同样不能把用户堵在「无解释」上：仍按当前候选重新预判并重新展示范围
-          const outcome = await recheckImpactForCurrentCandidate(
-            gatedTasks,
-            readError
-              ? "板面最新事实没有取到：" + readError + "。下面是按当前候选重新预判的范围；若版本已经变化，保存时会再要求你确认。"
-              : scopeNote,
-          );
-          if (outcome === "blocked") {
-            if (readError && impactCheckError.value) {
-              impactCheckError.value = readError + "；重新预判也没有完成（" + impactCheckError.value + "）";
-            }
-            return;
-          }
-          if (outcome === "ok") resumeSave = true;
-          saveStatus.value = "idle";
-          saveError.value = null;
+        if (conflictKind) {
+          attempt.stage = "recovery";
+          const outcome = await handleSaveConflict(attempt, conflictKind, failure);
+          if (outcome === "resume") resumeSave = true;
           return;
         }
         saveStatus.value = "error";
@@ -2493,19 +2580,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
         dirty.value = true;
       } finally {
         /**
-         * #46（第三轮）：旧请求的 finally **只清理它自己的在途记录**。
-         *
-         * 缺陷：在飞记录是全局的，切走 / 切回来会把它清成 null，或者被另一块板面的请求覆盖 ——
-         * 于是同一份候选被重复发出，或者切回 B 时接不回原请求。
-         * 正确口径：只有「这条记录仍然是我」才清；别的板面 / 同板更新的请求的记录不许动。
+         * #46（第三/四轮）：旧请求的 finally **只清理它自己的在途记录**。
          */
-        if (flight && saveInFlightByBoard.get(ownerBoardId) === flight) {
+        if (saveInFlightByBoard.get(ownerBoardId) === flight) {
           saveInFlightByBoard.delete(ownerBoardId);
         }
+        releaseFlight();
       }
     })();
-    flight = run;
-    saveInFlightByBoard.set(ownerBoardId, run);
     await run;
     // N1/F3：服务端要求「用最新版本重来」时，这里必须真的再发一次；
     // 收敛由代次 + 恢复状态保证（不会无界重试：要么保存成功，要么停在明确失败上）。
@@ -2514,10 +2596,204 @@ export const useInteractiveStore = defineStore("interactive", () => {
       boardId.value === ownerBoardId &&
       dirty.value &&
       !pendingImpact.value &&
+      !recoveryPlanFor(ownerBoardId) &&
       saveStatus.value !== "error"
     ) {
       scheduleSave();
     }
+  }
+
+  /** 服务端 409 失败体的形状（与 services/interactive 解出的 payload 一致）。 */
+  interface SaveFailurePayload {
+    error?: string;
+    reason?: string;
+    scopeChanged?: boolean;
+    affectedTasks?: ImpactTaskRef[];
+    currentSeq?: number;
+  }
+
+  /** 服务端 409 的三种可恢复冲突（其它错误不走恢复流程）。 */
+  function conflictKindOf(status: number | undefined, error: unknown): SaveConflictKind | null {
+    if (status !== 409) return null;
+    if (error === "stale_state" || error === "impact_confirmation_required" || error === "stale_check") {
+      return error;
+    }
+    return null;
+  }
+
+  function conflictReasonText(kind: SaveConflictKind, reason: string): string {
+    if (kind === "stale_state") return "服务端已有更新的已保存版本（" + reason + "）";
+    if (kind === "impact_confirmation_required") return "这次保存需要先做影响确认，但板面版本已经变化";
+    return "这次改动的影响确认已经过期（" + reason + "）";
+  }
+
+  /**
+   * #46（第四轮）：409 之后按**原板面**继续恢复：重读 → 重新预判 → 等待用户确认。
+   *
+   * 每个 await 之后都先核对原板与操作身份：
+   * - 仍是当前：照既有规则写状态、继续下一步；
+   * - 已经切走：把恢复所需的事实存进原板会话（恢复计划），当前板面一个字段都不动，
+   *   切回原板后再基于它的最新状态继续（保留既有的重试上限与失败重试入口）。
+   */
+  async function handleSaveConflict(
+    attempt: SaveAttempt,
+    kind: SaveConflictKind,
+    failure: SaveFailurePayload | undefined,
+  ): Promise<"resume" | "stopped"> {
+    const owner = attempt.boardId;
+    const isCurrent = () => boardId.value === owner;
+    const reason = failure?.reason ?? "板面版本已经变化";
+    const affectedTasks = failure?.affectedTasks?.length ? failure.affectedTasks : null;
+    const planBase = {
+      boardId: owner,
+      kind,
+      reason,
+      scopeChanged: failure?.scopeChanged === true,
+      affectedTasks,
+      attemptToken: attempt.token,
+      attemptRev: attempt.putRev,
+      snapshotSeq: attempt.serverSeq,
+    };
+    // 用户上一次的影响确认已经作废：这次保存要重新走门
+    if (isCurrent()) {
+      impactConfirmed = false;
+      pendingConfirm = null;
+    } else {
+      writeSaveResultToStashedSession(owner, { impactConfirmed: false, pendingConfirm: null });
+    }
+    // 有界重试：同一板面、同一候选最多 3 次自动恢复
+    const attempts = bumpRecoveryAttempts(owner, attempt.putRev);
+    if (attempts > 3) {
+      clearSaveRecoveryPlan(owner);
+      const limitReason =
+        "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。" +
+        "请确认是否有其他窗口或页面正在同时编辑，然后点重试";
+      if (!isCurrent()) {
+        writeSaveResultToStashedSession(owner, { saveStatus: "error", saveError: limitReason, dirty: true });
+        return "stopped";
+      }
+      saveStatus.value = "error";
+      saveError.value = limitReason;
+      dirty.value = true;
+      return "stopped";
+    }
+    /**
+     * 恢复的后续步骤属于**原板面**：已经离开时先把计划存进原板会话，
+     * 切回来后基于该板最新状态继续。
+     */
+    if (!isCurrent()) {
+      setSaveRecoveryPlan({ ...planBase, needsRead: true });
+      writeSaveResultToStashedSession(owner, {
+        saveStatus: "idle",
+        saveError: null,
+        dirty: true,
+      });
+      return "stopped";
+    }
+    saveStatus.value = "idle";
+    saveError.value = null;
+    attempt.stage = "recovery";
+    const read = await recoverCandidateFromServer(owner, conflictReasonText(kind, reason));
+    if (!isCurrent()) {
+      setSaveRecoveryPlan({
+        ...planBase,
+        needsRead: true,
+        ...(read.status === "failed" ? { reason: read.reason ?? reason } : {}),
+      });
+      writeSaveResultToStashedSession(
+        owner,
+        read.status === "failed"
+          ? { saveStatus: "error", saveError: read.reason ?? "读取最新板面事实失败", dirty: true }
+          : { saveStatus: "idle", saveError: null, dirty: true },
+      );
+      return "stopped";
+    }
+    if (kind === "stale_state") {
+      if (read.status === "failed") {
+        saveStatus.value = "error";
+        saveError.value = read.reason ?? "读取最新板面事实失败";
+        dirty.value = true;
+        return "stopped";
+      }
+      clearSaveRecoveryPlan(owner);
+      return "resume";
+    }
+    /**
+     * R5/F3：需要重新取得有效确认。读取失败**不能**让用户连确认说明都看不到：
+     * 仍按原板当前候选重新预判，把「最新事实没取到」如实写进说明里。
+     */
+    const note =
+      read.status === "failed"
+        ? "板面最新事实没有取到：" +
+          (read.reason ?? "原因未知") +
+          "。下面是按当前候选重新预判的范围；若版本已经变化，保存时会再要求你确认。"
+        : kind === "stale_check" && failure?.scopeChanged === true
+          ? "重新核对后发现受影响的运行中任务与刚才的说明不同：下面是当前的完整范围，" +
+            "这次改动还没有保存、任务也都还没被暂停，请按它重新确认。"
+          : undefined;
+    const outcome = await recheckImpactForCurrentCandidate(owner, affectedTasks ?? undefined, note);
+    if (!isCurrent()) {
+      setSaveRecoveryPlan({ ...planBase, needsRead: false });
+      writeSaveResultToStashedSession(owner, {
+        saveStatus: "idle",
+        saveError: null,
+        dirty: true,
+      });
+      return "stopped";
+    }
+    clearSaveRecoveryPlan(owner);
+    if (outcome === "blocked") {
+      if (read.status === "failed" && impactCheckError.value) {
+        impactCheckError.value =
+          (read.reason ?? "") + "；重新预判也没有完成（" + impactCheckError.value + "）";
+      }
+      return "stopped";
+    }
+    if (outcome === "ok") return "resume";
+    return "stopped";
+  }
+
+  /**
+   * #46（第四轮）：回到原板面后继续它自己的冲突恢复。
+   * 只有「整板读取已经落定」（load() 成功）时才会调用 —— 读取本身就是恢复的第一步。
+   */
+  function resumeBoardRecoveryIfNeeded(targetBoardId: string): void {
+    const plan = recoveryPlanFor(targetBoardId);
+    if (!plan) return;
+    if (boardId.value !== targetBoardId) return;
+    if (saveInFlightFor(targetBoardId)) return;
+    void continueBoardRecovery(plan);
+  }
+
+  async function continueBoardRecovery(plan: SaveRecoveryPlan): Promise<void> {
+    const owner = plan.boardId;
+    if (boardId.value !== owner) return;
+    if (saveInFlightFor(owner)) return;
+    /** 回到原板时已经没有待保存候选（例如这次冲突之前已由更新的保存收尾）：计划作废。 */
+    if (!dirty.value && !pendingImpact.value) {
+      clearSaveRecoveryPlan(owner);
+      return;
+    }
+    if (plan.kind === "stale_state") {
+      // 回到原板时的整板读取已经把最新事实合并进候选：直接继续这次保存（代次/恢复预算继续生效）
+      clearSaveRecoveryPlan(owner);
+      scheduleSave();
+      return;
+    }
+    /**
+     * 候选可能在离开期间被改过：不信任离开前的预判结果，
+     * 先按原板**当前**候选与任务范围重新核对，再决定是否显示可操作的确认。
+     */
+    const note =
+      plan.kind === "stale_check" && plan.scopeChanged
+        ? "重新核对后发现受影响的运行中任务与刚才的说明不同：下面是当前的完整范围，" +
+          "这次改动还没有保存、任务也都还没被暂停，请按它重新确认。"
+        : undefined;
+    const outcome = await recheckImpactForCurrentCandidate(owner, plan.affectedTasks ?? undefined, note);
+    if (boardId.value !== owner) return;
+    clearSaveRecoveryPlan(owner);
+    if (outcome === "blocked") return;
+    if (outcome === "ok") scheduleSave();
   }
 
   function undo() {
@@ -2728,6 +3004,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (pendingImpact.value) {
         // 还在等用户决定影响确认：不要自作主张再排一次保存，等用户确认
         saveStatus.value = "idle";
+      } else if (recoveryPlanFor(boardId.value)) {
+        // 这块板面自己的冲突恢复还没做完：由恢复流程继续，不能插进去重复发请求
+        saveStatus.value = "idle";
       } else {
         saveStatus.value = "saving";
         scheduleSave();
@@ -2884,6 +3163,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       dirty: dirty.value,
       saveStatus: saveStatus.value,
       saveError: saveError.value,
+      impactCheckError: impactCheckError.value,
       lastSavedAt: lastSavedAt.value,
       lastOpLabel: lastOpLabel.value,
       undoStack: [...undoStack.value],
@@ -2918,6 +3198,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       dirty.value = false;
       saveStatus.value = "idle";
       saveError.value = null;
+      impactCheckError.value = null;
       lastSavedAt.value = null;
       lastOpLabel.value = "";
       undoStack.value = [];
@@ -2944,6 +3225,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     dirty.value = session.dirty;
     saveStatus.value = session.saveStatus;
     saveError.value = session.saveError;
+    impactCheckError.value = session.impactCheckError;
     lastSavedAt.value = session.lastSavedAt;
     lastOpLabel.value = session.lastOpLabel;
     undoStack.value = [...session.undoStack];
@@ -2977,8 +3259,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
       // 原请求还在飞：沿用这块板面自己的保存状态，等它自己结算（不重排、不重发）
       return;
     }
-    // 还有未保存内容：切回来要接着存（防抖重排，目标板面由 saveNow 自己认领）
-    if (session.dirty && !session.pendingImpact) scheduleSave();
+    /**
+     * #46（第四轮）：有冲突恢复计划的板面不在这里重排 —— 回到原板后先由 load() 落定最新事实，
+     * 再继续它的恢复（重读 / 重新预判 / 等待确认），避免对同一份候选重复发请求。
+     */
+    if (session.dirty && !session.pendingImpact && !recoveryPlanFor(targetBoardId)) scheduleSave();
   }
 
   /** 板面已经切走时，把保存结果写回**它自己的**会话（绝不写进当前板面）。 */
@@ -2991,7 +3276,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
     Object.assign(session, patch);
   }
 
-  async function refreshBoardFromServer() {
+  async function refreshBoardFromServer(targetBoardId: string = boardId.value) {
+    /**
+     * #46（第四轮）：读取的归属由**调用方显式给出**（冲突恢复读的是原板面，不是此刻显示的那块）。
+     * 已经不在那块板面时不再发请求，也不往当前板面写任何东西。
+     */
+    if (boardId.value !== targetBoardId) return false;
+    const requestedBoardId = targetBoardId;
     // 请求发出前的内存版本：迟到返回时用它判断「用户是不是已经又输入了」（§11.1）
     const before = new Map(draftKeySeq);
     // 各键「已保存版本」的读取基线（M1/01）：GET 在飞期间一次 PUT 先成功到达，
@@ -3006,7 +3297,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
      *   用户刚保存成功的新版本不许被旧读取回退；
      * - `readSeq`：读取代次，两次 GET 乱序时只有更新的那次算数。
      */
-    const requestedBoardId = boardId.value;
     const readLocalRev = boardLocalRev;
     const readCleanRev = boardCleanRev;
     const readSeq = ++boardReadSeq;
@@ -3470,6 +3760,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
        * 并立刻按这个身份做一次精确查证：查到就恢复受理事实，查不到就继续「结果未知」。
        */
       await restorePendingSubmission();
+      /**
+       * #46（第四轮）：整板读取落定 = 回到原板面后恢复的第一步已经完成；
+       * 如果这块板面还有冲突恢复计划，按它的最新状态继续（重读已由这次 load 完成）。
+       */
+      resumeBoardRecoveryIfNeeded(boardId.value);
       if (understandingStatus.value && !understandingSettled(understandingStatus.value)) {
         void startUnderstandingPolling();
       }
@@ -5387,8 +5682,33 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 用户确认：改动生效，受影响的任务会暂停并保留进度。 */
   async function confirmImpact(): Promise<ImpactConfirmResult> {
     const pending = pendingImpact.value;
+    /**
+     * #46（第四轮）：确认必须属于**当前板面**的这一份候选。
+     *
+     * 别的板面暂存的确认不能被当前板面消费（否则 A 会把 B 的确认发给自己的保存）；
+     * 没有可确认的说明时也不许把 impactConfirmed 打开后直接保存。
+     */
+    if (!pending) {
+      return { outcome: "superseded", reason: "当前板面没有待确认的影响说明" };
+    }
+    if (pending.boardId && pending.boardId !== boardId.value) {
+      return {
+        outcome: "superseded",
+        reason: "这次影响确认属于另一块板面，已忽略（请回到那块板面确认）",
+      };
+    }
     pendingImpact.value = null;
-    if (pending && pending.previewRev !== boardLocalRev) {
+    /**
+     * 候选是否还是这次说明针对的那一版：优先按**内容**核对（版本号会在切板 / 恢复会话 /
+     * 服务器事实合并时被重新赋值，只有内容变了才真的需要重新核实）。
+     */
+    const currentCandidateKey = board.value
+      ? JSON.stringify(candidateComparable(board.value))
+      : "";
+    const candidateChanged = pending.candidateKey
+      ? pending.candidateKey !== currentCandidateKey
+      : pending.previewRev !== boardLocalRev;
+    if (candidateChanged) {
       /**
        * 等待确认期间板面又出现了新的候选（08 路径2）：这次说明只覆盖当时那一版，
        * 确认不能放行未说明的改动 —— 重新核实影响，再把新的说明交给用户。
@@ -5407,9 +5727,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
     impactConfirmed = true;
     impactCheckError.value = null;
-    if (pending?.checkId) {
-      pendingConfirm = { checkId: pending.checkId, stateVersion: pending.stateVersion };
+    /**
+     * 这次确认只对**它预判过的那一版候选**有效（previewRev 必须仍等于当前候选版本）。
+     * 没有服务端句柄的说明不是有效确认（服务端会再拒一次），不带着它去保存。
+     * 服务端仍会按 checkId / stateVersion 再校验一次（客户端不替代服务端校验）。
+     */
+    if (!pending.checkId) {
+      return { outcome: "check_failed", reason: "这次影响确认没有服务端编号，已暂停保存，请重新核实" };
     }
+    pendingConfirm = { checkId: pending.checkId, stateVersion: pending.stateVersion };
     await saveNow();
     return summarizeImpactConfirm();
   }
@@ -5419,6 +5745,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     impactConfirmed = false;
     pendingImpact.value = null;
     impactCheckError.value = null;
+    // #46（第四轮）：取消也放弃这块板面自己的冲突恢复计划（候选整块退回已保存事实）
+    clearSaveRecoveryPlan(boardId.value);
     // 07：取消 = 这次板面变更不生效，那么它带来的草稿清除也不该落地
     pendingDraftClears.clear();
     syncPendingDraftClearKeys();
@@ -5491,7 +5819,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   /** 保存前的只读预判（给组件用；不改任何状态）。走 M4 定稿的 impact-check。 */
   async function checkMaterialImpact(state: BoardState) {
-    return runImpactCheck(state.seq, state);
+    return runImpactCheck(boardId.value, state.seq, state);
   }
 
   /* ------------------------------------------------------------------

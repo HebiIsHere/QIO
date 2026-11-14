@@ -823,3 +823,626 @@ describe("#46 第三轮：保存归属与在途请求", () => {
     expect(liveCards(store).map((card) => card.id), "B 的 409 恢复把 A 的卡片改了").toEqual(["card_a"]);
   });
 });
+describe("#46 第四轮：保存归属贯穿预判、写入与冲突恢复", () => {
+  const TASK_ID = "task_impact_1";
+  const AFFECTED_TASK = {
+    intentId: TASK_ID,
+    title: "任务-1",
+    materials: ["card_b"],
+    consequence: "暂停并保留进度",
+  };
+
+  function runningIntent(): never {
+    return {
+      id: TASK_ID,
+      boardId: BOARD_B,
+      submissionId: null,
+      title: "任务-1",
+      summary: "",
+      status: "running",
+      preview: { kind: "task" },
+      impact: { materials: ["card_b"], consequence: "暂停并保留进度" },
+      dependsOn: [],
+      conflictsWith: [],
+      conflictKey: "",
+      materialRefs: ["card_b"],
+      progress: { done: 0, total: 1, text: "" },
+      reason: "",
+      demo: true,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never;
+  }
+
+  function withRunningTask(): void {
+    vi.mocked(api.fetchIntents).mockResolvedValue({
+      intents: [runningIntent()],
+      conflicts: [],
+      batchAvailable: false,
+      recovery: { paused: [] },
+    } as never);
+  }
+
+  /** 每次影响预判的「目标板面 + 依据版本 + 候选卡片」，用来核对请求归属。 */
+  function impactChecks(): { boardId: string; stateVersion: number; cardIds: string[] }[] {
+    return vi.mocked(api.checkMaterialImpact).mock.calls.map((call) => {
+      const candidate = call[2] as BoardState;
+      return {
+        boardId: String(call[0]),
+        stateVersion: Number(call[1]),
+        cardIds: (candidate?.cards ?? []).map((card) => card.id),
+      };
+    });
+  }
+
+  /** 每次 PUT 的「目标板面 + 候选 + 确认句柄」，用来核对最终写入。 */
+  function puts(): {
+    boardId: string;
+    state: BoardState;
+    cardIds: string[];
+    confirm: { checkId?: string } | undefined;
+  }[] {
+    return vi.mocked(api.saveBoardState).mock.calls.map((call) => {
+      const candidate = call[1] as BoardState;
+      return {
+        boardId: String(call[0]),
+        state: candidate,
+        cardIds: (candidate?.cards ?? []).map((card) => card.id),
+        confirm: call[3] as { checkId?: string } | undefined,
+      };
+    });
+  }
+
+  function apiError(status: number, payload: Record<string, unknown>): Error {
+    return Object.assign(new Error(String(status)), { status, payload });
+  }
+
+  function affectedCheck(checkId: string, stateVersion: number): never {
+    return {
+      ok: true,
+      checkId,
+      stateVersion,
+      affected: [AFFECTED_TASK],
+      impactConfirmationRequired: true,
+    } as never;
+  }
+
+  function cleanCheck(stateVersion = 0): never {
+    return { ok: true, stateVersion, affected: [], impactConfirmationRequired: false } as never;
+  }
+
+  function boardPayloadOf(boardId: string, seq: number, cards: BoardState["cards"]) {
+    return boardPayload(boardState(boardId, cards, seq));
+  }
+
+  it("预判在飞时 B → A → B：同一份候选只发一次 B 的预判、一次 B 的 PUT", async () => {
+    withRunningTask();
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+
+    const precheck = deferred<never>();
+    vi.mocked(api.checkMaterialImpact).mockReturnValueOnce(precheck.promise as never);
+
+    store.commit(addCard(store.board!, { kind: "text", content: "B 新增的卡" }), "新增卡片");
+    const candidateSize = liveCards(store).length;
+    await waitForDebouncedSave();
+    expect(impactChecks().length, "前提：B 的预判已经发出").toBe(1);
+    expect(impactChecks()[0].boardId, "预判没有发往 B").toBe(BOARD_B);
+    expect(impactChecks()[0].cardIds.length).toBe(candidateSize);
+
+    // 预判还没回来：B → A → B（期间没有新编辑）
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+    await waitForDebouncedSave();
+
+    expect(impactChecks().length, "切回 B 时对同一份候选又发了一次预判").toBe(1);
+    expect(puts().length, "预判还没回来就发出了 PUT").toBe(0);
+
+    precheck.resolve(cleanCheck() as never);
+    await settle();
+    await waitForDebouncedSave();
+
+    const bPuts = puts().filter((item) => item.boardId === BOARD_B);
+    expect(bPuts.length, "同一份候选发了多次 PUT").toBe(1);
+    expect(bPuts[0].cardIds.length, "PUT 的候选不是发起保存时的那一份").toBe(candidateSize);
+    expect(bPuts[0].state.seq, "PUT 没有使用已确认的服务端版本").toBe(3);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的保存").toBe(0);
+    expect(store.boardId).toBe(BOARD_B);
+    expect(store.saveStatus, "B 没有落到已保存").toBe("saved");
+    expect(store.dirty, "B 保存成功后仍标未保存").toBe(false);
+  });
+
+  it("切回 B 后再编辑：旧预判结果不能放行旧候选", async () => {
+    withRunningTask();
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+
+    const oldCheck = deferred<never>();
+    const newCheck = deferred<never>();
+    vi.mocked(api.checkMaterialImpact)
+      .mockReturnValueOnce(oldCheck.promise as never)
+      .mockReturnValueOnce(newCheck.promise as never);
+
+    store.commit(addCard(store.board!, { kind: "text", content: "第一版" }), "新增卡片");
+    await waitForDebouncedSave();
+    expect(impactChecks().length, "前提：旧候选的预判已经发出").toBe(1);
+
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+
+    // 切回 B 后新增编辑：旧预判对应的候选已经不是当前候选
+    store.commit(addCard(store.board!, { kind: "text", content: "第二版" }), "新增卡片");
+    const latestSize = liveCards(store).length;
+    await waitForDebouncedSave();
+
+    // 旧预判现在才回来：不许放行旧候选
+    oldCheck.resolve(cleanCheck() as never);
+    await settle();
+    expect(puts().filter((item) => item.boardId === BOARD_B).length, "旧预判结果放行了旧候选").toBe(0);
+
+    const checks = impactChecks();
+    expect(checks.length, "新候选没有重新预判").toBeGreaterThanOrEqual(2);
+    const latest = checks[checks.length - 1];
+    expect(latest.boardId, "重新预判没有发往 B").toBe(BOARD_B);
+    expect(latest.cardIds.length, "重新预判用的不是最新候选").toBe(latestSize);
+    expect(latest.stateVersion, "重新预判没有使用已确认的服务端版本").toBe(3);
+
+    newCheck.resolve(cleanCheck() as never);
+    await settle();
+    await waitForDebouncedSave();
+    const bPuts = puts().filter((item) => item.boardId === BOARD_B);
+    expect(bPuts.length, "最新候选没有只保存一次").toBe(1);
+    expect(bPuts[0].cardIds.length, "保存的不是最新候选").toBe(latestSize);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的保存").toBe(0);
+    expect(store.boardId).toBe(BOARD_B);
+  });
+
+  it("收到 409 后重读在途时切到 A、重读失败：A 不受影响，切回 B 可继续恢复", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A ? boardState(BOARD_A, [cardA], 3) : boardState(BOARD_B, [cardB], 7),
+      )) as never);
+    await store.selectBoard(BOARD_A);
+    const aStatus = store.saveStatus;
+    const aCards = liveCards(store).map((card) => card.id);
+    await store.selectBoard(BOARD_B);
+
+    const putFlight = deferred<void>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(async () => {
+      await putFlight.promise;
+      throw apiError(409, { error: "stale_state", reason: "服务端已有更新的已保存版本", currentSeq: 8 });
+    });
+    store.commit(addCard(store.board!, { kind: "text", content: "B 新增的卡" }), "新增卡片");
+    await waitForDebouncedSave();
+    expect(puts().filter((item) => item.boardId === BOARD_B).length, "前提：B 的 PUT 已发出").toBe(1);
+
+    // 409 后的重读挂起
+    const recoveryRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => recoveryRead.promise as never);
+    putFlight.resolve();
+    await settle();
+    expect(store.boardId, "前提：收到 409 时仍在 B").toBe(BOARD_B);
+
+    // 重读在途时切到 A，然后重读失败
+    await store.selectBoard(BOARD_A);
+    recoveryRead.reject(new Error("读取最新事实失败"));
+    await settle();
+    await settle();
+
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.saveStatus, "B 的重读失败写进了 A 的保存状态").toBe(aStatus);
+    expect(store.saveError, "B 的错误显示在 A 上").toBeNull();
+    expect(store.dirty, "B 的未保存标记落到了 A").toBe(false);
+    expect(liveCards(store).map((card) => card.id), "A 的卡片被改动").toEqual(aCards);
+    expect(impactChecks().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的影响预判").toBe(0);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的保存").toBe(0);
+
+    // 切回 B：候选完整、失败状态归 B；读取落定后继续恢复
+    let bSeq = 7;
+    const loadB = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => loadB.promise as never);
+    const selectingB = store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.boardId).toBe(BOARD_B);
+    expect(liveCards(store).map((card) => card.id).length, "B 的候选丢了").toBe(2);
+    expect(store.saveStatus, "B 的重读失败没有归 B").toBe("error");
+    expect(store.saveError, "B 看不到自己的失败原因").toContain("读取最新事实失败");
+
+    bSeq = 7;
+    loadB.resolve(boardPayloadOf(BOARD_B, bSeq, [cardB]) as never);
+    await selectingB;
+    await settle();
+    await waitForDebouncedSave();
+
+    const bPuts = puts().filter((item) => item.boardId === BOARD_B);
+    expect(bPuts.length, "回 B 后没有继续恢复保存").toBeGreaterThanOrEqual(2);
+    expect(bPuts[bPuts.length - 1].cardIds.length, "恢复保存用的候选不完整").toBe(2);
+    expect(store.boardId).toBe(BOARD_B);
+  });
+
+  it("收到 409 后重读在途时切到 A、重读成功：A 不受影响，回 B 用最新版本继续", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    let bSeq = 7;
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A
+          ? boardState(BOARD_A, [cardA], 3)
+          : boardState(BOARD_B, [cardB], bSeq),
+      )) as never);
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+    const aStatus = store.saveStatus;
+
+    const putFlight = deferred<void>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(async () => {
+      await putFlight.promise;
+      throw apiError(409, { error: "stale_state", reason: "服务端已有更新的已保存版本", currentSeq: 8 });
+    });
+    store.commit(addCard(store.board!, { kind: "text", content: "B 新增的卡" }), "新增卡片");
+    await waitForDebouncedSave();
+
+    const recoveryRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => recoveryRead.promise as never);
+    putFlight.resolve();
+    await settle();
+
+    await store.selectBoard(BOARD_A);
+    bSeq = 8;
+    recoveryRead.resolve(boardPayloadOf(BOARD_B, 8, [cardB]) as never);
+    await settle();
+    await settle();
+
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.saveStatus, "B 的重读结果写进了 A").toBe(aStatus);
+    expect(store.dirty, "B 的未保存标记落到了 A").toBe(false);
+    expect(liveCards(store).map((card) => card.id), "A 的卡片被改动").toEqual(["card_a"]);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的保存").toBe(0);
+
+    // 回 B：按最新的服务端版本继续保存（不拿旧 seq 再撞一次）
+    const loadB = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => loadB.promise as never);
+    const selectingB = store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.boardId).toBe(BOARD_B);
+    expect(liveCards(store).map((card) => card.id).length, "B 的候选丢了").toBe(2);
+
+    loadB.resolve(boardPayloadOf(BOARD_B, 8, [cardB]) as never);
+    await selectingB;
+    await settle();
+    await waitForDebouncedSave();
+
+    const bPuts = puts().filter((item) => item.boardId === BOARD_B);
+    expect(bPuts.length, "回 B 后没有继续保存").toBeGreaterThanOrEqual(2);
+    const finalPut = bPuts[bPuts.length - 1];
+    expect(finalPut.cardIds.length, "恢复后的保存候选不完整").toBe(2);
+    expect(finalPut.state.seq, "恢复后的保存没有使用已确认的服务端版本").toBe(8);
+    expect(store.saveStatus).toBe("saved");
+  });
+
+  it("impact_confirmation_required 的重读已落、重新预判在飞时切到 A：确认归 B，回 B 重新核对后确认", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    let bSeq = 7;
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A
+          ? boardState(BOARD_A, [cardA], 3)
+          : boardState(BOARD_B, [cardB], bSeq),
+      )) as never);
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+
+    const putFlight = deferred<void>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(async () => {
+      await putFlight.promise;
+      throw apiError(409, {
+        error: "impact_confirmation_required",
+        reason: "这次改动会影响正在运行的任务",
+        affectedTasks: [AFFECTED_TASK],
+      });
+    });
+    store.commit(addCard(store.board!, { kind: "text", content: "B 新增的卡" }), "新增卡片");
+    await waitForDebouncedSave();
+
+    // 重读在 B 上成功，重新预判挂起
+    const recoveryRead = deferred<never>();
+    const awayRecheck = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => recoveryRead.promise as never);
+    vi.mocked(api.checkMaterialImpact).mockReturnValueOnce(awayRecheck.promise as never);
+    putFlight.resolve();
+    await settle();
+    bSeq = 8;
+    recoveryRead.resolve(boardPayloadOf(BOARD_B, 8, [cardB]) as never);
+    await settle();
+    const checksOnB = impactChecks().filter((item) => item.boardId === BOARD_B);
+    expect(checksOnB.length, "前提：恢复后的重新预判已经发给 B").toBe(1);
+
+    // 预判在飞时切到 A，然后放回 B 的预判结果
+    await store.selectBoard(BOARD_A);
+    awayRecheck.resolve(affectedCheck("chk_away", 8) as never);
+    await settle();
+    await settle();
+
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.pendingImpact, "B 的待确认状态落到了 A").toBeNull();
+    expect(impactChecks().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的影响预判").toBe(0);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了保存").toBe(0);
+
+    // 回 B：重新核对 B 的当前候选与任务范围，再显示可操作的确认
+    const loadB = deferred<never>();
+    const resumeRecheck = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => loadB.promise as never);
+    vi.mocked(api.checkMaterialImpact).mockReturnValueOnce(resumeRecheck.promise as never);
+    const selectingB = store.selectBoard(BOARD_B);
+    await settle();
+    loadB.resolve(boardPayloadOf(BOARD_B, 8, [cardB]) as never);
+    await selectingB;
+    await settle();
+
+    const checksAfterReturn = impactChecks().filter((item) => item.boardId === BOARD_B);
+    expect(checksAfterReturn.length, "回 B 后没有按当前候选重新核对").toBe(2);
+    expect(checksAfterReturn[checksAfterReturn.length - 1].stateVersion).toBe(8);
+    resumeRecheck.resolve(affectedCheck("chk_b2", 8) as never);
+    await settle();
+    await settle();
+
+    const pending = store.pendingImpact;
+    expect(pending, "回 B 后没有可操作的确认").not.toBeNull();
+    expect(pending!.boardId, "确认记录不属于 B").toBe(BOARD_B);
+    expect(pending!.checkId).toBe("chk_b2");
+    expect(pending!.affected.map((item) => item.intentId)).toEqual([TASK_ID]);
+
+    // 用测试替身走一次有效确认：最终 PUT 的目标板、候选与确认编号一致
+    const putCandidateSize = liveCards(store).length;
+    await store.confirmImpact();
+    await settle();
+    await waitForDebouncedSave();
+    const bPuts = puts().filter((item) => item.boardId === BOARD_B);
+    const finalPut = bPuts[bPuts.length - 1];
+    expect(finalPut, "确认后没有发出保存").toBeTruthy();
+    expect(finalPut.cardIds.length, "保存的候选不是 B 的当前候选").toBe(putCandidateSize);
+    expect(finalPut.state.seq, "确认后的保存没有使用已确认的服务端版本").toBe(8);
+    expect(finalPut.confirm?.checkId, "保存没有带上这次确认的编号").toBe("chk_b2");
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "确认后保存发到了 A").toBe(0);
+  });
+});
+describe("#46 第四轮：确认必须匹配板面、候选与任务范围", () => {
+  const TASK_ID = "task_impact_1";
+  const AFFECTED_TASK = {
+    intentId: TASK_ID,
+    title: "任务-1",
+    materials: ["card_b"],
+    consequence: "暂停并保留进度",
+  };
+
+  function runningIntent(): never {
+    return {
+      id: TASK_ID,
+      boardId: BOARD_B,
+      submissionId: null,
+      title: "任务-1",
+      summary: "",
+      status: "running",
+      preview: { kind: "task" },
+      impact: { materials: ["card_b"], consequence: "暂停并保留进度" },
+      dependsOn: [],
+      conflictsWith: [],
+      conflictKey: "",
+      materialRefs: ["card_b"],
+      progress: { done: 0, total: 1, text: "" },
+      reason: "",
+      demo: true,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never;
+  }
+
+  function withRunningTask(): void {
+    vi.mocked(api.fetchIntents).mockResolvedValue({
+      intents: [runningIntent()],
+      conflicts: [],
+      batchAvailable: false,
+      recovery: { paused: [] },
+    } as never);
+  }
+
+  function impactChecks(): { boardId: string; stateVersion: number; cardIds: string[] }[] {
+    return vi.mocked(api.checkMaterialImpact).mock.calls.map((call) => {
+      const candidate = call[2] as BoardState;
+      return {
+        boardId: String(call[0]),
+        stateVersion: Number(call[1]),
+        cardIds: (candidate?.cards ?? []).map((card) => card.id),
+      };
+    });
+  }
+
+  function puts(): {
+    boardId: string;
+    state: BoardState;
+    cardIds: string[];
+    confirm: { checkId?: string } | undefined;
+  }[] {
+    return vi.mocked(api.saveBoardState).mock.calls.map((call) => {
+      const candidate = call[1] as BoardState;
+      return {
+        boardId: String(call[0]),
+        state: candidate,
+        cardIds: (candidate?.cards ?? []).map((card) => card.id),
+        confirm: call[3] as { checkId?: string } | undefined,
+      };
+    });
+  }
+
+  function apiError(status: number, payload: Record<string, unknown>): Error {
+    return Object.assign(new Error(String(status)), { status, payload });
+  }
+
+  function affectedCheck(checkId: string, stateVersion: number): never {
+    return {
+      ok: true,
+      checkId,
+      stateVersion,
+      affected: [AFFECTED_TASK],
+      impactConfirmationRequired: true,
+    } as never;
+  }
+
+  function boardPayloadOf(boardId: string, seq: number, cards: BoardState["cards"]) {
+    return boardPayload(boardState(boardId, cards, seq));
+  }
+
+  it("stale_check 的重读已落、重新预判在飞时切到 A：范围变化归 B，回 B 重新确认后保存", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    let bSeq = 7;
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A
+          ? boardState(BOARD_A, [cardA], 3)
+          : boardState(BOARD_B, [cardB], bSeq),
+      )) as never);
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+
+    const putFlight = deferred<void>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(async () => {
+      await putFlight.promise;
+      throw apiError(409, {
+        error: "stale_check",
+        reason: "确认已经过期",
+        scopeChanged: true,
+        affectedTasks: [AFFECTED_TASK],
+      });
+    });
+    store.commit(addCard(store.board!, { kind: "text", content: "B 新增的卡" }), "新增卡片");
+    await waitForDebouncedSave();
+
+    const recoveryRead = deferred<never>();
+    const awayRecheck = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => recoveryRead.promise as never);
+    vi.mocked(api.checkMaterialImpact).mockReturnValueOnce(awayRecheck.promise as never);
+    putFlight.resolve();
+    await settle();
+    bSeq = 8;
+    recoveryRead.resolve(boardPayloadOf(BOARD_B, 8, [cardB]) as never);
+    await settle();
+    expect(impactChecks().filter((item) => item.boardId === BOARD_B).length, "前提：重新预判已经发给 B").toBe(1);
+
+    await store.selectBoard(BOARD_A);
+    awayRecheck.resolve(affectedCheck("chk_stale_away", 8) as never);
+    await settle();
+    await settle();
+
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.pendingImpact, "B 的待确认状态落到了 A").toBeNull();
+    expect(impactChecks().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的重新预判").toBe(0);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了保存").toBe(0);
+
+    const loadB = deferred<never>();
+    const resumeRecheck = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => loadB.promise as never);
+    vi.mocked(api.checkMaterialImpact).mockReturnValueOnce(resumeRecheck.promise as never);
+    const selectingB = store.selectBoard(BOARD_B);
+    await settle();
+    loadB.resolve(boardPayloadOf(BOARD_B, 8, [cardB]) as never);
+    await selectingB;
+    await settle();
+
+    expect(impactChecks().filter((item) => item.boardId === BOARD_B).length, "回 B 后没有重新核对范围").toBe(2);
+    resumeRecheck.resolve(affectedCheck("chk_stale_b2", 8) as never);
+    await settle();
+    await settle();
+
+    const pending = store.pendingImpact;
+    expect(pending, "回 B 后没有可操作的确认").not.toBeNull();
+    expect(pending!.boardId, "确认记录不属于 B").toBe(BOARD_B);
+    expect(pending!.checkId).toBe("chk_stale_b2");
+    expect(pending!.affected.map((item) => item.intentId).sort()).toEqual([TASK_ID].sort());
+    expect(pending!.note ?? "", "范围变化没有按既有机制重新说明").toMatch(/重新核对|重新确认/);
+
+    const candidateSize = liveCards(store).length;
+    await store.confirmImpact();
+    await settle();
+    await waitForDebouncedSave();
+    const bPuts = puts().filter((item) => item.boardId === BOARD_B);
+    const finalPut = bPuts[bPuts.length - 1];
+    expect(finalPut.confirm?.checkId, "保存没有带上重新确认的编号").toBe("chk_stale_b2");
+    expect(finalPut.cardIds.length, "保存的候选不是 B 的当前候选").toBe(candidateSize);
+    expect(finalPut.state.seq, "重新确认后的保存没有使用已确认的服务端版本").toBe(8);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length).toBe(0);
+  });
+
+  it("确认已显示时切到 A 再回 B 继续编辑：A 消费不了 B 的确认，B 先重新核对再保存", async () => {
+    withRunningTask();
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A ? boardState(BOARD_A, [cardA], 3) : boardState(BOARD_B, [cardB], 7),
+      )) as never);
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+
+    const firstCheck = deferred<never>();
+    vi.mocked(api.checkMaterialImpact).mockReturnValueOnce(firstCheck.promise as never);
+    store.commit(addCard(store.board!, { kind: "text", content: "第一版" }), "新增卡片");
+    await waitForDebouncedSave();
+    firstCheck.resolve(affectedCheck("chk_1", 7) as never);
+    await settle();
+    await settle();
+    expect(store.pendingImpact, "前提：B 的确认已经显示").not.toBeNull();
+    expect(store.pendingImpact!.boardId).toBe(BOARD_B);
+
+    // 切到 A：B 的确认不允许被 A 消费
+    await store.selectBoard(BOARD_A);
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.pendingImpact, "B 的确认显示到了 A").toBeNull();
+    const aStatus = store.saveStatus;
+    const outcome = await store.confirmImpact();
+    await settle();
+    await waitForDebouncedSave();
+    expect(outcome.outcome, "A 消费了不属于它的确认").not.toBe("saved");
+    expect(puts().filter((item) => item.boardId === BOARD_A).length, "A 因为 B 的确认发出了保存").toBe(0);
+    expect(store.saveStatus).toBe(aStatus);
+
+    // 回 B：确认记录取回，候选又有新编辑 → 必须先重新核对
+    await store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.pendingImpact?.checkId, "B 的确认记录丢了").toBe("chk_1");
+    store.commit(addCard(store.board!, { kind: "text", content: "第二版" }), "新增卡片");
+    const latestSize = liveCards(store).length;
+    await settle();
+
+    const secondCheck = deferred<never>();
+    vi.mocked(api.checkMaterialImpact).mockReturnValueOnce(secondCheck.promise as never);
+    const confirming = store.confirmImpact();
+    await settle();
+    const checks = impactChecks();
+    const recheck = checks[checks.length - 1];
+    expect(recheck.boardId, "重新核对没有发往 B").toBe(BOARD_B);
+    expect(recheck.cardIds.length, "重新核对用的不是最新候选").toBe(latestSize);
+    expect(recheck.stateVersion, "重新核对没有使用已确认的服务端版本").toBe(7);
+    secondCheck.resolve(affectedCheck("chk_2", 7) as never);
+    const confirmResult = await confirming;
+    await settle();
+    await settle();
+    expect(confirmResult.outcome, "候选变了却直接保存了").toBe("needs_confirm");
+    expect(store.pendingImpact?.checkId, "确认编号没有换成重新核对后的那份").toBe("chk_2");
+
+    // 再确认一次：最终 PUT 的目标板、候选与确认编号一致
+    await store.confirmImpact();
+    await settle();
+    await waitForDebouncedSave();
+    const bPuts = puts().filter((item) => item.boardId === BOARD_B);
+    const finalPut = bPuts[bPuts.length - 1];
+    expect(finalPut.confirm?.checkId).toBe("chk_2");
+    expect(finalPut.cardIds.length, "最终保存的候选不是最新候选").toBe(latestSize);
+    expect(finalPut.state.seq, "最终保存没有使用已确认的服务端版本").toBe(7);
+    expect(puts().filter((item) => item.boardId === BOARD_A).length).toBe(0);
+    expect(store.saveStatus).toBe("saved");
+  });
+});
