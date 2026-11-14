@@ -1,0 +1,2678 @@
+[
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/?probe=1",
+    "ts": 1794672638732,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@vite/client",
+    "ts": 1794672638767,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/main.ts?t=1794672608379",
+    "ts": 1794672638767,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/vue.js?v=6d0e439c",
+    "ts": 1794672638771,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/pinia.js?v=6d0e439c",
+    "ts": 1794672638772,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/App.vue?t=1794672608379",
+    "ts": 1794672638772,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/router.ts",
+    "ts": 1794672638773,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/styles/tokens.css",
+    "ts": 1794672638773,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/styles/base.css",
+    "ts": 1794672638774,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/styles/scroll.css",
+    "ts": 1794672638774,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/styles/layers.css",
+    "ts": 1794672638775,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/400.css",
+    "ts": 1794672638775,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/600.css",
+    "ts": 1794672638776,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/theme.ts",
+    "ts": 1794672638777,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/motion.ts",
+    "ts": 1794672638777,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/scrollIndicator.ts",
+    "ts": 1794672638777,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/updater.ts",
+    "ts": 1794672638778,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-AJ4G2CON.js?v=6d0e439c",
+    "ts": 1794672638799,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-WOOG5QLI.js?v=6d0e439c",
+    "ts": 1794672638800,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-FJ57YAAY.js?v=6d0e439c",
+    "ts": 1794672638804,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/vue-router.js?v=6d0e439c",
+    "ts": 1794672638807,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/events.ts?t=1794672608379",
+    "ts": 1794672638807,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/ui.ts",
+    "ts": 1794672638808,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/onboarding.ts",
+    "ts": 1794672638808,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/approvals.ts",
+    "ts": 1794672638808,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/security.ts",
+    "ts": 1794672638808,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/NonChatApprovalEntry.vue?t=1794672608379",
+    "ts": 1794672638809,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/UnifiedApprovalLayer.vue?t=1794672608379",
+    "ts": 1794672638809,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/DevTaskEntry.vue?t=1794672608379",
+    "ts": 1794672638810,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/WindowChrome.vue?t=1794672608379",
+    "ts": 1794672638810,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/onboarding/OnboardingWizard.vue",
+    "ts": 1794672638810,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QTipLayer.vue",
+    "ts": 1794672638811,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/GlobalFeedbackHost.vue?t=1794672608379",
+    "ts": 1794672638811,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/BootStatus.vue",
+    "ts": 1794672638811,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/onboarding/SetupIncompleteNotice.vue",
+    "ts": 1794672638812,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/boot.ts",
+    "ts": 1794672638812,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useWindowFrame.ts",
+    "ts": 1794672638812,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/App.vue?vue&type=style&index=0&lang.css",
+    "ts": 1794672638813,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@id/__x00__plugin-vue:export-helper",
+    "ts": 1794672638813,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/vite/dist/client/env.mjs",
+    "ts": 1794672638822,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/updater.ts",
+    "ts": 1794672638853,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/events.ts",
+    "ts": 1794672638872,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/session.ts?t=1794672608379",
+    "ts": 1794672638873,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/unifiedApprovals.ts?t=1794672608379",
+    "ts": 1794672638873,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/approvalLifecycle.ts",
+    "ts": 1794672638874,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/backend.ts",
+    "ts": 1794672638874,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/restore.ts?t=1794672608379",
+    "ts": 1794672638875,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/interactive.ts?t=1794672608379",
+    "ts": 1794672638875,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/api.ts",
+    "ts": 1794672638884,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/quitGuard.ts",
+    "ts": 1794672638885,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/desktop.ts",
+    "ts": 1794672638885,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/approvalResults.ts",
+    "ts": 1794672638889,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/security.ts",
+    "ts": 1794672638896,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/NonChatApprovalEntry.vue?vue&type=style&index=0&scoped=5cbe2635&lang.css",
+    "ts": 1794672638899,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/modalArbiter.ts",
+    "ts": 1794672638900,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/feedbackGate.ts",
+    "ts": 1794672638900,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/planetContinuum.ts",
+    "ts": 1794672638901,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/UnifiedApprovalModal.vue?t=1794672608379",
+    "ts": 1794672638901,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/TopicStageNotice.vue",
+    "ts": 1794672638901,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/UnifiedApprovalLayer.vue?vue&type=style&index=0&scoped=da72a403&lang.css",
+    "ts": 1794672638902,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QConfirm.vue",
+    "ts": 1794672638907,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useQioScrollbars.ts",
+    "ts": 1794672638908,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/DevTaskEntry.vue?vue&type=style&index=0&scoped=ecf7ec93&lang.css",
+    "ts": 1794672638908,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/assets/qio-orbit-logo.png?import",
+    "ts": 1794672638911,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/security/PermissionModeText.vue",
+    "ts": 1794672638911,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/notifications.ts",
+    "ts": 1794672638912,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QIcon.vue",
+    "ts": 1794672638912,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/GlobalIssueEntry.vue",
+    "ts": 1794672638913,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useQioTip.ts",
+    "ts": 1794672638913,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/windowFrame.ts",
+    "ts": 1794672638913,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/WindowChrome.vue?vue&type=style&index=0&scoped=ad17d0e9&lang.css",
+    "ts": 1794672638913,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/credentials/CredentialForm.vue",
+    "ts": 1794672638924,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QInput.vue",
+    "ts": 1794672638924,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QIconButton.vue",
+    "ts": 1794672638925,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/credentials.ts",
+    "ts": 1794672638925,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/onboarding/steps.ts",
+    "ts": 1794672638926,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/onboarding/OnboardingWizard.vue?vue&type=style&index=0&scoped=cb77481a&lang.css",
+    "ts": 1794672638926,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QTipLayer.vue?vue&type=style&index=0&scoped=734cf196&lang.css",
+    "ts": 1794672638927,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/GlobalIssuePanel.vue?t=1794672608379",
+    "ts": 1794672638927,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/TopNotice.vue?t=1794672608379",
+    "ts": 1794672638927,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/useTaskFailureNotices.ts?t=1794672608379",
+    "ts": 1794672638928,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/useGlobalIssueSources.ts?t=1794672608379",
+    "ts": 1794672638928,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/conversationTasks.ts?t=1794672608379",
+    "ts": 1794672638929,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/GlobalFeedbackHost.vue?vue&type=style&index=0&scoped=a18cf2d6&lang.css",
+    "ts": 1794672638930,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/BootStatus.vue?vue&type=style&index=0&scoped=f53f72de&lang.css",
+    "ts": 1794672638930,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/recoveryApi.ts",
+    "ts": 1794672638966,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/sendIdentity.ts",
+    "ts": 1794672638966,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/attachments.ts",
+    "ts": 1794672638967,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/drafts.ts",
+    "ts": 1794672638967,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/chat.ts",
+    "ts": 1794672638968,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/interactive.ts",
+    "ts": 1794672638990,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/approval.ts",
+    "ts": 1794672638991,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/board.ts",
+    "ts": 1794672638991,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/cardLayout.ts",
+    "ts": 1794672638992,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/fileCardRef.ts",
+    "ts": 1794672638992,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/materials.ts",
+    "ts": 1794672638992,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/types.ts",
+    "ts": 1794672638993,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/serverFacts.ts",
+    "ts": 1794672638993,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/submission.ts",
+    "ts": 1794672638993,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/viewport.ts",
+    "ts": 1794672638994,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/intentWorkbench.ts",
+    "ts": 1794672638994,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/taskCenter.ts",
+    "ts": 1794672638994,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/recoverySummary.ts",
+    "ts": 1794672638995,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/TopicStageNotice.vue?vue&type=style&index=0&scoped=536f0e9c&lang.css",
+    "ts": 1794672639029,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QConfirm.vue?vue&type=style&index=0&scoped=dcfb47a4&lang.css",
+    "ts": 1794672639036,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/security/PermissionModeText.vue?vue&type=style&index=0&scoped=f1995a12&lang.css",
+    "ts": 1794672639056,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ApprovalFacts.vue",
+    "ts": 1794672639059,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/ApprovalResultsPanel.vue?t=1794672608379",
+    "ts": 1794672639059,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/KnowledgeApprovalBody.vue?t=1794672608379",
+    "ts": 1794672639060,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/TopicApprovalContent.vue",
+    "ts": 1794672639061,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/UnifiedApprovalModal.vue?vue&type=style&index=0&scoped=bb8949eb&lang.css",
+    "ts": 1794672639061,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/globalIssues.ts",
+    "ts": 1794672639062,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/GlobalIssueEntry.vue?vue&type=style&index=0&scoped=977e23df&lang.css",
+    "ts": 1794672639062,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/icons.ts",
+    "ts": 1794672639062,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QIcon.vue?vue&type=style&index=0&scoped=0aeeabe5&lang.css",
+    "ts": 1794672639063,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QCombo.vue",
+    "ts": 1794672639072,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QNumber.vue",
+    "ts": 1794672639073,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QSelect.vue",
+    "ts": 1794672639073,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/credentials/CredentialForm.vue?vue&type=style&index=0&scoped=70d3a22a&lang.css",
+    "ts": 1794672639074,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QIconButton.vue?vue&type=style&index=0&scoped=f32a5ed0&lang.css",
+    "ts": 1794672639085,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/conversationTasks.ts",
+    "ts": 1794672639096,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/conversation/contracts.ts",
+    "ts": 1794672639096,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/feedbackOffsets.ts",
+    "ts": 1794672639101,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/issueActions.ts?t=1794672608379",
+    "ts": 1794672639102,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/GlobalIssuePanel.vue?vue&type=style&index=0&scoped=0b68d6d4&lang.css",
+    "ts": 1794672639102,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/noticeNavigation.ts?t=1794672608379",
+    "ts": 1794672639102,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/feedback/TopNotice.vue?vue&type=style&index=0&scoped=5164e897&lang.css",
+    "ts": 1794672639103,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/conversationShell.ts",
+    "ts": 1794672639118,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/taskFeedApi.ts",
+    "ts": 1794672639118,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/resize.ts",
+    "ts": 1794672639143,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/geometry.ts",
+    "ts": 1794672639144,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/textCard.ts",
+    "ts": 1794672639151,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/linkEndpoints.ts",
+    "ts": 1794672639151,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/v2/geometry.ts",
+    "ts": 1794672639151,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/KnowledgeApprovalBody.vue?vue&type=style&index=0&scoped=a7951c9a&lang.css",
+    "ts": 1794672639190,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ApprovalFacts.vue?vue&type=style&index=0&scoped=7a38ab50&lang.css",
+    "ts": 1794672639197,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/entries.ts",
+    "ts": 1794672639199,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/ApprovalResultsPanel.vue?vue&type=style&index=0&scoped=462ab077&lang.css",
+    "ts": 1794672639200,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/approval/TopicApprovalContent.vue?vue&type=style&index=0&scoped=3fcbbc49&lang.css",
+    "ts": 1794672639200,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useEscapeLayer.ts",
+    "ts": 1794672639219,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QCombo.vue?vue&type=style&index=0&scoped=b2c64c65&lang.css",
+    "ts": 1794672639221,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QNumber.vue?vue&type=style&index=0&scoped=4b0e54a8&lang.css",
+    "ts": 1794672639224,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ui/QSelect.vue?vue&type=style&index=0&scoped=2d03c0ec&lang.css",
+    "ts": 1794672639250,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/conversation/layoutPrefs.ts",
+    "ts": 1794672639255,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-latin-400-normal.woff2",
+    "ts": 1794672639290,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/tasks?view=current&limit=40",
+    "ts": 1794672639290,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/health",
+    "ts": 1794672639291,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/views/ConversationView.vue",
+    "ts": 1794672639291,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/tasks?view=current&limit=40",
+    "ts": 1794672639293,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/settings/ui",
+    "ts": 1794672639297,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/onboarding/status",
+    "ts": 1794672639298,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/security/mode",
+    "ts": 1794672639298,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/approvals/pending",
+    "ts": 1794672639298,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/approvals/history?limit=50",
+    "ts": 1794672639299,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/memory/pending?kind=knowledge_proposal&limit=500",
+    "ts": 1794672639299,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/settings/ui",
+    "ts": 1794672639300,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/events",
+    "ts": 1794672639315,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/onboarding/status",
+    "ts": 1794672639316,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/memory/pending?kind=knowledge_proposal&limit=500",
+    "ts": 1794672639317,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/runtime/state",
+    "ts": 1794672639326,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/tasks?view=current&limit=40",
+    "ts": 1794672639326,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/runtime/state",
+    "ts": 1794672639327,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/TaskRail.vue",
+    "ts": 1794672639331,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ChatColumn.vue",
+    "ts": 1794672639331,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/PreviewPanel.vue",
+    "ts": 1794672639332,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/PlanetDock.vue",
+    "ts": 1794672639332,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/PlanetBoot.vue",
+    "ts": 1794672639332,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/RecoveryInbox.vue",
+    "ts": 1794672639333,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/conversationPreview.ts",
+    "ts": 1794672639333,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/previewBridge.ts",
+    "ts": 1794672639333,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/taskLocator.ts",
+    "ts": 1794672639334,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/views/ConversationView.vue?vue&type=style&index=0&scoped=5e0ab62b&lang.css",
+    "ts": 1794672639334,
+    "postData": ""
+  },
+  {
+    "method": "POST",
+    "url": "http://127.0.0.1:8734/api/onboarding/seen",
+    "ts": 1794672639343,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/onboarding/seen",
+    "ts": 1794672639343,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-latin-600-normal.woff2",
+    "ts": 1794672639346,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/recovery/records",
+    "ts": 1794672639352,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/recovery/records",
+    "ts": 1794672639352,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/dev/tasks",
+    "ts": 1794672639358,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/dev/tasks",
+    "ts": 1794672639358,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/dev/authorizations",
+    "ts": 1794672639362,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/dev/authorizations",
+    "ts": 1794672639363,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/approvals/pending",
+    "ts": 1794672639366,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/approvals/history?limit=50",
+    "ts": 1794672639366,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/conversation/preview.ts",
+    "ts": 1794672639373,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewReader.vue",
+    "ts": 1794672639373,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/PreviewPanel.vue?vue&type=style&index=0&scoped=b2efdb2c&lang.css",
+    "ts": 1794672639373,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/PlanetBoot.vue?vue&type=style&index=0&scoped=d5e18453&lang.css",
+    "ts": 1794672639377,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/TaskRailItem.vue",
+    "ts": 1794672639382,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/TaskRail.vue?vue&type=style&index=0&scoped=af11c427&lang.css",
+    "ts": 1794672639383,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useFloatingWindow.ts",
+    "ts": 1794672639386,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/floatingState.ts",
+    "ts": 1794672639386,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/PlanetOrb.vue",
+    "ts": 1794672639387,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/PlanetDock.vue?vue&type=style&index=0&scoped=783872d7&lang.css",
+    "ts": 1794672639387,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/RecoveryInbox.vue?vue&type=style&index=0&scoped=873a2cfe&lang.css",
+    "ts": 1794672639391,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/MessageStream.vue",
+    "ts": 1794672639395,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ComposerDock.vue",
+    "ts": 1794672639395,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ChatColumn.vue?vue&type=style&index=0&scoped=5da794f3&lang.css",
+    "ts": 1794672639396,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/conversation/previewTypes.ts",
+    "ts": 1794672639399,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/previewPlan.ts",
+    "ts": 1794672639515,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/TaskRailItem.vue?vue&type=style&index=0&scoped=172e8a53&lang.css",
+    "ts": 1794672639539,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/renderers/index.ts",
+    "ts": 1794672639570,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/renderers/code.ts",
+    "ts": 1794672639571,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewTextPane.vue",
+    "ts": 1794672639571,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewStructuredPane.vue",
+    "ts": 1794672639571,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewImageViewer.vue",
+    "ts": 1794672639572,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewPdfViewer.vue",
+    "ts": 1794672639572,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewReader.vue?vue&type=style&index=0&scoped=df8f6df9&lang.css",
+    "ts": 1794672639572,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/@tanstack_vue-virtual.js?v=6d0e439c",
+    "ts": 1794672639600,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/chatViewport.ts",
+    "ts": 1794672639600,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/MessageItem.vue",
+    "ts": 1794672639601,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/TurnProcess.vue",
+    "ts": 1794672639601,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ContinueBar.vue",
+    "ts": 1794672639602,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/turnLabel.ts",
+    "ts": 1794672639602,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/readingAnchor.ts",
+    "ts": 1794672639602,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/composerMetrics.ts",
+    "ts": 1794672639603,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/MessageStream.vue?vue&type=style&index=0&scoped=988beb19&lang.css",
+    "ts": 1794672639603,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/Composer.vue",
+    "ts": 1794672639610,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ComposerEntries.vue",
+    "ts": 1794672639610,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ConversationModeSwitch.vue",
+    "ts": 1794672639610,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ComposerDock.vue?vue&type=style&index=0&scoped=bbaeeade&lang.css",
+    "ts": 1794672639611,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/ringField.ts",
+    "ts": 1794672639613,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/topicData.ts",
+    "ts": 1794672639614,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/PlanetOrb.vue?vue&type=style&index=0&scoped=bb444bba&lang.css",
+    "ts": 1794672639614,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/MarkdownContent.vue",
+    "ts": 1794672639857,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewTextPane.vue?vue&type=style&index=0&scoped=63eeac73&lang.css",
+    "ts": 1794672639857,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/renderers/image.ts",
+    "ts": 1794672639860,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewImageViewer.vue?vue&type=style&index=0&scoped=20f076aa&lang.css",
+    "ts": 1794672639861,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewStructuredPane.vue?vue&type=style&index=0&scoped=3c1b62aa&lang.css",
+    "ts": 1794672639885,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/renderers/types.ts",
+    "ts": 1794672639911,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/preview/PreviewPdfViewer.vue?vue&type=style&index=0&scoped=0e8194fa&lang.css",
+    "ts": 1794672639942,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ToolCreationCard.vue",
+    "ts": 1794672639953,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/IntentExecutionMessage.vue",
+    "ts": 1794672639954,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/AttachmentChip.vue",
+    "ts": 1794672639954,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/mediaFacts.ts",
+    "ts": 1794672639955,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/toolFailureFacts.ts",
+    "ts": 1794672639956,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/MessageItem.vue?vue&type=style&index=0&scoped=e1d7c71b&lang.css",
+    "ts": 1794672639956,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/NarrativeStage.vue",
+    "ts": 1794672639959,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/TurnTimingPanel.vue",
+    "ts": 1794672639960,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/turnProcess.ts",
+    "ts": 1794672639960,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/TurnProcess.vue?vue&type=style&index=0&scoped=f0943a9e&lang.css",
+    "ts": 1794672639960,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ContinueBar.vue?vue&type=style&index=0&scoped=e83e351c&lang.css",
+    "ts": 1794672639973,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/attachmentOps.ts",
+    "ts": 1794672639981,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/conversationLayout.ts",
+    "ts": 1794672639981,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/Composer.vue?vue&type=style&index=0&scoped=77b33550&lang.css",
+    "ts": 1794672639982,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ConversationModeSwitch.vue?vue&type=style&index=0&scoped=b0905e3e&lang.css",
+    "ts": 1794672639991,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/SendIssuesPanel.vue",
+    "ts": 1794672639992,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/QueuePanel.vue",
+    "ts": 1794672639992,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/ComposerEntries.vue?vue&type=style&index=0&scoped=9050ac53&lang.css",
+    "ts": 1794672639992,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/three.js?v=6d0e439c",
+    "ts": 1794672640048,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/externalLink.ts",
+    "ts": 1794672640064,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useQioTables.ts",
+    "ts": 1794672640065,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/unified.js?v=6d0e439c",
+    "ts": 1794672640065,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/mdast-util-to-string.js?v=6d0e439c",
+    "ts": 1794672640065,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/remark-parse.js?v=6d0e439c",
+    "ts": 1794672640066,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/remark-gfm.js?v=6d0e439c",
+    "ts": 1794672640066,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/remark-directive.js?v=6d0e439c",
+    "ts": 1794672640066,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/qioTable.ts",
+    "ts": 1794672640067,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_core.js?v=6d0e439c",
+    "ts": 1794672640067,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_languages_javascript.js?v=6d0e439c",
+    "ts": 1794672640067,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_languages_typescript.js?v=6d0e439c",
+    "ts": 1794672640068,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_languages_python.js?v=6d0e439c",
+    "ts": 1794672640068,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_languages_json.js?v=6d0e439c",
+    "ts": 1794672640068,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_languages_bash.js?v=6d0e439c",
+    "ts": 1794672640069,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_languages_css.js?v=6d0e439c",
+    "ts": 1794672640069,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/highlight__js_lib_languages_xml.js?v=6d0e439c",
+    "ts": 1794672640069,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/MarkdownContent.vue?vue&type=style&index=0&scoped=38045747&lang.css",
+    "ts": 1794672640070,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/ToolCreationCard.vue?vue&type=style&index=0&scoped=cca6fa1b&lang.css",
+    "ts": 1794672640098,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/IntentExecutionMessage.vue?vue&type=style&index=0&scoped=b48deb74&lang.css",
+    "ts": 1794672640110,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/AttachmentChip.vue?vue&type=style&index=0&scoped=79b6562d&lang.css",
+    "ts": 1794672640131,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/NarrativeStage.vue?vue&type=style&index=0&scoped=f422c1f4&lang.css",
+    "ts": 1794672640144,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useTurnTiming.ts",
+    "ts": 1794672640154,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/trace.ts",
+    "ts": 1794672640154,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/TurnTimingPanel.vue?vue&type=style&index=0&scoped=1529abe8&lang.css",
+    "ts": 1794672640155,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/SendIssuesPanel.vue?vue&type=style&index=0&scoped=8be4b6d1&lang.css",
+    "ts": 1794672640168,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/conversation/QueuePanel.vue?vue&type=style&index=0&scoped=face8e49&lang.css",
+    "ts": 1794672640174,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-P3UAHLMF.js?v=6d0e439c",
+    "ts": 1794672640178,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-2EC6RXZP.js?v=6d0e439c",
+    "ts": 1794672640183,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-RL5YPS7L.js?v=6d0e439c",
+    "ts": 1794672640185,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-VBZBPGBT.js?v=6d0e439c",
+    "ts": 1794672640185,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-EKXGRIMN.js?v=6d0e439c",
+    "ts": 1794672640190,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-Z7R4Y5H3.js?v=6d0e439c",
+    "ts": 1794672640190,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/chunk-Z5H26TRR.js?v=6d0e439c",
+    "ts": 1794672640205,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-118-400-normal.woff2",
+    "ts": 1794672640349,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-117-400-normal.woff2",
+    "ts": 1794672640349,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-118-600-normal.woff2",
+    "ts": 1794672640350,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-117-600-normal.woff2",
+    "ts": 1794672640350,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-112-600-normal.woff2",
+    "ts": 1794672640351,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-119-600-normal.woff2",
+    "ts": 1794672640351,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-116-600-normal.woff2",
+    "ts": 1794672640352,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/assets/qio-orbit-logo.png",
+    "ts": 1794672640352,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/memory/pending?kind=knowledge_proposal&limit=500",
+    "ts": 1794672640353,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/settings/ui",
+    "ts": 1794672640353,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+    "ts": 1794672640353,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/tasks?view=current&limit=40",
+    "ts": 1794672640354,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-115-600-normal.woff2",
+    "ts": 1794672640354,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/session/context?limit=200",
+    "ts": 1794672640355,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/views/PlanetView.vue",
+    "ts": 1794672640382,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/usePlanetScene.ts",
+    "ts": 1794672640446,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/browseSession.ts",
+    "ts": 1794672640446,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/layoutSlots.ts",
+    "ts": 1794672640446,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/PageTools.vue",
+    "ts": 1794672640447,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/ManagementArea.vue",
+    "ts": 1794672640447,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/usePlanetManageTransition.ts",
+    "ts": 1794672640447,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/planetPending.ts",
+    "ts": 1794672640448,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/easing.ts",
+    "ts": 1794672640448,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/planetSession.ts",
+    "ts": 1794672640448,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/entryLayout.ts",
+    "ts": 1794672640449,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/views/PlanetView.vue?vue&type=style&index=0&scoped=3c5cc2cd&lang.css",
+    "ts": 1794672640449,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/PageTools.vue?vue&type=style&index=0&scoped=358571a8&lang.css",
+    "ts": 1794672640474,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/services/entityCandidatesApi.ts",
+    "ts": 1794672640483,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/manageMotion.ts",
+    "ts": 1794672640489,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/MemoryTab.vue",
+    "ts": 1794672640496,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/KnowledgePanel.vue",
+    "ts": 1794672640497,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/EntityPanel.vue",
+    "ts": 1794672640497,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/PendingItems.vue",
+    "ts": 1794672640497,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/MaintenanceRecords.vue",
+    "ts": 1794672640498,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/GlobalSearchPanel.vue",
+    "ts": 1794672640498,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/manageViews.ts",
+    "ts": 1794672640498,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/ManagementArea.vue?vue&type=style&index=0&scoped=85b110c1&lang.css",
+    "ts": 1794672640499,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/node_modules/.vite/deps/three_examples_jsm_controls_OrbitControls__js.js?v=6d0e439c",
+    "ts": 1794672640510,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/planetShader.ts",
+    "ts": 1794672640510,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/dotPool.ts",
+    "ts": 1794672640510,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/browseFlow.ts",
+    "ts": 1794672640511,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/MemoryTab.vue?vue&type=style&index=0&scoped=67b3c123&lang.css",
+    "ts": 1794672640667,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/GlobalSearchPanel.vue?vue&type=style&index=0&scoped=4d38cd7d&lang.css",
+    "ts": 1794672640695,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/EntityCandidates.vue",
+    "ts": 1794672640701,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/planet/entityKind.ts",
+    "ts": 1794672640701,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useActionFeedback.ts",
+    "ts": 1794672640702,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/EntityPanel.vue?vue&type=style&index=0&scoped=2939c0a7&lang.css",
+    "ts": 1794672640702,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/MaintenanceRestoreDialog.vue",
+    "ts": 1794672640713,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/MaintenanceRecords.vue?vue&type=style&index=0&scoped=311dac23&lang.css",
+    "ts": 1794672640713,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/PendingItems.vue?vue&type=style&index=0&scoped=7fb0028f&lang.css",
+    "ts": 1794672640734,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/KnowledgePanel.vue?vue&type=style&index=0&scoped=22fb7d43&lang.css",
+    "ts": 1794672640774,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/EntityCandidates.vue?vue&type=style&index=0&scoped=2bc2a55b&lang.css",
+    "ts": 1794672640810,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/planet/MaintenanceRestoreDialog.vue?vue&type=style&index=0&scoped=8e204e1e&lang.css",
+    "ts": 1794672640826,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/memory/pending?limit=500",
+    "ts": 1794672640892,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/entities/candidates?include_archived=true&limit=500",
+    "ts": 1794672640896,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-114-400-normal.woff2",
+    "ts": 1794672640961,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/@fs/D:/qio-dev/qio/frontend/node_modules/@fontsource/noto-serif-sc/files/noto-serif-sc-116-400-normal.woff2",
+    "ts": 1794672640962,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/memory/pending?limit=500",
+    "ts": 1794672640963,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/entities/candidates?include_archived=true&limit=500",
+    "ts": 1794672640967,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/graph/topics",
+    "ts": 1794672640968,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/planet/overview",
+    "ts": 1794672640970,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/graph/topics",
+    "ts": 1794672640970,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/planet/overview",
+    "ts": 1794672640975,
+    "postData": ""
+  },
+  {
+    "method": "POST",
+    "url": "http://127.0.0.1:8734/api/planet/browse",
+    "ts": 1794672641007,
+    "postData": "{\"direction\":\"forward\",\"count\":16,\"current_topic_id\":\"topic_009488ba8433\"}"
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/planet/browse",
+    "ts": 1794672641008,
+    "postData": ""
+  },
+  {
+    "method": "POST",
+    "url": "http://127.0.0.1:8734/api/planet/browse",
+    "ts": 1794672641014,
+    "postData": "{\"cursor\":\"1167204934.1.0\",\"direction\":\"forward\",\"count\":16,\"exclude\":[\"topic_009488ba8433\"],\"seed\":1167204934}"
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/views/InteractiveView.vue",
+    "ts": 1794672641578,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/layout.ts",
+    "ts": 1794672641628,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardCanvas.vue",
+    "ts": 1794672641629,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardToolbar.vue",
+    "ts": 1794672641630,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/index.ts",
+    "ts": 1794672641630,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/IntentLayer.vue",
+    "ts": 1794672641631,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveBookmarks.vue",
+    "ts": 1794672641632,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/ExecutionRecordPanel.vue",
+    "ts": 1794672641632,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/views/InteractiveView.vue?vue&type=style&index=0&scoped=e25d0171&lang.css",
+    "ts": 1794672641633,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveWorkspace.vue",
+    "ts": 1794672641744,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveChromeTools.vue",
+    "ts": 1794672641747,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveConversation.vue",
+    "ts": 1794672641749,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/RetryPanel.vue",
+    "ts": 1794672641750,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/RecoveryPanel.vue",
+    "ts": 1794672641750,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/SaveFailureBanner.vue",
+    "ts": 1794672641751,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/ImpactConfirmLayer.vue",
+    "ts": 1794672641752,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/TaskCenterPanel.vue",
+    "ts": 1794672641752,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/chromeTarget.ts",
+    "ts": 1794672641753,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/chromePlacement.ts",
+    "ts": 1794672641754,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/saveStatus.ts",
+    "ts": 1794672641755,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/retryApi.ts",
+    "ts": 1794672641756,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/intentDisplayState.ts",
+    "ts": 1794672641757,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveBookmarks.vue?vue&type=style&index=0&scoped=864da678&lang.css",
+    "ts": 1794672641769,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/toolbarLayout.ts",
+    "ts": 1794672641778,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/AddMenu.vue",
+    "ts": 1794672641779,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/SubmitCluster.vue",
+    "ts": 1794672641780,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardToolbar.vue?vue&type=style&index=0&scoped=f955607f&lang.css",
+    "ts": 1794672641780,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/executionRecordDisplay.ts",
+    "ts": 1794672641807,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/ExecutionRecordPanel.vue?vue&type=style&index=0&scoped=8e0ee44b&lang.css",
+    "ts": 1794672641808,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/intentDisplay.ts",
+    "ts": 1794672641808,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/IntentLayer.vue?vue&type=style&index=0&scoped=7a4dff6b&lang.css",
+    "ts": 1794672641809,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/overlayPlacement.ts",
+    "ts": 1794672641871,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/renderers/imageDisplay.ts",
+    "ts": 1794672641872,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useResizeGesture.ts",
+    "ts": 1794672641873,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/chatFrameState.ts",
+    "ts": 1794672641873,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/utils/titlebar.ts",
+    "ts": 1794672641874,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardCard.vue",
+    "ts": 1794672641874,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardGroupFrame.vue",
+    "ts": 1794672641875,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardCardAnchorLayer.vue",
+    "ts": 1794672641875,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardGroupAnchorLayer.vue",
+    "ts": 1794672641876,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardLinkLayer.vue",
+    "ts": 1794672641877,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardPreviewLayer.vue",
+    "ts": 1794672641877,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardResizeLayer.vue",
+    "ts": 1794672641878,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardCanvas.vue?vue&type=style&index=0&scoped=dcd2fcb0&lang.css",
+    "ts": 1794672641879,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveWorkspace.vue?vue&type=style&index=0&scoped=3a03cf4e&lang.css",
+    "ts": 1794672641935,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveChromeTools.vue?vue&type=style&index=0&scoped=f3cf4e49&lang.css",
+    "ts": 1794672641952,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/SaveFailureBanner.vue?vue&type=style&index=0&scoped=a3081ded&lang.css",
+    "ts": 1794672641962,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/RetryPanel.vue?vue&type=style&index=0&scoped=c2a15be1&lang.css",
+    "ts": 1794672641967,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/InteractiveConversation.vue?vue&type=style&index=0&scoped=9e360c3c&lang.css",
+    "ts": 1794672641983,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/ImpactConfirmLayer.vue?vue&type=style&index=0&scoped=1f493def&lang.css",
+    "ts": 1794672642008,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/TaskCenterPanel.vue?vue&type=style&index=0&scoped=934962b9&lang.css",
+    "ts": 1794672642132,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/displayText.ts",
+    "ts": 1794672642150,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/v2/RecoveryPanel.vue?vue&type=style&index=0&scoped=c44efdfe&lang.css",
+    "ts": 1794672642160,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/composables/useTransientNotice.ts",
+    "ts": 1794672642208,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/AddMenu.vue?vue&type=style&index=0&scoped=af84cc9c&lang.css",
+    "ts": 1794672642209,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardChangeList.vue",
+    "ts": 1794672642280,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/submitPanelPlacement.ts",
+    "ts": 1794672642280,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/SubmitCluster.vue?vue&type=style&index=0&scoped=b96751ba&lang.css",
+    "ts": 1794672642281,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardGroupFrame.vue?vue&type=style&index=0&scoped=65d6470e&lang.css",
+    "ts": 1794672642306,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardCardAnchorLayer.vue?vue&type=style&index=0&scoped=d7c823a3&lang.css",
+    "ts": 1794672642329,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardGroupAnchorLayer.vue?vue&type=style&index=0&scoped=9dbbbc79&lang.css",
+    "ts": 1794672642337,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/cardDetail.ts",
+    "ts": 1794672642347,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/CardInlinePreview.vue",
+    "ts": 1794672642347,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/SelectionMenu.vue",
+    "ts": 1794672642348,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/CardDraftHint.vue",
+    "ts": 1794672642348,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/CardAttachmentPreview.vue",
+    "ts": 1794672642349,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/FileCardMaterialPanel.vue",
+    "ts": 1794672642350,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/attachmentPreview.ts",
+    "ts": 1794672642351,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/TextCardEditor.vue",
+    "ts": 1794672642352,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardCard.vue?vue&type=style&index=0&scoped=c1a6c7e2&lang.css",
+    "ts": 1794672642352,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardPreviewLayer.vue?vue&type=style&index=0&scoped=e915c20b&lang.css",
+    "ts": 1794672642362,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/linkCurve.ts",
+    "ts": 1794672642362,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardLinkLayer.vue?vue&type=style&index=0&scoped=6e35dc26&lang.css",
+    "ts": 1794672642363,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardResizeLayer.vue?vue&type=style&index=0&scoped=5527de7d&lang.css",
+    "ts": 1794672642376,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/BoardChangeList.vue?vue&type=style&index=0&scoped=8da97e77&lang.css",
+    "ts": 1794672642501,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/horizontalFit.ts",
+    "ts": 1794672642530,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/CardInlinePreview.vue?vue&type=style&index=0&scoped=6f7c445f&lang.css",
+    "ts": 1794672642531,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/SelectionMenu.vue?vue&type=style&index=0&scoped=6c4ea717&lang.css",
+    "ts": 1794672642539,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/CardDraftHint.vue?vue&type=style&index=0&scoped=0e302565&lang.css",
+    "ts": 1794672642540,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/FileCardMaterialPanel.vue?vue&type=style&index=0&scoped=11e80bec&lang.css",
+    "ts": 1794672642555,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/components/interactive/CardAttachmentPreview.vue?vue&type=style&index=0&scoped=83195462&lang.css",
+    "ts": 1794672642556,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/interactive/TextCardEditor.vue?vue&type=style&index=0&scoped=2fa11576&lang.css",
+    "ts": 1794672642566,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/memory/pending?kind=knowledge_proposal&limit=500",
+    "ts": 1794672642615,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/state",
+    "ts": 1794672642616,
+    "postData": ""
+  },
+  {
+    "method": "PUT",
+    "url": "http://127.0.0.1:8734/api/settings/ui",
+    "ts": 1794672642617,
+    "postData": "{\"conversation_layout\":\"{\\\"version\\\":1,\\\"leftWidth\\\":292,\\\"leftCollapsed\\\":false,\\\"rightWidth\\\":420,\\\"rightOpen\\\":false,\\\"taskTab\\\":\\\"current\\\",\\\"previewFull\\\":false,\\\"previewTabs\\\":[],\\\"activePreviewTabId\\\":null,\\\"updatedAt\\\":\\\"2026-11-14T16:10:42.613Z\\\"}\"}"
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/state",
+    "ts": 1794672642618,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/visible-range",
+    "ts": 1794672642657,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/visible-range",
+    "ts": 1794672642658,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/intents",
+    "ts": 1794672642667,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/intents",
+    "ts": 1794672642668,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/intent-views",
+    "ts": 1794672642677,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/intent-views",
+    "ts": 1794672642677,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/understanding",
+    "ts": 1794672642688,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/understanding",
+    "ts": 1794672642689,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/executions",
+    "ts": 1794672642705,
+    "postData": ""
+  },
+  {
+    "method": "OPTIONS",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/executions",
+    "ts": 1794672642705,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:8734/api/interactive/boards/board_default/state",
+    "ts": 1794672642714,
+    "postData": ""
+  },
+  {
+    "method": "GET",
+    "url": "http://127.0.0.1:5199/src/stores/interactive.ts",
+    "ts": 1794672644220,
+    "postData": ""
+  }
+]
