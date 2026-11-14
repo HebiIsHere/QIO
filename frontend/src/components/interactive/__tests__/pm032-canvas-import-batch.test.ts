@@ -366,10 +366,9 @@ describe("#46 离开互动页后继续上传和关联", () => {
     expect(batchItems()[0].status).toBe("failed");
     expect(batchItems()[0].error || "").toContain("原板面");
 
-    // 回到原板面后重试：源还在内存里，不需要重新选择文件
+    // 回到原板面后重试：源还在内存里，不需要重新选择文件；附件已上传成功，复用第一次的附件 ID
     store.boardId = "board_default";
     store.board = originalBoard;
-    mocks.uploadAttachment.mockResolvedValueOnce(attachment("跨板.txt", { id: "att_cross_retry" }));
     const retries = statusEl().findAll('[data-im="card-attach-retry"]');
     expect(retries, "回到原板面后没有恢复入口").toHaveLength(1);
     await retries[0].trigger("click");
@@ -378,8 +377,9 @@ describe("#46 离开互动页后继续上传和关联", () => {
     expect(batchItems()[0].status).toBe("succeeded");
     const live = liveCards();
     expect(live).toHaveLength(1);
-    expect(linkedAttachmentId(live[0].id)).toBe("att_cross_retry");
+    expect(linkedAttachmentId(live[0].id), "重试关联没有复用第一次上传的附件 ID").toBe("att_cross");
     expect(mocks.pickBrowserFile).not.toHaveBeenCalled();
+    expect(mocks.uploadAttachment, "重试关联重复上传了同一份文件").toHaveBeenCalledTimes(1);
   });
 
   it("单卡关联：上传发出后去设置，回执仍完成原卡关联；返回时显示真实结果", async () => {

@@ -1792,3 +1792,32 @@ describe("#46 第五轮：整轮恢复次数与在途重新预判接回", () => 
     expect(putLog().filter((item) => item.boardId === BOARD_A).length, "向 A 发出了 B 的保存").toBe(0);
   });
 });
+
+describe("#46 第六轮：草稿按发起时的板面归属", () => {
+  it("B 输入草稿、自动保存前切到 A：草稿只写 B，不写 A", async () => {
+    const cardA = textCard("card_a", "A 的内容");
+    const cardB = textCard("card_b", "B 的内容");
+    vi.mocked(api.fetchBoardState).mockImplementation((async (id: string) =>
+      boardPayload(
+        id === BOARD_A ? boardState(BOARD_A, [cardA], 3) : boardState(BOARD_B, [cardB], 7),
+      )) as never);
+
+    await store.selectBoard(BOARD_A);
+    await store.selectBoard(BOARD_B);
+    store.setCardDraftInput("card_b", { text: "B 的新草稿" });
+
+    // 草稿防抖还没到点就切到 A
+    await store.selectBoard(BOARD_A);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    await settle();
+
+    const draftCalls = vi.mocked(api.saveDrafts).mock.calls;
+    expect(draftCalls.length, "草稿没有发出去").toBeGreaterThan(0);
+    for (const call of draftCalls) {
+      expect(String(call[0]), "草稿写到了错误的板面").toBe(BOARD_B);
+      expect(Object.keys(call[1] as Record<string, string>)).toContain("card:card_b");
+    }
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.board?.cards?.some((card) => card.id === "card_b"), "B 的草稿写进了 A 的板面").toBe(false);
+  });
+});

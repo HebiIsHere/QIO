@@ -318,6 +318,10 @@ export interface CardImportJobSnapshot {
   attachment: AttachmentRef | null;
   /** 终态是否已经被界面展示过（展示过就不在下次返回时重复弹出） */
   acknowledged: boolean;
+  /** #46：关联已写入板面，但正式保存回执还没确认 —— 还不能显示「已关联附件」。 */
+  awaitingSave?: boolean;
+  /** #46：关联成功保存后要保留的附件事实（保存失败重试时复用同一份）。 */
+  pendingAttachment?: AttachmentRef | null;
 }
 
 /** #46：单卡导入的进度 / 终态事件（组件只负责显示，执行始终在 store）。 */
@@ -1363,7 +1367,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 取消撤回的恢复状态（F1）：active=true 表示「服务器事实还没落地确认这次撤回」。
    * 界面据此**不许**宣称「已撤回」；reason 是回读失败的真实原因，可重试。
    */
-  const cancelRecovery = ref<{ boardId: string; active: boolean; reason: string | null } | null>(null);
+  /**
+   * #46（第六轮）：撤回的恢复状态**按板面**记：B 的撤回读取在飞时切到 A 再撤回，
+   * A 的结果只属于 A；B 的迟到失败也只写回 B，不覆盖 A 的撤回结果。
+   */
+  const cancelRecoveryByBoard = new Map<
+    string,
+    { boardId: string; active: boolean; reason: string | null }
+  >();
+  const cancelRecovery = computed(
+    () => cancelRecoveryByBoard.get(boardId.value) ?? null,
+  ) as unknown as import("vue").Ref<{ boardId: string; active: boolean; reason: string | null } | null>;
 
   /**
    * 被用户关闭（取消/再次查看之前的暂缓）的「剩余撤回决定」提示（N3）。
@@ -1512,6 +1526,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   /** 草稿的写入代次（单调递增）：每个键记最后一次修改的序号，旧请求的返回据此丢弃 */
   let draftSeq = 0;
+  /**
+   * #46（第六轮）：草稿键的**归属板面**。
+   *
+   * 缺陷：草稿保存只按「此刻的 boardId」发请求；在 B 输入后自动保存前切到 A，
+   * flushDrafts 就把 B 的草稿写给了 A。归属必须在**发起编辑时**固定，之后经过
+   * 防抖 / 切板 / 重读 / 重试都写回原板面。
+   */
+  const draftBoardByKey = new Map<string, string>();
+  function draftBoardOf(key: string): string {
+    return draftBoardByKey.get(key) ?? boardId.value;
+  }
+  function rememberDraftBoard(key: string, targetBoardId: string = boardId.value): void {
+    draftBoardByKey.set(key, targetBoardId);
+  }
   const draftKeySeq = new Map<string, number>();
   const draftSavedKeySeq = new Map<string, number>();
   /** 同一时刻只允许一个草稿保存请求在飞（并发 PUT 会让旧内容盖掉新内容） */
@@ -1524,7 +1552,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * - 只要这份依据还在，`flushDrafts` 就必须真的发一次请求（清空最后一份也要发）；
    * - 版本号用来保证「旧版本的清除不许删掉后来新建的版本」。
    */
-  const pendingRemovals = new Map<string, { cardId: string; version: number }>();
+  const pendingRemovals = new Map<string, { cardId: string; version: number; boardId?: string }>();
   /**
    * 本机副本删除**真的失败**、还没处理完的键（13）：值是当时要删的记录版本（null = 按对象删）。
    * 只有 storage-failure 才登记；version-guard 是「另一份更新的记录还在」的有意保留，不是失败。
@@ -1568,7 +1596,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 正式变更（板面保存）真实成功之前，取消/失败/等待确认都必须保留候选与恢复来源。
    * version = 登记时 draftKeySeq 的那一版；登记后用户又输入更新版本 → 该次登记作废。
    */
-  const pendingDraftClears = new Map<string, number>();
+  /** #46：待清除登记也带归属板面：只有该板面的正式保存成功才允许清它。 */
+  const pendingDraftClears = new Map<string, { version: number; boardId: string }>();
   /**
    * 登记表的**响应式镜像**（给界面/测试观察用）。
    *
@@ -2511,6 +2540,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           }
           // 服务端接受了这次写入：整轮自动恢复到此收尾（计划与次数一起结束）
           finishSaveRecovery(ownerBoardId);
+          settleCardImportSaveForBoard(ownerBoardId, true);
           return;
         }
         // #80：保存回执里的 pending 是服务端刚重算的「相对上次成功提交还剩下的改动」
@@ -2569,7 +2599,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           return;
         }
         // 服务器接受了这次写入：这是**已保存事实**（F1 的撤回也由它确认）
-        settleCancelRecovery(true, null);
+        settleCancelRecovery(true, null, ownerBoardId);
         /*
           Phase 2：保存回执同样是服务器事实 —— 对齐参与口径，并把还没被服务器确认的
           用户参与选择保留下来（旧后端的回执里没有 participation 时不能把它抹掉）。
@@ -2599,15 +2629,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
          * 07：正式变更真的落地了，才执行登记的草稿清除。
          * 版本守卫：登记之后用户又输入了更新版本（draftKeySeq 前进）→ 该次登记作废。
          */
-        for (const [key, version] of pendingDraftClears) {
-          if (Object.prototype.hasOwnProperty.call(drafts.value, key) && (draftKeySeq.get(key) ?? 0) !== version) {
+        for (const [key, entry] of pendingDraftClears) {
+          // #46：只有本次保存所属板面的草稿才允许被这次成功回执清掉
+          if (entry.boardId !== ownerBoardId) continue;
+          if (Object.prototype.hasOwnProperty.call(drafts.value, key) && (draftKeySeq.get(key) ?? 0) !== entry.version) {
             pendingDraftClears.delete(key);
             continue;
           }
           pendingDraftClears.delete(key);
-          clearDraft(key);
+          clearDraft(key, entry.boardId);
         }
         syncPendingDraftClearKeys();
+        settleCardImportSaveForBoard(ownerBoardId, true);
         const impact = (result as { materialImpact?: { paused?: Intent[] } }).materialImpact;
         // N2：这一次保存真实撤回/暂停了哪些任务，以服务端回执为准（客户端不猜）
         lastSavePaused.value = impact?.paused ?? [];
@@ -2655,6 +2688,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
               saveError: (err as Error).message,
               dirty: true,
             });
+            settleCardImportSaveForBoard(ownerBoardId, false, (err as Error).message);
           }
           return;
         }
@@ -2673,6 +2707,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
         saveStatus.value = "error";
         saveError.value = (err as Error).message;
         dirty.value = true;
+        settleCardImportSaveForBoard(ownerBoardId, false, saveError.value);
       } finally {
         /**
          * #46（第三/四轮）：旧请求的 finally **只清理它自己的在途记录**。
@@ -2776,6 +2811,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveStatus.value = "error";
       saveError.value = limitReason;
       dirty.value = true;
+      settleCardImportSaveForBoard(owner, false, limitReason);
       return "stopped";
     }
     /**
@@ -3105,12 +3141,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * `ok=true` 只表示**服务器事实已经落地**（回读成功采纳 / 后续保存被接受），
    * 不是「我们相信撤回成功了」；失败时保留真实原因与可重试状态。
    */
-  function settleCancelRecovery(ok: boolean, reason: string | null): void {
-    const state = cancelRecovery.value;
-    if (!state || !state.active) return;
-    cancelRecovery.value = ok
-      ? { ...state, active: false, reason: null }
-      : { ...state, active: true, reason: reason ?? "撤回还没被服务器事实确认" };
+  function settleCancelRecovery(
+    ok: boolean,
+    reason: string | null,
+    forBoardId: string = boardId.value,
+  ): void {
+    const state = cancelRecoveryByBoard.get(forBoardId);
+    if (!state || !state.active || state.boardId !== forBoardId) return;
+    cancelRecoveryByBoard.set(
+      forBoardId,
+      ok
+        ? { ...state, active: false, reason: null }
+        : { ...state, active: true, reason: reason ?? "撤回还没被服务器事实确认" },
+    );
   }
 
   /**
@@ -3549,13 +3592,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
         // #46：候选已经按这块板面的服务器事实合并过 —— 内容属于当前板面
         boardContentBoardId = requestedBoardId;
         boardContentIsPlaceholder = false;
-        settleCancelRecovery(true, null);
+        settleCancelRecovery(true, null, requestedBoardId);
       } else {
         // 迟到的读取：只合并草稿，不用它回退任何板面事实
-        mergeDraftsFromPayload(payload, before, readSaved);
+        mergeDraftsFromPayload(payload, before, readSaved, requestedBoardId);
       }
       if (pendingRemovals.size > 0) scheduleDraftSave();
-      settleCancelRecovery(true, null);
+      settleCancelRecovery(true, null, requestedBoardId);
       // #46：这次读取落定（内容已按服务器事实合并进候选），等它的回执可以继续判定
       endBoardRead(requestedBoardId);
       return true;
@@ -3566,9 +3609,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 「服务器改动」而造出假冲突）。旧读取只允许合并草稿，不动任何板面事实。
      */
     if (!payloadIsNewer) {
-      mergeDraftsFromPayload(payload, before, readSaved);
+      mergeDraftsFromPayload(payload, before, readSaved, requestedBoardId);
       if (pendingRemovals.size > 0) scheduleDraftSave();
-      settleCancelRecovery(true, null);
+      settleCancelRecovery(true, null, requestedBoardId);
       endBoardRead(requestedBoardId);
       return true;
     }
@@ -3608,10 +3651,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } else {
       saveStatus.value = "idle";
     }
-    mergeDraftsFromPayload(payload, before, readSaved);
+    mergeDraftsFromPayload(payload, before, readSaved, requestedBoardId);
     // 刷新后发现的「待同步清除」要真的发出去：清空最后一份也要发（§11.2）
     if (pendingRemovals.size > 0) scheduleDraftSave();
-    settleCancelRecovery(true, null);
+    settleCancelRecovery(true, null, requestedBoardId);
     // #46：读取落定，等这块板面的上传回执可以继续判定
     endBoardRead(requestedBoardId);
     return true;
@@ -3625,6 +3668,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     payload: BoardStateResponse,
     before: Map<string, number>,
     readSaved: Map<string, number>,
+    targetBoardId: string = boardId.value,
   ): void {
     // 服务端是已保存内容的事实来源，但**本地还没保存成功的编辑内容**优先：
     // 失败/在飞的草稿不能被服务端旧值覆盖（§9.5「失败时保留编辑内容」），
@@ -3652,6 +3696,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
         !Object.prototype.hasOwnProperty.call(serverDrafts, key);
       if (keepLocal) mergedDrafts[key] = drafts.value[key] ?? "";
     }
+    // #46：这次读取属于哪块板面，这里合并出来的草稿键就归哪块板面（发起编辑时的归属以更早的记忆为准）
+    for (const key of Object.keys(mergedDrafts)) {
+      if (!draftBoardByKey.has(key)) rememberDraftBoard(key, targetBoardId);
+    }
     restoreLocalCardDrafts(mergedDrafts);
     drafts.value = mergedDrafts;
     // 未保存/失败的键保留自己的状态；GET 在飞期间保存成功（越过读取基线）的键
@@ -3670,11 +3718,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
     draftStates.value = keptStates;
   }
 
-  async function refreshVisibleRange() {
+  /** #46：读取按「板面 + 本次请求代次」落地；迟到的响应既不覆盖当前板面，也不写当前板面的错误。 */
+  let visibleRangeReadSeq = 0;
+  let intentsReadSeq = 0;
+  let executionsReadSeq = 0;
+  let boardLoadSeq = 0;
+
+  async function refreshVisibleRange(targetBoardId: string = boardId.value) {
+    const seq = ++visibleRangeReadSeq;
     try {
-      const payload = await api.fetchVisibleRange(boardId.value);
+      const payload = await api.fetchVisibleRange(targetBoardId);
+      if (boardId.value !== targetBoardId || seq !== visibleRangeReadSeq) return;
       visibleRange.value = payload.visibleRange;
     } catch (err) {
+      if (boardId.value !== targetBoardId || seq !== visibleRangeReadSeq) return;
       visibleRange.value = null;
       saveError.value = (err as Error).message;
     }
@@ -3700,10 +3757,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * - 失败：**保留**最后一次成功读到的任务、冲突与批次依据，只标明「刷新失败」与真实原因。
    *   读取失败绝不是「任务消失」；只有成功返回的空集合才是真的空。
    */
-  async function loadIntents(): Promise<boolean> {
+  async function loadIntents(targetBoardId: string = boardId.value): Promise<boolean> {
+    const seq = ++intentsReadSeq;
     intentsLoadState.value = "loading";
     try {
-      const payload = await api.fetchIntents(boardId.value);
+      const payload = await api.fetchIntents(targetBoardId);
+      // #46：B 的任务清单迟到不许写进 A（板面或代次对不上就不落地）
+      if (boardId.value !== targetBoardId || seq !== intentsReadSeq) return false;
       intents.value = payload.intents ?? [];
       conflicts.value = payload.conflicts ?? [];
       batchAvailable.value = Boolean(payload.batchAvailable);
@@ -3715,6 +3775,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (payload.executions?.length) mergeExecutions(payload.executions);
       return true;
     } catch (err) {
+      if (boardId.value !== targetBoardId || seq !== intentsReadSeq) return false;
       // 只记这次读取失败：旧清单、旧冲突、旧批次依据原样保留（不清空、不假装任务消失）
       intentsLoadState.value = "error";
       intentsLoadError.value = (err as Error).message || "原因未知";
@@ -3927,23 +3988,37 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   async function load() {
+    /**
+     * #46：一次 load 只有**自己的读取上下文**：板面 + 代次 + 后续步骤。
+     * 切走板面后，这块板面的后续读取与失败都不许写进新板面（B → A、B → A → B 同口径）。
+     */
+    const contextBoardId = boardId.value;
+    const contextSeq = ++boardLoadSeq;
+    const contextIsValid = () => boardId.value === contextBoardId && contextSeq === boardLoadSeq;
     loading.value = true;
     loadError.value = null;
     try {
-      await refreshBoardFromServer();
+      const applied = await refreshBoardFromServer(contextBoardId);
+      if (!applied || !contextIsValid()) return;
       boardLoadedOnce.value = true;
-      await refreshVisibleRange();
-      await loadIntents();
+      await refreshVisibleRange(contextBoardId);
+      if (!contextIsValid()) return;
+      await loadIntents(contextBoardId);
+      if (!contextIsValid()) return;
       // F02/F06：意图视图与任务清单同一处维护；读取失败保留上次内容并标「更新失败」
       await loadIntentViews();
+      if (!contextIsValid()) return;
       // 刷新后如实恢复真实的理解与执行状态（页面刷新不重复创建、不重复执行）
       await refreshUnderstanding();
-      await loadExecutions();
+      if (!contextIsValid()) return;
+      await loadExecutions(contextBoardId);
+      if (!contextIsValid()) return;
       /**
        * 契约 §1.3：重启 / 刷新后仍未确认的同一次提交沿用**同一个**请求身份，
        * 并立刻按这个身份做一次精确查证：查到就恢复受理事实，查不到就继续「结果未知」。
        */
       await restorePendingSubmission();
+      if (!contextIsValid()) return;
       /**
        * #46（第四轮）：整板读取落定 = 回到原板面后恢复的第一步已经完成；
        * 如果这块板面还有冲突恢复计划，按它的最新状态继续（重读已由这次 load 完成）。
@@ -3953,6 +4028,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
         void startUnderstandingPolling();
       }
     } catch (err) {
+      // 已切走 / 已被更新的 load 接手：这次失败属于原板面，不写当前板面
+      if (!contextIsValid()) return;
       if (!board.value) {
         // #46：读取失败时补的空占位不是「已加载的原板面」：等它的上传回执按真实情况结束
         board.value = emptyBoardState(boardId.value);
@@ -3962,7 +4039,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       loadError.value = (err as Error).message;
       wakeBoardReadyWaiters(boardId.value);
     } finally {
-      loading.value = false;
+      if (contextIsValid()) loading.value = false;
     }
   }
 
@@ -4203,7 +4280,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * - 服务器确认之前状态**不是**已同步：清除失败要能看到原因并重试；
    * - 版本往前推，让还在飞的旧保存回执不再算数（不许把已清除的草稿复活）。
    */
-  function clearDraft(key: string): void {
+  function clearDraft(key: string, ownerBoardId: string = draftBoardOf(key)): void {
+    const clearBoardId = ownerBoardId;
     if (Object.prototype.hasOwnProperty.call(drafts.value, key)) {
       const next = { ...drafts.value };
       delete next[key];
@@ -4215,7 +4293,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     setDraftConflict(key, null);
     const cardId = cardIdFromDraftKey(key);
     if (!cardId) return;
-    const cleared = writeCardLocalClear(cardId, { boardId: boardId.value, seq: draftKeySeq.get(key) ?? 0 });
+    const cleared = writeCardLocalClear(cardId, { boardId: clearBoardId, seq: draftKeySeq.get(key) ?? 0 });
     setDraftLocalState(key, cleared);
     /**
      * 12：只登记**真实写进存储**的版本（committedVersion）。
@@ -4224,7 +4302,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
      */
     const committed = cleared.ok ? cleared.committedVersion ?? cleared.version : undefined;
     if (committed !== undefined) {
-      pendingRemovals.set(key, { cardId, version: committed });
+      pendingRemovals.set(key, { cardId, version: committed, boardId: clearBoardId });
       pendingLocalRemovals.delete(key);
     } else {
       /**
@@ -4244,7 +4322,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
        * 必须保留它、不许覆盖，也不许随后把它删掉。
        */
       pendingLocalRemovals.set(key, { purpose: "clear-draft", expectVersion: onDiskVersion, guard: "version" });
-      pendingRemovals.set(key, { cardId, version: onDiskVersion });
+      pendingRemovals.set(key, { cardId, version: onDiskVersion, boardId: clearBoardId });
     }
     setDraftRemovalState(
       key,
@@ -4263,7 +4341,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 真正的清除由 `saveNow` 在「回执对应当前候选且没有任何更新候选」时按登记版本执行。
    */
   function requestDraftClear(key: string): void {
-    pendingDraftClears.set(key, draftKeySeq.get(key) ?? 0);
+    pendingDraftClears.set(key, {
+      version: draftKeySeq.get(key) ?? 0,
+      boardId: draftBoardOf(key),
+    });
     syncPendingDraftClearKeys();
   }
 
@@ -4276,6 +4357,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
       lastDraftKey.value = key;
       return;
     }
+    // #46：编辑发生在哪块板面，这份草稿就只属于哪块板面
+    rememberDraftBoard(key);
     drafts.value = { ...drafts.value, [key]: text };
     lastDraftKey.value = key;
     draftKeySeq.set(key, ++draftSeq);
@@ -4333,6 +4416,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       lastDraftKey.value = key;
       return;
     }
+    rememberDraftBoard(key);
     drafts.value = { ...drafts.value, [key]: text };
     lastDraftKey.value = key;
     draftKeySeq.set(key, ++draftSeq);
@@ -4569,14 +4653,25 @@ export const useInteractiveStore = defineStore("interactive", () => {
             // 未决冲突键等用户选择：不上传（本机候选不上去），也不删除（服务器那份原样保留）
             conflictKeys.add(conflictKey);
           }
-          const keys = unsavedDraftKeys().filter((key) => !conflictKeys.has(key));
+          const allUnsaved = unsavedDraftKeys().filter((key) => !conflictKeys.has(key));
+          const allRemovalKeys = [...pendingRemovals.keys()].filter((key) => !conflictKeys.has(key));
+          if (allUnsaved.length === 0 && allRemovalKeys.length === 0) break;
+          /**
+           * #46：一次请求只写**一块板面**的草稿。归属在编辑发起时固定，
+           * 切板后才到点的保存仍然写回原板面；另一块板面的草稿留在队列里，下一次防抖处理。
+           */
+          const ownerBoardId = draftBoardOf(allUnsaved[0] ?? allRemovalKeys[0]);
+          const keys = allUnsaved.filter((key) => draftBoardOf(key) === ownerBoardId);
           const patchDrafts: Record<string, string> = {};
           for (const key of keys) patchDrafts[key] = drafts.value[key] ?? "";
           const atSeq = draftSeq;
           // 这次请求**明确删除**的键（每条带自己登记的身份版本）
-          const removalsAtRequest = new Map(pendingRemovals);
+          const removalsAtRequest = new Map(
+            [...pendingRemovals].filter(
+              ([key]) => (pendingRemovals.get(key)?.boardId ?? draftBoardOf(key)) === ownerBoardId,
+            ),
+          );
           const removedKeys = [...removalsAtRequest.keys()];
-          if (keys.length === 0 && removedKeys.length === 0) break;
           /**
            * 逐键版本（C1）：没有安全基线（baseRev 与服务端当前 rev 一致）时，
            * 服务端只凭它判断「这次覆盖 / 删除是不是基于当前那一版」。
@@ -4626,7 +4721,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           }
           for (const key of removalsAtRequest.keys()) setDraftRemovalState(key, "pending");
           try {
-            receiptsAtRequest = await api.saveDrafts(boardId.value, patchDrafts, {
+            receiptsAtRequest = await api.saveDrafts(ownerBoardId, patchDrafts, {
               removed: removedKeys,
               baseRev: serverDraftRev,
               keyVersions: keyVersionsAtRequest,
@@ -4778,7 +4873,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
                * 而不是直接删记录：删除再失败一次，磁盘上仍是 kind=draft，重开就复活。
                */
               const protection = ensureCardLocalClear(entry.cardId, {
-                boardId: boardId.value,
+                boardId: ownerBoardId,
                 seq: draftKeySeq.get(key) ?? 0,
                 expectVersion: pendingLocal.expectVersion,
               });
@@ -5847,20 +5942,64 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 绝不因为 Promise 正常返回就宣称「已保存、任务已暂停」。
    */
   function summarizeImpactConfirm(extraReason?: string): ImpactConfirmResult {
-    if (pendingImpact.value) {
+    return summarizeImpactConfirmFor(boardId.value, extraReason);
+  }
+  /**
+   * #46（第六轮）：确认的返回结果必须来自**这次确认对应的板面**，而不是此刻显示的那块。
+   *
+   * 缺陷：B 点确认后切到已保存的 A，B 的保存失败只写进 B 的会话；旧实现却读全局
+   * saveStatus（A 的 saved）→ 把 B 的失败报成「已保存」。这里按操作所属板面读取
+   * 当前显示状态或该板面自己的保存会话。
+   */
+  function summarizeImpactConfirmFor(
+    targetBoardId: string,
+    extraReason?: string,
+  ): ImpactConfirmResult {
+    if (boardId.value === targetBoardId) {
+      if (pendingImpact.value) {
+        return {
+          outcome: "needs_confirm",
+          reason: pendingImpact.value.note ?? "这次改动还没有保存，正在等你确认影响范围",
+        };
+      }
+      if (impactCheckError.value) return { outcome: "check_failed", reason: impactCheckError.value };
+      if (saveStatus.value === "error") {
+        return { outcome: "save_failed", reason: saveError.value ?? "保存没有完成，原因未知" };
+      }
+      if (saveStatus.value === "saved" && !dirty.value) {
+        return { outcome: "saved", paused: [...lastSavePaused.value] };
+      }
+      if (dirty.value) {
+        return {
+          outcome: "superseded",
+          reason: extraReason ?? "板面又有更新的改动接手了这次保存，已按最新版本重新核实",
+        };
+      }
+      return { outcome: "superseded", reason: extraReason ?? "这次确认没有对应的落库结果，已重新核实" };
+    }
+    const session = boardSaveSessions.get(targetBoardId);
+    if (!session) {
       return {
-        outcome: "needs_confirm",
-        reason: pendingImpact.value.note ?? "这次改动还没有保存，正在等你确认影响范围",
+        outcome: "superseded",
+        reason: extraReason ?? "这次确认对应的板面已经不可用，已按最新事实重新核实",
       };
     }
-    if (impactCheckError.value) return { outcome: "check_failed", reason: impactCheckError.value };
-    if (saveStatus.value === "error") {
-      return { outcome: "save_failed", reason: saveError.value ?? "保存没有完成，原因未知" };
+    if (session.pendingImpact) {
+      return {
+        outcome: "needs_confirm",
+        reason: session.pendingImpact.note ?? "这次改动还没有保存，正在等你确认影响范围",
+      };
     }
-    if (saveStatus.value === "saved" && !dirty.value) {
-      return { outcome: "saved", paused: [...lastSavePaused.value] };
+    if (session.impactCheckError) {
+      return { outcome: "check_failed", reason: session.impactCheckError };
     }
-    if (dirty.value) {
+    if (session.saveStatus === "error") {
+      return { outcome: "save_failed", reason: session.saveError ?? "保存没有完成，原因未知" };
+    }
+    if (session.saveStatus === "saved" && !session.dirty) {
+      return { outcome: "saved", paused: [] };
+    }
+    if (session.dirty) {
       return {
         outcome: "superseded",
         reason: extraReason ?? "板面又有更新的改动接手了这次保存，已按最新版本重新核实",
@@ -5871,6 +6010,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   /** 用户确认：改动生效，受影响的任务会暂停并保留进度。 */
   async function confirmImpact(): Promise<ImpactConfirmResult> {
+    const confirmBoardId = boardId.value;
     const pending = pendingImpact.value;
     /**
      * #46（第四轮）：确认必须属于**当前板面**的这一份候选。
@@ -5913,7 +6053,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (rechecked && !rechecked.note) {
         pendingImpact.value = { ...rechecked, note: recheckNote };
       }
-      return summarizeImpactConfirm(recheckNote);
+      return summarizeImpactConfirmFor(confirmBoardId, recheckNote);
     }
     impactConfirmed = true;
     impactCheckError.value = null;
@@ -5927,7 +6067,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
     pendingConfirm = { checkId: pending.checkId, stateVersion: pending.stateVersion };
     await saveNow(undefined, { recoveryContinuation: true });
-    return summarizeImpactConfirm();
+    return summarizeImpactConfirmFor(confirmBoardId);
   }
 
   /** 用户取消：这次未确认的候选放弃（07），回到服务器已保存状态；执行中的任务继续。 */
@@ -5975,30 +6115,33 @@ export const useInteractiveStore = defineStore("interactive", () => {
     dirty.value = false;
     saveStatus.value = "idle";
     saveError.value = null;
-    cancelRecovery.value = { boardId: boardId.value, active: true, reason: null };
+    const cancelBoardId = boardId.value;
+    cancelRecoveryByBoard.set(cancelBoardId, { boardId: cancelBoardId, active: true, reason: null });
     try {
-      const applied = await refreshBoardFromServer();
-      if (!applied) settleCancelRecovery(false, "撤回还没有被服务器事实确认（板面已经切换）");
+      const applied = await refreshBoardFromServer(cancelBoardId);
+      if (!applied) settleCancelRecovery(false, "撤回还没有被服务器事实确认（板面已经切换）", cancelBoardId);
     } catch (err) {
       settleCancelRecovery(
         false,
         "撤回还没有被服务器事实确认：" + ((err as Error).message || "读取服务器状态失败"),
+        cancelBoardId,
       );
     }
   }
 
   /** F1：撤回还没被服务器事实确认时的重试入口（界面据此提供「重新核对」）。 */
   async function retryCancelRecovery(): Promise<{ ok: boolean; error?: string }> {
+    const owner = boardId.value;
     try {
-      const applied = await refreshBoardFromServer();
+      const applied = await refreshBoardFromServer(owner);
       if (!applied) {
-        settleCancelRecovery(false, "撤回还没有被服务器事实确认（板面已经切换）");
+        settleCancelRecovery(false, "撤回还没有被服务器事实确认（板面已经切换）", owner);
         return { ok: false, error: "没有取到当前板面的最新事实" };
       }
       return { ok: true };
     } catch (err) {
       const message = (err as Error).message || "读取服务器状态失败";
-      settleCancelRecovery(false, "撤回还没有被服务器事实确认：" + message);
+      settleCancelRecovery(false, "撤回还没有被服务器事实确认：" + message, owner);
       return { ok: false, error: message };
     }
   }
@@ -6177,7 +6320,10 @@ export const useInteractiveStore = defineStore("interactive", () => {
     epoch: number = understandingEpoch,
   ): Promise<Understanding | null> {
     if (!apiSupports("fetchUnderstanding")) return null;
-    const payload = await api.fetchUnderstanding(boardId.value, submissionId);
+    const requestedBoardId = boardId.value;
+    const payload = await api.fetchUnderstanding(requestedBoardId, submissionId);
+    // #46：迟到的理解读取不许写进另一块板面
+    if (requestedBoardId !== boardId.value) return null;
     if (epoch !== understandingEpoch) return null;
     const found = adoptUnderstandings(payload, submissionId);
     understandingError.value = null;
@@ -6581,11 +6727,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /** 读取本板面的执行记录；读完之后只在确有排队 / 运行的任务时才继续查询。 */
-  async function loadExecutions(): Promise<void> {
+  async function loadExecutions(targetBoardId: string = boardId.value): Promise<void> {
     if (!apiSupports("fetchExecutions")) return;
+    const seq = ++executionsReadSeq;
     executionsLoadState.value = "loading";
     try {
-      const payload = await api.fetchExecutions(boardId.value);
+      const payload = await api.fetchExecutions(targetBoardId);
+      if (boardId.value !== targetBoardId || seq !== executionsReadSeq) return;
       // 合并而不是整体替换：刚同步拿到的执行记录不该被一次旧/空的列表抹掉（记录只追加）
       mergeExecutions(payload?.executions ?? []);
       executionError.value = null;
@@ -6594,6 +6742,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       executionsLoadState.value = "ok";
       startExecutionPolling();
     } catch (err) {
+      if (boardId.value !== targetBoardId || seq !== executionsReadSeq) return;
       executionError.value = (err as Error).message;
       executionsLoadError.value = executionError.value;
       executionsLoadState.value = "error";
@@ -6806,6 +6955,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     fileName: string;
     sourceKind: "browser_upload" | "desktop_path" | "dropped_path";
     source: ImportSourceToken;
+    /** #46：这次尝试复用的已上传附件（重试关联时不再重新上传）。 */
+    reuseAttachment?: AttachmentRef | null;
   }
 
   interface ImportAssociationOutcome {
@@ -6826,6 +6977,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const importItemSources = new Map<string, ImportSourceToken>();
   const cardImportSources = new Map<string, ImportSourceToken>();
   const runningImportBatches = new Map<string, Promise<void>>();
+  /**
+   * #46（第六轮）：已经上传成功、但关联 / 保存还没完成的附件事实。
+   * 「重试关联」只重试原板关联与保存，复用**第一次取得的附件 ID**，不再重新上传。
+   */
+  const settledAttachmentByCard = new Map<string, { attachment: AttachmentRef; fileName: string }>();
+  const settledAttachmentByItem = new Map<string, { attachment: AttachmentRef; fileName: string }>();
   const importJobListeners = new Set<(event: ImportJobEvent) => void>();
   /** 单卡关联的真实进度（返回互动页时按这里显示，不再写「结果未知」）。 */
   const cardImportJobs = ref<Record<string, CardImportJobSnapshot>>({});
@@ -6936,6 +7093,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     itemKey?: string | null;
     fileName: string;
     source: ImportSourceToken;
+    reuseAttachment?: AttachmentRef | null;
   }): ImportAttemptRecord {
     const targetBoard = input.boardId ?? boardId.value;
     const attempt: ImportAttemptRecord = {
@@ -6948,6 +7106,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       fileName: input.fileName,
       sourceKind: importSourceKindOf(input.source),
       source: input.source,
+      reuseAttachment: input.reuseAttachment ?? null,
     };
     importAttempts.set(attempt.id, attempt);
     if (attempt.batchId && attempt.itemKey) {
@@ -7201,16 +7360,32 @@ export const useInteractiveStore = defineStore("interactive", () => {
     };
     let settled: AttachmentRef | null = null;
     try {
-      const created =
-        "path" in source
-          ? await registerSourceAttachment(source.path, source.sourceKind)
-          : await uploadAttachment(source.file, { sourceKind: "browser_upload" });
-      if (!attempt.batchId) {
-        // 单卡关联：上传已完成，正在等附件可用（真实进度，返回页面后也按它显示）
-        reportCardJobPhase(attempt, "processing");
-        emitCardJobChange(attempt, "processing", null);
+      if (attempt.reuseAttachment) {
+        settled = attempt.reuseAttachment;
+      } else {
+        const created =
+          "path" in source
+            ? await registerSourceAttachment(source.path, source.sourceKind)
+            : await uploadAttachment(source.file, { sourceKind: "browser_upload" });
+        if (!attempt.batchId) {
+          // 单卡关联：上传已完成，正在等附件可用（真实进度，返回页面后也按它显示）
+          reportCardJobPhase(attempt, "processing");
+          emitCardJobChange(attempt, "processing", null);
+        }
+        settled = await waitUntilSettled(created);
       }
-      settled = await waitUntilSettled(created);
+      // 上传成功即记住附件事实：后续关联 / 保存失败时重试复用同一份，不再上传第二次
+      if (attempt.batchId && attempt.itemKey) {
+        settledAttachmentByItem.set(importItemMapKey(attempt.batchId, attempt.itemKey), {
+          attachment: settled,
+          fileName: attempt.fileName,
+        });
+      } else if (attempt.cardId) {
+        settledAttachmentByCard.set(importCardMapKey(attempt.boardId, attempt.cardId), {
+          attachment: settled,
+          fileName: attempt.fileName,
+        });
+      }
       const outcome = await applyImportAssociation(attempt, settled);
       return { ...base, ...outcome, attachment: settled };
     } catch (error) {
@@ -7242,16 +7417,28 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return;
     }
     // 单卡关联：把真实终态留给界面（返回互动页时显示一次）并通知当前界面
+    /**
+     * #46（第六轮）：关联写入板面 ≠ 保存成功。原板就是当前板面且有未保存改动时，
+     * 先显示「关联待保存」，等这次候选的保存回执再决定成功 / 失败（失败可复用附件重试）。
+     */
+    const awaitingSave =
+      result.ok &&
+      boardId.value === attempt.boardId &&
+      dirty.value &&
+      saveStatus.value !== "saved" &&
+      saveStatus.value !== "error";
     putCardImportJob({
       attemptId: attempt.id,
       boardId: attempt.boardId,
       cardId: result.cardId ?? attempt.cardId ?? "",
       fileName: attempt.fileName,
       sourceKind: attempt.sourceKind,
-      phase: result.ok ? "succeeded" : "failed",
+      phase: result.ok ? (awaitingSave ? "processing" : "succeeded") : "failed",
       error: result.error,
       attachment: result.attachment,
       acknowledged: result.superseded,
+      awaitingSave,
+      pendingAttachment: awaitingSave ? result.attachment : null,
     });
     if (!result.superseded) {
       emitCardJobChange(attempt, result.ok ? "succeeded" : "failed", result);
@@ -7310,6 +7497,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
     const targetBoard = item.boardId || batch.boardId;
     const cardId = item.cardId ?? null;
+    const settledBefore = settledAttachmentByItem.get(importItemMapKey(batchId, itemKey));
+    const reuseAttachment =
+      settledBefore && settledBefore.fileName === (item.name || importNameOfSource(source))
+        ? settledBefore.attachment
+        : null;
     const attempt = beginImportAttempt({
       boardId: targetBoard,
       cardId,
@@ -7318,6 +7510,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       itemKey,
       fileName: item.name || importNameOfSource(source),
       source,
+      reuseAttachment,
     });
     noteImportItem(batchId, itemKey, { status: "uploading" });
     const result = await executeImportAttempt(attempt, source);
@@ -7359,6 +7552,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function startCardAttachment(options: {
     cardId: string;
     source: ImportSourceToken;
+    reuseAttachment?: AttachmentRef | null;
   }): { attemptId: number; done: Promise<ImportJobResult> } {
     const targetBoard = boardId.value;
     const cardId = options.cardId;
@@ -7369,6 +7563,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       expectedAttachmentId: cardAttachmentIdOn(targetBoard, cardId),
       fileName: importNameOfSource(source),
       source,
+      reuseAttachment: options.reuseAttachment ?? null,
     });
     cardImportSources.set(importCardMapKey(targetBoard, cardId), source);
     reportCardJobPhase(attempt, "uploading");
@@ -7380,14 +7575,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return { attemptId: attempt.id, done };
   }
 
-  /** 返回页面后的「重试关联」：内存里还有这份文件时不需要用户重新选择。 */
+  /**
+   * 返回页面后的「重试关联」：
+   * - 已经取得可用附件 ID 时**只重试原板关联与保存**，复用第一次上传的附件，不再上传第二次；
+   * - 还没有附件事实时才需要内存里的文件源（整页刷新后才会丢）。
+   */
   function retryCardAttachment(cardId: string): boolean {
     if (!cardId) return false;
-    const source = cardImportSources.get(importCardMapKey(boardId.value, cardId));
-    if (!source) return false;
     const card = (board.value?.cards ?? []).find((item) => item.id === cardId && !item.deleted);
     if (!card) return false;
-    startCardAttachment({ cardId, source });
+    const key = importCardMapKey(boardId.value, cardId);
+    const settled = settledAttachmentByCard.get(key);
+    const source = cardImportSources.get(key);
+    if (!source && !settled) return false;
+    startCardAttachment({
+      cardId,
+      source: (source ?? { file: new File([], settled?.fileName ?? "retry") }) as ImportSourceToken,
+      reuseAttachment: settled?.attachment ?? null,
+    });
     return true;
   }
 
@@ -7415,6 +7620,32 @@ export const useInteractiveStore = defineStore("interactive", () => {
       )
       .sort((a, b) => b.attemptId - a.attemptId);
     return jobs[0] ?? null;
+  }
+
+  /**
+   * #46（第六轮）：原板候选的正式保存回执到了 —— 结算「关联待保存」的单卡导入结果。
+   * 成功才显示「已关联附件」；失败保留附件事实与可执行的重试入口。
+   */
+  function settleCardImportSaveForBoard(
+    targetBoardId: string,
+    ok: boolean,
+    error: string | null = null,
+  ): void {
+    const jobs = { ...cardImportJobs.value };
+    let changed = false;
+    for (const [key, job] of Object.entries(jobs)) {
+      if (job.boardId !== targetBoardId || !job.awaitingSave) continue;
+      const keptAttachment = job.pendingAttachment ?? job.attachment;
+      jobs[key] = {
+        ...job,
+        phase: ok ? "succeeded" : "failed",
+        awaitingSave: false,
+        error: ok ? null : (error ?? "关联已写入板面，但保存没有完成"),
+        pendingAttachment: ok ? null : keptAttachment,
+      };
+      changed = true;
+    }
+    if (changed) cardImportJobs.value = jobs;
   }
 
   /** 终态已经展示过：下次返回页面不再重复弹。 */
