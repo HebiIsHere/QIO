@@ -261,9 +261,14 @@ describe("#46 跨板回执只关联已加载的原板面", () => {
     const selecting = store.selectBoard(BOARD_A);
     await settle();
     expect(store.boardId, "本用例前提：boardId 已经是 A").toBe(BOARD_A);
-    expect(liveCards(store).map((card) => card.id), "本用例前提：内存里仍是 B 的内容").toEqual([
-      "card_b",
-    ]);
+    /**
+     * #46 第二轮：切回 A 时 B 的候选已经被存进 B 自己的会话，内存里**不再**是 B 的内容
+     * （这正是本轮修复点之一）。前提改为「A 还没读到」：内容不是 A 的服务端结果。
+     */
+    expect(
+      liveCards(store).map((card) => card.id),
+      "切回 A 后内存里仍是 B 的内容（待保存候选没有按板面隔离）",
+    ).not.toContain("card_b");
 
     // 上传先成功：A 还没加载 —— 不许写板面，也不许把 B 的内容交给 commit / 保存
     const saveCallsBefore = vi.mocked(api.saveBoardState).mock.calls.length;
@@ -274,9 +279,10 @@ describe("#46 跨板回执只关联已加载的原板面", () => {
       "A 加载前就发出了保存请求",
     ).toBe(saveCallsBefore);
     expect(savedCardIds(), "保存请求里出现了 B 的卡片").not.toContain("card_b");
-    expect(liveCards(store).map((card) => card.id), "A 加载前板面被写成了别的内容").toEqual([
-      "card_b",
-    ]);
+    expect(
+      liveCards(store).map((card) => card.id),
+      "A 加载前板面被写成了别的内容",
+    ).not.toContain("card_b");
 
     // A 读取落定：回执继续关联，只关联一次，且板面 ID / 文件卡 / 附件都属于 A
     readingA.resolve();

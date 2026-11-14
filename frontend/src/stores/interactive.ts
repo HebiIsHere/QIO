@@ -1187,6 +1187,60 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** #46：等原板面加载完成的回执（按板面分组；读取落定 / 板面身份变化时唤醒并重新判定）。 */
   const boardReadyWaiters = new Map<string, Set<() => void>>();
   /**
+   * #46（第二轮）：**每块板面自己的待保存状态**。
+   *
+   * 缺陷：上一轮只修好了「回执写进哪块板面」，但待保存候选仍是一份全局状态
+   * （board.value / dirty / boardLocalRev / cleanState / knownServerSeq / 冲突 / 影响确认）。
+   * 于是「A 上传 → 切到 B 新增卡（B 的候选还没保存）→ 切回 A 并延迟 A 的读取」时，
+   * A 的读取落地会把 **B 的候选**合并进 A 的服务端结果，再把合并结果标记成 A ——
+   * 发往 A 的保存请求里就带上了 B 的卡片。
+   *
+   * 正确口径：待保存内容属于**它被编辑时的那块板面**。切换板面时把当前板面的候选
+   * 整体存进这里（连同版本记账、冲突、影响确认与保存状态），切回来时再取回；
+   * 保存请求的目标板面永远来自「这份候选的归属」，不是「此刻的 boardId」。
+   */
+  interface BoardSaveSession {
+    /** 这份候选属于哪块板面（保存请求的目标板面就是它）。 */
+    boardId: string;
+    /** 候选内容（含未保存改动）。 */
+    board: BoardState;
+    /** 与服务器一致的那一版（撤回 / 冲突合并的基线）。 */
+    cleanState: BoardState | null;
+    boardLocalRev: number;
+    boardCleanRev: number;
+    knownServerSeq: number;
+    boardReadAppliedSeq: number;
+    dirty: boolean;
+    saveStatus: SaveStatus;
+    saveError: string | null;
+    lastSavedAt: string | null;
+    lastOpLabel: string;
+    undoStack: string[];
+    redoStack: string[];
+    boardContentConflicts: Record<string, { local: string; server: string }>;
+    boardRemovalConflicts: Record<string, { kind: "group" | "link"; id: string; server: Record<string, unknown> }>;
+    pendingImpact: {
+      affected: { intentId: string; title: string; materials: string[]; consequence: string }[];
+      previewRev: number;
+      stateVersion: number;
+      checkId?: string;
+      note?: string;
+    } | null;
+    impactConfirmed: boolean;
+    pendingConfirm: { checkId: string; stateVersion?: number } | null;
+    confirmedCheck: { checkId: string; savedSeq: number } | null;
+    localCheckedChoices: Map<string, boolean>;
+    localParticipationChoices: Map<string, Participation>;
+    /** 这块板面自己的保存防抖计时器（切走时清掉，切回来按需重排）。 */
+    saveTimer: ReturnType<typeof setTimeout> | null;
+    /** 这块板面自己的在飞保存（切走时不清：它写的是它自己的板面）。 */
+    saveInFlight: Promise<void> | null;
+    /** 这块板面自己的保存代次（旧回执据此判断是否被取代）。 */
+    saveToken: number;
+  }
+  /** 按板面 id 存起来的待保存会话（只有「切走时还有未保存内容」的板面才会在这里）。 */
+  const boardSaveSessions = new Map<string, BoardSaveSession>();
+  /**
    * 用户已确认的影响检查句柄（M4）：
    * - `pendingConfirm` 在用户点「确认」后设置，随这一次保存的 PUT 一起提交；
    * - `confirmedCheck` 记录「哪一次确认授权了哪个已保存版本」，只有板面自那以后没有新改动时
@@ -1846,6 +1900,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
       saveStatus.value = "error";
       return;
     }
+    /**
+     * #46（第二轮）：保存请求的目标板面来自**待保存内容的真实归属**，不是「此刻的 boardId」。
+     *
+     * 候选只在「它被编辑时的那块板面」下才允许发出：切换板面时当前候选已经被存进
+     * boardSaveSessions，board.value 换成了目标板面的内容 —— 这时如果还有一次迟到的
+     * saveNow 被排上，它必须按内容归属发，或者干脆不发（内容已经不在当前板面）。
+     */
+    const ownerBoardId = boardId.value;
     if (saveInFlight) {
       // 等旧请求结束后要看一眼：这期间用户又改了（dirty 仍为真）就必须**再存一次**，
       // 不能拿到结果就返回，把更新的候选永远忘在内存里（相邻于 N1 的真实遗漏）。
@@ -1960,8 +2022,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
       try {
         const confirmPayload =
           impactConfirmed && pendingConfirm ? pendingConfirm : undefined;
+        /**
+         * #46（第二轮）：PUT 的目标板面 = 这份候选的归属（ownerBoardId），
+         * 不是「请求发出这一刻的 boardId」—— 影响预判期间用户可能已经切走。
+         */
         const result = await api.saveBoardState(
-          boardId.value,
+          ownerBoardId,
           snapshot,
           lastOpLabel.value || "op",
           confirmPayload,
@@ -2037,6 +2103,31 @@ export const useInteractiveStore = defineStore("interactive", () => {
           用户参与选择保留下来（旧后端的回执里没有 participation 时不能把它抹掉）。
         */
         const savedState = applyParticipation(clampBoardBounds(result.state));
+        /**
+         * #46（第二轮）：回执只写回**它自己的板面**。
+         *
+         * 保存期间用户可能已经切走：这时当前 board.value 是另一块板面的内容，
+         * 把这次回执写上去就是串数据。切走了就写进那块板面的会话（它自己的候选与状态），
+         * 当前板面一个字段都不动。
+         */
+        if (boardId.value !== ownerBoardId) {
+          writeSaveResultToStashedSession(ownerBoardId, {
+            board: forceParticipationChoices(savedState),
+            cleanState: cloneState(forceParticipationChoices(savedState)),
+            boardCleanRev: putRev,
+            knownServerSeq: Math.max(
+              boardSaveSessions.get(ownerBoardId)?.knownServerSeq ?? 0,
+              Number.isFinite(acceptedServerSeq) ? acceptedServerSeq : 0,
+            ),
+            lastSavedAt: result.savedAt,
+            saveStatus: "saved",
+            saveError: null,
+            dirty: false,
+            impactConfirmed: false,
+            pendingConfirm: null,
+          });
+          return;
+        }
         reconcileParticipationChoices(savedState);
         board.value = forceParticipationChoices(savedState);
         // #46：保存回执给出的就是这块板面的服务端事实（内容可用，不是空占位）
@@ -2195,6 +2286,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
           if (outcome === "ok") resumeSave = true;
           saveStatus.value = "idle";
           saveError.value = null;
+          return;
+        }
+        /**
+         * #46（第二轮）：保存失败时，B 的修改保留在**B 自己的**可恢复状态里。
+         * 已经切走就写进那块板面的会话（候选 + dirty + 失败原因），当前板面不动。
+         */
+        if (boardId.value !== ownerBoardId) {
+          writeSaveResultToStashedSession(ownerBoardId, {
+            saveStatus: "error",
+            saveError: (err as Error).message,
+            dirty: true,
+          });
           return;
         }
         saveStatus.value = "error";
@@ -2541,6 +2644,128 @@ export const useInteractiveStore = defineStore("interactive", () => {
       waiters.add(onWake);
       boardReadyWaiters.set(targetBoardId, waiters);
     });
+  }
+
+  /* ------------------------------------------------------------------
+   * #46（第二轮）：板面切换时把「待保存内容」整体存起来 / 取回来
+   *
+   * 为什么必须按板面隔离：待保存候选不只是一份 board.value —— 它还包括
+   * 版本记账（boardLocalRev / boardCleanRev / knownServerSeq）、与服务器一致的基线
+   * （cleanState）、冲突、影响确认、勾选/参与选择、撤销栈与保存状态。
+   * 只切 boardId 而把这些留在全局，切回 A 时 A 的读取就会把 B 的候选合并进 A 的结果。
+   * ------------------------------------------------------------------ */
+
+  /** 把当前板面的待保存会话存进 map（切换板面前调用）。 */
+  function stashCurrentBoardSession(): void {
+    const owner = boardId.value;
+    if (!owner) return;
+    // 这块板面自己的防抖保存：切走后不许再按新板面的身份发出
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (!board.value) {
+      boardSaveSessions.delete(owner);
+      return;
+    }
+    boardSaveSessions.set(owner, {
+      boardId: owner,
+      board: cloneState(board.value),
+      cleanState: cleanState ? cloneState(cleanState) : null,
+      boardLocalRev,
+      boardCleanRev,
+      knownServerSeq,
+      boardReadAppliedSeq,
+      dirty: dirty.value,
+      saveStatus: saveStatus.value,
+      saveError: saveError.value,
+      lastSavedAt: lastSavedAt.value,
+      lastOpLabel: lastOpLabel.value,
+      undoStack: [...undoStack.value],
+      redoStack: [...redoStack.value],
+      boardContentConflicts: { ...boardContentConflicts.value },
+      boardRemovalConflicts: { ...boardRemovalConflicts.value },
+      pendingImpact: pendingImpact.value ? { ...pendingImpact.value } : null,
+      impactConfirmed,
+      pendingConfirm: pendingConfirm ? { ...pendingConfirm } : null,
+      confirmedCheck: confirmedCheck ? { ...confirmedCheck } : null,
+      localCheckedChoices: new Map(localCheckedChoices),
+      localParticipationChoices: new Map(localParticipationChoices),
+      saveTimer: null,
+      saveInFlight,
+      saveToken,
+    });
+  }
+
+  /** 把目标板面的待保存会话取回来（切换板面后调用）；没有会话 = 这块板面还没有候选。 */
+  function restoreBoardSession(targetBoardId: string): void {
+    const session = boardSaveSessions.get(targetBoardId);
+    if (!session) {
+      // 新板面：清掉上一块板面的候选与记账，等它的读取落地
+      board.value = null;
+      cleanState = null;
+      boardLocalRev = 0;
+      boardCleanRev = 0;
+      knownServerSeq = 0;
+      boardReadAppliedSeq = 0;
+      dirty.value = false;
+      saveStatus.value = "idle";
+      saveError.value = null;
+      lastSavedAt.value = null;
+      lastOpLabel.value = "";
+      undoStack.value = [];
+      redoStack.value = [];
+      boardContentConflicts.value = {};
+      boardRemovalConflicts.value = {};
+      pendingImpact.value = null;
+      impactConfirmed = false;
+      pendingConfirm = null;
+      confirmedCheck = null;
+      localCheckedChoices.clear();
+      localParticipationChoices.clear();
+      saveTimer = null;
+      saveInFlight = null;
+      return;
+    }
+    board.value = cloneState(session.board);
+    cleanState = session.cleanState ? cloneState(session.cleanState) : null;
+    boardLocalRev = session.boardLocalRev;
+    boardCleanRev = session.boardCleanRev;
+    knownServerSeq = session.knownServerSeq;
+    boardReadAppliedSeq = session.boardReadAppliedSeq;
+    dirty.value = session.dirty;
+    saveStatus.value = session.saveStatus;
+    saveError.value = session.saveError;
+    lastSavedAt.value = session.lastSavedAt;
+    lastOpLabel.value = session.lastOpLabel;
+    undoStack.value = [...session.undoStack];
+    redoStack.value = [...session.redoStack];
+    boardContentConflicts.value = { ...session.boardContentConflicts };
+    boardRemovalConflicts.value = { ...session.boardRemovalConflicts };
+    pendingImpact.value = session.pendingImpact ? { ...session.pendingImpact } : null;
+    impactConfirmed = session.impactConfirmed;
+    pendingConfirm = session.pendingConfirm ? { ...session.pendingConfirm } : null;
+    confirmedCheck = session.confirmedCheck ? { ...session.confirmedCheck } : null;
+    localCheckedChoices.clear();
+    for (const [key, value] of session.localCheckedChoices) localCheckedChoices.set(key, value);
+    localParticipationChoices.clear();
+    for (const [key, value] of session.localParticipationChoices) {
+      localParticipationChoices.set(key, value);
+    }
+    saveTimer = null;
+    saveInFlight = null;
+    // 还有未保存内容：切回来要接着存（防抖重排，目标板面由 saveNow 自己认领）
+    if (session.dirty && !session.pendingImpact) scheduleSave();
+  }
+
+  /** 板面已经切走时，把保存结果写回**它自己的**会话（绝不写进当前板面）。 */
+  function writeSaveResultToStashedSession(
+    ownerBoardId: string,
+    patch: Partial<BoardSaveSession>,
+  ): void {
+    const session = boardSaveSessions.get(ownerBoardId);
+    if (!session) return;
+    Object.assign(session, patch);
   }
 
   async function refreshBoardFromServer() {
@@ -3073,12 +3298,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return { ok: false, reason: "读取板面清单失败：" + ((err as Error)?.message || "原因未知") };
     }
     if (boardId.value !== id) {
+      /**
+       * #46（第二轮）：切换板面前先把**当前板面的待保存内容**整体存起来 ——
+       * 候选、版本记账、与服务器一致的基线、冲突、影响确认、勾选/参与选择、撤销栈与保存状态。
+       * 不存的话，切回 A 时 A 的读取会把 B 的候选合并进 A 的服务端结果（发往 A 的保存请求
+       * 于是带上 B 的卡片）。
+       */
+      stashCurrentBoardSession();
       boardId.value = id;
       /**
        * #46：板面身份一变，内存里的内容就不再属于当前板面（它还是上一块板面的内容）。
        * 在 load() 真正读到之前，回执不许把它当成「已加载的原板面」写进去。
        */
       boardContentBoardId = "";
+      // 取回目标板面自己的候选（没有 = 这块板面还没有候选，等读取落地）
+      restoreBoardSession(id);
       // 等原板面的上传回执立刻按新事实重新判定（切走 = 不再写板面；切回来 = 等读取落定后再写）
       wakeBoardReadyWaiters(id);
     }
