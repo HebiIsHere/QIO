@@ -748,6 +748,434 @@ async def test_verified_temp_dir_is_cleaned_on_cancel(db_conn, svc, tmp_path, mo
     assert all(not path.exists() for path in temp_dirs), temp_dirs
 
 
+# ---------------------------------------------------------------------------
+# #28b 返修：取消核验时清理临时文件（路径交接前的归属）
+# ---------------------------------------------------------------------------
+#
+# 已证实的残留缺陷：_load_verified_submission_material 在工作线程里创建临时目录并
+# 写入 verified.<ext>，然后 return (temp_dir, path, "")。若此时任务被取消，调用方
+# 拿不到 temp_dir，_read_content 的 finally 不会执行 → 残留 verified.txt。
+# 既有取消用例只覆盖「解析已经开始」的阶段（那时目录已经交接给调用方）。
+#
+# 现在的归属规则：创建即登记为「未交接」，交接成功才转移给调用方；工作线程退出时
+# 仍未交接的由线程自己清理；等待方先退出、线程稍后才交接的，结果由 _run_worker
+# 丢弃并清理；解析仍持有文件（Windows 删不掉）时登记为延迟清理，线程退出时再试。
+
+
+def _submission_file(db_conn, svc, tmp_path, name: str, body: bytes):
+    """建一条「已提交 + 文件卡」的最小现场，返回 (附件, 源文件路径)。"""
+    _ensure(db_conn)
+    att = _ready(svc, tmp_path, name, body)
+    state = _saved_state(db_conn)
+    state, _card_id = _add_file_card(state, att=att, name=name)
+    _save(db_conn, state)
+    _record_submission(db_conn, state, svc=svc)
+    target = svc.content_target(att.id)
+    source = Path(target[0] if isinstance(target, tuple) else target)
+    return att, source
+
+
+async def _wait_until(predicate, *, timeout: float = 5.0, message: str = "") -> None:
+    """有界等待某个终态出现（工作线程是线程池线程，退出后仍存活，不能按 is_alive 判）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    assert predicate(), message
+
+
+def _join_threads(threads) -> None:
+    """等工作线程真正结束（线程池线程退出后仍存活，只能按「跑完 work」判）。"""
+    for thread in threads:
+        thread.join(5.0)
+
+
+async def _cancel_and_wait_worker(tool, att, *, blocked, release, threads) -> None:
+    """在可控阻塞点取消读取，并等工作线程**真正结束**（不是只等等待方退出）。"""
+    task = asyncio.create_task(tool.run(attachment_id=att.id))
+    assert await asyncio.to_thread(blocked.wait, 5.0), "没有到达预期的阻塞点"
+    task.cancel()
+    # 让取消真正送达 _run_worker（设置协作取消标志）后再放行工作线程。
+    await asyncio.sleep(0.05)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert threads, "必须真的在工作线程里跑过"
+
+
+async def test_verified_temp_dir_is_cleaned_when_cancelled_before_handoff(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """阶段①：临时目录已创建、尚未交接时取消 → 目录与文件都要清理干净。"""
+    import threading
+
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    body = b"cancel before handoff body"
+    att, source = _submission_file(db_conn, svc, tmp_path, "交接前取消.txt", body)
+
+    created = threading.Event()
+    release = threading.Event()
+    threads: list = []
+    dirs: list[Path] = []
+    original = attachment_tools._verified_material_dir
+
+    def hooked() -> Path:
+        threads.append(threading.current_thread())
+        path = original()  # 目录已创建（登记为「未交接」）
+        dirs.append(path)
+        created.set()
+        release.wait(10.0)  # 可控阻塞：交接前停住
+        return path
+
+    monkeypatch.setattr(attachment_tools, "_verified_material_dir", hooked)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        await _cancel_and_wait_worker(
+            tool, att, blocked=created, release=release, threads=threads
+        )
+
+    assert dirs, "必须真的创建过核验临时目录"
+    await _wait_until(
+        lambda: all(not path.exists() for path in dirs),
+        message="取消后临时目录必须清理干净（线程退出时仍未交接的由线程自己清理）",
+    )
+    _join_threads(threads)
+    assert source.read_bytes() == body, "原附件必须保持完整（字节不变）"
+
+
+async def test_verified_temp_dir_is_cleaned_when_cancelled_while_writing(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """阶段②：临时文件写入中（已落盘、尚未交接）取消 → 目录与文件都要清理干净。"""
+    import threading
+
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    body = b"cancel while writing body"
+    att, source = _submission_file(db_conn, svc, tmp_path, "写入中取消.txt", body)
+
+    written = threading.Event()
+    release = threading.Event()
+    threads: list = []
+    dirs: list[Path] = []
+    original_dir = attachment_tools._verified_material_dir
+    original_write = Path.write_bytes
+
+    def hooked_dir() -> Path:
+        path = original_dir()
+        dirs.append(path)
+        return path
+
+    def hooked_write(self: Path, data: bytes) -> int:
+        if dirs and self.parent == dirs[-1]:
+            threads.append(threading.current_thread())
+            result = original_write(self, data)  # 文件真的写下去了
+            written.set()
+            release.wait(10.0)  # 可控阻塞：交接前停住
+            return result
+        return original_write(self, data)
+
+    monkeypatch.setattr(attachment_tools, "_verified_material_dir", hooked_dir)
+    monkeypatch.setattr(Path, "write_bytes", hooked_write)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        task = asyncio.create_task(tool.run(attachment_id=att.id))
+        assert await asyncio.to_thread(written.wait, 5.0), "临时文件没有写入"
+        assert dirs and (dirs[-1] / "verified.txt").exists(), "临时文件必须真的落盘"
+        task.cancel()
+        await asyncio.sleep(0.05)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert threads, "必须真的在工作线程里跑过"
+
+    await _wait_until(
+        lambda: all(not path.exists() for path in dirs),
+        message="取消后临时目录必须清理干净（含已写入的 verified 文件）",
+    )
+    _join_threads(threads)
+    assert source.read_bytes() == body, "原附件必须保持完整（字节不变）"
+
+
+async def test_verified_temp_dir_is_cleaned_when_cancelled_during_parse(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """阶段③：解析已开始（目录已交接）时取消 → 目录与文件都要清理干净。"""
+    import threading
+
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    body = b"cancel during parse body"
+    att, source = _submission_file(db_conn, svc, tmp_path, "解析中取消.txt", body)
+
+    started = threading.Event()
+    threads: list = []
+    dirs = _record_verified_dirs(monkeypatch)
+
+    def slow(att_obj, path, offset, limit, fragment_offset, label, cancel):
+        threads.append(threading.current_thread())
+        started.set()
+        while cancel is None or not cancel.is_set():
+            time.sleep(0.005)
+        raise attachment_tools._JobCancelled()
+
+    monkeypatch.setattr(attachment_tools, "_extract_text", slow)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        task = asyncio.create_task(tool.run(attachment_id=att.id))
+        assert await asyncio.to_thread(started.wait, 5.0), "解析没有开始"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert threads, "必须真的在工作线程里跑过"
+
+    assert dirs, "绑定提交的读取必须走核验临时文件"
+    await _wait_until(
+        lambda: all(not path.exists() for path in dirs),
+        message="解析阶段取消后临时目录必须清理干净",
+    )
+    _join_threads(threads)
+    assert source.read_bytes() == body, "原附件必须保持完整（字节不变）"
+
+
+async def test_verified_temp_dir_is_cleaned_when_write_fails(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """写临时文件失败（OSError）：线程内清理自己创建的目录，结果里不出现临时路径。"""
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    body = b"write failure body"
+    att, source = _submission_file(db_conn, svc, tmp_path, "写入失败.txt", body)
+
+    dirs: list[Path] = []
+    original_dir = attachment_tools._verified_material_dir
+    original_write = Path.write_bytes
+
+    def hooked_dir() -> Path:
+        path = original_dir()
+        dirs.append(path)
+        return path
+
+    def hooked_write(self: Path, data: bytes) -> int:
+        if dirs and self.parent == dirs[-1]:
+            raise OSError("disk full")
+        return original_write(self, data)
+
+    monkeypatch.setattr(attachment_tools, "_verified_material_dir", hooked_dir)
+    monkeypatch.setattr(Path, "write_bytes", hooked_write)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        result = await tool.run(attachment_id=att.id)
+
+    assert result.ok is False, result
+    assert result.code == "material_source_changed", result.code
+    assert "写临时文件失败" in (result.error or ""), result.error
+    assert dirs, "必须真的创建过核验临时目录"
+    assert all(not path.exists() for path in dirs), dirs
+    assert source.read_bytes() == body, "原附件必须保持完整（字节不变）"
+
+
+async def test_verified_temp_dir_is_cleaned_when_worker_raises(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """工作线程在交接前抛非 OSError 异常：线程内 finally 清理自己创建的目录。"""
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    body = b"worker raises body"
+    att, source = _submission_file(db_conn, svc, tmp_path, "线程异常.txt", body)
+
+    dirs: list[Path] = []
+    original_dir = attachment_tools._verified_material_dir
+    original_write = Path.write_bytes
+
+    def hooked_dir() -> Path:
+        path = original_dir()
+        dirs.append(path)
+        return path
+
+    def hooked_write(self: Path, data: bytes) -> int:
+        if dirs and self.parent == dirs[-1]:
+            raise RuntimeError("unexpected worker failure")
+        return original_write(self, data)
+
+    monkeypatch.setattr(attachment_tools, "_verified_material_dir", hooked_dir)
+    monkeypatch.setattr(Path, "write_bytes", hooked_write)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        result = await tool.run(attachment_id=att.id)
+
+    assert result.ok is False, result
+    assert result.code == "material_source_changed", result.code
+    assert "核验提交材料内容失败" in (result.error or ""), result.error
+    assert dirs, "必须真的创建过核验临时目录"
+    assert all(not path.exists() for path in dirs), dirs
+    assert source.read_bytes() == body, "原附件必须保持完整（字节不变）"
+
+
+async def test_verified_temp_dir_is_swept_after_parser_releases_file(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """解析仍持有临时文件时不能提前删（Windows 删不掉）：线程退出后再清理干净。
+
+    取消时等待方先放弃等待（WORKER_STOP_WAIT_SECONDS 压到很小），此时解析线程还开着
+    临时文件 —— 清理必须**推迟**到线程真正退出，而不是假装删掉了。
+    """
+    import threading
+
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    body = b"parser holds file body"
+    att, source = _submission_file(db_conn, svc, tmp_path, "解析持有.txt", body)
+
+    started = threading.Event()
+    finished = threading.Event()
+    dirs = _record_verified_dirs(monkeypatch)
+    monkeypatch.setattr(attachment_tools, "WORKER_STOP_WAIT_SECONDS", 0.05)
+
+    def slow(att_obj, path, offset, limit, fragment_offset, label, cancel):
+        handle = open(path, "rb")  # 解析器真的持有这份临时文件
+        try:
+            started.set()
+            while cancel is None or not cancel.is_set():
+                time.sleep(0.005)
+            time.sleep(0.2)  # 比等待上限长：等待方会先放弃等待
+            raise attachment_tools._JobCancelled()
+        finally:
+            handle.close()
+            finished.set()
+
+    monkeypatch.setattr(attachment_tools, "_extract_text", slow)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        task = asyncio.create_task(tool.run(attachment_id=att.id))
+        assert await asyncio.to_thread(started.wait, 5.0), "解析没有开始"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert dirs, "绑定提交的读取必须走核验临时文件"
+        # 线程还持有文件：此刻不能假装删掉了（Windows 上删不掉）。
+        assert await asyncio.to_thread(finished.wait, 5.0), "解析线程没有结束"
+        await _wait_until(
+            lambda: all(not path.exists() for path in dirs),
+            message="解析线程释放文件后，延迟清理的临时目录必须被删掉",
+        )
+
+    assert not (
+        set(dirs) & attachment_tools._deferred_verified_dirs()
+    ), "本次的延迟清理登记必须清空"
+    assert source.read_bytes() == body, "原附件必须保持完整（字节不变）"
+
+
+async def test_run_worker_discards_result_when_waiter_already_cancelled(svc):
+    """等待方先退出、工作线程稍后才交接：结果没人接，必须由 _run_worker 收尾。"""
+    import threading
+
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    started = threading.Event()
+    release = threading.Event()
+    discarded: list = []
+
+    def work(cancel):
+        started.set()
+        release.wait(10.0)
+        return ("handle", "payload")
+
+    tool = ReadAttachmentTool(svc)
+    task = asyncio.create_task(tool._run_worker(work, on_abandoned=discarded.append))
+    assert await asyncio.to_thread(started.wait, 5.0), "工作线程没有开始"
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert discarded == [("handle", "payload")], discarded
+
+
+async def test_abandoned_worker_result_is_cleaned_after_late_finish(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """等待方先放弃等待、线程稍后才交接：结果没人接，线程结束时必须清理临时目录。
+
+    这是「取消/超时后等待方先退出」的真实形状：_run_worker 等到 WORKER_STOP_WAIT_SECONDS
+    就放弃等待并抛 CancelledError，而工作线程稍后才把临时目录交接出来。此时没有任何
+    调用方持有 temp_dir —— 必须由 _run_worker 的收尾回调清理。
+    """
+    import threading
+
+    from agent.tools.attachment_tools import ReadAttachmentTool
+
+    body = b"late handoff body"
+    att, source = _submission_file(db_conn, svc, tmp_path, "晚到交接.txt", body)
+
+    written = threading.Event()
+    release = threading.Event()
+    dirs: list[Path] = []
+    original_dir = attachment_tools._verified_material_dir
+    original_write = Path.write_bytes
+
+    def hooked_dir() -> Path:
+        path = original_dir()
+        dirs.append(path)
+        return path
+
+    def hooked_write(self: Path, data: bytes) -> int:
+        if dirs and self.parent == dirs[-1]:
+            result = original_write(self, data)
+            written.set()
+            release.wait(10.0)  # 交接前停住：等待方会先放弃等待
+            return result
+        return original_write(self, data)
+
+    monkeypatch.setattr(attachment_tools, "_verified_material_dir", hooked_dir)
+    monkeypatch.setattr(Path, "write_bytes", hooked_write)
+    # 等待上限压到很小：等待方先放弃等待，线程稍后才交接。
+    monkeypatch.setattr(attachment_tools, "WORKER_STOP_WAIT_SECONDS", 0.05)
+
+    tool = ReadAttachmentTool(svc)
+    with _bound():
+        task = asyncio.create_task(tool.run(attachment_id=att.id))
+        assert await asyncio.to_thread(written.wait, 5.0), "临时文件没有写入"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert dirs and dirs[-1].exists(), "线程还没交接，目录此时应仍存在"
+        release.set()  # 线程现在才交接：结果没人接
+        await _wait_until(
+            lambda: all(not path.exists() for path in dirs),
+            message="线程晚到的交接结果必须被收尾（临时目录清理干净）",
+        )
+
+    assert source.read_bytes() == body, "原附件必须保持完整（字节不变）"
+
+
+def test_temp_dir_cleanup_defers_while_parser_still_holds_file(tmp_path):
+    """解析仍持有文件时不能提前删（Windows 打开文件删不掉）：登记延迟清理，线程退出后再删。"""
+    import sys
+    import tempfile
+
+    work = Path(tempfile.mkdtemp(prefix="verified-material-", dir=str(tmp_path)))
+    target = work / "verified.txt"
+    target.write_bytes(b"held by parser")
+    handle = open(target, "rb")
+    try:
+        attachment_tools._cleanup_temp_dir(work)
+        if sys.platform == "win32":
+            assert work.exists(), "Windows 上打开着的文件不应被假装删掉"
+            assert work in attachment_tools._deferred_verified_dirs()
+    finally:
+        handle.close()
+    attachment_tools._sweep_deferred_temp_dirs()
+    assert not work.exists(), "线程退出后必须把延迟清理的目录删掉"
+
+
 async def test_board_tools_reject_unbound_normal_mode(db_conn):
     """普通聊天没有程序绑定：板面工具一律拒绝（未提交改动读不到）。"""
     _ensure(db_conn)

@@ -167,7 +167,12 @@ def _verified_material_dir() -> Path:
     """#28：核验过的提交材料字节的**受控临时目录**（解析完立即清理）。
 
     优先落在 QIO 数据目录的 tmp 下（与媒体派生同一口径）；取不到就落系统临时目录。
-    目录名带固定前缀，便于异常退出后按前缀回收；调用方负责 _cleanup_temp_dir。
+    目录名带固定前缀，便于异常退出后按前缀回收。
+
+    #28b 归属规则：**创建它的一方负责清理，直到路径交接成功**。工作线程创建目录后
+    若在交接前被取消 / 出错，由线程自己清理；交接成功后所有权转给解析流程
+    （_read_content 的 finally）。等待方先退出、线程稍后才交接的，结果由
+    _run_worker 丢弃并清理（见 on_abandoned）。
     """
     import os
     import tempfile
@@ -183,16 +188,64 @@ def _verified_material_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix="qio-verified-material-"))
 
 
-def _cleanup_temp_dir(path: Path | None) -> None:
-    """清理核验材料的临时目录（清理失败不影响读取结论，也不外泄内容）。"""
-    if path is None:
-        return
+#: 解析仍持有文件时（Windows 上打开中的文件删不掉）登记为**延迟清理**的临时目录。
+#: 只登记本模块创建的核验材料目录；工作线程退出时再试一次（_sweep_deferred_temp_dirs）。
+_DEFERRED_TEMP_DIRS: dict[Path, None] = {}
+_DEFERRED_TEMP_DIRS_MAX = 64
+_DEFERRED_LOCK = threading.Lock()
+
+
+def _deferred_verified_dirs() -> set[Path]:
+    """当前登记为延迟清理的临时目录（只读快照，供测试与诊断用）。"""
+    with _DEFERRED_LOCK:
+        return set(_DEFERRED_TEMP_DIRS)
+
+
+def _remove_temp_dir(path: Path) -> bool:
+    """尝试真正删掉一个临时目录；返回 False 表示「现在删不掉，稍后再试」。"""
     try:
         import shutil
 
-        shutil.rmtree(path, ignore_errors=True)
-    except Exception:  # noqa: BLE001 - 清理是收尾动作
-        pass
+        shutil.rmtree(path)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        # Windows：目录里还有被打开的文件（解析器仍持有）→ 不能假装删掉了。
+        return False
+    except Exception:  # noqa: BLE001 - 其它异常重试也不会变好，不再登记
+        return True
+
+
+def _sweep_deferred_temp_dirs() -> None:
+    """重试延迟清理的临时目录（工作线程退出时调用：此时文件句柄已关闭）。"""
+    with _DEFERRED_LOCK:
+        pending = list(_DEFERRED_TEMP_DIRS)
+    for path in pending:
+        if _remove_temp_dir(path):
+            with _DEFERRED_LOCK:
+                _DEFERRED_TEMP_DIRS.pop(path, None)
+
+
+def _cleanup_temp_dir(path: Path | None) -> None:
+    """清理核验材料的临时目录（清理失败不影响读取结论，也不外泄内容）。
+
+    解析仍持有文件时（Windows 上删不掉）**不假装删掉了**：登记为延迟清理，
+    等工作线程退出后再删（_sweep_deferred_temp_dirs）。清理范围仅限本模块创建的
+    核验材料目录，原附件一律不动。
+    """
+    if path is None:
+        return
+    _sweep_deferred_temp_dirs()
+    if _remove_temp_dir(path):
+        with _DEFERRED_LOCK:
+            _DEFERRED_TEMP_DIRS.pop(path, None)
+        return
+    with _DEFERRED_LOCK:
+        if len(_DEFERRED_TEMP_DIRS) >= _DEFERRED_TEMP_DIRS_MAX:
+            # 极端情况下不无限增长：丢掉最早登记的一条（它已经泄漏，重试也不会变好）。
+            _DEFERRED_TEMP_DIRS.pop(next(iter(_DEFERRED_TEMP_DIRS)), None)
+        _DEFERRED_TEMP_DIRS[path] = None
 
 
 #: Python str.splitlines 的行分隔符集合
@@ -854,22 +907,35 @@ class ReadAttachmentTool(Tool):
             verified, failure = read_bytes(source, expected, cancel=cancel)
             if verified is None:
                 return None, None, failure
-            temp_dir = _verified_material_dir()
+            # #28b 归属：临时目录从创建到**交接成功**之间归本线程所有。取消
+            # （_JobCancelled / MaterialReadCancelled）、写盘失败、任何其它异常都在
+            # 这里清理自己创建的目录 —— 调用方在取消时根本拿不到 temp_dir，不能指望它。
+            temp_dir: Path | None = None
+            handed_off = False
             try:
+                temp_dir = _verified_material_dir()
                 path = temp_dir / ("verified" + suffix)
                 path.write_bytes(verified)
+                handed_off = True  # 交接成功：所有权转给调用方（解析流程）清理
+                return temp_dir, path, ""
             except OSError as exc:
-                _cleanup_temp_dir(temp_dir)
                 return (
                     None,
                     None,
                     "核验过的内容无法交给解析器（写临时文件失败）："
                     + type(exc).__name__,
                 )
-            return temp_dir, path, ""
+            finally:
+                if not handed_off:
+                    _cleanup_temp_dir(temp_dir)
+
+        def discard(result: Any) -> None:
+            """等待方已退出：线程刚交接出来的临时目录没人接，由这里清理。"""
+            if isinstance(result, tuple) and result:
+                _cleanup_temp_dir(result[0])
 
         try:
-            return await self._run_worker(work)
+            return await self._run_worker(work, on_abandoned=discard)
         except _JobCancelled:
             raise
         except Exception as exc:  # noqa: BLE001 - 核验失败按不能确认处理（失败关闭）
@@ -1225,16 +1291,48 @@ class ReadAttachmentTool(Tool):
         content.notes = notes + content.notes
         return ToolResult(ok=True, content=_json(self._content_payload(att, content)))
 
-    async def _run_worker(self, work: Callable[[threading.Event], Any]) -> Any:
+    async def _run_worker(
+        self,
+        work: Callable[[threading.Event], Any],
+        *,
+        on_abandoned: Callable[[Any], None] | None = None,
+    ) -> Any:
         """在工作线程里跑文件 I/O 与解析，事件循环保持可推进。
 
         取消/超时到来时：设置协作取消标志，然后**等待工作线程真正退出**（有界），
         再抛 CancelledError。这区分了「停止等待」与「工作真的停止」——不会把
         一个仍在读盘的线程当已经结束。线程只跑纯文件 I/O/解析，不碰数据库。
+
+        #28b：等待方先退出、线程稍后才产出结果时，结果**没有人接**。on_abandoned
+        给定时用它收尾（核验材料用它清理刚交接出来的临时目录），否则结果被丢弃。
+        线程退出时还会重试一次延迟清理的临时目录（解析仍持有文件时删不掉的那些）。
         """
+        # 每次起工作线程前先重试一次延迟清理：上一轮解析仍持有文件时删不掉的目录，
+        # 到这里文件句柄一定已经关闭（线程已退出），可以真正删掉。
+        _sweep_deferred_temp_dirs()
         cancel = threading.Event()
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(None, lambda: work(cancel))
+
+        def _abandon(abandoned: Any) -> None:
+            """结果没有人接：交给 on_abandoned 收尾（核验材料用它清理临时目录）。"""
+            if abandoned is not None and on_abandoned is not None:
+                try:
+                    on_abandoned(abandoned)
+                except Exception:  # noqa: BLE001 - 收尾失败不改变取消语义
+                    pass
+            _sweep_deferred_temp_dirs()
+
+        def _abandon_later(done: Any) -> None:
+            """线程在我们放弃等待之后才结束：结果同样没人接，必须收尾。"""
+            if done.cancelled():
+                return
+            try:
+                abandoned = done.result()
+            except BaseException:  # noqa: BLE001 - 线程自己失败，没有可收尾的产物
+                abandoned = None
+            _abandon(abandoned)
+
         try:
             return await asyncio.shield(future)
         except asyncio.CancelledError:
@@ -1245,6 +1343,19 @@ class ReadAttachmentTool(Tool):
                 )
             except BaseException:  # noqa: BLE001 - 已进入取消路径，等不到就放弃等待
                 pass
+            if future.done():
+                # 线程已经结束：结果没人接，就地收尾。
+                if future.cancelled():
+                    _abandon(None)
+                else:
+                    try:
+                        abandoned = future.result()
+                    except BaseException:  # noqa: BLE001 - 线程自己失败
+                        abandoned = None
+                    _abandon(abandoned)
+            else:
+                # 线程还在跑（已放弃等待）：等它真正结束时再收尾，绝不留下无人认领的临时文件。
+                future.add_done_callback(_abandon_later)
             raise
 
     def _resolve_read_path(self, att: Attachment) -> tuple[Path | None, str]:
