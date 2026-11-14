@@ -540,7 +540,11 @@ onMounted(() => {
    * 还能读，再点一次却新开一个空标签）。只在能确定是同一条消息时迁移。
    */
   stopPreviewIdentityWatch = watch(
-    () => session.messages.map((m) => m.id).join("\u0000"),
+    /**
+     * 键里同时带 id 与轮次身份：临时消息的 id 不变、但轮次身份是后来才补上的
+     * （TURN_START 之后才拿到 turnId）时，也要重新观察一次 —— 否则交接永远等不到身份。
+     */
+    () => session.messages.map((m) => m.id + ":" + String(m.turnId ?? "")).join("\u0000"),
     () => {
       preview.reconcileReplyCodeIdentities(session.messages);
     },

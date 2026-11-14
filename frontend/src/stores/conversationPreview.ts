@@ -94,6 +94,44 @@ const guards = new Map<string, PreviewVersionGuard>();
 const controllers = new Map<string, AbortController>();
 const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let disposed = false;
+
+/**
+ * 消息 id → 轮次身份（turnId）的观察表。
+ *
+ * 为什么需要它：回复代码标签的身份是 `replycode:<messageId>:<blockIndex>`，而刚生成的回复
+ * 先用本机乐观 id（`local_<ts>_<seq>`），历史快照接手后同一条回复换成后端 `msg_` id。
+ * 交接必须能**确认是同一轮的同一条消息**，不能靠「代码正文一样」猜 —— 不同回复完全可能
+ * 包含同一段代码。轮次身份只在消息**真的出现在列表里**时观察得到，所以在这里记下来：
+ * 临时消息消失之后，仍然知道它属于哪一轮。
+ *
+ * 有界：只保留最近若干条（消息量级远小于这个上限；超出按插入顺序淘汰最旧的）。
+ */
+const TURN_IDENTITY_LIMIT = 400;
+const observedTurnByMessage = new Map<string, string>();
+
+/** 临时（本机乐观）消息 id：`local_<ts>_<seq>`（见 stores/session.ts 的 _nextId）。 */
+const TEMPORARY_MESSAGE_ID_RE = /^local_/;
+
+function isTemporaryMessageId(messageId: string): boolean {
+  return TEMPORARY_MESSAGE_ID_RE.test(String(messageId || ""));
+}
+
+function rememberTurnIdentity(messageId: string, turnId: string): void {
+  if (!messageId || !turnId) return;
+  // 重新插入到末尾：最近出现过的消息最后被淘汰。
+  observedTurnByMessage.delete(messageId);
+  observedTurnByMessage.set(messageId, turnId);
+  while (observedTurnByMessage.size > TURN_IDENTITY_LIMIT) {
+    const oldest = observedTurnByMessage.keys().next();
+    if (oldest.done) break;
+    observedTurnByMessage.delete(oldest.value);
+  }
+}
+
+function observedTurnFor(messageId: string): string {
+  return observedTurnByMessage.get(String(messageId || "")) ?? "";
+}
+
 /**
  * 运行时世代：dispose() / resume() 各推进一次。
  *
@@ -707,45 +745,112 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
     /**
      * 按当前消息列表核对回复代码标签的身份（临时 id → 持久化 id 的交接）。
      *
-     * 只在**能确定是同一条消息**时迁移：标签记着的消息 id 已经不在列表里，
-     * 且列表里恰好有一条助手消息，它在同一 blockIndex 上的代码块正文与标签里
-     * 记住的正文**逐字相同**。多于一条候选（两段一模一样的代码）就不猜 ——
-     * 旧标签的正文还在内存里，仍然可读，不会变成空白。
+     * 归属规则（返修轮 task-6）：
+     *   * **已绑定正式消息 id 的标签继续指向原消息，永不迁移**。原消息只是暂时不在
+     *     当前列表里（切换话题、历史分页、列表刷新），别处出现同一段代码不能成为改绑理由；
+     *   * 只有**临时消息 id**（`local_<ts>_<seq>`）的标签才可能交接，而且必须能确认
+     *     「临时消息与持久化消息属于同一条回复」：轮次身份（turnId）相同，且该轮里
+     *     恰好只有一条助手消息在同一 blockIndex 上的代码块正文与标签记住的正文逐字相同；
+     *   * 轮次身份只在消息真的出现在列表里时观察得到（见 observedTurnByMessage）：
+     *     临时消息消失之后仍然知道它属于哪一轮，但**从未观察到**就不猜；
+     *   * 确认不了（没有轮次身份 / 候选不唯一 / 正文对不上）时原标签原样保留：
+     *     正文还在内存里，仍然可读，不迁移也不关闭。
+     *
+     * 代码正文、语言与块序号只用于**校验**，不能单独确定消息归属。
      *
      * 返回迁移了几个标签（0 = 没有需要交接的）。
      */
     reconcileReplyCodeIdentities(
-      messages: { id: string; role: string; content: string }[],
+      messages: { id: string; role: string; content: string; turnId?: string | null }[],
     ): number {
       const live = new Set(messages.map((m) => String(m.id || "")));
       const candidates = messages.filter((m) => m.role === "assistant" && String(m.id || ""));
+      /**
+       * 先观察：出现在列表里的助手消息，把它的轮次身份记下来。
+       * 这一步必须在迁移判断之前做 —— 临时消息与持久化消息可能在同一份列表里交接。
+       */
+      for (const message of candidates) {
+        const turnId = String(message.turnId ?? "").trim();
+        if (turnId) rememberTurnIdentity(String(message.id), turnId);
+      }
       let moved = 0;
       for (const tab of [...this.tabs]) {
         if (tab.target.source !== "reply_code") continue;
         const messageId = String(tab.target.messageId ?? "");
         if (!messageId || live.has(messageId)) continue;
+        // 正式消息 id：原消息只是暂时离开列表，标签继续指向它（不改绑）。
+        if (!isTemporaryMessageId(messageId)) continue;
         const text = this.documents[tab.id]?.text;
         if (typeof text !== "string") continue;
+        const turnId = observedTurnFor(messageId);
+        // 身份确认不了：不迁移、不关闭，旧标签继续用已有正文与位置。
+        if (!turnId) continue;
         const blockIndex = Number(tab.target.blockIndex ?? 0);
         const matches = candidates.filter(
-          (m) => codeBlockText(String(m.content || ""), blockIndex) === text,
+          (m) =>
+            String(m.turnId ?? "").trim() === turnId &&
+            !isTemporaryMessageId(String(m.id)) &&
+            codeBlockText(String(m.content || ""), blockIndex) === text,
         );
+        // 同一轮里可能有多条助手消息：候选不唯一就不猜是哪一条。
         if (matches.length !== 1) continue;
-        const nextId = replyCodePreviewId(String(matches[0].id), blockIndex);
+        const nextMessageId = String(matches[0].id);
+        const nextId = replyCodePreviewId(nextMessageId, blockIndex);
         if (nextId === tab.id) continue;
         if (this.tabs.some((item) => item.id === nextId)) {
-          this.closeTab(tab.id);
+          this.mergeIntoExistingTab(tab.id, nextId);
         } else {
           this.applyTabIdentity(tab.id, {
             ...tab.target,
             id: nextId,
-            messageId: String(matches[0].id),
+            messageId: nextMessageId,
             blockIndex,
           });
         }
         moved += 1;
       }
       return moved;
+    },
+
+    /**
+     * 交接时正式标签已经打开：合并成一个，并保住**用户刚操作的那个标签**的位置。
+     *
+     * 「刚操作」= 当前激活标签。用户正在读临时标签时，它的滚动与搜索词要跟着过去；
+     * 用户正在读正式标签时，正式标签自己的位置不被旧临时位置覆盖。
+     * 合并后激活项落在留下的那个标签上（不会因为关掉临时标签而跳到别的文件）。
+     *
+     * 正文只在内存里（不写布局偏好）：正式标签若是刷新后从布局恢复出来的，它自己没有正文，
+     * 这时把临时标签记住的正文交给它，并重新准备运行时 —— 否则合并完会变成「内容不在当前页面」。
+     */
+    mergeIntoExistingTab(oldId: string, keepId: string): void {
+      const shell = useConversationShellStore();
+      const activeId = shell.prefs.activePreviewTabId;
+      const carryPosition = activeId === oldId;
+      const source = shell.prefs.previewTabs.find((tab) => tab.id === oldId);
+      const target = shell.prefs.previewTabs.find((tab) => tab.id === keepId);
+      if (carryPosition && source && target) {
+        target.position = positionForKind(
+          target.target.kind,
+          mergePreviewPosition(target.position, source.position),
+        );
+      }
+      const sourceDocument = this.documents[oldId];
+      const targetDocument = this.documents[keepId];
+      const needsDocument =
+        Boolean(sourceDocument) && typeof targetDocument?.text !== "string";
+      if (needsDocument && sourceDocument) {
+        this.documents[keepId] = { ...sourceDocument };
+      }
+      this.closeTab(oldId);
+      if (needsDocument) {
+        // 正文刚交过来：把「没有正文」的旧结论丢掉，按新正文重新准备（不伪造内容）。
+        const runtime = this.runtime[keepId];
+        if (!runtime || runtime.phase === "problem") {
+          delete this.runtime[keepId];
+          this.ensureLoaded(keepId);
+        }
+      }
+      if (carryPosition) shell.setActivePreviewTab(keepId);
     },
 
     /** 记录回复代码 / 任务输出正文；已存在的旧内容按新内容替换。 */
@@ -894,6 +999,8 @@ export const useConversationPreviewStore = defineStore("conversationPreview", {
       epoch += 1;
       disposed = false;
       this._disposed = false;
+      // 轮次身份观察表是模块级的：用例之间必须隔离，否则上一个用例的观察会漏进来。
+      observedTurnByMessage.clear();
       this.runtime = {};
       this.documents = {};
       this.lastActionNote = "";

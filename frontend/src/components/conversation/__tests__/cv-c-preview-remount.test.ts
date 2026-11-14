@@ -379,13 +379,26 @@ describe("对话页真实挂载 / 卸载 / 重新挂载（设置页往返）", (
 });
 
 describe("临时消息身份 → 持久化消息身份的交接", () => {
+  /**
+   * 交接必须能确认「临时消息与持久化消息属于同一条回复」：轮次身份（turnId）相同，
+   * 且该轮里恰好只有一条助手消息在同一 blockIndex 上的代码块正文逐字相同。
+   * 正文、语言与块序号只用于校验，不能单独确定消息归属（返修轮 task-6）。
+   */
+  function observeTemporary(turnId = "turn_1") {
+    // 临时消息出现时在列表里被观察到：记下它属于哪一轮。
+    preview.reconcileReplyCodeIdentities([
+      { id: "local_1_1", role: "assistant", content: "```python\nprint(1)\n```", turnId },
+    ]);
+  }
+
   it("同一条消息换 id：标签跟着迁移，不重复开标签，正文与位置保留", () => {
     preview.openReplyCode({ messageId: "local_1_1", blockIndex: 0, text: "print(1)", language: "python" });
     preview.savePosition("replycode:local_1_1:0", { scrollTop: 42, search: "print" });
     expect(shell.prefs.previewTabs.map((tab) => tab.id)).toEqual(["replycode:local_1_1:0"]);
+    observeTemporary();
 
     const moved = preview.reconcileReplyCodeIdentities([
-      { id: "msg_abc", role: "assistant", content: "说明\n\n```python\nprint(1)\n```" },
+      { id: "msg_abc", role: "assistant", content: "说明\n\n```python\nprint(1)\n```", turnId: "turn_1" },
     ]);
 
     expect(moved).toBe(1);
@@ -398,8 +411,9 @@ describe("临时消息身份 → 持久化消息身份的交接", () => {
 
   it("正文对不上就不猜：旧标签原样保留，仍然可读", () => {
     preview.openReplyCode({ messageId: "local_1_1", blockIndex: 0, text: "print(1)", language: "python" });
+    observeTemporary();
     const moved = preview.reconcileReplyCodeIdentities([
-      { id: "msg_abc", role: "assistant", content: "```python\nprint(999)\n```" },
+      { id: "msg_abc", role: "assistant", content: "```python\nprint(999)\n```", turnId: "turn_1" },
     ]);
     expect(moved).toBe(0);
     expect(shell.prefs.previewTabs.map((tab) => tab.id)).toEqual(["replycode:local_1_1:0"]);
@@ -408,9 +422,10 @@ describe("临时消息身份 → 持久化消息身份的交接", () => {
 
   it("两段一模一样的代码（候选不唯一）不迁移，避免把标签挂到错的消息上", () => {
     preview.openReplyCode({ messageId: "local_1_1", blockIndex: 0, text: "print(1)", language: "python" });
+    observeTemporary();
     const moved = preview.reconcileReplyCodeIdentities([
-      { id: "msg_a", role: "assistant", content: "```python\nprint(1)\n```" },
-      { id: "msg_b", role: "assistant", content: "```python\nprint(1)\n```" },
+      { id: "msg_a", role: "assistant", content: "```python\nprint(1)\n```", turnId: "turn_1" },
+      { id: "msg_b", role: "assistant", content: "```python\nprint(1)\n```", turnId: "turn_1" },
     ]);
     expect(moved).toBe(0);
     expect(shell.prefs.previewTabs.map((tab) => tab.id)).toEqual(["replycode:local_1_1:0"]);
@@ -420,9 +435,10 @@ describe("临时消息身份 → 持久化消息身份的交接", () => {
     preview.openReplyCode({ messageId: "local_1_1", blockIndex: 0, text: "print(1)", language: "python" });
     preview.openReplyCode({ messageId: "msg_abc", blockIndex: 0, text: "print(1)", language: "python" });
     expect(shell.prefs.previewTabs).toHaveLength(2);
+    observeTemporary();
 
     const moved = preview.reconcileReplyCodeIdentities([
-      { id: "msg_abc", role: "assistant", content: "```python\nprint(1)\n```" },
+      { id: "msg_abc", role: "assistant", content: "```python\nprint(1)\n```", turnId: "turn_1" },
     ]);
 
     expect(moved).toBe(1);
@@ -433,7 +449,7 @@ describe("临时消息身份 → 持久化消息身份的交接", () => {
   it("消息 id 还在列表里时什么都不做（不误迁移）", () => {
     preview.openReplyCode({ messageId: "msg_abc", blockIndex: 0, text: "print(1)", language: "python" });
     const moved = preview.reconcileReplyCodeIdentities([
-      { id: "msg_abc", role: "assistant", content: "```python\nprint(1)\n```" },
+      { id: "msg_abc", role: "assistant", content: "```python\nprint(1)\n```", turnId: "turn_1" },
     ]);
     expect(moved).toBe(0);
     expect(shell.prefs.previewTabs.map((tab) => tab.id)).toEqual(["replycode:msg_abc:0"]);
