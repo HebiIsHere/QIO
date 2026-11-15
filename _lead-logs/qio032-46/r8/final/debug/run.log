@@ -1,0 +1,23 @@
+base=http://127.0.0.1:5201 api=http://127.0.0.1:8736
+{
+  "url": "http://127.0.0.1:5201/?debug=1794765490474#/",
+  "modeBtns": [
+    {
+      "text": "对话模式",
+      "cls": "mode-btn",
+      "disabled": false,
+      "aria": "切换到互动模式"
+    }
+  ],
+  "hasBoard": false,
+  "streamText": "今天想聊点什么？\n从下方输入框开始 · 话题星球在右下角",
+  "bodyText": "PERSONAL AGENT\n受限模式\n任务\n当前任务\n历史记录\n\n当前没有任务\n\n跳到输入框\nTOPIC\n默认话题\n今天想聊点什么？\n从下方输入框开始 · 话题星球在右下角\n对话模式\n 收起星球",
+  "notConnected": false
+}
+{
+  "hasBoard": true,
+  "bodyText": "PERSONAL AGENT\n\n尚未保存过\n\n受限模式\n\n拖动空白处平移，按住空格拖动框选，滚轮缩放\n\n还没有提交给 QIO\n任务\n▴\n展开对话\n＋添加\n提交给 QIO\n互动模式\nEnter 发送 · Shift+Enter 换行",
+  "url": "http://127.0.0.1:5201/?debug=1794765490474#/interactive"
+}
+
+== 结果：PASS 0 / FAIL 0 / OBSERVE 0 / TOTAL 0 ==

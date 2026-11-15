@@ -1,0 +1,62 @@
+start
+step1 seed
+step2 select B
+step3 input B
+step4 flush
+DBG flush:start
+DBG flush:before-wait-inflight
+DBG flush:after-wait-inflight
+DBG flush:draftwork=true
+DBG flush:round=0
+DBG flush:owner=board_b keys=1 removals=0
+saveDrafts board_b {"card:card_b":"B 的本机候选"}
+DBG flush:assigned
+DBG flush:awaited
+step5 conflict? {"local":"B 的本机候选","server":"另一窗口写进 B 的文字"}
+step6 select C
+step7 input C
+step8 select A
+step9 settle
+step10 wait debounce
+heartbeat
+heartbeat
+heartbeat
+heartbeat
+heartbeat
+DBG flush:start
+DBG flush:before-wait-inflight
+DBG flush:after-wait-inflight
+DBG flush:draftwork=true
+DBG flush:round=0
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=0
+DBG flush:round=1
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=1
+DBG flush:round=2
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=2
+DBG flush:round=3
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=3
+DBG flush:round=4
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=4
+DBG flush:round=5
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=5
+DBG flush:round=6
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=6
+DBG flush:round=7
+DBG flush:owner=board_b keys=0 removals=0
+DBG flush:skip-continue round=7
+DBG flush:assigned
+DBG flush:awaited
+heartbeat
+heartbeat
+step11 settle
+step12 calls ["board_b:{\"card:card_b\":\"B 的本机候选\"}"]
+probe-before-flush2
+DBG flush:start
+DBG flush:before-wait-inflight

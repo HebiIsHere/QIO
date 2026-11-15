@@ -1,0 +1,58 @@
+
+ RUN  v4.1.10 D:/qio-dev/q46-r8/frontend
+
+ ❯ src/stores/__tests__/q46-r8-drafts-protect.test.ts (6 tests | 1 failed) 5709ms
+     ✓ 2A 另一标签页的新稿还没同步：旧回执落定后本机副本仍是新文字，重新打开编辑器仍能恢复  848ms
+     × 2B 另一标签页的新稿已同步：旧回执到达后不得再发 removed，服务端更新的草稿仍在 1619ms
+     ✓ 3A 完成编辑后撤销：旧回执与随后无关保存成功都不得清掉对应草稿  809ms
+     ✓ 3B 删除卡片后撤销删除：删除回执不得清掉这张卡的草稿  808ms
+     ✓ 3C 控制组：删除写入失败时草稿与清除登记都保留（等重试）  812ms
+     ✓ 3D 控制组：正常完成编辑且正式内容落库时，该键的 removed 会发、本机记录被清  811ms
+ ❯ src/stores/__tests__/q46-r8-drafts-queue.test.ts (7 tests | 1 failed) 6828ms
+     ✓ 4A 第 1 版响应在读到第 2 版之后才到：界面与后续保存版本都必须还是第 2 版  832ms
+     × 4B 反向顺序：第 1 版响应在第二次读取落定前到达，界面不得先退回旧稿 824ms
+     ✓ 4C 控制组：第 1 版响应在用户已经切到 A 时到达 → 按板面归属丢弃，回到 B 仍是第 2 版  811ms
+     ✓ 4D 控制组：晚到的读取响应尊重用户在读取期间输入的新草稿  809ms
+     ✓ 5A A 的草稿保存返回 503：B 的草稿仍会被发出，B 不永远停在 saving，失败只归 A  1619ms
+     ✓ 6A B 存在待选择的同键冲突时：C 的草稿仍会发出，冲突项不重复发，正常项各发一次  810ms
+     ✓ 6B 控制组：没有可发送项时重复进入 flushDrafts 不悬挂、不发请求  1119ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-protect.test.ts > #46 第八轮 · 第 2 项：旧正式保存不得删除另一标签页的新恢复副本 > 2B 另一标签页的新稿已同步：旧回执到达后不得再发 removed，服务端更新的草稿仍在
+AssertionError: 旧正式保存回执仍对已被另一标签页更新过的草稿键发起了 removed: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/stores/__tests__/q46-r8-drafts-protect.test.ts:393:7
+    391|       removedCalls.length,
+    392|       "旧正式保存回执仍对已被另一标签页更新过的草稿键发起了 removed",
+    393|     ).toBe(0);
+       |       ^
+    394|     expect(books[BOARD_B].drafts[KEY_B], "服务端上更新的草稿被旧回执清掉了").toBe(tab2…
+    395|     expect(books[BOARD_B].keyVersions[KEY_B], "服务端更新的草稿版本被旧回执消费/推进").t…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-queue.test.ts > #46 第八轮 · 第 4 项：迟到的读取不得把新草稿显示成旧稿 > 4B 反向顺序：第 1 版响应在第二次读取落定前到达，界面不得先退回旧稿
+AssertionError: 更早的读取在第二次读取落定前把界面改成了旧稿: expected 'B 的草稿第 1 版' not to be 'B 的草稿第 1 版' // Object.is equality
+ ❯ src/stores/__tests__/q46-r8-drafts-queue.test.ts:398:63
+    396|     await firstRead;
+    397|     await settle();
+    398|     expect(store.drafts[KEY_B], "更早的读取在第二次读取落定前把界面改成了旧稿").not.toBe("B …
+       |                                                               ^
+    399|
+    400|     // 第 2 版读取落定：最终必须是第 2 版
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  2 failed | 11 passed (13)
+   Start at  01:28:25
+   Duration  11.77s (transform 2.45s, setup 44ms, import 3.34s, tests 12.54s, environment 5.61s)
+

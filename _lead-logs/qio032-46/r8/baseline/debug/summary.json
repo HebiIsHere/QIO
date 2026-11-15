@@ -1,0 +1,18 @@
+{
+  "runId": "20261115170406",
+  "at": "2026-11-15T17:04:06.634Z",
+  "base": "http://127.0.0.1:5202",
+  "api": "http://127.0.0.1:8735",
+  "provider": "http://127.0.0.1:8808",
+  "cdpPort": 9334,
+  "out": "D:\\qio-dev\\q46-r8\\_lead-logs\\qio032-46\\r8\\baseline\\debug",
+  "mode": "debug",
+  "pass": 0,
+  "fail": 0,
+  "observe": 0,
+  "total": 0,
+  "results": [],
+  "simulated": [],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。"
+}

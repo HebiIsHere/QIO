@@ -334,6 +334,10 @@ function showCardImportSnapshot(job: CardImportJobSnapshot): void {
      * #46（第七轮）：有可复用的已上传附件 → 「重试关联」（不重新选文件）；
      * 上传本身失败（还没有附件 ID）→ 沿用原有「重新选择文件」入口。
      */
+    /**
+     * #46（第八轮，第 9 项）：内存里还有用户刚选的文件源、或这次尝试的附件已上传时，
+     * 「重试关联」直接重试本次尝试（必要时重传同一个文件源），不要求重新选择文件。
+     */
     const retry = store.canRetryCardAttachment(job.cardId)
       ? {
           label: "重试关联",
@@ -385,7 +389,7 @@ function onImportJobEvent(event: ImportJobEvent): void {
     token,
     attachFailText(event.fileName, result.error || "原因未知"),
     cardId
-      ? store.hasReusableAttachment(cardId)
+      ? store.canRetryCardAttachment(cardId)
         ? {
             label: "重试关联",
             run: () => {
@@ -612,6 +616,15 @@ onMounted(async () => {
       if (!alive) return;
       dismiss();
       cardJobTokens.clear();
+      /**
+       * #46（第八轮，第 11 项）：批次反馈与重试入口按板面归属 —— 切板后立刻换成
+       * **目标板面自己的**批次（没有就是空），不再把上一块板面的失败项 / 重试留在页面上。
+       */
+      const latestBatch = store.currentImportBatch;
+      activeImportBatchId.value = latestBatch?.id ?? null;
+      if (latestBatch && latestBatch.items.some((item) => item.status === "pending")) {
+        void store.runImportBatch(latestBatch.id);
+      }
       restoreCardImportNotice();
     },
   );

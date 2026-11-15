@@ -261,20 +261,23 @@ describe("失败提示", () => {
     expect(wrapper!.find('[data-im="add-material-dismiss"]').exists(), "失败提示没有关闭入口").toBe(true);
     const retry = wrapper!.find('[data-im="add-material-retry"]');
     expect(retry.exists(), "失败提示没有明确的重新操作入口").toBe(true);
-    expect(retry.text()).toContain("重新选择文件");
+    /**
+     * #46 第八轮（任务书四.9）：上传本身失败的尝试仍保留用户刚选的文件源 ——
+     * 重试入口是「重试关联」：直接重传同一个文件源，不要求用户再选一次。
+     */
+    expect(retry.text()).toContain("重试关联");
 
     // 失败不会被任何计时器清掉（推过成功提示的 3 秒也不消失）
     await vi.advanceTimersByTimeAsync(30_000);
     expect(statusEl().exists(), "失败提示被自动清掉了").toBe(true);
 
-    // 点「重新选择文件」：同一张卡片真的重新走 pickBrowserFile → 上传 → 关联
+    // 点「重试关联」：重传同一个文件源（不再打开文件选择器）
     const picksBefore = mocks.pickBrowserFile.mock.calls.length;
-    mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "大文件.bin"));
     mocks.uploadAttachment.mockResolvedValue(attachment({ id: "att_retry", name: "大文件.bin" }));
     await retry.trigger("click");
     await flush();
-    expect(mocks.pickBrowserFile.mock.calls.length, "重新选择没有重新发起选择").toBe(picksBefore + 1);
-    expect(mocks.uploadAttachment, "重新选择没有真的再上传一次").toHaveBeenCalledTimes(2);
+    expect(mocks.pickBrowserFile.mock.calls.length, "重试关联又要求重新选择文件").toBe(picksBefore);
+    expect(mocks.uploadAttachment, "重试关联没有真的再上传一次").toHaveBeenCalledTimes(2);
     expect(statusText()).toContain("已关联附件");
     expect(statusText()).toContain("大文件.bin");
 
@@ -464,17 +467,22 @@ describe("用户取消选择", () => {
       meta: { ...cardById(cardId).meta, file: { name: "原有的.png", attachmentId: "att_old" } },
     });
 
-    // 同一张卡片再走一次：这次用户取消
-    mocks.pickBrowserFile.mockResolvedValue(null);
+    /**
+     * #46 第八轮（任务书四.9）：上传失败的尝试保留了用户刚选的文件源，重试直接重传它 ——
+     * 不再重新打开文件选择器。替换成功前卡片保留原有附件（这里在板面上预置的 att_old），
+     * 替换成功后才写入新上传的附件。
+     */
     await wrapper!.find('[data-im="add-material-retry"]').trigger("click");
     await flush();
 
-    expect(statusText()).toContain("没有选择文件");
-    expect(statusText(), "原始附件被说成不存在").toContain("仍然关联着原有附件");
-    expect(statusText()).toContain("原有的.png");
-    expect(statusText(), "卡片已有附件却还在说「还没有关联」").not.toContain("还没有关联");
-    // 原有附件事实没被取消操作删掉
-    expect((cardById(cardId).meta.file as { attachmentId: string }).attachmentId).toBe("att_old");
+    expect(statusText(), "重试关联没有走成功提示").toContain("已关联附件");
+    // 重传成功后的提示是本次上传回执的名字（替身默认 报告.pdf）
+    expect(statusText()).toContain("报告.pdf");
+    expect(statusText(), "替换成功后还在说没有选择文件").not.toContain("没有选择文件");
+    expect(
+      (cardById(cardId).meta.file as { attachmentId: string }).attachmentId,
+      "替换成功后卡片附件没有更新为本次上传的附件",
+    ).not.toBe("att_old");
   });
 });
 

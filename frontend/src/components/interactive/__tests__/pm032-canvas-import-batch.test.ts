@@ -354,6 +354,7 @@ describe("#46 离开互动页后继续上传和关联", () => {
     mocks.uploadAttachment.mockReturnValueOnce(flying.promise);
     await dropFiles([file("跨板.txt")]);
     const originalBoard = store.board!;
+    const batchId = store.currentImportBatch!.id;
     expect(batchItems()[0].status).toBe("uploading");
 
     // 用户打开另一块板面时回执才到
@@ -363,12 +364,18 @@ describe("#46 离开互动页后继续上传和关联", () => {
     await settle();
 
     expect(store.board!.cards, "迟到回执写进了当前碰巧打开的板面").toHaveLength(0);
-    expect(batchItems()[0].status).toBe("failed");
-    expect(batchItems()[0].error || "").toContain("原板面");
+    // #46 第八轮（第 11 项）：批次入口按板面归属 —— A 上没有「当前批次」，
+    // 原板面的批次事实仍按 id 可取，切回原板面后才成为可操作的当前批次。
+    expect(store.currentImportBatch, "A 上显示了 B 的批次").toBeNull();
+    const originalItems = store.importBatchById(batchId)!.items;
+    expect(originalItems[0].status).toBe("failed");
+    expect(originalItems[0].error || "").toContain("原板面");
 
     // 回到原板面后重试：源还在内存里，不需要重新选择文件；附件已上传成功，复用第一次的附件 ID
     store.boardId = "board_default";
     store.board = originalBoard;
+    // 切板后批次入口是异步重绘的（按目标板面的真实状态），等一次渲染
+    await settle();
     const retries = statusEl().findAll('[data-im="card-attach-retry"]');
     expect(retries, "回到原板面后没有恢复入口").toHaveLength(1);
     await retries[0].trigger("click");

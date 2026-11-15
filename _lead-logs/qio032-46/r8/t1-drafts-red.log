@@ -1,0 +1,154 @@
+
+ RUN  v4.1.10 D:/qio-dev/_q46-r8-baseline/frontend
+
+ ❯ src/stores/__tests__/q46-r8-drafts-protect.test.ts (6 tests | 4 failed) 5749ms
+     × 2A 另一标签页的新稿还没同步：旧回执落定后本机副本仍是新文字，重新打开编辑器仍能恢复 844ms
+     × 2B 另一标签页的新稿已同步：旧回执到达后不得再发 removed，服务端更新的草稿仍在 1650ms
+     × 3A 完成编辑后撤销：旧回执与随后无关保存成功都不得清掉对应草稿 810ms
+     × 3B 删除卡片后撤销删除：删除回执不得清掉这张卡的草稿 814ms
+     ✓ 3C 控制组：删除写入失败时草稿与清除登记都保留（等重试）  810ms
+     ✓ 3D 控制组：正常完成编辑且正式内容落库时，该键的 removed 会发、本机记录被清  819ms
+ ❯ src/stores/__tests__/q46-r8-drafts-queue.test.ts (7 tests | 4 failed) 6817ms
+     × 4A 第 1 版响应在读到第 2 版之后才到：界面与后续保存版本都必须还是第 2 版 828ms
+     × 4B 反向顺序：第 1 版响应在第二次读取落定前到达，界面不得先退回旧稿 810ms
+     ✓ 4C 控制组：第 1 版响应在用户已经切到 A 时到达 → 按板面归属丢弃，回到 B 仍是第 2 版  808ms
+     ✓ 4D 控制组：晚到的读取响应尊重用户在读取期间输入的新草稿  812ms
+     × 5A A 的草稿保存返回 503：B 的草稿仍会被发出，B 不永远停在 saving，失败只归 A 1622ms
+     × 6A B 存在待选择的同键冲突时：C 的草稿仍会发出，冲突项不重复发，正常项各发一次 815ms
+     ✓ 6B 控制组：没有可发送项时重复进入 flushDrafts 不悬挂、不发请求  1120ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-protect.test.ts > #46 第八轮 · 第 2 项：旧正式保存不得删除另一标签页的新恢复副本 > 2A 另一标签页的新稿还没同步：旧回执落定后本机副本仍是新文字，重新打开编辑器仍能恢复
+AssertionError: 标签页 1 的旧正式保存回执把标签页 2 还没同步的新恢复副本删掉了: expected '' to be '标签页 2 还没同步的新文字' // Object.is equality
+
+- Expected
++ Received
+
+- 标签页 2 还没同步的新文字
+
+ ❯ src/stores/__tests__/q46-r8-drafts-protect.test.ts:340:64
+    338|     // 标签页 2 的本机恢复副本必须原样保留（内容 + 版本 + 记录种类）
+    339|     const stored = readCardLocalDraft(CARD_B);
+    340|     expect(stored?.text, "标签页 1 的旧正式保存回执把标签页 2 还没同步的新恢复副本删掉了").toBe(ta…
+       |                                                                ^
+    341|     expect(stored?.kind, "标签页 2 的新恢复副本被写成了「待清除」依据（重开就恢复不出新文字）").toBe("…
+    342|     expect(stored?.version, "标签页 2 的新恢复副本版本被旧回执推进/覆盖了").toBe(tab2Versi…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-protect.test.ts > #46 第八轮 · 第 2 项：旧正式保存不得删除另一标签页的新恢复副本 > 2B 另一标签页的新稿已同步：旧回执到达后不得再发 removed，服务端更新的草稿仍在
+AssertionError: 旧正式保存回执仍对已被另一标签页更新过的草稿键发起了 removed: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/stores/__tests__/q46-r8-drafts-protect.test.ts:393:7
+    391|       removedCalls.length,
+    392|       "旧正式保存回执仍对已被另一标签页更新过的草稿键发起了 removed",
+    393|     ).toBe(0);
+       |       ^
+    394|     expect(books[BOARD_B].drafts[KEY_B], "服务端上更新的草稿被旧回执清掉了").toBe(tab2…
+    395|     expect(books[BOARD_B].keyVersions[KEY_B], "服务端更新的草稿版本被旧回执消费/推进").t…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-protect.test.ts > #46 第八轮 · 第 3 项：撤销正式编辑时保留对应草稿 > 3A 完成编辑后撤销：旧回执与随后无关保存成功都不得清掉对应草稿
+AssertionError: 撤销后的无关保存成功仍向服务器发起了针对该草稿的 removed: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/stores/__tests__/q46-r8-drafts-protect.test.ts:447:69
+    445|
+    446|     const removedCalls = draftCallsFor(BOARD_B).filter((call) => call.…
+    447|     expect(removedCalls.length, "撤销后的无关保存成功仍向服务器发起了针对该草稿的 removed").to…
+       |                                                                     ^
+    448|     const stored = readCardLocalDraft(CARD_B);
+    449|     const serverDraft = books[BOARD_B].drafts[KEY_B];
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-protect.test.ts > #46 第八轮 · 第 3 项：撤销正式编辑时保留对应草稿 > 3B 删除卡片后撤销删除：删除回执不得清掉这张卡的草稿
+AssertionError: 撤销删除后，删除回执/无关保存成功仍清掉了这张卡的草稿: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/stores/__tests__/q46-r8-drafts-protect.test.ts:509:64
+    507|
+    508|     const removedCalls = draftCallsFor(BOARD_B).filter((call) => call.…
+    509|     expect(removedCalls.length, "撤销删除后，删除回执/无关保存成功仍清掉了这张卡的草稿").toBe(0);
+       |                                                                ^
+    510|     const stored = readCardLocalDraft(CARD_B);
+    511|     const serverDraft = books[BOARD_B].drafts[KEY_B];
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-queue.test.ts > #46 第八轮 · 第 4 项：迟到的读取不得把新草稿显示成旧稿 > 4A 第 1 版响应在读到第 2 版之后才到：界面与后续保存版本都必须还是第 2 版
+AssertionError: 迟到的第 1 版读取把界面改回了旧稿（正文与版本没有成对应用）: expected 'B 的草稿第 1 版' to be 'B 的草稿第 2 版' // Object.is equality
+
+Expected: "B 的草稿第 2 版"
+Received: "B 的草稿第 1 版"
+
+ ❯ src/stores/__tests__/q46-r8-drafts-queue.test.ts:342:68
+    340|     await settle();
+    341|
+    342|     expect(store.drafts[KEY_B], "迟到的第 1 版读取把界面改回了旧稿（正文与版本没有成对应用）").toB…
+       |                                                                    ^
+    343|       "B 的草稿第 2 版",
+    344|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-queue.test.ts > #46 第八轮 · 第 4 项：迟到的读取不得把新草稿显示成旧稿 > 4B 反向顺序：第 1 版响应在第二次读取落定前到达，界面不得先退回旧稿
+AssertionError: 更早的读取在第二次读取落定前把界面改成了旧稿: expected 'B 的草稿第 1 版' not to be 'B 的草稿第 1 版' // Object.is equality
+ ❯ src/stores/__tests__/q46-r8-drafts-queue.test.ts:398:63
+    396|     await firstRead;
+    397|     await settle();
+    398|     expect(store.drafts[KEY_B], "更早的读取在第二次读取落定前把界面改成了旧稿").not.toBe("B …
+       |                                                               ^
+    399|
+    400|     // 第 2 版读取落定：最终必须是第 2 版
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-queue.test.ts > #46 第八轮 · 第 5 项：一块板的保存失败不得堵住其他板的草稿 > 5A A 的草稿保存返回 503：B 的草稿仍会被发出，B 不永远停在 saving，失败只归 A
+AssertionError: A 板的草稿保存失败把 B 板还等在队列里的草稿堵住了（B 一直显示保存中、请求也没发）: expected 0 to be greater than or equal to 1
+ ❯ src/stores/__tests__/q46-r8-drafts-queue.test.ts:506:7
+    504|       bCalls.length,
+    505|       "A 板的草稿保存失败把 B 板还等在队列里的草稿堵住了（B 一直显示保存中、请求也没发）",
+    506|     ).toBeGreaterThanOrEqual(1);
+       |       ^
+    507|     expect(bCalls[0].drafts[KEY_B], "B 的草稿保存发错了内容").toBe("B 的草稿");
+    508|     expect(store.draftStateFor(KEY_A).status, "A 的失败没有被如实标成 error").to…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-drafts-queue.test.ts > #46 第八轮 · 第 6 项：冲突板不得卡住队列 > 6A B 存在待选择的同键冲突时：C 的草稿仍会发出，冲突项不重复发，正常项各发一次
+AssertionError: B 板存在待选择的草稿冲突时，C 板的草稿保存被卡住（队列停在冲突板上）: expected 0 to be greater than or equal to 1
+ ❯ src/stores/__tests__/q46-r8-drafts-queue.test.ts:578:7
+    576|       cCalls.length,
+    577|       "B 板存在待选择的草稿冲突时，C 板的草稿保存被卡住（队列停在冲突板上）",
+    578|     ).toBeGreaterThanOrEqual(1);
+       |       ^
+    579|     expect(cCalls[0].boardId).toBe(BOARD_C);
+    580|     expect(cCalls[0].drafts[KEY_C], "C 的草稿保存发错了内容").toBe("C 的草稿");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  8 failed | 5 passed (13)
+   Start at  01:27:57
+   Duration  11.46s (transform 2.00s, setup 48ms, import 2.71s, tests 12.57s, environment 5.64s)
+

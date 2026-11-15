@@ -1,0 +1,3 @@
+== QIO #46 第八轮（R8）浏览器验收 runId=2026-11-15T17:50:02.441Z
+base=http://127.0.0.1:5199 api=http://127.0.0.1:8734 provider=http://127.0.0.1:8807 out=D:\qio-dev\q46-r8\_lead-logs\qio032-46\r8\run only=[]
+wt=D:/qio-dev/q46-r8 dataDir= cdp=9334

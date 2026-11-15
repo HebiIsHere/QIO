@@ -1,0 +1,5 @@
+== QIO #46 第八轮（R8）浏览器验收 runId=2026-11-15T17:54:00.626Z
+base=http://127.0.0.1:5202 api=http://127.0.0.1:8735 provider=http://127.0.0.1:8808 out=D:\qio-dev\q46-r8\_lead-logs\qio032-46\r8\baseline\g2 only=["s2"]
+wt=D:/qio-dev/q46-r8 dataDir=D:\qio-dev\q46-r8\_lead-logs\qio032-46\r8\e2e-data\baseline cdp=9334
+
+---- s2 第2项 双标签页旧回执不删新副本 ----
