@@ -269,6 +269,8 @@ type DropBatchEntry = { name: string; token: ImportSourceToken };
 const IMPORT_STATUS_TEXT: Record<ImportItemStatus, string> = {
   pending: "等待上传",
   uploading: "上传中",
+  // #46（第七轮）：关联已写入板面、正式保存回执还没到 —— 既不是成功也不是失败
+  awaiting_save: "关联待保存",
   succeeded: "已接收",
   failed: "失败",
   unreceived: "未接收",
@@ -287,8 +289,13 @@ const importSummary = computed(() => importBatchSummaryText(activeImportBatch.va
 const cardJobTokens = new Map<number, number>();
 
 function cardJobProgressText(
-  job: Pick<CardImportJobSnapshot, "phase" | "fileName" | "sourceKind">,
+  job: Pick<CardImportJobSnapshot, "phase" | "fileName" | "sourceKind"> & { awaitingSave?: boolean },
 ): string {
+  /**
+   * #46（第七轮）：关联已写入板面、正式保存回执还没到 —— 这是「关联待保存」，
+   * 不是「已关联附件」。提示必须跟随这份真实状态（与批次项同一口径）。
+   */
+  if (job.awaitingSave) return "附件「" + job.fileName + "」已上传，正在等待板面保存确认…";
   if (job.phase === "processing") return "正在处理附件「" + job.fileName + "」…";
   return job.sourceKind === "browser_upload"
     ? "正在保存附件「" + job.fileName + "」…"
@@ -323,17 +330,19 @@ function showCardImportSnapshot(job: CardImportJobSnapshot): void {
   }
   if (job.phase === "failed") {
     store.acknowledgeCardImport(job.attemptId);
-    fail(
-      token,
-      attachFailText(job.fileName, job.error || "原因未知"),
-      // 内存里还有这份文件时不需要用户重新选；只有确实没有源时才回退到重新选择
-      {
-        label: "重试关联",
-        run: () => {
-          if (!store.retryCardAttachment(job.cardId)) void attachRealFile("file", job.cardId);
-        },
-      },
-    );
+    /**
+     * #46（第七轮）：有可复用的已上传附件 → 「重试关联」（不重新选文件）；
+     * 上传本身失败（还没有附件 ID）→ 沿用原有「重新选择文件」入口。
+     */
+    const retry = store.canRetryCardAttachment(job.cardId)
+      ? {
+          label: "重试关联",
+          run: () => {
+            if (!store.retryCardAttachment(job.cardId)) void attachRealFile("file", job.cardId);
+          },
+        }
+      : retryOf("file", job.cardId);
+    fail(token, attachFailText(job.fileName, job.error || "原因未知"), retry);
     return;
   }
   progress(token, cardJobProgressText(job));
@@ -367,10 +376,24 @@ function onImportJobEvent(event: ImportJobEvent): void {
     return;
   }
   const cardId = result.cardId || event.cardId || "";
+  /**
+   * #46（第七轮）：已经取得附件 ID 的失败项，重试只重试**原板关联与保存**，
+   * 复用第一次上传的附件（不重新要求用户选择文件）。
+   * 上传本身失败的（还没有附件 ID）保留原有「重新选择文件」入口。
+   */
   fail(
     token,
     attachFailText(event.fileName, result.error || "原因未知"),
-    cardId ? retryOf("file", cardId) : undefined,
+    cardId
+      ? store.hasReusableAttachment(cardId)
+        ? {
+            label: "重试关联",
+            run: () => {
+              if (!store.retryCardAttachment(cardId)) void attachRealFile("file", cardId);
+            },
+          }
+        : retryOf("file", cardId)
+      : undefined,
   );
 }
 
@@ -575,6 +598,23 @@ onMounted(async () => {
   // 单卡关联：离开期间的真实进度 / 已完成 / 具体失败原因（同一个提示入口，显示一次）
   restoreCardImportNotice();
   stopImportJob = store.onImportJob(onImportJobEvent);
+  /**
+   * #46（第七轮）：**板面一变，附件提示随目标板面的真实状态更新**。
+   *
+   * 缺陷：提示只在组件挂载时恢复一次；在 B 发起上传、切到 A 后上传完成、再回 B 时，
+   * 界面仍停在旧的「正在保存附件」，必须重进页面（重新挂载）才出现恢复入口。
+   * 正确口径：切板后清掉上一块板面的提示痕迹，立刻按新板面在 store 里的真实状态显示
+   * （正在处理 / 关联待保存 / 关联成功 / 可重试失败）。
+   */
+  watch(
+    () => store.boardId,
+    () => {
+      if (!alive) return;
+      dismiss();
+      cardJobTokens.clear();
+      restoreCardImportNotice();
+    },
+  );
   // 只有桌面壳会给出真实路径；浏览器由模板里的 drop 事件兜底（字节 → 首次落盘）
   stopPathDrop = await onPathDrop((paths) => {
     void attachDroppedPaths(paths);

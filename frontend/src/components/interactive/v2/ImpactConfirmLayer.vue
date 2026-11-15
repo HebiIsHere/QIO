@@ -129,7 +129,24 @@ type LayerOutcomeKind =
   | "cancelled_unconfirmed"
   | "revert_done"
   | "revert_partial";
-const outcome = ref<{ kind: LayerOutcomeKind; title: string; text: string; paused: Intent[] } | null>(null);
+/**
+ * #46（第七轮）：结果必须**归属它对应的板面**。
+ *
+ * 缺陷：B 点确认后切到 A，B 的保存失败回执到达时这里照样把失败文案与「重新核实并保存」
+ * 按钮渲染在 A 的页面上（用户已经在 A，却看到 B 的失败）。正确口径：结果记下它属于哪块板面，
+ * 只在**那块板面**显示；切回 B 时从原有入口看到并处理 B 的失败。
+ */
+const outcome = ref<{
+  kind: LayerOutcomeKind;
+  title: string;
+  text: string;
+  paused: Intent[];
+  boardId: string;
+} | null>(null);
+/** 当前板面自己的结果（别的板面的结果不在这里显示，切回原板时再显示）。 */
+const visibleOutcome = computed(() =>
+  outcome.value && outcome.value.boardId === store.boardId ? outcome.value : null,
+);
 const busy = ref(false);
 const retryBusy = ref(false);
 const error = ref<string | null>(null);
@@ -162,10 +179,25 @@ function outcomeTitle(kind: string): string {
 }
 
 /* ── 影响确认：确认 / 取消 / 重试（原有能力） ─────────────── */
+/**
+ * #46（第七轮）：这次操作属于哪块板面。
+ *
+ * 在**点击那一刻**取定（不是结果回来时读 store.boardId）—— 用户可能在点击与回执之间切板，
+ * 结果仍归原板面：A 上不显示 B 的失败，切回 B 才看到并处理。
+ */
+function outcomeBoardId(): string {
+  return store.boardId;
+}
+
 async function confirm(): Promise<void> {
   if (busy.value) return;
   busy.value = true;
   error.value = null;
+  /**
+   * #46（第七轮）：**点击那一刻**的板面就是这次确认的归属。
+   * 结果回来时用户可能已经切到 A —— 结果仍写回 B，A 上不显示 B 的失败。
+   */
+  const ownerBoardId = store.boardId;
   try {
     const result = await store.confirmImpact();
     if (store.pendingImpact) {
@@ -178,11 +210,11 @@ async function confirm(): Promise<void> {
       kind === "saved"
         ? "改动已保存生效；受影响的任务已暂停并保留进度（不会自动继续，需要你在任务面板里确认后按当前材料继续）。"
         : result?.reason || "这次改动没有落库，也没有任务被暂停";
-    outcome.value = { kind: kind as ImpactConfirmOutcome, title: outcomeTitle(kind), text, paused };
+    outcome.value = { kind: kind as ImpactConfirmOutcome, title: outcomeTitle(kind), text, paused, boardId: ownerBoardId };
   } catch (err) {
     const message = (err as Error).message || "确认没有完成";
     error.value = message;
-    outcome.value = { kind: "save_failed", title: outcomeTitle("save_failed"), text: message, paused: [] };
+    outcome.value = { kind: "save_failed", title: outcomeTitle("save_failed"), text: message, paused: [], boardId: ownerBoardId };
   } finally {
     busy.value = false;
   }
@@ -201,6 +233,7 @@ async function cancel(): Promise<void> {
         title: outcomeTitle("cancelled_unconfirmed"),
         text: recovery.reason || "撤回还没有被服务器事实确认",
         paused: [],
+        boardId: outcomeBoardId(),
       };
       return;
     }
@@ -209,6 +242,7 @@ async function cancel(): Promise<void> {
       title: outcomeTitle("cancelled"),
       text: "已取消：这次改动没有生效，任务继续；其他独立任务不受影响。",
       paused: [],
+      boardId: outcomeBoardId(),
     };
   } catch (err) {
     const message = (err as Error).message || "取消失败";
@@ -218,6 +252,7 @@ async function cancel(): Promise<void> {
       title: outcomeTitle("cancelled_unconfirmed"),
       text: message,
       paused: [],
+      boardId: outcomeBoardId(),
     };
   } finally {
     busy.value = false;
@@ -238,6 +273,7 @@ async function retrySave(): Promise<void> {
         title: outcomeTitle("saved"),
         text: "改动已保存生效。",
         paused: [...store.lastSavePaused],
+        boardId: outcomeBoardId(),
       };
       return;
     }
@@ -247,6 +283,7 @@ async function retrySave(): Promise<void> {
         title: outcomeTitle("save_failed"),
         text: store.saveError || "保存没有完成",
         paused: [],
+        boardId: outcomeBoardId(),
       };
       return;
     }
@@ -256,6 +293,7 @@ async function retrySave(): Promise<void> {
         title: outcomeTitle("check_failed"),
         text: store.impactCheckError,
         paused: [],
+        boardId: outcomeBoardId(),
       };
     }
   } finally {
@@ -275,6 +313,7 @@ async function retryCancelRecovery(): Promise<void> {
         title: outcomeTitle("cancelled"),
         text: "已取消：这次改动没有生效，任务继续。",
         paused: [],
+        boardId: outcomeBoardId(),
       };
     } else {
       outcome.value = {
@@ -282,6 +321,7 @@ async function retryCancelRecovery(): Promise<void> {
         title: outcomeTitle("cancelled_unconfirmed"),
         text: result.error || store.cancelRecovery?.reason || "撤回还没有被服务器事实确认",
         paused: [],
+        boardId: outcomeBoardId(),
       };
     }
   } finally {
@@ -341,11 +381,11 @@ async function continueRevert(intentId: string): Promise<void> {
       if (remaining.length) {
         const text = parts.join("；") + "；还有 " + remaining.length + " 项需要你决定。";
         notice.value = text;
-        outcome.value = { kind: "revert_partial", title: outcomeTitle("revert_partial"), text, paused: [] };
+        outcome.value = { kind: "revert_partial", title: outcomeTitle("revert_partial"), text, paused: [], boardId: outcomeBoardId() };
       } else {
         const text = parts.join("；") + "；这个任务剩下的改动已经处理完。";
         notice.value = text;
-        outcome.value = { kind: "revert_done", title: outcomeTitle("revert_done"), text, paused: [] };
+        outcome.value = { kind: "revert_done", title: outcomeTitle("revert_done"), text, paused: [], boardId: outcomeBoardId() };
       }
       return;
     }
@@ -648,24 +688,25 @@ onBeforeUnmount(() => {
 
   <!-- 真实结果：活过对话框关闭，按 store 的真实结果说话 -->
   <section
-    v-if="!open && !deferred && outcome"
+    v-if="!open && !deferred && visibleOutcome"
     class="ic-outcome qio-floating"
     role="status"
     aria-live="polite"
     data-im="impact-confirm-outcome"
-    :data-outcome="outcome.kind"
+    :data-outcome="visibleOutcome.kind"
+    :data-board-id="visibleOutcome.boardId"
   >
-    <h2 class="ic-outcome-title">{{ outcome.title }}</h2>
-    <p class="ic-outcome-text">{{ outcome.text }}</p>
-    <div v-if="outcome.kind === 'saved'" class="ic-paused" data-im="impact-confirm-paused">
-      <p>{{ outcome.paused.length ? "这次被暂停的任务：" : "这次没有任务因为这项改动被暂停。" }}</p>
-      <ul v-if="outcome.paused.length">
-        <li v-for="intent in outcome.paused" :key="intent.id">{{ intent.title }}</li>
+    <h2 class="ic-outcome-title">{{ visibleOutcome.title }}</h2>
+    <p class="ic-outcome-text">{{ visibleOutcome.text }}</p>
+    <div v-if="visibleOutcome.kind === 'saved'" class="ic-paused" data-im="impact-confirm-paused">
+      <p>{{ visibleOutcome.paused.length ? "这次被暂停的任务：" : "这次没有任务因为这项改动被暂停。" }}</p>
+      <ul v-if="visibleOutcome.paused.length">
+        <li v-for="intent in visibleOutcome.paused" :key="intent.id">{{ intent.title }}</li>
       </ul>
     </div>
     <div class="ic-actions qio-modal-actions">
       <button
-        v-if="outcome.kind === 'check_failed' || outcome.kind === 'save_failed' || outcome.kind === 'superseded'"
+        v-if="visibleOutcome.kind === 'check_failed' || visibleOutcome.kind === 'save_failed' || visibleOutcome.kind === 'superseded'"
         class="qio-btn primary"
         type="button"
         data-im="impact-confirm-retry"
@@ -673,7 +714,7 @@ onBeforeUnmount(() => {
         @click="retrySave"
       >{{ retryBusy ? "核实中…" : "重新核实并保存" }}</button>
       <button
-        v-if="outcome.kind === 'cancelled_unconfirmed'"
+        v-if="visibleOutcome.kind === 'cancelled_unconfirmed'"
         class="qio-btn primary"
         type="button"
         data-im="impact-confirm-recovery-retry"

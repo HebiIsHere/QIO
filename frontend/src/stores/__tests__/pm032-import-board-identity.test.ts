@@ -463,6 +463,13 @@ describe("#46 跨板回执只关联已加载的原板面", () => {
     expect(live, "原板面没有建卡，或建了重复卡").toHaveLength(1);
     expect(live[0].kind).toBe("file");
     expect(linkedAttachmentId(store, live[0].id)).toBe("att_batch");
+    /**
+     * #46（第七轮）：批次项不再「关联写入即成功」—— 关联已写进板面、正式保存回执还没到
+     * 时是 awaiting_save（界面显示「关联待保存」）。这里等这次候选的保存回执落地，
+     * 再断言它变成 succeeded（保存请求仍只属于原板面）。
+     */
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await settle();
     expect(store.importBatchById(batch.id)!.items[0].status).toBe("succeeded");
     expect(savedBoardIds().every((id) => id === BOARD_A)).toBe(true);
     expect(savedCardIds()).not.toContain("card_b");
