@@ -1,0 +1,10 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests) 18ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  13:23:54
+   Duration  2.99s (transform 861ms, setup 27ms, import 1.05s, tests 18ms, environment 1.36s)
+

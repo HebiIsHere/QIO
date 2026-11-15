@@ -1,0 +1,107 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/_r7-baseline-head/frontend
+
+ ❯ src/stores/__tests__/q46-r7-cancel-recovery.test.ts (4 tests | 2 failed) 2921ms
+     × 回读失败 → 重试成功：cancelRecovery.active 变 false、reason 清空（响应式公开读取） 720ms
+     × 同板失败后重试仍失败：如实更新真实原因（不假装成功），再重试成功才收敛 718ms
+     ✓ B 的撤回失败晚于 A 的撤回开始：A 的撤回结果不被 B 的迟到失败覆盖  714ms
+     ✓ 组件层：取消后回读失败显示重试入口，点它重试成功后入口消失  767ms
+ ❯ src/stores/__tests__/q46-r7-impact-ownership.test.ts (7 tests | 2 failed) 14798ms
+     ✓ 旧预判先成功返回：旧响应被丢弃，确认仍对应最新候选  2558ms
+     ✓ 新预判先成功返回、旧预判迟到：旧响应不覆盖较新的确认  2527ms
+     ✓ 旧预判先失败返回：旧失败不写成当前预判失败，最新候选仍可确认  2538ms
+     × 409 恢复中的重新预判：旧响应迟到不许清理新恢复计划（保存必须继续） 2544ms
+     ✓ store 层：B 点确认后切到 A，B 的保存失败迟到只写 B  1310ms
+     × 组件层：A 上不渲染 B 的失败文案与重试按钮；B 上可见，点重试只向 B 发请求 1372ms
+     ✓ 同板：较早的保存失败结果不覆盖较新的确认操作（重试成功后显示已保存）  1947ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/q46-r7-cancel-recovery.test.ts > 三.6 撤回未被服务器确认：重试与响应式读取 > 回读失败 → 重试成功：cancelRecovery.active
+ 变 false、reason 清空（响应式公开读取）
+AssertionError: 重试成功后 cancelRecovery 仍是 active=true（响应式读取没有随状态更新）: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/stores/__tests__/q46-r7-cancel-recovery.test.ts:267:7
+    265|       store.cancelRecovery?.active,
+    266|       "重试成功后 cancelRecovery 仍是 active=true（响应式读取没有随状态更新）",
+    267|     ).toBe(false);
+       |       ^
+    268|     expect(store.cancelRecovery?.reason, "重试成功后仍留着旧的失败原因").toBeNull();
+    269|     expect(store.cancelRecovery?.boardId, "收敛后的撤回状态不属于 B").toBe(BOARD_…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-cancel-recovery.test.ts > 三.6 撤回未被服务器确认：重试与响应式读取 > 同板失败后重试仍失败：如实更新真实原因（不假装成功），再重试成功才
+收敛
+AssertionError: 重试失败没有更新真实原因: expected '撤回还没有被服务器事实确认：第一次读取失败（503）' to contain '502'
+
+Expected: "502"
+Received: "撤回还没有被服务器事实确认：第一次读取失败（503）"
+
+ ❯ src/stores/__tests__/q46-r7-cancel-recovery.test.ts:286:72
+    284|     expect(firstRetry.ok, "重试失败却报告成功").toBe(false);
+    285|     expect(store.cancelRecovery?.active, "重试失败却宣称撤回已确认").toBe(true);
+    286|     expect(String(store.cancelRecovery?.reason ?? ""), "重试失败没有更新真实原因")…
+       |                                                                        ^
+    287|
+    288|     // 第二次重试成功：收敛
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-impact-ownership.test.ts > 二.4 影响预判乱序：确认始终对应最新候选 > 409 恢复中的重新预判：旧响应迟到不许清理新恢复计划（保存必须继
+续）
+AssertionError: 旧响应清掉了新恢复计划：重新预判返回「可以保存」后保存没有继续: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ src/stores/__tests__/q46-r7-impact-ownership.test.ts:434:7
+    432|       bPuts.length,
+    433|       "旧响应清掉了新恢复计划：重新预判返回「可以保存」后保存没有继续",
+    434|     ).toBe(2);
+       |       ^
+    435|     expect(bPuts[bPuts.length - 1].state.seq, "恢复后的保存没有使用最新服务端版本").toB…
+    436|     expect(puts().filter((item) => item.boardId === BOARD_A).length, "…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-impact-ownership.test.ts > 二.5 确认结果只在 B 展示，不串到 A > 组件层：A 上不渲染 B 的失败文案与重试按钮；B 上可见，点重试
+只向 B 发请求
+AssertionError: A 的页面上渲染出了 B 的保存失败文案（确认结果没有按板面归属）: expected '这次改动还没有生效：它会影响正在执行的任务 这些任务失败或取消后，已经撤回…' not to contain 'B 
+板保存失败'
+
+Expected: "B 板保存失败"
+Received: "这次改动还没有生效：它会影响正在执行的任务 这些任务失败或取消后，已经撤回了不受影响的部分；下面这些改动会影响其他工作，所以停在这里等你决定。  「继续」会按上面的说明处理这个任务的剩余改动（服务端会先按当前内容重新
+核对）； 「取消」保持现状、不做任何改动。多个任务各自独立，不会顺带处理你没有看到的项。  当前没有需要你决定的剩余改动。 取消：保持现状，不做改动这次改动没有保存成功B 板保存失败：服务端 500重新核实并保存 知道了"
+
+ ❯ src/stores/__tests__/q46-r7-impact-ownership.test.ts:534:11
+    532|       wrapper.text(),
+    533|       "A 的页面上渲染出了 B 的保存失败文案（确认结果没有按板面归属）",
+    534|     ).not.toContain("B 板保存失败");
+       |           ^
+    535|     expect(
+    536|       wrapper.find('[data-im="impact-confirm-retry"]').exists(),
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  4 failed | 7 passed (11)
+   Start at  13:31:05
+   Duration  18.17s (transform 1.75s, setup 29ms, import 2.22s, tests 17.72s, environment 2.97s)
+

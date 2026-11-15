@@ -1,0 +1,14 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests) 16ms
+ ✓ src/stores/__tests__/closure-lead-r1r2r3r5.test.ts (8 tests) 46ms
+ ✓ src/components/interactive/v2/__tests__/ImpactConfirmLayer.test.ts (12 tests) 273ms
+ ✓ src/stores/__tests__/recovery-lead-state-facts.test.ts (14 tests) 562ms
+     ✓ 【状态/单元】服务端拒绝旧版本写入（409 stale_state）后：接收最新事实并用最新版本重试  494ms
+
+ Test Files  4 passed (4)
+      Tests  36 passed (36)
+   Start at  13:37:27
+   Duration  4.86s (transform 3.23s, setup 86ms, import 4.40s, tests 896ms, environment 7.16s)
+

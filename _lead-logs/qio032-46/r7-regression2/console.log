@@ -1,0 +1,2 @@
+[PASS] 3) B 409 达上限：恰好 4 次 PUT；切出切回不新增；手动重试恢复且只写 B :: {"putsAtLimit":4,"afterSwitchCount":4,"putsA":0,"retryPuts":1,"uiBeforeRetry":{"text":"保存失败：服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）","tone":"err","retry":true},"afterRetry":{"saveStatus":"saved","saveError":null},"st":{"saveStatus":"error","saveError":"服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试"},"allPutStatuses":[409,409,409,409,200]}
+[OBSERVE] 6) B 撤回读取挂起 → A 撤回 → 返回 B 失败 :: {"note":"UNVERIFIED：撤回（revert）决策读取链路未能在本轮窗口内稳定驱动；见报告"}

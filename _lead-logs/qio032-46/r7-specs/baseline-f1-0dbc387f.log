@@ -1,0 +1,41 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/_r7-baseline-head/frontend
+
+ ❯ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests | 1 failed) 18ms
+     ✓ 取消的正文不许留下、不许被写回；等待期间的独立移动必须保留 12ms
+     × 回读失败：本地撤回仍生效、如实说明撤回未被服务器确认、可重试（新口径） 6ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts > F1 取消恢复等待期间的独立操作 > 回读失败：本地撤回仍生效、如
+实说明撤回未被服务器确认、可重试（新口径）
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts:187:42
+    185|     const retried = await store.retryCancelRecovery();
+    186|     expect(retried.ok, "重试入口没有取到最新事实").toBe(true);
+    187|     expect(store.cancelRecovery?.active).toBe(false);
+       |                                          ^
+    188|   });
+    189| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  13:23:38
+   Duration  2.86s (transform 822ms, setup 27ms, import 992ms, tests 18ms, environment 1.32s)
+

@@ -1,0 +1,136 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/_r7-spec-attach-baseline/frontend
+
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts (4 tests | 4 failed) 1249ms
+     × 上传成功但关联保存失败：状态区分待保存/失败/成功，失败保留附件 ID 且不发成功提示 15ms
+     × 重试关联：只上传 1 次、复用同一 attachmentId，保存回执成功后才变成成功 613ms
+     × 关联已写入但保存回执未到：批次项不得标成功；保存失败后仍不得成功 4ms
+     × 重试复用附件 ID、不重复建卡、同批其他项不变；成功回执后对应项才成功 616ms
+ ❯ src/stores/__tests__/q46-r7-task-isolation.test.ts (5 tests | 2 failed) 1845ms
+     × B 有运行中任务、A 首次读取失败：A 的 intents / intentViews 不使用 B 的清单 14ms
+     × B 有运行中任务、A 首次读取失败：A 的普通保存不发影响预判，PUT 只指向 A 且成功 613ms
+     ✓ A 自己真的有运行中任务时，影响预判照常发往 A（隔离不等于关掉预判）  606ms
+     ✓ 同板刷新失败保留同板旧数据（F11 口径不被本轮隔离改坏） 3ms
+     ✓ 晚到的整板读取与任务清单不覆盖当前板数据与保存错误  608ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/q46-r7-attachment-state.test.ts > #46 R7 四.8 单卡附件状态机 > 上传成功但关联保存失败：状态区分待保存/失败/成功，失败保留附件 ID 
+且不发成功提示
+AssertionError: 保存回执还没到就发了成功提示：["processing","succeeded"]: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts:269:7
+    267|       phases.includes("succeeded"),
+    268|       "保存回执还没到就发了成功提示：" + JSON.stringify(phases),
+    269|     ).toBe(false);
+       |       ^
+    270|     expect(
+    271|       store.activeCardImportForBoard?.phase,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-attachment-state.test.ts > #46 R7 四.8 单卡附件状态机 > 重试关联：只上传 1 次、复用同一 attachmentId，保存回执成
+功后才变成成功
+AssertionError: 保存回执还没到就发了成功提示: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts:339:60
+    337|     expect(retryJob.phase, "保存回执还没到就标成了成功").toBe("processing");
+    338|     expect(retryJob.awaitingSave, "重试关联没有标出「关联待保存」").toBe(true);
+    339|     expect(phases.includes("succeeded"), "保存回执还没到就发了成功提示").toBe(false);
+       |                                                            ^
+    340|
+    341|     // 等重试后的保存真的发出（被 hold 住）
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-attachment-state.test.ts > #46 R7 四.9 批量导入写入失败 > 关联已写入但保存回执未到：批次项不得标成功；保存失败后仍不得成功
+AssertionError: 保存回执还没到就把批次项标成了「已接收」: expected 'succeeded' not to be 'succeeded' // Object.is equality
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts:381:11
+    379|       item().status,
+    380|       "保存回执还没到就把批次项标成了「已接收」",
+    381|     ).not.toBe("succeeded");
+       |           ^
+    382|     expect(item().attachmentId, "批次项没有记下附件 ID").toBe("att_批次-1.txt");
+    383|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-attachment-state.test.ts > #46 R7 四.9 批量导入写入失败 > 重试复用附件 ID、不重复建卡、同批其他项不变；成功回执后对应项才成功
+AssertionError: 写入失败的第 1 项被标成了成功: expected 'succeeded' not to be 'succeeded' // Object.is equality
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts:419:59
+    417|     expect(store.saveStatus, "前提：第 1 项写入失败").toBe("error");
+    418|     const item0AfterFail = store.importBatchById(batch.id)!.items[0];
+    419|     expect(item0AfterFail.status, "写入失败的第 1 项被标成了成功").not.toBe("succee…
+       |                                                           ^
+    420|     expect(item0AfterFail.attachmentId).toBe("att_批次-1.txt");
+    421|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-task-isolation.test.ts > #46 R7 三.7 任务清单按板面归属 > B 有运行中任务、A 首次读取失败：A 的 intents / inte
+ntViews 不使用 B 的清单
+AssertionError: A 显示了 B 的任务清单（任务清单没有按板面归属）: expected [ 'task_b_running' ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "task_b_running",
++ ]
+
+ ❯ src/stores/__tests__/q46-r7-task-isolation.test.ts:293:7
+    291|       store.intents.map((item) => item.id),
+    292|       "A 显示了 B 的任务清单（任务清单没有按板面归属）",
+    293|     ).toEqual([]);
+       |       ^
+    294|     expect(
+    295|       store.intentViews.map((view) => String(view.intent_id)),
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-task-isolation.test.ts > #46 R7 三.7 任务清单按板面归属 > B 有运行中任务、A 首次读取失败：A 的普通保存不发影响预判，PUT 
+只指向 A 且成功
+AssertionError: A 的普通保存因为 B 的运行中任务发了影响预判：[{"boardId":"board_a","stateVersion":3,"cardIds":["c_mwhds9v91ove0"]}]: expect
+ed 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/stores/__tests__/q46-r7-task-isolation.test.ts:314:7
+    312|       impactChecks().length - before,
+    313|       "A 的普通保存因为 B 的运行中任务发了影响预判：" + JSON.stringify(impactChecks()),
+    314|     ).toBe(0);
+       |       ^
+    315|     expect(
+    316|       vi.mocked(api.previewMaterialImpact).mock.calls.length,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  6 failed | 3 passed (9)
+   Start at  13:15:20
+   Duration  5.14s (transform 1.46s, setup 31ms, import 1.93s, tests 3.09s, environment 3.10s)
+

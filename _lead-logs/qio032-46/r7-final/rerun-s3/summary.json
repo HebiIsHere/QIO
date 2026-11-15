@@ -1,0 +1,274 @@
+{
+  "runId": "mwhhk24r",
+  "at": "2026-11-15T07:03:24.098Z",
+  "base": "http://127.0.0.1:5199",
+  "api": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8807",
+  "cdpPort": 9333,
+  "out": "D:\\qio-dev\\pm-qio032-integration\\_lead-logs\\qio032-46\\r7-final-rerun",
+  "mode": "r7",
+  "pass": 1,
+  "fail": 2,
+  "observe": 0,
+  "total": 3,
+  "results": [
+    {
+      "name": "3) 后台冲突也计入上限：PUT ≤4、切板往返不新增；页面出现可点「重试保存」并从该按钮恢复（只 1 次 PUT 200）",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "rounds": [
+          {
+            "round": 2,
+            "saveStatus": "error",
+            "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+            "puts": 4
+          },
+          {
+            "round": 3,
+            "saveStatus": "error",
+            "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+            "puts": 4
+          },
+          {
+            "round": 4,
+            "saveStatus": "error",
+            "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+            "puts": 4
+          }
+        ],
+        "putsAtLimit": 4,
+        "putsAtLimitStatuses": [
+          409,
+          409,
+          409,
+          409
+        ],
+        "putTimeline": [
+          {
+            "at": 2242,
+            "status": 409
+          },
+          {
+            "at": 6618,
+            "status": 409
+          },
+          {
+            "at": 7084,
+            "status": 409
+          },
+          {
+            "at": 7550,
+            "status": 409
+          }
+        ],
+        "putsAfterSwitch": 4,
+        "noFifth": true,
+        "limitOk": true,
+        "onA1": {
+          "boardId": "r7a_mwhhk24r_s3",
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "onB": {
+          "boardId": "r7b_mwhhk24r_s3",
+          "saveStatus": "error",
+          "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+          "dirty": true
+        },
+        "retryBtn": {
+          "exists": true,
+          "visible": true,
+          "inViewport": true,
+          "disabled": false,
+          "hitSelf": true,
+          "hitTag": "button",
+          "text": "重试",
+          "rect": {
+            "x": 762,
+            "y": 51,
+            "w": 40,
+            "h": 22
+          }
+        },
+        "retryClick": {
+          "ok": true,
+          "reason": null,
+          "text": "重试"
+        },
+        "retryPuts": 1,
+        "saved": {
+          "saveStatus": "saved",
+          "seq": 2
+        },
+        "putsA": 0
+      }
+    },
+    {
+      "name": "8) 附件状态与重试：B 上传期间切 A，回 B 立即显示真实状态；失败期无成功提示；从实际页面按钮重试关联只上传 1 次、复用附件 ID、后端回读 attachmentId、界面显示成功",
+      "ok": false,
+      "observe": false,
+      "detail": {
+        "uploads": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "onA": {
+          "boardId": "r7a_mwhhk24r_s8",
+          "cards": [
+            {
+              "id": "ca8",
+              "kind": "text",
+              "content": "A 上传期间停留（场景8）",
+              "name": null,
+              "attachmentId": null,
+              "docText": "A 上传期间停留（场景8）",
+              "blocks": [
+                "A 上传期间停留（场景8）"
+              ]
+            }
+          ]
+        },
+        "onB": {
+          "boardId": "r7b_mwhhk24r_s8",
+          "jobs": [
+            {
+              "attemptId": 1,
+              "boardId": "r7b_mwhhk24r_s8",
+              "cardId": "c_mwhhl6y41vkgy",
+              "fileName": "attach-mwhhk24r.txt",
+              "phase": "failed",
+              "awaitingSave": false,
+              "acknowledged": true,
+              "error": "回执到达时当前板面不是发起上传时的原板面（r7b_mwhhk24r_s8），这次上传没有写进板面；回到原板面后可以重试关联。",
+              "attachmentId": "att_661894635fe9",
+              "pendingAttachmentId": null
+            }
+          ]
+        },
+        "noticeText": "附件保存失败「attach-mwhhk24r.txt」：回执到达时当前板面不是发起上传时的原板面（r7b_mwhhk24r_s8），这次上传没有写进板面；回到原板面后可以重试关联。",
+        "stateShown": true,
+        "noSuccessWhileFailed": true,
+        "failedJob": {
+          "key": "2",
+          "attemptId": 2,
+          "boardId": "r7b_mwhhk24r_s8",
+          "cardId": "c_mwhhlgax2n5vs",
+          "fileName": "retry-mwhhk24r.txt",
+          "phase": "failed",
+          "attachment": {},
+          "pendingAttachment": {},
+          "awaitingSave": false,
+          "acknowledged": true,
+          "error": "/api/interactive/boards/r7b_mwhhk24r_s8/state -> 500: harness: 关联保存故障"
+        },
+        "noticeWhileFailed": "附件保存失败「retry-mwhhk24r.txt」：/api/interactive/boards/r7b_mwhhk24r_s8/state -> 500: harness: 关联保存故障",
+        "noSuccessNotice": true,
+        "noticeNamesAttachment": true,
+        "maxAttemptBefore": 1,
+        "retryHow": "add-menu-notice",
+        "retryClick": {
+          "ok": true,
+          "reason": null,
+          "text": "重试关联"
+        },
+        "uploads2": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "retriedAttach": null,
+        "reuseOk": true,
+        "successSeen": false,
+        "uiText": "正在处理附件「retry-mwhhk24r.txt」…",
+        "afterSave": "error"
+      }
+    },
+    {
+      "name": "9) 批量导入：写入失败时批次项不得标成功；从实际页面重试入口恢复后后端回读关联成功、上传只 1 次、不重复建卡、同批其他项状态不变",
+      "ok": false,
+      "observe": false,
+      "detail": {
+        "drop": {
+          "ok": true,
+          "count": 2
+        },
+        "batchFailed": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwhhk24r.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r7b_mwhhk24r_s9/state -> 500: harness: 批量导入写入故障",
+            "cardId": "c_mwhhm6y018kxo"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwhhk24r.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r7b_mwhhk24r_s9/state -> 500: harness: 批量导入写入故障",
+            "cardId": "c_mwhhm70a21nm4"
+          }
+        ],
+        "noFalseSuccess": true,
+        "batchUi": [
+          {
+            "name": "batch-a-mwhhk24r.txt",
+            "status": "failed",
+            "text": "batch-a-mwhhk24r.txt\n失败\n/api/interactive/boards/r7b_mwhhk24r_s9/state -> 500: harness: 批量导入写入故障\n重试"
+          },
+          {
+            "name": "batch-b-mwhhk24r.txt",
+            "status": "failed",
+            "text": "batch-b-mwhhk24r.txt\n失败\n/api/interactive/boards/r7b_mwhhk24r_s9/state -> 500: harness: 批量导入写入故障\n重试"
+          }
+        ],
+        "uploadsBefore": 2,
+        "uploadsAfterCount": 2,
+        "cardsBefore": 0,
+        "retryBtn": {
+          "exists": true,
+          "visible": true,
+          "text": "重试"
+        },
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "uploadsAfter": 2,
+        "fileCards": [],
+        "attached": 0,
+        "noDuplicateCard": true,
+        "batchAfter": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwhhk24r.txt",
+            "status": "awaiting_save",
+            "error": null,
+            "cardId": "c_mwhhm6y018kxo"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwhhk24r.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r7b_mwhhk24r_s9/state -> 500: harness: 批量导入写入故障",
+            "cardId": "c_mwhhm70a21nm4"
+          }
+        ],
+        "otherUnchanged": false
+      }
+    }
+  ],
+  "simulated": [],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。",
+  "stamp": "2026-11-15T07:00:59.211Z"
+}

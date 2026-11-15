@@ -1,0 +1,81 @@
+{
+  "task": "task-2",
+  "title": "R7 store 回归测试（草稿归属/版本/清理 + 后台冲突上限）",
+  "baseline_commit": "0dbc387f1ecdc2dfa21f658ce16dbe07a6fa9b3d",
+  "baseline_worktree": "D:\\qio-dev\\_tmp-r7-baseline-spec-drafts (detached @ 0dbc387f, node_modules junction)",
+  "files": [
+    "frontend/src/stores/__tests__/q46-r7-drafts.test.ts",
+    "frontend/src/stores/__tests__/q46-r7-save-limit.test.ts"
+  ],
+  "command": "cd frontend; npx vitest run src/stores/__tests__/q46-r7-drafts.test.ts src/stores/__tests__/q46-r7-save-limit.test.ts",
+  "baseline": {
+    "log": "_lead-logs/qio032-46/r7-specs/red-r7-store-baseline-0dbc387f.log",
+    "test_files": "2 failed (2)",
+    "tests": "5 failed | 1 passed (6)",
+    "failures": [
+      {
+        "case": "A1",
+        "assertion": "baseRev 用了别的板面的存簿版本（A 实际读到的是 1）",
+        "actual": 2,
+        "expected": 1,
+        "root_cause": "草稿存簿 rev/keyVersions 全局而非按板面"
+      },
+      {
+        "case": "A2",
+        "assertion": "B 的 baseRev 用了 A 的存簿版本（B 实际读到的是 5）",
+        "actual": 10,
+        "expected": 5,
+        "root_cause": "A 的回执 rev 推进了全局版本，B 的请求带上了它"
+      },
+      {
+        "case": "B1",
+        "assertion": "后台成功之后没有真的向 B 发一次草稿清除（removed）",
+        "actual": 0,
+        "expected": ">=1",
+        "root_cause": "正式保存后台成功分支提前 return，未消化 pendingDraftClears"
+      },
+      {
+        "case": "B2",
+        "assertion": "登记之后又输入的新版本没有被版本守卫作废",
+        "actual": "['card:card_b']",
+        "expected": "不含 card:card_b",
+        "root_cause": "同上：后台成功不处理清除登记，版本守卫没有机会作废旧登记"
+      },
+      {
+        "case": "C1",
+        "assertion": "达到上限后切板往返 / 重读又自动发了保存",
+        "actual": 5,
+        "expected": 4,
+        "root_cause": "409 在切走之后到达时不计入整轮恢复次数（无界写入）"
+      }
+    ],
+    "passing": [
+      "C2 前台不切板时序：同样最多 4 次 PUT（第五轮已修，作为回归护栏）"
+    ]
+  },
+  "fixed": {
+    "log": "_lead-logs/qio032-46/r7-specs/green-r7-drafts.log",
+    "test_files": "2 passed (2)",
+    "tests": "6 passed (6)",
+    "note": "当前工作树（含 Lead 本轮 interactive.ts 实现）上运行；未改产品代码"
+  },
+  "case_mapping": {
+    "A1": "任务书一（浏览器验收第 1 项）：双窗口并发静默覆盖 —— baseRev/逐键版本必须是本板读到的版本；同键冲突两份保留；B 不受影响",
+    "A2": "任务书一（补充）：两块板面先后有草稿写入在途 —— 请求板面/版本/键互不串",
+    "B1": "任务书二（浏览器验收第 2 项）：正式保存后台成功清旧草稿 —— 登记消化 + 真发 removed + 服务端无该键 + A 不受影响",
+    "B2": "任务书二：回执前又输入新版本 —— 新草稿保留、旧登记作废、不发 removed",
+    "C1": "任务书二/三（浏览器验收第 3 项）：后台冲突计入整轮上限 —— 同轮 PUT≤4、切板往返不增加、回 B 失败态保留候选、重试只发 B 一次",
+    "C2": "任务书二（控制组）：前台不切板时序同样最多 4 次 PUT"
+  },
+  "gaps": [
+    "已修复：草稿存簿版本全局化（A1/A2）、后台成功不清理旧草稿（B1/B2）、后台 409 不计入上限（C1）",
+    "实现中间态曾出现 A 的草稿被重复写入一次（A、B、A 三次 saveDrafts）；最终实现下已绿，但本文件未把「每板每候选只写一次」写成硬断言，建议 Lead 复核口径",
+    "未覆盖：真实浏览器/真实后端落盘、跨浏览器多窗口（另一窗口用 mock 回执模拟）；未跑 vue-tsc --noEmit（留给 Lead 收尾统一跑）"
+  ],
+  "test_notes": [
+    "草稿内容/状态按板面显示：断言 B 的草稿一律先 selectBoard(B)",
+    "saveDrafts mock 会更新可变的服务端草稿存簿，fetchBoardState 每次返回当前存簿（rev + keyVersions），避免清除后重读合并回旧稿造成假失败",
+    "A2 依赖「同一时刻只允许一个草稿请求在飞」的既有约束",
+    "C1 用真实计时器，显式 20s 超时（未改 vitest 配置）；C2 用 fake timers"
+  ]
+}

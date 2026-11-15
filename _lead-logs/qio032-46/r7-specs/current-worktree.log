@@ -1,0 +1,22 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/stores/__tests__/q46-r7-cancel-recovery.test.ts (4 tests) 2901ms
+     ✓ 回读失败 → 重试成功：cancelRecovery.active 变 false、reason 清空（响应式公开读取）  717ms
+     ✓ 同板失败后重试仍失败：如实更新真实原因（不假装成功），再重试成功才收敛  715ms
+     ✓ B 的撤回失败晚于 A 的撤回开始：A 的撤回结果不被 B 的迟到失败覆盖  706ms
+     ✓ 组件层：取消后回读失败显示重试入口，点它重试成功后入口消失  762ms
+ ✓ src/stores/__tests__/q46-r7-impact-ownership.test.ts (7 tests) 15429ms
+     ✓ 旧预判先成功返回：旧响应被丢弃，确认仍对应最新候选  2556ms
+     ✓ 新预判先成功返回、旧预判迟到：旧响应不覆盖较新的确认  2542ms
+     ✓ 旧预判先失败返回：旧失败不写成当前预判失败，最新候选仍可确认  2544ms
+     ✓ 409 恢复中的重新预判：旧响应迟到不许清理新恢复计划（保存必须继续）  2551ms
+     ✓ store 层：B 点确认后切到 A，B 的保存失败迟到只写 B  1310ms
+     ✓ 组件层：A 上不渲染 B 的失败文案与重试按钮；B 上可见，点重试只向 B 发请求  1975ms
+     ✓ 同板：较早的保存失败结果不覆盖较新的确认操作（重试成功后显示已保存）  1949ms
+
+ Test Files  2 passed (2)
+      Tests  11 passed (11)
+   Start at  13:32:03
+   Duration  18.92s (transform 1.68s, setup 32ms, import 2.19s, tests 18.33s, environment 3.23s)
+

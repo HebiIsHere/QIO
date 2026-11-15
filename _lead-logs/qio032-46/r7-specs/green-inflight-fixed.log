@@ -1,0 +1,18 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/stores/__tests__/q46-r7-task-isolation.test.ts (5 tests) 1853ms
+     ✓ B 有运行中任务、A 首次读取失败：A 的普通保存不发影响预判，PUT 只指向 A 且成功  610ms
+     ✓ A 自己真的有运行中任务时，影响预判照常发往 A（隔离不等于关掉预判）  621ms
+     ✓ 晚到的整板读取与任务清单不覆盖当前板数据与保存错误  606ms
+ ✓ src/stores/__tests__/q46-r7-attachment-state.test.ts (4 tests) 4285ms
+     ✓ 上传成功但关联保存失败：状态区分待保存/失败/成功，失败保留附件 ID 且不发成功提示  622ms
+     ✓ 重试关联：只上传 1 次、复用同一 attachmentId，保存回执成功后才变成成功  1230ms
+     ✓ 关联已写入但保存回执未到：批次项不得标成功；保存失败后仍不得成功  609ms
+     ✓ 重试复用附件 ID、不重复建卡、同批其他项不变；成功回执后对应项才成功  1823ms
+
+ Test Files  2 passed (2)
+      Tests  9 passed (9)
+   Start at  13:17:30
+   Duration  7.56s (transform 1.49s, setup 31ms, import 1.97s, tests 6.14s, environment 3.04s)
+

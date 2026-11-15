@@ -1,0 +1,67 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/pm-qio032-integration/frontend
+
+ ✓ src/stores/__tests__/q46-r7-task-isolation.test.ts (5 tests) 1859ms
+     ✓ B 有运行中任务、A 首次读取失败：A 的普通保存不发影响预判，PUT 只指向 A 且成功  620ms
+     ✓ A 自己真的有运行中任务时，影响预判照常发往 A（隔离不等于关掉预判）  620ms
+     ✓ 晚到的整板读取与任务清单不覆盖当前板数据与保存错误  604ms
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts (4 tests | 2 failed) 3071ms
+     × 上传成功但关联保存失败：状态区分待保存/失败/成功，失败保留附件 ID 且不发成功提示 15ms
+     × 重试关联：只上传 1 次、复用同一 attachmentId，保存回执成功后才变成成功 615ms
+     ✓ 关联已写入但保存回执未到：批次项不得标成功；保存失败后仍不得成功  621ms
+     ✓ 重试复用附件 ID、不重复建卡、同批其他项不变；成功回执后对应项才成功  1819ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/q46-r7-attachment-state.test.ts > #46 R7 四.8 单卡附件状态机 > 上传成功但关联保存失败：状态区分待保存/失败/成功，失败保留附件 ID 
+且不发成功提示
+AssertionError: 保存回执还没到就发了成功提示：["processing","succeeded"]: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts:269:7
+    267|       phases.includes("succeeded"),
+    268|       "保存回执还没到就发了成功提示：" + JSON.stringify(phases),
+    269|     ).toBe(false);
+       |       ^
+    270|     expect(
+    271|       store.activeCardImportForBoard?.phase,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/stores/__tests__/q46-r7-attachment-state.test.ts > #46 R7 四.8 单卡附件状态机 > 重试关联：只上传 1 次、复用同一 attachmentId，保存回执成
+功后才变成成功
+AssertionError: 保存回执还没到就发了成功提示: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/stores/__tests__/q46-r7-attachment-state.test.ts:339:60
+    337|     expect(retryJob.phase, "保存回执还没到就标成了成功").toBe("processing");
+    338|     expect(retryJob.awaitingSave, "重试关联没有标出「关联待保存」").toBe(true);
+    339|     expect(phases.includes("succeeded"), "保存回执还没到就发了成功提示").toBe(false);
+       |                                                            ^
+    340|
+    341|     // 等重试后的保存真的发出（被 hold 住）
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  2 failed | 7 passed (9)
+   Start at  13:13:38
+   Duration  6.27s (transform 1.41s, setup 28ms, import 1.85s, tests 4.93s, environment 2.97s)
+

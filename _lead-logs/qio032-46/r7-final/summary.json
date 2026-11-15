@@ -1,0 +1,948 @@
+{
+  "runId": "mwhhvyg5",
+  "at": "2026-11-15T07:16:13.283Z",
+  "base": "http://127.0.0.1:5199",
+  "api": "http://127.0.0.1:8734",
+  "provider": "http://127.0.0.1:8807",
+  "cdpPort": 9333,
+  "out": "D:\\qio-dev\\pm-qio032-integration\\_lead-logs\\qio032-46\\r7-final-main",
+  "mode": "r7",
+  "pass": 11,
+  "fail": 0,
+  "observe": 0,
+  "total": 11,
+  "results": [
+    {
+      "name": "1) 草稿双窗口并发：baseRev/逐键版本用 A 板自己的版本；同键冲突后两份文字都保留；B 草稿不受影响",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "readA": {
+          "rev": 1,
+          "keyVersions": {
+            "card:ca1": 1
+          },
+          "drafts": {
+            "card:ca1": "A 草稿：窗口1 读到的那一版"
+          }
+        },
+        "readB": {
+          "rev": 1,
+          "keyVersions": {
+            "card:cb1": 1
+          }
+        },
+        "seedA1": {
+          "rev": 1
+        },
+        "seedB2": {
+          "rev": 1
+        },
+        "otherPut": {
+          "status": 200,
+          "rev": 2,
+          "conflicts": []
+        },
+        "afterOther": {
+          "rev": 2,
+          "drafts": {
+            "card:ca1": "A 草稿：另一窗口写进来的那一版"
+          }
+        },
+        "draftPut": {
+          "status": 200,
+          "body": {
+            "mode": "patch",
+            "drafts": {
+              "card:ca1": "A 草稿：窗口1 读到的那一版"
+            },
+            "removed": [],
+            "baseRev": 1,
+            "keyVersions": {
+              "card:ca1": 1
+            }
+          }
+        },
+        "draftLedger": [
+          {
+            "status": 200,
+            "body": {
+              "mode": "patch",
+              "drafts": {
+                "card:ca1": "A 草稿：窗口1 读到的那一版"
+              },
+              "removed": [],
+              "baseRev": 1,
+              "keyVersions": {
+                "card:ca1": 1
+              }
+            }
+          }
+        ],
+        "baseRevOk": true,
+        "keyVerOk": true,
+        "conflict": {
+          "local": "A 草稿：窗口1 现在输入的新版",
+          "server": "A 草稿：另一窗口写进来的那一版"
+        },
+        "conflictOk": true,
+        "localKept": true,
+        "serverKeptOther": true,
+        "backendA": {
+          "rev": 2,
+          "drafts": {
+            "card:ca1": "A 草稿：另一窗口写进来的那一版"
+          }
+        },
+        "backendB": {
+          "rev": 1,
+          "drafts": {
+            "card:cb1": "B 草稿第一版"
+          }
+        },
+        "bExpected": "B 草稿第一版",
+        "bUnaffected": true,
+        "storeDrafts": {
+          "card:ca1": "A 草稿：窗口1 现在输入的新版"
+        },
+        "storeDraftStates": {
+          "card:ca1": {
+            "status": "saving",
+            "error": null
+          }
+        }
+      }
+    },
+    {
+      "name": "2) 正式保存后台成功清旧草稿：B 正式内容落库、B 旧草稿清除、A 草稿保持；B 新草稿不被旧回执清掉",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "beforeSave": {
+          "rev": 2,
+          "drafts": {
+            "card:cb2": "B 的旧草稿（保存成功后应被清掉）"
+          }
+        },
+        "slowRuleHits": 1,
+        "onA": {
+          "boardId": "r7a_mwhhvyg5_s2",
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "boardBAfter": {
+          "seq": 2,
+          "cards": [
+            {
+              "id": "cb2",
+              "content": "B 正式内容（保存成功后落库）"
+            }
+          ]
+        },
+        "backendBAfter": {
+          "rev": 4,
+          "drafts": {}
+        },
+        "backendAAfter": {
+          "rev": 1,
+          "drafts": {
+            "card:ca2": "A 的草稿（应保持）"
+          }
+        },
+        "bSaved": true,
+        "bDraftText": "",
+        "bDraftCleared": true,
+        "aKept": true,
+        "backendBNew": {
+          "rev": 6,
+          "drafts": {
+            "card:cb2": "B 保存后又输入的新草稿"
+          }
+        },
+        "newDraftKept": true,
+        "draftLedger": [
+          {
+            "url": "/api/interactive/drafts/r7b_mwhhvyg5_s2",
+            "status": 200,
+            "body": {
+              "mode": "patch",
+              "drafts": {
+                "card:cb2": "B 正式内容（保存成功后落库）"
+              },
+              "removed": [],
+              "baseRev": 2,
+              "keyVersions": {
+                "card:cb2": 2
+              }
+            }
+          },
+          {
+            "url": "/api/interactive/drafts/r7b_mwhhvyg5_s2",
+            "status": 200,
+            "body": {
+              "mode": "patch",
+              "drafts": {},
+              "removed": [
+                "card:cb2"
+              ],
+              "baseRev": 3,
+              "keyVersions": {
+                "card:cb2": 3
+              }
+            }
+          }
+        ],
+        "onAStore": {
+          "pendingDraftClearKeys": [],
+          "draftStates": {},
+          "drafts": {
+            "card:ca2": "A 的草稿（应保持）"
+          }
+        },
+        "onBStore": {
+          "pendingDraftClearKeys": [],
+          "draftStates": {
+            "card:cb2": {
+              "status": "saved",
+              "error": null
+            }
+          },
+          "drafts": {
+            "card:cb2": "B 保存后又输入的新草稿"
+          }
+        }
+      }
+    },
+    {
+      "name": "3) 后台冲突也计入上限：PUT ≤4、切板往返不新增；页面出现可点「重试保存」并从该按钮恢复（只 1 次 PUT 200）",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "rounds": [
+          {
+            "round": 2,
+            "saveStatus": "error",
+            "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+            "puts": 4
+          },
+          {
+            "round": 3,
+            "saveStatus": "error",
+            "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+            "puts": 4
+          },
+          {
+            "round": 4,
+            "saveStatus": "error",
+            "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+            "puts": 4
+          }
+        ],
+        "putsAtLimit": 4,
+        "putsAtLimitStatuses": [
+          409,
+          409,
+          409,
+          409
+        ],
+        "putTimeline": [
+          {
+            "at": 2199,
+            "status": 409
+          },
+          {
+            "at": 6497,
+            "status": 409
+          },
+          {
+            "at": 6965,
+            "status": 409
+          },
+          {
+            "at": 7429,
+            "status": 409
+          }
+        ],
+        "putsAfterSwitch": 4,
+        "noFifth": true,
+        "limitOk": true,
+        "onA1": {
+          "boardId": "r7a_mwhhvyg5_s3",
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "onB": {
+          "boardId": "r7b_mwhhvyg5_s3",
+          "saveStatus": "error",
+          "saveError": "服务端上这个板面的版本一直在变化，这次保存没有完成（已自动重来 3 次）。请确认是否有其他窗口或页面正在同时编辑，然后点重试",
+          "dirty": true
+        },
+        "retryBtn": {
+          "exists": true,
+          "visible": true,
+          "inViewport": true,
+          "disabled": false,
+          "hitSelf": true,
+          "hitTag": "button",
+          "text": "重试",
+          "rect": {
+            "x": 762,
+            "y": 51,
+            "w": 40,
+            "h": 22
+          }
+        },
+        "retryClick": {
+          "ok": true,
+          "reason": null,
+          "text": "重试"
+        },
+        "retryPuts": 1,
+        "saved": {
+          "saveStatus": "saved",
+          "seq": 2
+        },
+        "putsA": 0
+      }
+    },
+    {
+      "name": "4) 预判乱序（旧成功先到 / 新成功先到 / 旧先失败）：确认入口始终对应最新候选，确认后 PUT 目标/候选/checkId/stateVersion 一致",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driven": true,
+        "cases": [
+          {
+            "ordering": "旧成功先到",
+            "steps": [
+              {
+                "delayMs": 5000,
+                "action": "pass"
+              },
+              {
+                "delayMs": 9000,
+                "action": "pass"
+              }
+            ],
+            "running": {
+              "ok": true,
+              "intentId": "i_0a8f39719c17",
+              "boardId": "r7b_mwhhvyg5_s4_0",
+              "card": "cb4",
+              "watchKeys": [
+                "cb4"
+              ]
+            },
+            "clearedOverlays": [],
+            "typed1": true,
+            "firstEditLanded": true,
+            "typed2": true,
+            "secondEditLanded": true,
+            "impactPostsAtSecond": 2,
+            "secondEditBoard": [
+              "B 预判候选二（新）#0"
+            ],
+            "firstPost": {
+              "status": 200
+            },
+            "impactShown": true,
+            "beforeLate": {
+              "checkId": "chk_ac5e0727b31d",
+              "previewRev": 2,
+              "stateVersion": 1,
+              "candidateHasNew": true
+            },
+            "afterLate": {
+              "checkId": "chk_ac5e0727b31d",
+              "previewRev": 2,
+              "stateVersion": 1,
+              "candidateHasNew": true
+            },
+            "uiAfter": {
+              "open": true,
+              "submit": true,
+              "body": "这次改动还没有生效：它会影响正在执行的任务\n\n等待确认，尚未保存。 下面这些任务正在执行，而这次改动动了它们依赖的材料。选择「确认改动」才会保存并让相关任务暂停 （进度保留）；选择「取消本次改动」则这次改动不生效，任务继续。 其他独立任务不受影响；这不是对任务的重新审批。\n\n任务：B 执行中任务（场景4-0）\n\n受影响"
+            },
+            "impactPosts": 2,
+            "confirmClick": {
+              "ok": true,
+              "reason": null
+            },
+            "saved": {
+              "saveStatus": "saved",
+              "saveError": null
+            },
+            "putCount": 1,
+            "putStatus": 200,
+            "putCandidateHasNewText": true,
+            "checkIdMatches": true,
+            "stateVersionMatches": true,
+            "oneConfirm": true,
+            "pendingIsNewest": true,
+            "onlyOnePut": true,
+            "impactPostsEnough": true,
+            "impactCheckError": null,
+            "pass": true,
+            "clearedAfter": [
+              "outcome-close"
+            ]
+          },
+          {
+            "ordering": "新成功先到",
+            "steps": [
+              {
+                "delayMs": 9000,
+                "action": "pass"
+              },
+              {
+                "delayMs": 1500,
+                "action": "pass"
+              }
+            ],
+            "running": {
+              "ok": true,
+              "intentId": "i_ad13e4892a9a",
+              "boardId": "r7b_mwhhvyg5_s4_1",
+              "card": "cb4",
+              "watchKeys": [
+                "cb4"
+              ]
+            },
+            "clearedOverlays": [],
+            "typed1": true,
+            "firstEditLanded": true,
+            "typed2": true,
+            "secondEditLanded": true,
+            "impactPostsAtSecond": 2,
+            "secondEditBoard": [
+              "B 预判候选二（新）#1"
+            ],
+            "firstPost": {
+              "status": 200
+            },
+            "impactShown": true,
+            "beforeLate": {
+              "checkId": "chk_73afe6e9e4cc",
+              "previewRev": 2,
+              "stateVersion": 1,
+              "candidateHasNew": true
+            },
+            "afterLate": {
+              "checkId": "chk_73afe6e9e4cc",
+              "previewRev": 2,
+              "stateVersion": 1,
+              "candidateHasNew": true
+            },
+            "uiAfter": {
+              "open": true,
+              "submit": true,
+              "body": "这次改动还没有生效：它会影响正在执行的任务\n\n等待确认，尚未保存。 下面这些任务正在执行，而这次改动动了它们依赖的材料。选择「确认改动」才会保存并让相关任务暂停 （进度保留）；选择「取消本次改动」则这次改动不生效，任务继续。 其他独立任务不受影响；这不是对任务的重新审批。\n\n任务：B 执行中任务（场景4-1）\n\n受影响"
+            },
+            "impactPosts": 2,
+            "confirmClick": {
+              "ok": true,
+              "reason": null
+            },
+            "saved": {
+              "saveStatus": "saved",
+              "saveError": null
+            },
+            "putCount": 1,
+            "putStatus": 200,
+            "putCandidateHasNewText": true,
+            "checkIdMatches": true,
+            "stateVersionMatches": true,
+            "oneConfirm": true,
+            "pendingIsNewest": true,
+            "onlyOnePut": true,
+            "impactPostsEnough": true,
+            "impactCheckError": null,
+            "pass": true,
+            "clearedAfter": [
+              "outcome-close"
+            ]
+          },
+          {
+            "ordering": "旧请求先失败",
+            "steps": [
+              {
+                "delayMs": 4000,
+                "action": "fail"
+              },
+              {
+                "delayMs": 8000,
+                "action": "pass"
+              }
+            ],
+            "running": {
+              "ok": true,
+              "intentId": "i_7989eecb098b",
+              "boardId": "r7b_mwhhvyg5_s4_2",
+              "card": "cb4",
+              "watchKeys": [
+                "cb4"
+              ]
+            },
+            "clearedOverlays": [],
+            "typed1": true,
+            "firstEditLanded": true,
+            "typed2": true,
+            "secondEditLanded": true,
+            "impactPostsAtSecond": 2,
+            "secondEditBoard": [
+              "B 预判候选二（新）#2"
+            ],
+            "firstPost": {
+              "status": 200
+            },
+            "impactShown": true,
+            "beforeLate": {
+              "checkId": "chk_5cbb6a6afa41",
+              "previewRev": 2,
+              "stateVersion": 1,
+              "candidateHasNew": true
+            },
+            "afterLate": {
+              "checkId": "chk_5cbb6a6afa41",
+              "previewRev": 2,
+              "stateVersion": 1,
+              "candidateHasNew": true
+            },
+            "uiAfter": {
+              "open": true,
+              "submit": true,
+              "body": "这次改动还没有生效：它会影响正在执行的任务\n\n等待确认，尚未保存。 下面这些任务正在执行，而这次改动动了它们依赖的材料。选择「确认改动」才会保存并让相关任务暂停 （进度保留）；选择「取消本次改动」则这次改动不生效，任务继续。 其他独立任务不受影响；这不是对任务的重新审批。\n\n任务：B 执行中任务（场景4-2）\n\n受影响"
+            },
+            "impactPosts": 2,
+            "confirmClick": {
+              "ok": true,
+              "reason": null
+            },
+            "saved": {
+              "saveStatus": "saved",
+              "saveError": null
+            },
+            "putCount": 1,
+            "putStatus": 200,
+            "putCandidateHasNewText": true,
+            "checkIdMatches": true,
+            "stateVersionMatches": true,
+            "oneConfirm": true,
+            "pendingIsNewest": true,
+            "onlyOnePut": true,
+            "impactPostsEnough": true,
+            "impactCheckError": null,
+            "pass": true,
+            "clearedAfter": [
+              "outcome-close"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "5) 确认提示不串板：B 确认后切 A，B 的失败不显示在 A（无失败文案/无重试按钮）；回 B 可见失败与重试入口，点重试只写 B",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "running": {
+          "ok": true,
+          "intentId": "i_d8fcf859fd44",
+          "boardId": "r7b_mwhhvyg5_s5",
+          "card": "cb5",
+          "watchKeys": [
+            "cb5"
+          ]
+        },
+        "impactShown": true,
+        "confirmClick": {
+          "ok": true,
+          "reason": null
+        },
+        "onA": {
+          "boardId": "r7a_mwhhvyg5_s5",
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "uiSaveOnA": {
+          "text": "已保存",
+          "tone": "ok",
+          "retry": false
+        },
+        "retryOnA": {
+          "exists": false
+        },
+        "aHasBError": false,
+        "onB": {
+          "boardId": "r7b_mwhhvyg5_s5",
+          "saveStatus": "error",
+          "saveError": "Failed to fetch"
+        },
+        "retryOnB": {
+          "exists": true,
+          "visible": true,
+          "text": "重试"
+        },
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "putsA": 0,
+        "putsB": 3,
+        "putStatuses": [
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "6) 撤回重试：回读失败 → 页面出现可点「重新核对服务器事实」；点它后回读成功、入口消失",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "running": {
+          "ok": true,
+          "intentId": "i_4e464b60c88e",
+          "boardId": "r7b_mwhhvyg5_s6",
+          "card": "cb6",
+          "watchKeys": [
+            "cb6"
+          ]
+        },
+        "impactShown": true,
+        "cancelClick": {
+          "ok": true,
+          "reason": null
+        },
+        "afterCancel": {
+          "cancelRecovery": {
+            "boardId": "r7b_mwhhvyg5_s6",
+            "active": true,
+            "reason": "撤回还没有被服务器事实确认：Failed to fetch"
+          },
+          "saveStatus": "idle"
+        },
+        "retryEntry": {
+          "exists": true,
+          "visible": true,
+          "disabled": false,
+          "text": "重新核对服务器事实"
+        },
+        "outcomeText": "撤回还没有被服务器事实确认\n\n撤回还没有被服务器事实确认：Failed to fetch\n\n重新核对服务器事实\n知道了",
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "afterRetry": {
+          "cancelRecovery": {
+            "boardId": "r7b_mwhhvyg5_s6",
+            "active": false,
+            "reason": null
+          }
+        },
+        "retryEntryAfter": {
+          "exists": false
+        },
+        "outcomeAfter": "已取消这次改动\n\n已取消：这次改动没有生效，任务继续。\n\n知道了",
+        "activeBefore": true,
+        "entryOk": true,
+        "settledAfter": true,
+        "entryGone": true
+      }
+    },
+    {
+      "name": "6b) B 的撤回失败晚于 A 的撤回开始：A 的撤回结果不被 B 的迟到失败覆盖",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "runningA": {
+          "ok": true,
+          "intentId": "i_880464350b8a",
+          "boardId": "r7a_mwhhvyg5_s6",
+          "card": "ca6",
+          "watchKeys": [
+            "ca6"
+          ]
+        },
+        "aImpact": true,
+        "aCancel": {
+          "ok": true
+        },
+        "onB": {
+          "boardId": "r7b_mwhhvyg5_s6",
+          "cancelRecovery": {
+            "boardId": "r7b_mwhhvyg5_s6",
+            "active": false,
+            "reason": null
+          }
+        },
+        "onA": {
+          "boardId": "r7a_mwhhvyg5_s6",
+          "cancelRecovery": {
+            "boardId": "r7a_mwhhvyg5_s6",
+            "active": false,
+            "reason": null
+          }
+        }
+      }
+    },
+    {
+      "name": "7) 任务隔离：B 有运行中任务、A 无任务且首次任务读取失败；A 的保存不被 B 的任务预判拦住，A 的 intents 为空，B 的任务不显示在 A",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "seeded": {
+          "ok": true,
+          "intentId": "i_f3a1ca4cc8a4",
+          "boardId": "r7b_mwhhvyg5_s7",
+          "card": "cb7",
+          "watchKeys": [
+            "cb7"
+          ]
+        },
+        "onA": {
+          "boardId": "r7a_mwhhvyg5_s7",
+          "intents": [],
+          "intentViews": [],
+          "intentsLoadState": "error",
+          "intentsLoadError": "Failed to fetch",
+          "loadError": null
+        },
+        "aSaved": {
+          "saveStatus": "saved",
+          "saveError": null
+        },
+        "putsA": 1,
+        "putsB": 0,
+        "impactA": 0,
+        "impactB": 0,
+        "aIntentsEmpty": true,
+        "bTaskNotShown": true
+      }
+    },
+    {
+      "name": "8) 附件状态与重试：B 上传期间切 A，回 B 立即显示真实状态；失败期无成功提示；从实际页面按钮重试关联只上传 1 次、复用附件 ID、后端回读 attachmentId、界面显示成功",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "uploads": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "onA": {
+          "boardId": "r7a_mwhhvyg5_s8",
+          "cards": [
+            {
+              "id": "ca8",
+              "kind": "text",
+              "content": "A 上传期间停留（场景8）",
+              "name": null,
+              "attachmentId": null,
+              "docText": "A 上传期间停留（场景8）",
+              "blocks": [
+                "A 上传期间停留（场景8）"
+              ]
+            }
+          ]
+        },
+        "onB": {
+          "boardId": "r7b_mwhhvyg5_s8",
+          "jobs": [
+            {
+              "attemptId": 1,
+              "boardId": "r7b_mwhhvyg5_s8",
+              "cardId": "c_mwhi20et17r5q",
+              "fileName": "attach-mwhhvyg5.txt",
+              "phase": "failed",
+              "awaitingSave": false,
+              "acknowledged": true,
+              "error": "回执到达时当前板面不是发起上传时的原板面（r7b_mwhhvyg5_s8），这次上传没有写进板面；回到原板面后可以重试关联。",
+              "attachmentId": "att_2f277ad058a8",
+              "pendingAttachmentId": null
+            }
+          ]
+        },
+        "noticeText": "附件保存失败「attach-mwhhvyg5.txt」：回执到达时当前板面不是发起上传时的原板面（r7b_mwhhvyg5_s8），这次上传没有写进板面；回到原板面后可以重试关联。",
+        "stateShown": true,
+        "noSuccessWhileFailed": true,
+        "failedJob": {
+          "key": "2",
+          "attemptId": 2,
+          "boardId": "r7b_mwhhvyg5_s8",
+          "cardId": "c_mwhi29rv27vqt",
+          "fileName": "retry-mwhhvyg5.txt",
+          "phase": "failed",
+          "attachment": {},
+          "pendingAttachment": {},
+          "awaitingSave": false,
+          "acknowledged": true,
+          "error": "/api/interactive/boards/r7b_mwhhvyg5_s8/state -> 500: harness: 关联保存故障"
+        },
+        "noticeWhileFailed": "附件保存失败「retry-mwhhvyg5.txt」：/api/interactive/boards/r7b_mwhhvyg5_s8/state -> 500: harness: 关联保存故障",
+        "noSuccessNotice": true,
+        "noticeNamesAttachment": true,
+        "maxAttemptBefore": 1,
+        "retryHow": "add-menu-notice",
+        "retryClick": {
+          "ok": true,
+          "reason": null,
+          "text": "重试关联"
+        },
+        "uploads2": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "retriedAttach": "att_23bb0cf133c2",
+        "reuseOk": true,
+        "successSeen": true,
+        "uiText": "已关联附件「retry-mwhhvyg5.txt」",
+        "afterSave": "saved"
+      }
+    },
+    {
+      "name": "9) 批量导入：写入失败时批次项不得标成功；从实际页面重试入口恢复后后端回读关联成功、上传只 1 次、不重复建卡、同批其他项状态不变",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "drop": {
+          "ok": true,
+          "count": 2
+        },
+        "batchFailed": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwhhvyg5.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r7b_mwhhvyg5_s9/state -> 500: harness: 批量导入写入故障",
+            "cardId": "c_mwhi2gwv1zs07"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwhhvyg5.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r7b_mwhhvyg5_s9/state -> 500: harness: 批量导入写入故障",
+            "cardId": "c_mwhi2gxw2vnoq"
+          }
+        ],
+        "noFalseSuccess": true,
+        "batchUi": [
+          {
+            "name": "batch-a-mwhhvyg5.txt",
+            "status": "failed",
+            "text": "batch-a-mwhhvyg5.txt\n失败\n/api/interactive/boards/r7b_mwhhvyg5_s9/state -> 500: harness: 批量导入写入故障\n重试"
+          },
+          {
+            "name": "batch-b-mwhhvyg5.txt",
+            "status": "failed",
+            "text": "batch-b-mwhhvyg5.txt\n失败\n/api/interactive/boards/r7b_mwhhvyg5_s9/state -> 500: harness: 批量导入写入故障\n重试"
+          }
+        ],
+        "uploadsBefore": 2,
+        "uploadsAfterCount": 2,
+        "cardsBefore": 0,
+        "retryBtn": {
+          "exists": true,
+          "visible": true,
+          "text": "重试"
+        },
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "uploadsAfter": 2,
+        "fileCards": [
+          {
+            "id": "c_mwhi2gwv1zs07",
+            "name": "batch-a-mwhhvyg5.txt",
+            "attachmentId": "att_cf60216af824"
+          },
+          {
+            "id": "c_mwhi2gxw2vnoq",
+            "name": "batch-b-mwhhvyg5.txt",
+            "attachmentId": "att_a75e405a4939"
+          }
+        ],
+        "attached": 2,
+        "noDuplicateCard": true,
+        "batchAfter": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwhhvyg5.txt",
+            "status": "succeeded",
+            "error": null,
+            "cardId": "c_mwhi2gwv1zs07"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwhhvyg5.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r7b_mwhhvyg5_s9/state -> 500: harness: 批量导入写入故障",
+            "cardId": "c_mwhi2gxw2vnoq"
+          }
+        ],
+        "otherUnchanged": true
+      }
+    },
+    {
+      "name": "10) 原始路径回归：上传 → 打开设置 → 返回互动页（卡片/附件保留，不重复上传）",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "opened": true,
+        "uploads": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "boardId": "r7b_mwhhvyg5_s10",
+        "cards": [
+          {
+            "id": "c_mwhi3hsw1078k",
+            "kind": "file",
+            "content": "待补充文件说明",
+            "name": "settings-mwhhvyg5.txt",
+            "attachmentId": "att_81b4696efe52",
+            "docText": null,
+            "blocks": []
+          }
+        ],
+        "serverCards": [
+          {
+            "id": "c_mwhi3hsw1078k",
+            "kind": "file",
+            "attachmentId": "att_81b4696efe52"
+          }
+        ]
+      }
+    }
+  ],
+  "simulated": [],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。",
+  "stamp": "2026-11-15T07:10:14.309Z",
+  "rerun": {
+    "note": "最终定稿（1b75e54a：选择变化/重复提交不再重置恢复轮次；关联重试补排保存）后完整 s1..s10 一次跑完，11/11 PASS。中间定向复跑证据保留在 r7-final-rerun（s3）与 r7-final-rerun2（s8,s9）。",
+    "sources": [
+      "_lead-logs/qio032-46/r7-final-main/summary.json（本次完整运行）"
+    ],
+    "intermediate": [
+      "_lead-logs/qio032-46/r7-final-rerun/",
+      "_lead-logs/qio032-46/r7-final-rerun2/"
+    ]
+  }
+}
