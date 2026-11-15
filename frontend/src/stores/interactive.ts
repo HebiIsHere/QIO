@@ -1923,22 +1923,80 @@ export const useInteractiveStore = defineStore("interactive", () => {
     boardContentConflicts.value = remaining;
   }
 
+  /**
+   * 板面**正式内容**的指纹（不含 seq / 时间戳 / 选择）：判断「这次提交是不是真的有改动」。
+   *
+   * #46（第七轮）：选择变化是**视图状态**，不是正式改动 —— 它可以让本地板面刷新，
+   * 但不推进保存版本、不排保存、也不结束整轮自动恢复（否则「选卡片」就会重置 4 次上限）。
+   */
+  function contentFingerprint(state: BoardState): string {
+    /**
+     * 只投影**用户可见的正式字段**：normalizeState / applyParticipation 可能补充默认值，
+     * 那些值不是用户改动（选择卡片时也不该因此被当成一次内容变更）。
+     */
+    const card = (item: Record<string, unknown>) => ({
+      id: item.id,
+      kind: item.kind,
+      content: item.content,
+      meta: item.meta ?? {},
+      x: item.x,
+      y: item.y,
+      w: item.w,
+      h: item.h,
+      checked: item.checked,
+      hidden: item.hidden,
+      folded: item.folded,
+      bookmarked: item.bookmarked,
+      deleted: item.deleted,
+      participation: item.participation ?? null,
+    });
+    const strip = (items: Record<string, unknown>[]) =>
+      items.map((item) => {
+        const { updatedAt: _u, createdAt: _c, ...rest } = item;
+        return rest;
+      });
+    return JSON.stringify({
+      boardId: state.boardId ?? "",
+      cards: ((state.cards ?? []) as unknown as Record<string, unknown>[]).map(card),
+      groups: strip((state.groups ?? []) as unknown as Record<string, unknown>[]),
+      links: strip((state.links ?? []) as unknown as Record<string, unknown>[]),
+    });
+  }
+
   function commit(next: BoardState, label: string): void {
     /**
      * #20：整板读取失败期间，store 自己拒绝编辑（返回 false、不动 board / 不排保存）。
      * 界面可能还没来得及禁用按钮，数据层也必须守住「失败期间不得对旧板面发起编辑」。
      */
     if (boardEditBlockedReason.value !== null) return;
-    /**
-     * #46（第五轮）：这是用户**真实的新编辑**（不是重读推进版本）——
-     * 上一轮自动恢复的次数到此结束，下一次冲突属于新一轮（不会把旧轮次数算到新改动上）。
-     */
-    endSaveRecoveryRoundForEdit(boardId.value);
     const current = board.value;
     // Phase 2 §5.1：参与的旧兼容字段（checked / hidden）与 participation 同口径；
     // 对齐不补时间戳（否则等于凭空造出一次改动）。
     const aligned = applyParticipation({ ...next, boardId: boardId.value });
     const alignedCurrent = current ? applyParticipation(current) : null;
+    /**
+     * #46（第七轮）：**没有正式内容变化的提交不是「新的正式改动」**。
+     *
+     * 缺陷：选中卡片（BoardCanvas.onSelect）与编辑器关闭 / 焦点变化等路径都会再 commit 一次，
+     * 而 commit 无条件结束整轮自动恢复 —— 于是「4 次冲突后停住」的计数被重置、继续发出新写入
+     * （真实浏览器实测后台冲突场景共 7 次 PUT）。正确口径：
+     * - 内容（卡片 / 组 / 关联）没变：只允许**本地**选择变化，不推进版本、不置脏、不排保存、
+     *   不结束自动恢复轮次；
+     * - 内容变了才是用户真实的新编辑（开始新一轮有限恢复）。
+     */
+    const contentUnchanged =
+      Boolean(alignedCurrent) && contentFingerprint(aligned) === contentFingerprint(alignedCurrent as BoardState);
+    if (alignedCurrent && contentUnchanged) {
+      const selectionChanged =
+        JSON.stringify(aligned.selection ?? []) !== JSON.stringify(alignedCurrent.selection ?? []);
+      if (selectionChanged) board.value = aligned;
+      return;
+    }
+    /**
+     * #46（第五轮）：这是用户**真实的新编辑**（不是重读推进版本）——
+     * 上一轮自动恢复的次数到此结束，下一次冲突属于新一轮（不会把旧轮次数算到新改动上）。
+     */
+    endSaveRecoveryRoundForEdit(boardId.value);
     trackCheckedChanges(alignedCurrent, aligned);
     trackParticipationChanges(alignedCurrent, aligned);
     settleContentConflicts(alignedCurrent, aligned);
@@ -2367,6 +2425,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     saveRecoveryByBoard.delete(targetBoardId);
   }
   function endSaveRecoveryRound(targetBoardId: string): void {
+    if (saveRecoveryRoundByBoard.has(targetBoardId)) {
+    }
     saveRecoveryRoundByBoard.delete(targetBoardId);
   }
   /**
@@ -2477,10 +2537,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
      * 用户明确点「重试保存」（直接调用 saveNow()，没有板面/续存参数）才解除。
      */
     if (saveHaltedByLimitByBoard.has(ownerBoardId)) {
-      if (ownerOverride !== undefined || options.recoveryContinuation) return;
+      if (ownerOverride !== undefined || options.recoveryContinuation) {
+        return;
+      }
       saveHaltedByLimitByBoard.delete(ownerBoardId);
     }
-    if (!options.recoveryContinuation) endSaveRecoveryRound(ownerBoardId);
+    if (!options.recoveryContinuation) {
+      endSaveRecoveryRound(ownerBoardId);
+    }
     /**
      * 这块板面正在做一次冲突恢复（已经读/预判，或等用户确认）：恢复流程自己会继续。
      * 触发保存时接回这次恢复：同一候选交给在途的重新预判；候选变了按最新事实重新核对。
@@ -7630,7 +7694,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
   let importBoardStore: ReturnType<typeof useInteractiveStore> | null = null;
   function commitImportBoard(next: BoardState, label: string): void {
     const target = importBoardStore ?? (importBoardStore = useInteractiveStore());
+    const before = board.value ? contentFingerprint(applyParticipation(board.value)) : "";
     target.commit(next, label);
+    const after = board.value ? contentFingerprint(applyParticipation(board.value)) : "";
+    /**
+     * #46（第七轮）：**关联重试可能内容不变**（同一份附件再次关联，commit 判为重复提交而不排保存），
+     * 但这次关联仍需要一次保存回执来结算「关联待保存」。只在 commit 确实没有产生内容变化时
+     * 补一次保存调度（新建卡 / 首次关联仍走原路径，不额外多发请求）。
+     */
+    if (before === after) {
+      dirty.value = true;
+      if (saveStatus.value !== "saving") saveStatus.value = "saving";
+      scheduleSave();
+    }
   }
   function cardAttachmentIdOn(targetBoardId: string, cardId: string): string {
     if (targetBoardId !== boardId.value) return "";
