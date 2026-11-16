@@ -33,8 +33,9 @@ describe("placeChromePopover：右/下边界按内容区而不是窗口矩形", 
   });
 
   it("不传原点（旧调用）时行为与改造前一致（原点 0）", () => {
+    // 旧调用没有有效的 anchor.top/bottom（0 视为未提供，实现会回退到 height）
     const p = placeChromePopover(
-      { left: 1100, top: 200, right: 1140, bottom: 224, width: 40, height: 24 },
+      { left: 1100, top: 0, right: 1140, bottom: 0, width: 40, height: 24 },
       { width: 1144, height: 744 },
       { width: 420, maxWidth: 420, margin: 8, gap: 6 },
     );

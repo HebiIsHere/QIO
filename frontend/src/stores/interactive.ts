@@ -4749,14 +4749,26 @@ writeSaveResultToStashedSession(ownerBoardId, {
     /**
      * #46：一次 load 只有**自己的读取上下文**：板面 + 代次 + 后续步骤。
      * 切走板面后，这块板面的后续读取与失败都不许写进新板面（B → A、B → A → B 同口径）。
+     *
+     * 例外（v0.3.3 CI 回归修复）：**首次加载**的默认板面允许服务端给出规范化 id。
+     * 板面读取落定后如果 `board_default` 被服务端改成真实 id，后续读取必须用这个
+     * 有效 id —— 否则 `contextIsValid()` 会把「服务端规范化」误判成切板，
+     * intents / 意图视图全部被丢弃（首屏任务、恢复入口、批量入口都不出现）。
      */
-    const contextBoardId = boardId.value;
+    let contextBoardId = boardId.value;
     const contextSeq = ++boardLoadSeq;
     const contextIsValid = () => boardId.value === contextBoardId && contextSeq === boardLoadSeq;
     loading.value = true;
     loadError.value = null;
     try {
       const applied = await refreshBoardFromServer(contextBoardId);
+      if (
+        applied &&
+        contextBoardId === DEFAULT_BOARD_ID &&
+        boardId.value !== contextBoardId
+      ) {
+        contextBoardId = boardId.value;
+      }
       if (!applied || !contextIsValid()) return;
       boardLoadedOnce.value = true;
       await refreshVisibleRange(contextBoardId);

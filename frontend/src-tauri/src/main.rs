@@ -28,7 +28,34 @@ mod backend_lifecycle;
 // 必须在 main() 最前面、任何共享写操作（job/日志/令牌/窗口/后端）之前取锁。
 mod single_instance;
 mod updater_net;
+// 0.3.2 窗口层是 Windows 专用实现（DWM / Win32 子窗 / WebView2 穿透）；
+// Linux CI 只做 \`cargo check\`，必须整体隔离，不能让 Windows API 参与 Linux 编译。
+#[cfg(windows)]
 mod window_frame;
+
+/// 窗口层 IPC 的跨平台门面：Windows 用真实命令，其它平台给可编译的同名占位
+/// （产品只发布 Windows；非 Windows 命令行调用返回明确的“不支持”错误）。
+#[cfg(windows)]
+use window_frame::commands as window_ipc;
+#[cfg(not(windows))]
+mod window_ipc {
+    #[tauri::command]
+    pub fn qio_set_hit_regions(_regions: serde_json::Value) -> Result<serde_json::Value, String> {
+        Err("窗口层仅支持 Windows".to_string())
+    }
+    #[tauri::command]
+    pub fn qio_get_window_frame() -> Result<serde_json::Value, String> {
+        Err("窗口层仅支持 Windows".to_string())
+    }
+    #[tauri::command]
+    pub fn qio_window_action(_action: String) -> Result<serde_json::Value, String> {
+        Err("窗口层仅支持 Windows".to_string())
+    }
+    #[tauri::command]
+    pub fn qio_set_passthrough(_mode: String) -> Result<serde_json::Value, String> {
+        Err("窗口层仅支持 Windows".to_string())
+    }
+}
 
 use backend_lifecycle::{
     descendant_pids, process_alive, stop_pids, stop_tree_by_pid, StopFailure, StopReport,
@@ -1937,6 +1964,24 @@ fn close_behavior_override() -> Option<String> {
 ///
 /// pub(crate)：单实例激活监听线程（single_instance.rs）复用同一条恢复路径 ——
 /// 同会话重复启动必须和托盘恢复表现一致（show + unminimize + focus），不许各写一份。
+#[cfg(windows)]
+fn notify_frame_shown(app: &tauri::AppHandle) {
+    if let Some(frame) = app.try_state::<Arc<window_frame::state::WindowFrameState>>() {
+        window_frame::on_window_shown(&frame, "tray-show");
+    }
+}
+#[cfg(not(windows))]
+fn notify_frame_shown(_app: &tauri::AppHandle) {}
+
+#[cfg(windows)]
+fn notify_frame_hidden(app: &tauri::AppHandle) {
+    if let Some(frame) = app.try_state::<Arc<window_frame::state::WindowFrameState>>() {
+        window_frame::on_window_hidden(&frame, "tray-hide");
+    }
+}
+#[cfg(not(windows))]
+fn notify_frame_hidden(_app: &tauri::AppHandle) {}
+
 pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         log::warn!("[qio] 找不到主窗口，无法从托盘恢复");
@@ -1951,9 +1996,7 @@ pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     if let Err(err) = window.set_focus() {
         log::warn!("[qio] 从托盘恢复窗口失败（focus）：{err}");
     }
-    if let Some(frame) = app.try_state::<Arc<window_frame::state::WindowFrameState>>() {
-        window_frame::on_window_shown(&frame, "tray-show");
-    }
+    notify_frame_shown(app);
     log::info!("[qio] 已从托盘恢复主窗口");
 }
 
@@ -1962,9 +2005,7 @@ fn hide_main_window(app: &tauri::AppHandle, reason: &str) {
     match app.get_webview_window("main") {
         Some(window) => match window.hide() {
             Ok(()) => {
-                if let Some(frame) = app.try_state::<Arc<window_frame::state::WindowFrameState>>() {
-                    window_frame::on_window_hidden(&frame, "tray-hide");
-                }
+                notify_frame_hidden(app);
                 log::info!("[qio] 主窗口已隐藏到托盘（{reason}）：后端继续运行，托盘可恢复")
             }
             Err(err) => log::error!("[qio] 隐藏主窗口失败（{reason}）：{err}"),
@@ -2227,6 +2268,35 @@ fn qio_close_ack(state: tauri::State<'_, Arc<ShellRuntime>>) {
     state.close_ack.store(true, Ordering::SeqCst);
 }
 
+/// 创建主窗口并按平台初始化窗口层：Windows 走 0.3.2 透明圆角/overlay/poll 实现，
+/// 其它平台只建普通窗口（产品只发布 Windows；Linux 仅用于 CI 的 \`cargo check\`）。
+#[cfg(windows)]
+fn create_and_init_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let frame_cfg = window_frame::config::FrameConfig::from_env();
+    let evidence_dir = window_frame::evidence_dir_from_env(&data_dir());
+    let (frame_state, main_window) =
+        window_frame::create_main_window(app, frame_cfg, evidence_dir)?;
+    window_frame::init(app, &frame_state, &main_window);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn create_and_init_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .title("QIO")
+        .inner_size(1200.0, 800.0)
+        .build()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn shutdown_window_layer(app: &tauri::AppHandle) {
+    window_frame::shutdown(app);
+}
+
+#[cfg(not(windows))]
+fn shutdown_window_layer(_app: &tauri::AppHandle) {}
+
 fn main() {
     // 全机单实例闸门：**必须在任何共享写操作之前**（Job Object / 日志目录探针 / 令牌文件 /
     // 窗口 / 后端都算共享写操作）。锁是 Global 命名内核互斥（产品级 v1，与安装路径、
@@ -2387,20 +2457,9 @@ fn main() {
             // 0.3.2 窗口层：程序化建窗（tauri.conf.json 的 app.windows 已清空）。
             // 必须在托盘/后端之前：关闭行为、托盘恢复、ownership 的 WM_CLOSE 兜底
             // 都以 main 窗口存在为前提；窗口 label 必须保持 "main"（capabilities 依赖）。
-            let frame_cfg = window_frame::config::FrameConfig::from_env();
-            let evidence_dir = window_frame::evidence_dir_from_env(&data_dir());
-            let (frame_state, main_window) = match window_frame::create_main_window(
-                app.handle(),
-                frame_cfg,
-                evidence_dir,
-            ) {
-                Ok(created) => created,
-                Err(err) => {
-                    log::error!("[qio] window-frame 主窗口创建失败：{err}");
-                    return Err(Box::new(err));
-                }
-            };
-            window_frame::init(app.handle(), &frame_state, &main_window);
+            // Windows 用窗口层（透明圆角 + overlay + poll）；其它平台只建普通主窗口，
+            // 保证 Linux CI 的 \`cargo check\` 不触碰 Win32 API。
+            create_and_init_main_window(app.handle())?;
             app.manage(Arc::clone(&runtime_for_setup));
             // 全机单实例：窗口已就绪 → 开始监听「同会话重复启动」的激活事件。
             // 事件在取锁后立刻创建（手动手重置）：首个实例仍在启动时到达的激活不会丢，
@@ -2461,9 +2520,9 @@ fn main() {
             attachment_picker::reveal_attachment_path,
             // 0.3.2 窗口层 IPC（spec §3.3）：命中布局上报 / 首屏 runtime / 窗口动作 /
             // 穿透诊断；自定义命令不走 capability，capabilities/default.json 不需要改。
-            window_frame::commands::qio_set_hit_regions,
-            window_frame::commands::qio_get_window_frame,
-            window_frame::commands::qio_window_action,
+            window_ipc::qio_set_hit_regions,
+            window_ipc::qio_get_window_frame,
+            window_ipc::qio_window_action,
             window_frame::commands::qio_set_passthrough
         ])
         .build(tauri::generate_context!())
@@ -2471,7 +2530,7 @@ fn main() {
         .run(move |app, event| match event {
             RunEvent::Exit | RunEvent::ExitRequested { .. } => {
                 // 0.3.2：先停 poll（join 最多一个 8ms 周期）、销毁 overlay，再收尾后端。
-                window_frame::shutdown(app);
+                shutdown_window_layer(app);
                 shutdown_runtime(&runtime);
             }
             _ => {}
