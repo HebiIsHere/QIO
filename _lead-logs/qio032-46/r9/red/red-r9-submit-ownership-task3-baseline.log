@@ -1,0 +1,130 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/_q46-r9-baseline/frontend
+
+ ❯ src/stores/__tests__/q46-r8-submit-ownership.test.ts (10 tests | 5 failed) 7177ms
+     ✓ B 保存后在 A 上放行：提交只发往 B，版本用 B 本次保存确认的 8，A 收不到任何提交  734ms
+     ✓ B 保存失败：不发出任何提交，失败原因 / 候选 / 重试入口留在 B，A 不受影响  714ms
+     ✓ B 等待影响确认：本次不提交；切回 B 确认后只提交 B  713ms
+     ✓ B 的提交回执在 A 打开时才到：只更新 B（提交后读取 / 任务刷新不碰 A）  716ms
+     ✓ 后端已受理但浏览器没收到响应：查证只针对 B、沿用同一请求身份，重试不重复受理  721ms
+     × B 的提交后回读在 A 打开时失败：A 保持 idle，错误只回到 B 711ms
+     × B 的提交后回读在 A 打开时成功：A 不被刷新也不再记 B 的批次，回 B 后收敛为 idle 716ms
+     × B→A→B 之后新刷新成功：旧刷新迟到的失败不得覆盖新结果 717ms
+     × 在 B 点重试刷新后立刻切到 A：不在 A 写状态、不对 A 发读取 717ms
+     × B 提交后回读只合并了旧草稿（未采纳板面事实）：不得置 idle，重试拿到新版本才收敛 716ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/stores/__tests__/q46-r8-submit-ownership.test.ts > 一.1b 提交后回读只归发起板（第九轮） > B 的提交后回读在 A 打开时失败：A 保持 idle，错误只回到 
+B
+AssertionError: B 的回读失败写进了 A 的刷新状态: expected 'error' to be 'idle' // Object.is equality
+
+Expected: "idle"
+Received: "error"
+
+ ❯ src/stores/__tests__/q46-r8-submit-ownership.test.ts:726:60
+    724|
+    725|     expect(store.boardId, "B 的提交后回读把当前板面切走了").toBe(BOARD_A);
+    726|     expect(store.submitRefreshState, "B 的回读失败写进了 A 的刷新状态").toBe("idle"…
+       |                                                            ^
+    727|     expect(store.submitRefreshError, "B 的回读失败原因显示在 A 上").toBeNull();
+    728|     expect(readCounts(), "B 的提交后回读对 A 发起了读取").toEqual(atA);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-submit-ownership.test.ts > 一.1b 提交后回读只归发起板（第九轮） > B 的提交后回读在 A 打开时成功：A 不被刷新也不再记 B 的批次
+，回 B 后收敛为 idle
+AssertionError: B 的提交后回读继续对 A 发起了读取: expected { board_a: { board: 2, …(2) }, …(1) } to deeply equal { board_a: { board:
+ 2, …(2) }, …(1) }
+
+- Expected
++ Received
+
+@@ -1,10 +1,10 @@
+  {
+    "board_a": {
+      "board": 2,
+-     "intents": 2,
+-     "visible": 2,
++     "intents": 3,
++     "visible": 3,
+    },
+    "board_b": {
+      "board": 2,
+      "intents": 1,
+      "visible": 2,
+
+ ❯ src/stores/__tests__/q46-r8-submit-ownership.test.ts:763:49
+    761|     expect(store.boardId, "B 的提交后回读把当前板面切走了").toBe(BOARD_A);
+    762|     expect(store.submitRefreshState, "B 的成功回读写进了 A 的刷新状态").toBe("idle"…
+    763|     expect(readCounts(), "B 的提交后回读继续对 A 发起了读取").toEqual(atA);
+       |                                                 ^
+    764|     expect(
+    765|       vi.mocked(approval.recordIntentBatch).mock.calls,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-submit-ownership.test.ts > 一.1b 提交后回读只归发起板（第九轮） > B→A→B 之后新刷新成功：旧刷新迟到的失败不得覆盖新结果
+AssertionError: 旧代次的迟到失败覆盖了更新一次的成功结果: expected 'error' to be 'idle' // Object.is equality
+
+Expected: "idle"
+Received: "error"
+
+ ❯ src/stores/__tests__/q46-r8-submit-ownership.test.ts:807:62
+    805|     await settle();
+    806|
+    807|     expect(store.submitRefreshState, "旧代次的迟到失败覆盖了更新一次的成功结果").toBe("idl…
+       |                                                              ^
+    808|     expect(store.submitRefreshError, "旧代次的迟到失败给新结果写入了错误").toBeNull();
+    809|     expect(submitCalls(), "旧刷新失败触发了重复提交").toHaveLength(1);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-submit-ownership.test.ts > 一.1b 提交后回读只归发起板（第九轮） > 在 B 点重试刷新后立刻切到 A：不在 A 写状态、不对 A 发读取
+AssertionError: 重试刷新在切板后仍报告成功: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/stores/__tests__/q46-r8-submit-ownership.test.ts:842:41
+    840|
+    841|     expect(store.boardId, "B 的重试刷新把当前板面切走了").toBe(BOARD_A);
+    842|     expect(retried.ok, "重试刷新在切板后仍报告成功").toBe(false);
+       |                                         ^
+    843|     expect(store.submitRefreshState, "B 的重试刷新写进了 A 的刷新状态").toBe("idle"…
+    844|     expect(store.submitRefreshError, "B 的重试刷新错误显示在 A 上").toBeNull();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  src/stores/__tests__/q46-r8-submit-ownership.test.ts > 一.1b 提交后回读只归发起板（第九轮） > B 提交后回读只合并了旧草稿（未采纳板面事实）：不得置 idle，重
+试拿到新版本才收敛
+AssertionError: 回读只合并了旧草稿（没有采纳板面事实），刷新却被当成成功（idle）: expected 'idle' to be 'error' // Object.is equality
+
+Expected: "error"
+Received: "idle"
+
+ ❯ src/stores/__tests__/q46-r8-submit-ownership.test.ts:874:7
+    872|       store.submitRefreshState,
+    873|       "回读只合并了旧草稿（没有采纳板面事实），刷新却被当成成功（idle）",
+    874|     ).toBe("error");
+       |       ^
+    875|     expect(String(store.submitRefreshError ?? ""), "没有说明「这次回读没有被采纳」").…
+    876|       "没有被采纳",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed | 5 passed (10)
+   Start at  12:08:41
+   Duration  10.50s (transform 1.00s, setup 26ms, import 1.28s, tests 7.18s, environment 1.77s)
+

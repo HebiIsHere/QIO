@@ -1,0 +1,199 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/q46-r9/frontend
+
+ ✓ src/acceptance-state-recovery/f08-stale-read-version.test.ts (2 tests) 77ms
+ ✓ src/acceptance-state-recovery/f2-legacy-local-removal-replace.test.ts (1 test) 71ms
+ ✓ src/acceptance-state-recovery/n1-superseded-check.test.ts (1 test) 82ms
+ ✓ src/acceptance-state-recovery/f01-drafts-two-windows.test.ts (4 tests) 130ms
+ ✓ src/acceptance-state-recovery/n5-submit-move-checked.test.ts (1 test) 105ms
+ ✓ src/acceptance-state-recovery/f07-local-removal-merge.test.ts (6 tests) 125ms
+ ✓ src/acceptance-state-recovery/f1-cancel-recovery-independent-changes.test.ts (2 tests) 113ms
+ ✓ src/acceptance-state-recovery/f11-intents-load-failure.test.ts (4 tests) 107ms
+ ✓ src/acceptance-state-recovery/n8-submit-read-once.test.ts (3 tests) 114ms
+ ✓ src/acceptance-state-recovery/f10-submit-refresh.test.ts (3 tests) 109ms
+ ✓ src/acceptance-state-recovery/n7-acceptance-identity.test.ts (9 tests) 139ms
+ ✓ src/components/interactive/v2/__tests__/ImpactConfirmLayer.test.ts (12 tests) 447ms
+ ✓ src/components/interactive/__tests__/p3c-retry-recovery.test.ts (14 tests) 222ms
+ ✓ src/stores/__tests__/recovery-lead-state-facts.test.ts (14 tests) 669ms
+     ✓ 【状态/单元】服务端拒绝旧版本写入（409 stale_state）后：接收最新事实并用最新版本重试  492ms
+node.exe : stderr | src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 网址（地址 + 标题）：未完成输入在
+关闭重开后完整恢复，且不自动形成正式改动
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (stderr | src/ac...完整恢复，且不自动形成正式改动:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
+  at <SelectionMenu open-up=false > 
+  at <BoardCard card= {
+  id: 'c_url',
+  kind: 'url',
+  content: '原始说明',
+  meta: { href: 'https://旧.example', title: '旧标题' },
+  x: 0,
+  y: 0,
+  w: 1,
+  h: 1,
+  checked: false,
+  hidden: false,
+  folded: false,
+  bookmarked: false,
+  deleted: false,
+  createdAt: '',
+  updatedAt: ''
+} selected=true highlight=false  ... > 
+  at <VTUROOT>
+
+stderr | src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 网址（地址 + 标题）：未完成输入在关闭重开后完整恢复，且
+不自动形成正式改动
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
+  at <SelectionMenu open-up=false > 
+  at <BoardCard card= {
+  id: 'c_url',
+  kind: 'url',
+  content: '原始说明',
+  meta: { href: 'https://旧.example', title: '旧标题' },
+  x: 0,
+  y: 0,
+  w: 1,
+  h: 1,
+  checked: false,
+  hidden: false,
+  folded: false,
+  bookmarked: false,
+  deleted: false,
+  createdAt: '',
+  updatedAt: ''
+} selected=true highlight=false  ... > 
+  at <VTUROOT>
+
+stderr | src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 代码（语言）：未完成输入在关闭重开后完整恢复，且不自动形成
+正式改动
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
+  at <SelectionMenu open-up=false > 
+  at <BoardCard card= {
+  id: 'c_code',
+  kind: 'code',
+  content: '// 原始代码',
+  meta: { language: 'typescript' },
+  x: 0,
+  y: 0,
+  w: 1,
+  h: 1,
+  checked: false,
+  hidden: false,
+  folded: false,
+  bookmarked: false,
+  deleted: false,
+  createdAt: '',
+  updatedAt: ''
+} selected=true highlight=false  ... > 
+  at <VTUROOT>
+
+stderr | src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 代码（语言）：未完成输入在关闭重开后完整恢复，且不自动形成
+正式改动
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
+  at <SelectionMenu open-up=false > 
+  at <BoardCard card= {
+  id: 'c_code',
+  kind: 'code',
+  content: '// 原始代码',
+  meta: { language: 'typescript' },
+  x: 0,
+  y: 0,
+  w: 1,
+  h: 1,
+  checked: false,
+  hidden: false,
+  folded: false,
+  bookmarked: false,
+  deleted: false,
+  createdAt: '',
+  updatedAt: ''
+} selected=true highlight=false  ... > 
+  at <VTUROOT>
+
+stderr | src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 文件（名称）：未完成输入在关闭重开后完整恢复，且不自动形成
+正式改动
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
+  at <SelectionMenu open-up=false > 
+  at <BoardCard card= {
+  id: 'c_file',
+  kind: 'file',
+  content: '文件说明',
+  meta: { name: '旧文件名.pdf' },
+  x: 0,
+  y: 0,
+  w: 1,
+  h: 1,
+  checked: false,
+  hidden: false,
+  folded: false,
+  bookmarked: false,
+  deleted: false,
+  createdAt: '',
+  updatedAt: ''
+} selected=true highlight=false  ... > 
+  at <VTUROOT>
+
+stderr | src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 文件（名称）：未完成输入在关闭重开后完整恢复，且不自动形成
+正式改动
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
+  at <SelectionMenu open-up=false > 
+  at <BoardCard card= {
+  id: 'c_file',
+  kind: 'file',
+  content: '文件说明',
+  meta: { name: '旧文件名.pdf' },
+  x: 0,
+  y: 0,
+  w: 1,
+  h: 1,
+  checked: false,
+  hidden: false,
+  folded: false,
+  bookmarked: false,
+  deleted: false,
+  createdAt: '',
+  updatedAt: ''
+} selected=true highlight=false  ... > 
+  at <VTUROOT>
+
+stderr | src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts > N6 未完成的附加字段 > 兼容旧的「仅正文」记录：正文恢复，附加字段沿用卡片原值
+[Vue warn]: injection "Symbol(pinia)" not found. 
+  at <QConfirm open=false variant="layer" title="解除组会连带解除组级关系"  ... > 
+  at <SelectionMenu open-up=false > 
+  at <BoardCard card= {
+  id: 'c_url',
+  kind: 'url',
+  content: '原始说明',
+  meta: { href: 'https://旧.example', title: '旧标题' },
+  x: 0,
+  y: 0,
+  w: 1,
+  h: 1,
+  checked: false,
+  hidden: false,
+  folded: false,
+  bookmarked: false,
+  deleted: false,
+  createdAt: '',
+  updatedAt: ''
+} selected=true highlight=false  ... > 
+  at <VTUROOT>
+
+ ✓ src/acceptance-state-recovery/n6-incomplete-input-fields.test.ts (4 tests) 202ms
+ ✓ src/acceptance-state-recovery/f3-cross-page-stale-reconfirm.test.ts (1 test) 23ms
+
+ Test Files  16 passed (16)
+      Tests  81 passed (81)
+   Start at  12:11:10
+   Duration  16.70s (transform 24.05s, setup 922ms, import 41.87s, tests 2.74s, environment 144.29s)
+

@@ -1,0 +1,19 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/q46-r9/frontend
+
+ ✓ src/stores/__tests__/q46-r8-select-cancel.test.ts (9 tests) 6448ms
+     ✓ 先打开 B、再打开 A：B 的旧清单请求迟到，不得把当前板面与内容改回 B  716ms
+     ✓ 交换到达顺序：A 的整板读取仍在飞时 B 的旧清单先到，A 仍必须最终胜出  715ms
+     ✓ 最新目标 A 读取失败：错误只归这次选择，B 的旧响应迟到不能抢回页面  714ms
+     ✓ B 连续两次撤回：第一次成功回执迟到不关闭第二次等待；第二次失败原因保留且可重试  718ms
+     ✓ expectSeq=7 只读到 6：重试不结算；读到 7 才报成功并结束等待  716ms
+     ✓ 回读版本缺失（seq=0）：不结算成功，仍保留重试入口  715ms
+     ✓ 保存回执缺 seq（Number(undefined)=NaN）：不得绕过版本校验结算撤回  714ms
+     ✓ 切板后的回读不结算本板撤回，A 的撤回状态不受影响  723ms
+     ✓ 同板连续两次撤回：旧的成功 / 失败迟到都不得关闭或改写较新的撤回  716ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  12:02:32
+   Duration  9.45s (transform 840ms, setup 25ms, import 1.05s, tests 6.45s, environment 1.68s)
+

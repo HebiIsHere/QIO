@@ -123,6 +123,14 @@ import { buildRecoveryItems, type RecoveryItem } from "../components/interactive
 
 const DEFAULT_BOARD_ID = "board_default";
 const UNDO_LIMIT = 100;
+/**
+ * #46 第九轮：**已删除**的「跨标签页草稿同步标记」的存储键。
+ *
+ * 第八轮把「服务端已确认的逐键版本 + 正文」写进这个共享 localStorage 键，清理旧草稿前再读它。
+ * 该机制在第九轮整体移除（只写不清理、旧值里还带草稿正文）；这里保留键名仅用于初始化时
+ * 幂等清掉旧版遗留数据，新代码不再读 / 写它。
+ */
+const LEGACY_DRAFT_SYNC_MARKER_STORAGE_KEY = "qio.draft.sync-marker.v1";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "error";
 /** 卡片草稿的保存状态（契约 §9.5）：失败必须能被看见并可重试，不许静默 */
@@ -383,6 +391,19 @@ export interface InteractiveIntentsChangedPayload {
 }
 
 export const useInteractiveStore = defineStore("interactive", () => {
+  /**
+   * 初始化草稿存储（第九轮）：跨标签页草稿同步标记已整体删除，这里幂等清掉旧版遗留的键。
+   *
+   * - 只处理 `qio.draft.sync-marker.v1` 这一个键：真实未同步草稿、聊天草稿等其它本地键一个都不动；
+   * - 不读取、不解析、不记录键值内容（旧值里带过草稿正文，诊断日志不得输出正文）；
+   * - 幂等：本来没有这个键时什么也不发生，每次初始化重复执行没有副作用；
+   * - 存储不可用 / removeItem 抛错时静默继续（沿用草稿存储既有容错口径，不阻断启动）。
+   */
+  try {
+    globalThis.localStorage?.removeItem(LEGACY_DRAFT_SYNC_MARKER_STORAGE_KEY);
+  } catch {
+    // 旧标记不参与任何新逻辑：删不掉（隐私模式 / 配额 / 被禁用）不影响启动与草稿保存
+  }
   const boardId = ref(DEFAULT_BOARD_ID);
   const board = ref<BoardState | null>(null);
   const loading = ref(false);
@@ -1198,6 +1219,23 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   let boardReadSeq = 0;
   let boardReadAppliedSeq = 0;
+  /**
+   * #46（第九轮，第 4 项）：每块板面**最近一次实际采纳的服务器读取事实** {readSeq, seq}。
+   *
+   * 只有真正落到板面事实的读取才记录（被取代的旧读取 / 只合并草稿的读取不记录）——
+   * 撤回重试据此证明「本次回读确实被采纳，并且服务器版本已经到达撤回基线」，
+   * 而不是拿界面缓存里的 knownServerSeq 冒充本次回读依据。
+   */
+  const boardReadAdoption = new Map<string, { readSeq: number; seq: number }>();
+  function recordBoardReadAdoption(forBoardId: string, readSeq: number, seq: number): void {
+    const known = boardReadAdoption.get(forBoardId);
+    // 读取代次只增不减：迟到的旧读取不许把采纳事实退回去
+    if (known && known.readSeq > readSeq) return;
+    boardReadAdoption.set(forBoardId, { readSeq, seq });
+  }
+  function adoptedReadFor(forBoardId: string): { readSeq: number; seq: number } | null {
+    return boardReadAdoption.get(forBoardId) ?? null;
+  }
   /**
    * #46：内存里的板面内容是在**哪块板面**下建立的（读取落地 / 保存回执 / 撤回恢复 / 提交）。
    *
@@ -3015,7 +3053,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
            * #46（第八轮，第 8 项）：后台保存成功同样只能结算**发起这次保存时**的那一次撤回，
            * 且回执里的服务器版本必须已到达撤回基线 —— 旧保存成功不许关掉后来开始的新撤回。
            */
-          settleCancelRecovery(true, null, ownerBoardId, cancelOpAtSaveStart, { seq: Number(result.seq) });
+          settleCancelRecovery(true, null, ownerBoardId, cancelOpAtSaveStart, {
+            seq: Number.isFinite(Number(result.seq)) ? Number(result.seq) : undefined,
+          });
           /**
            * #46（第七轮）：附件关联的结算必须核对**这次保存回执里的板面状态** ——
            * 快照里还没有这次关联时继续显示待保存（旧回执不冒充成功）。
@@ -3087,7 +3127,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
         // 服务器接受了这次写入：这是**已保存事实**（F1 的撤回也由它确认）
         saveFailureHeldByBoard.delete(ownerBoardId);
         settleCancelRecovery(true, null, ownerBoardId, cancelOpAtSaveStart, {
-          seq: Number.isFinite(acceptedServerSeq) ? acceptedServerSeq : Number(result.seq),
+          seq: Number.isFinite(acceptedServerSeq) ? acceptedServerSeq : undefined,
         });
         /*
           Phase 2：保存回执同样是服务器事实 —— 对齐参与口径，并把还没被服务器确认的
@@ -3701,8 +3741,16 @@ writeSaveResultToStashedSession(ownerBoardId, {
     const state = cancelRecoveryByBoard.value[forBoardId];
     if (!state || !state.active || state.boardId !== forBoardId) return;
     if (typeof opSeq === "number" && state.opSeq !== opSeq) return;
-    if (ok && facts && typeof facts.seq === "number" && Number.isFinite(facts.seq)) {
-      if (state.expectSeq > 0 && facts.seq < state.expectSeq) return;
+    if (ok) {
+      /**
+       * #46（第九轮，第 4 项）：成功必须由「这次操作、且版本已经到达撤回基线」的服务器事实
+       * 证明。缺版本（undefined / NaN）、0、更旧的版本一律不结算成功 —— 旧实现在 facts 缺失
+       * 或 seq=NaN 时直接跳过校验，把「还没被服务器确认」说成已确认（保存回执里
+       * `Number(result.seq)` 恰好可能是 NaN）。
+       */
+      const factsSeq = facts?.seq;
+      if (typeof factsSeq !== "number" || !Number.isFinite(factsSeq) || factsSeq <= 0) return;
+      if (state.expectSeq > 0 && factsSeq < state.expectSeq) return;
     }
     cancelRecoveryByBoard.value = {
       ...cancelRecoveryByBoard.value,
@@ -4227,6 +4275,8 @@ writeSaveResultToStashedSession(ownerBoardId, {
         // #46：候选已经按这块板面的服务器事实合并过 —— 内容属于当前板面
         boardContentBoardId = requestedBoardId;
         boardContentIsPlaceholder = false;
+        // #46（第九轮，第 4 项）：这是真正采纳了服务器事实的读取之一 —— 记录采纳事实
+        recordBoardReadAdoption(requestedBoardId, readSeq, payloadSeq);
         /**
          * 只有真正采纳了这次服务器事实（且读到时服务器已到这次撤回的版本）才结算；
          * 结算绑定读取发起时的撤回代次，旧操作的读取不许关掉更新的撤回（第 8 项）。
@@ -4279,6 +4329,8 @@ writeSaveResultToStashedSession(ownerBoardId, {
     dropCheckedChoicesNotIn(board.value);
     boardCleanRev = boardLocalRev;
     boardReadAppliedSeq = Math.max(boardReadAppliedSeq, readSeq);
+    // #46（第九轮，第 4 项）：整块采用服务器事实（第二个真正采纳的分支）—— 记录采纳事实
+    recordBoardReadAdoption(requestedBoardId, readSeq, payloadSeq);
     undoStack.value = [];
     redoStack.value = [];
     dirty.value = false;
@@ -4403,16 +4455,25 @@ writeSaveResultToStashedSession(ownerBoardId, {
    */
   let boardSelectSeq = 0;
 
-  async function refreshVisibleRange(targetBoardId: string = boardId.value) {
+  /**
+   * 读取本板面的可见范围。
+   *
+   * #46（第九轮，第 3 项）：返回**这次读取是否真的被采纳** —— 提交后的刷新要按它的
+   * 返回值判断「本次读取有没有完成」，不能只看有没有抛错（失败 / 被更新读取取代 /
+   * 已经切走都不会抛错，但都不算完成）。
+   */
+  async function refreshVisibleRange(targetBoardId: string = boardId.value): Promise<boolean> {
     const seq = ++visibleRangeReadSeq;
     try {
       const payload = await api.fetchVisibleRange(targetBoardId);
-      if (boardId.value !== targetBoardId || seq !== visibleRangeReadSeq) return;
+      if (boardId.value !== targetBoardId || seq !== visibleRangeReadSeq) return false;
       visibleRange.value = payload.visibleRange;
+      return true;
     } catch (err) {
-      if (boardId.value !== targetBoardId || seq !== visibleRangeReadSeq) return;
+      if (boardId.value !== targetBoardId || seq !== visibleRangeReadSeq) return false;
       visibleRange.value = null;
       saveError.value = (err as Error).message;
+      return false;
     }
   }
 
@@ -4706,8 +4767,9 @@ writeSaveResultToStashedSession(ownerBoardId, {
       if (deferredSubmission?.deferredRefreshAfterSubmit) {
         const deferred = deferredSubmission.deferredRefreshAfterSubmit;
         deferredSubmission.deferredRefreshAfterSubmit = null;
-        submitRefreshState.value = "pending";
-        await refreshAfterSubmit(new Set(deferred.intentsBefore), deferred.batchKey);
+        // #46（第九轮，第 3 项）：延后的提交后刷新也走**同一入口**（按原板面冻结上下文收尾，
+        // 不先写全局 pending 再调「无主」刷新）。
+        await refreshAfterSubmit(boardId.value, deferred.intentsBefore, deferred.batchKey);
         if (!contextIsValid()) return;
       }
       /**
@@ -5006,53 +5068,6 @@ writeSaveResultToStashedSession(ownerBoardId, {
    * - 服务器确认之前状态**不是**已同步：清除失败要能看到原因并重试；
    * - 版本往前推，让还在飞的旧保存回执不再算数（不许把已清除的草稿复活）。
    */
-  /**
-   * #46（第八轮，第 2 项后半）：**跨标签页的草稿同步标记**（共享 localStorage）。
-   *
-   * 反例：标签页 2 已经把新稿同步到服务端（逐键版本推到 4），标签页 1 的旧正式保存回执
-   * 到达后仍按自己读到的旧版本（3）发 removed —— 服务端要么按版本拒绝、要么把对方的新稿删掉。
-   * 仅看本页内存里的版本发现不了「另一标签页刚刚同步过」这件事，而本机恢复副本在同步成功后
-   * 本来就会被清掉（那是正常行为）。所以每次草稿保存成功后把「服务端已确认到的逐键版本」
-   * 写进共享标记；清理旧草稿前先读它：比本页已知版本更新 → 保留服务器上的新版本，
-   * 不发这次 removed，走既有冲突 / 保留语义。
-   */
-  const DRAFT_SYNC_MARKER_STORAGE_KEY = "qio.draft.sync-marker.v1";
-  type DraftSyncMarkerBook = Record<string, Record<string, { version: number; text: string }>>;
-  function readDraftSyncMarkers(): DraftSyncMarkerBook {
-    try {
-      const raw = globalThis.localStorage?.getItem(DRAFT_SYNC_MARKER_STORAGE_KEY);
-      if (!raw) return {};
-      const parsed = JSON.parse(raw) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as DraftSyncMarkerBook)
-        : {};
-    } catch {
-      return {};
-    }
-  }
-  function recordDraftSyncMarker(boardId: string, key: string, version: number, text: string): void {
-    if (!boardId || !key || !Number.isFinite(version) || version <= 0) return;
-    try {
-      const all = readDraftSyncMarkers();
-      const book = (all[boardId] ??= {});
-      const existing = book[key];
-      if (existing && existing.version > version) return;
-      book[key] = { version, text };
-      globalThis.localStorage?.setItem(DRAFT_SYNC_MARKER_STORAGE_KEY, JSON.stringify(all));
-    } catch {
-      // 标记只是跨标签页的保护提示：写不进去不阻断正常保存 / 清除
-    }
-  }
-  function draftServerVersionAdvancedElsewhere(
-    boardId: string,
-    key: string,
-    knownVersion: number,
-  ): boolean {
-    const marker = readDraftSyncMarkers()[boardId]?.[key];
-    if (!marker) return false;
-    return Number.isFinite(marker.version) && marker.version > knownVersion;
-  }
-
   function clearDraft(
     key: string,
     ownerBoardId: string = draftBoardOf(key),
@@ -5108,6 +5123,11 @@ writeSaveResultToStashedSession(ownerBoardId, {
      * 把标签页 2 的新文字在本机的唯一恢复副本覆盖掉。现在只有身份仍然一致才清理；
      * 身份对不上 = 已被另一标签页更新 —— 保留新记录（它仍然会被它自己的通道上传），
      * 网络侧的旧草稿清除照常发出（服务端版本守卫会按它的真实版本处理）。
+     *
+     * 第九轮评估（删除跨标签页同步标记后）：这段重读核对**保留、不简化** ——
+     * 它保护的是「本机恢复记录本身」，不是共享标记：旧正式保存回执到达时，同一浏览器的
+     * 另一个页面 / 标签页可能已经写下更新的一版（版本或内容身份对不上），这时无条件写 cleared
+     * 会覆盖那份唯一的恢复副本（2A 用例）。删掉它没有任何其它机制能兜住这条路径。
      */
     const expectLocal = options.expectLocal ?? null;
     let preservedLocal = false;
@@ -5123,16 +5143,6 @@ writeSaveResultToStashedSession(ownerBoardId, {
           ? currentRecord === null
           : currentVersion === expectLocal.version && currentFingerprint === expectLocal.fingerprint;
       preservedLocal = !sameRecord;
-    }
-    /**
-     * 本机记录可能已经被同步清掉（同步成功就是正常删除），此时只能靠共享的同步标记判断
-     * 「另一标签页是否已经把更新的版本推到了服务端」。
-     */
-    if (!preservedLocal && cardId) {
-      const knownServerVersion = ownerBook.keyVersions.get(key) ?? 0;
-      if (draftServerVersionAdvancedElsewhere(clearBoardId, key, knownServerVersion)) {
-        preservedLocal = true;
-      }
     }
     const cleared = preservedLocal
       ? {
@@ -5978,20 +5988,6 @@ writeSaveResultToStashedSession(ownerBoardId, {
               ownerBook.states = { ...ownerBook.states, [key]: { status: "saved", error: null } };
             }
             failedDraftVersionsByBoard.get(ownerBoardId)?.delete(key);
-            /**
-             * 记录「这条草稿已经同步到的服务端版本」（共享 localStorage）：
-             * 其他标签页清理旧草稿前用它判断是否有更新版本，避免用旧版本发 removed。
-             */
-            {
-              const receiptKeyVersions = receiptsAtRequest?.keyVersions as
-                | Record<string, number>
-                | undefined;
-              const syncedVersion = Number(receiptKeyVersions?.[key]);
-              if (Number.isFinite(syncedVersion) && syncedVersion > 0) {
-                recordDraftSyncMarker(ownerBoardId, key, syncedVersion, patchDrafts[key] ?? "");
-              }
-            }
-
             // 服务端已经拿到这一版：本机恢复副本按「当时那一版」清理（契约 §10.5 / §12.2）。
             // 版本校验（§12.2）：请求在飞期间被同一浏览器的**另一个页面**换成新版本的记录不许被这次回执删掉。
             const cardId = cardIdFromDraftKey(key);
@@ -6345,6 +6341,16 @@ writeSaveResultToStashedSession(ownerBoardId, {
    * 操作结果决定下一步；提交回执 / 受理查证 / 重试身份 / 提交后的草稿恢复 / 任务刷新全部
    * 落回原板面自己的会话。A 的状态、视口和已加载内容只由 A 自己的操作更新。
    * ------------------------------------------------------------------ */
+  /**
+   * #46（第九轮，第 3 项）：提交后刷新冻结的上下文。
+   * 入口确定后整段刷新只按它执行：原板面 / 刷新代次 / 本次提交的批次身份 / 任务清单基线。
+   */
+  interface SubmitRefreshContext {
+    boardId: string;
+    gen: number;
+    intentsBefore: string[];
+    batchKey: string;
+  }
   interface BoardSubmissionSession {
     boardId: string;
     submitStatus: SubmitStatus;
@@ -6374,10 +6380,23 @@ writeSaveResultToStashedSession(ownerBoardId, {
     deferredCheckedClear: { cleared: string[]; atSeq: Map<string, number> } | null;
     /** 提交期间切走时的提交后任务刷新（回到原板面后按原板面执行）。 */
     deferredRefreshAfterSubmit: { intentsBefore: string[]; batchKey: string } | null;
+    /**
+     * #46（第九轮，第 3 项）：最近一次提交后刷新的冻结上下文（发起板面 / 代次 / 批次 / 任务基线）。
+     * retrySubmitRefresh() 复用它 —— 点击后立刻切板也仍然按原板面与原批次收尾。
+     */
+    lastRefreshContext: SubmitRefreshContext | null;
     /** 提交期间切走时的理解轮询（回到原板面后启动）。 */
     deferredUnderstandingPolling: boolean;
   }
   const submissionSessions = new Map<string, BoardSubmissionSession>();
+  /**
+   * #46（第九轮，第 3 项）：**按板面**的提交后刷新代次。
+   *
+   * 反例：全局一次刷新状态 — 在 B 提交、切到 A 后，B 的回读要么读 A / 把失败写进 A，
+   * 要么 B→A→B 之后旧代次的迟到结果覆盖新一次刷新。代次只增不减，只有最新一代能写
+   * 这块板面的刷新状态（提交后读取归发起板，旧代次一律不落状态）。
+   */
+  const submitRefreshGenByBoard = new Map<string, number>();
   function blankSubmissionSession(ownerBoardId: string): BoardSubmissionSession {
     return {
       boardId: ownerBoardId,
@@ -6406,11 +6425,17 @@ writeSaveResultToStashedSession(ownerBoardId, {
       draftsNotPromoted: [],
       deferredCheckedClear: null,
       deferredRefreshAfterSubmit: null,
+      lastRefreshContext: null,
       deferredUnderstandingPolling: false,
     };
   }
   /** 把当前全局提交事实快照成某块板面的会话（调用方保证这块板面就是 statusBoardId）。 */
   function captureSubmissionSession(ownerBoardId: string): BoardSubmissionSession {
+    /**
+     * #46（第九轮，第 3 项）：会话里那些**不属于界面显示**的延后 / 刷新上下文必须原样带走 ——
+     * 否则「离开原板面 → 切回 → load 还没消费完又离开」会把延后刷新丢掉。
+     */
+    const existing = submissionSessions.get(ownerBoardId);
     return {
       boardId: ownerBoardId,
       submitStatus: submitStatus.value,
@@ -6436,9 +6461,10 @@ writeSaveResultToStashedSession(ownerBoardId, {
       understandingBoundSubmissionId,
       promotedDrafts: [...promotedDrafts.value],
       draftsNotPromoted: [...draftsNotPromoted.value],
-      deferredCheckedClear: null,
-      deferredRefreshAfterSubmit: null,
-      deferredUnderstandingPolling: false,
+      deferredCheckedClear: existing?.deferredCheckedClear ?? null,
+      deferredRefreshAfterSubmit: existing?.deferredRefreshAfterSubmit ?? null,
+      lastRefreshContext: existing?.lastRefreshContext ?? null,
+      deferredUnderstandingPolling: existing?.deferredUnderstandingPolling ?? false,
     };
   }
   /** 把一块板面的提交事实恢复到全局（切到它 / 回到它时调用）。 */
@@ -6476,6 +6502,14 @@ writeSaveResultToStashedSession(ownerBoardId, {
   }
   function submissionIsCurrent(ownerBoardId: string): boolean {
     return boardId.value === ownerBoardId && statusBoardId === ownerBoardId;
+  }
+  /** 这块板面冻结的提交后刷新上下文（retrySubmitRefresh 复用，不按此刻显示板面重建）。 */
+  function submitRefreshContextFor(ownerBoardId: string): SubmitRefreshContext | null {
+    return submissionSessions.get(ownerBoardId)?.lastRefreshContext ?? null;
+  }
+  /** 记下这块板面冻结的提交后刷新上下文（只记进它自己的会话，不碰显示状态）。 */
+  function rememberSubmitRefreshContext(ownerBoardId: string, context: SubmitRefreshContext): void {
+    ensureSubmissionSession(ownerBoardId).lastRefreshContext = context;
   }
   function readSubmissionFor(ownerBoardId: string): BoardSubmissionSession {
     if (submissionIsCurrent(ownerBoardId)) return captureSubmissionSession(ownerBoardId);
@@ -6848,7 +6882,7 @@ writeSaveResultToStashedSession(ownerBoardId, {
      */
     const batchKey = "session:submission:" + (result.submission?.id ?? Date.now());
     if (ownerIsCurrent()) {
-      await refreshAfterSubmit(intentsBefore, batchKey);
+      await refreshAfterSubmit(ownerBoardId, intentsBefore, batchKey);
     } else {
       setOwned({
         deferredRefreshAfterSubmit: { intentsBefore: [...intentsBefore], batchKey },
@@ -6929,44 +6963,140 @@ writeSaveResultToStashedSession(ownerBoardId, {
    *
    * 失败**不改变**提交结果：`submitStatus` 保持成功、`lastSubmission` 与基准依据都不动，
    * 只记录 `submitRefreshError`，让界面说「提交成功，页面刷新失败」。
+   *
+   * #46（第九轮，第 3 项）：**这次任务只归发起板**。
+   * - 入口冻结「发起板面 + 刷新代次 + 批次身份 + 任务基线」，所有读取显式带上原板面 id；
+   * - 每个 await 之后核对「代次仍最新 + 板面仍原板」：不是最新代次就直接退出（旧结果不落地），
+   *   已经离开原板面则把**尚未开始**的步骤记进原板面会话 deferredRefreshAfterSubmit，
+   *   回到原板面由 load() 用同一入口收尾；
+   * - 已经返回的真实失败（读取抛错 / 未采纳 / 子读取返回失败）经 patchSubmissionFor 归原板面，
+   *   绝不写当前板面的状态；
+   * - 只有实际采纳的刷新才置 idle；refreshBoardFromServer 返回 false（未采纳 / 已切走）
+   *   与可见范围 / 任务清单的失败都算本次未完成。
    */
-  async function refreshAfterSubmit(intentsBefore: Set<string>, batchKey: string): Promise<boolean> {
-    submitRefreshState.value = "pending";
-    submitRefreshError.value = null;
-    try {
-      await refreshBoardFromServer();
-      await refreshVisibleRange();
-      await refreshIntentFacts();
-      // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
-      recordNewIntents(intentsBefore, batchKey);
-      submitRefreshState.value = "idle";
-      return true;
-    } catch (err) {
-      submitRefreshState.value = "error";
-      submitRefreshError.value = (err as Error).message || "原因未知";
+  async function refreshAfterSubmit(
+    ownerBoardId: string,
+    intentsBeforeInput: Iterable<string>,
+    batchKey: string,
+  ): Promise<boolean> {
+    const intentsBefore = [...intentsBeforeInput];
+    const gen = (submitRefreshGenByBoard.get(ownerBoardId) ?? 0) + 1;
+    submitRefreshGenByBoard.set(ownerBoardId, gen);
+    /**
+     * 冻结上下文：retrySubmitRefresh 复用它（点击后立刻切板也不换板面 / 不换批次），
+     * load() 消费 pending 的延后刷新时也按它收尾。
+     */
+    rememberSubmitRefreshContext(ownerBoardId, {
+      boardId: ownerBoardId,
+      gen,
+      intentsBefore: [...intentsBefore],
+      batchKey,
+    });
+    const isLatestGen = () => (submitRefreshGenByBoard.get(ownerBoardId) ?? 0) === gen;
+    const ownerIsCurrent = () => boardId.value === ownerBoardId && statusBoardId === ownerBoardId;
+    const patchOwner = (patch: Partial<BoardSubmissionSession>) =>
+      patchSubmissionFor(ownerBoardId, patch);
+    /** 真实失败只归原板面（当前板面已经在别处时写进原板自己的会话，绝不给 A 写状态）。 */
+    const fail = (message: string): false => {
+      // 已经有更新的一次刷新接手：旧代次不写任何状态（不能覆盖新结果）
+      if (!isLatestGen()) return false;
+      patchOwner({ submitRefreshState: "error", submitRefreshError: message });
       return false;
+    };
+    /** 已经离开原板面：尚未开始的步骤延后，回原板面由 load() 走同一入口收尾。 */
+    const deferRemaining = (): false => {
+      if (!isLatestGen()) return false;
+      patchOwner({
+        deferredRefreshAfterSubmit: { intentsBefore: [...intentsBefore], batchKey },
+        submitRefreshState: "pending",
+      });
+      return false;
+    };
+    patchOwner({ submitRefreshState: "pending", submitRefreshError: null });
+    /**
+     * 整板读取：只有**本次刷新实际采纳了板面事实**才算完成。
+     *
+     * `refreshBoardFromServer` 的返回值只覆盖一部分情况：比已知服务器版本更旧的读取会返回
+     * true，但它只合并草稿、没有采纳板面事实（既有语义被 load() 等调用方依赖，不改）。
+     * 这里用 boardReadAdoption 的读取代次前进判断「确实采纳」：并发 load() 在本次刷新开始后
+     * 采纳了同一块板面的事实，同样算「板面确实被刷新」。
+     */
+    const readSeqBefore = boardReadSeq;
+    let boardApplied = false;
+    try {
+      boardApplied = await refreshBoardFromServer(ownerBoardId);
+    } catch (err) {
+      return fail((err as Error).message || "原因未知");
     }
+    if (!isLatestGen()) return false;
+    if (!ownerIsCurrent()) return deferRemaining();
+    if (!boardApplied) {
+      return fail("这次提交后的板面读取没有被采纳，页面没有刷新；请点「重试刷新」");
+    }
+    const adoptedAfterRefresh = adoptedReadFor(ownerBoardId);
+    if (adoptedAfterRefresh === null || adoptedAfterRefresh.readSeq <= readSeqBefore) {
+      return fail(
+        "这次提交后的板面读取没有被采纳（只合并了草稿），页面没有刷新；请点「重试刷新」",
+      );
+    }
+    /** 可见范围：显式归原板面；未采纳 / 失败同样算本次未完成。 */
+    let rangeApplied = false;
+    try {
+      rangeApplied = await refreshVisibleRange(ownerBoardId);
+    } catch (err) {
+      return fail((err as Error).message || "原因未知");
+    }
+    if (!isLatestGen()) return false;
+    if (!ownerIsCurrent()) return deferRemaining();
+    if (!rangeApplied) {
+      return fail("提交后的可见范围读取没有完成；请点「重试刷新」");
+    }
+    /** 任务清单：读取失败（false）算本次未完成；只有服务端事实被采纳才继续。 */
+    const intentsApplied = await loadIntents(ownerBoardId);
+    if (!isLatestGen()) return false;
+    if (!ownerIsCurrent()) return deferRemaining();
+    if (!intentsApplied) {
+      return fail(intentsLoadError.value || "提交后的任务清单读取没有完成；请点「重试刷新」");
+    }
+    /** 意图视图与任务清单同一处维护（既有口径：视图读取失败不阻塞提交后刷新）。 */
+    await loadIntentViews();
+    if (!isLatestGen()) return false;
+    if (!ownerIsCurrent()) return deferRemaining();
+    // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
+    recordNewIntents(new Set(intentsBefore), batchKey);
+    patchOwner({
+      submitRefreshState: "idle",
+      submitRefreshError: null,
+      deferredRefreshAfterSubmit: null,
+    });
+    return true;
   }
 
   /**
    * F10：只重试**读取**（板面 / 可见范围 / 任务清单），绝不重新提交，
    * 也绝不动「已提交」这个已经成立的事实与基线依据。
+   *
+   * #46（第九轮，第 3 项）：重试复用**原板面冻结的刷新上下文**（发起板面 / 批次身份不变）；
+   * 点击后立刻切到 A 时，未开始的读取延后回原板面收尾 —— 不在 A 写状态、也不对 A 发读取。
    */
   async function retrySubmitRefresh(): Promise<{ ok: boolean; error?: string }> {
-    submitRefreshState.value = "pending";
-    submitRefreshError.value = null;
-    try {
-      await refreshBoardFromServer();
-      await refreshVisibleRange();
-      await refreshIntentFacts();
-      submitRefreshState.value = "idle";
-      return { ok: true };
-    } catch (err) {
-      const message = (err as Error).message || "读取服务器状态失败";
-      submitRefreshState.value = "error";
-      submitRefreshError.value = message;
-      return { ok: false, error: message };
+    const owner = boardId.value;
+    if (!submissionIsCurrent(owner)) {
+      return { ok: false, error: "当前板面不是这次提交的发起板面，请回到原板面再重试刷新" };
     }
+    const frozen = submitRefreshContextFor(owner);
+    const intentsBefore = frozen ? [...frozen.intentsBefore] : [...intentIdSet()];
+    const batchKey = frozen ? frozen.batchKey : "session:submission:retry:" + Date.now();
+    const ok = await refreshAfterSubmit(owner, intentsBefore, batchKey);
+    if (ok) return { ok: true };
+    const ownerState = readSubmissionFor(owner);
+    if (ownerState.deferredRefreshAfterSubmit) {
+      return {
+        ok: false,
+        error: "板面已经切换，这次刷新已经延后到原板面；回到原板面会自动收尾",
+      };
+    }
+    return { ok: false, error: ownerState.submitRefreshError ?? "读取服务器状态失败" };
   }
 
   /**
@@ -7686,28 +7816,56 @@ writeSaveResultToStashedSession(ownerBoardId, {
   /** F1：撤回还没被服务器事实确认时的重试入口（界面据此提供「重新核对」）。 */
   async function retryCancelRecovery(): Promise<{ ok: boolean; error?: string }> {
     const owner = boardId.value;
+    const state = cancelRecoveryByBoard.value[owner];
+    if (!state || state.boardId !== owner) {
+      return { ok: false, error: "当前板面没有等待服务器事实确认的撤回" };
+    }
+    if (!state.active) return { ok: true };
     /**
      * #46（第七轮）：重试属于**当前板面这一次**撤回操作 —— 记下它的代次，
      * 读取成功只结算这一次；期间同板又开始了新的撤回时，这次结果不许把它判成已完成。
+     *
+     * #46（第九轮，第 4 项）：还必须是**本次回读真的被采纳**，且采纳到的服务器版本
+     * 已经到达这次撤回的基线才算成功；旧实现只看「读取没抛错」就报成功：
+     * 读到比基线更旧的版本 / 版本缺失（seq 缺失或 0）都会被当成已确认。
      */
-    const opSeq = cancelRecoveryByBoard.value[owner]?.opSeq;
+    const opSeq = state.opSeq;
+    const expectSeq = Number(state.expectSeq ?? 0) || 0;
+    const readSeqBefore = boardReadSeq;
+    const settleUnconfirmed = (reason: string): { ok: boolean; error?: string } => {
+      settleCancelRecovery(false, reason, owner, opSeq);
+      return { ok: false, error: reason };
+    };
     try {
       const applied = await refreshBoardFromServer(owner);
       if (!applied) {
-        settleCancelRecovery(false, "撤回还没有被服务器事实确认（板面已经切换）", owner, opSeq);
-        return { ok: false, error: "没有取到当前板面的最新事实" };
+        const current = cancelRecoveryByBoard.value[owner];
+        // 期间已经有真正采纳的读取把这次撤回确认掉了：只结算一次，不重复报错
+        if (current && current.opSeq === opSeq && !current.active) return { ok: true };
+        return settleUnconfirmed("撤回还没有被服务器事实确认（板面已经切换）");
       }
-      /**
-       * 读取成功 = 服务器事实已经落地：撤回被确认。这里必须**显式**结算 ——
-       * 读取路径里的 settleCancelRecovery 只覆盖「读取落地」的通用分支，
-       * 而重试入口的语义是「这次撤回现在有结论了」。
-       */
-      settleCancelRecovery(true, null, owner, opSeq);
+      const adopted = adoptedReadFor(owner);
+      const readAdvanced = adopted !== null && adopted.readSeq > readSeqBefore;
+      const current = cancelRecoveryByBoard.value[owner];
+      const opStillCurrent = Boolean(current && current.opSeq === opSeq);
+      const seqReached =
+        adopted !== null &&
+        Number.isFinite(adopted.seq) &&
+        adopted.seq > 0 &&
+        adopted.seq >= expectSeq;
+      if (!readAdvanced || !opStillCurrent || !seqReached) {
+        return settleUnconfirmed(
+          adopted === null
+            ? "撤回还没有被服务器事实确认：这次回读没有给出可用的服务器版本"
+            : "撤回还没有被服务器事实确认：这次回读的服务器版本没有到达撤回基线",
+        );
+      }
+      // 本次读取被真正采纳且版本到达基线：显式结算这次撤回（满足条件只结算一次）
+      settleCancelRecovery(true, null, owner, opSeq, { seq: adopted.seq });
       return { ok: true };
     } catch (err) {
       const message = (err as Error).message || "读取服务器状态失败";
-      settleCancelRecovery(false, "撤回还没有被服务器事实确认：" + message, owner, opSeq);
-      return { ok: false, error: message };
+      return settleUnconfirmed("撤回还没有被服务器事实确认：" + message);
     }
   }
 
@@ -8080,7 +8238,7 @@ writeSaveResultToStashedSession(ownerBoardId, {
      */
     const lookupBatchKey = "session:submission:" + acceptance.submissionId;
     if (ownerIsCurrent()) {
-      await refreshAfterSubmit(intentIdSet(), lookupBatchKey);
+      await refreshAfterSubmit(ownerBoardId, intentIdSet(), lookupBatchKey);
       void startUnderstandingPolling();
     } else {
       setOwned({

@@ -24,6 +24,9 @@ use std::time::{Duration, Instant};
 
 mod attachment_picker;
 mod backend_lifecycle;
+// 桌面全机单实例（R9 #46 Task 1）：Global 命名互斥 + 同会话激活 + 更新重启交接。
+// 必须在 main() 最前面、任何共享写操作（job/日志/令牌/窗口/后端）之前取锁。
+mod single_instance;
 mod updater_net;
 mod window_frame;
 
@@ -571,6 +574,20 @@ async fn qio_refresh_updater_proxy() -> Result<Option<String>, String> {
     })
     .await
     .map_err(|err| format!("代理探测任务失败：{err}"))
+}
+
+/// 更新重启交接：前端在调用 plugin-process 的 relaunch() **之前**调用（见 services/updater.ts）。
+///
+/// 为什么要先握手：安装器重启应用时旧进程可能还没退完 —— 新进程会看到单实例锁仍被占。
+/// 置位同会话的交接事件后，新进程才知道「这是更新重启」从而等待旧进程退出释放锁，
+/// 而不是把自己当成重复启动（弹提示后退出，用户看到的是「更新完应用没重启」）。
+///
+/// 返回 false = 交接事件不可用（前端仍继续重启，新实例退回重复启动兜底，不卡住更新）。
+#[tauri::command]
+fn qio_arm_relaunch() -> bool {
+    let armed = single_instance::arm_relaunch_handoff();
+    log::info!("[qio] 更新重启：交接事件置位={armed}");
+    armed
 }
 
 // kill_tree_by_pid 已挪到 qio_core::ownership（卸载帮助程序也要用同一份实现）：
@@ -1327,6 +1344,10 @@ impl ShellRuntime {
     }
 
     /// 更新前结束后端进程树：**只返回真实结果**，拿不到「已确认退出」就是 Err。
+    ///
+    /// 注意（全机单实例）：单实例锁是**进程级**的（见 `single_instance::Guard`），
+    /// 这里结束后端**不释放**它 —— 更新安装期间本进程仍是主实例，新进程只有在本进程
+    /// 真正退出（内核释放锁）之后才会接任。
     fn prepare_for_update(&self) -> Result<StopReport, String> {
         let pid = {
             let mut phase = lock(&self.phase);
@@ -1391,6 +1412,9 @@ impl ShellRuntime {
     }
 
     /// 停止后端之后把本实例后端恢复回来（幂等：本来在跑就不重复启动）。
+    ///
+    /// 单实例锁同样**不随恢复释放**：更新失败后本进程继续作为主实例运行，
+    /// 用户不会因为一次失败的更新而出现「第二套应用」（锁在进程退出时才由内核释放）。
     fn restore_backend(&self, app: &tauri::AppHandle) -> Result<RestoreResult, String> {
         log::info!("[qio] 收到恢复后端请求：当前阶段 {}", self.phase().label());
         {
@@ -1757,7 +1781,11 @@ fn write_install_lease(shell_pid: u32, backend_pid: u32) -> Result<PathBuf, Stri
     Ok(path)
 }
 
-/// 同一安装目录重复启动时的识别与清理（不阻断合法实例，也不覆盖别人的记录）。
+/// 安装实例记录的**诊断**（全机单实例锁已保证只有一个活动实例；这里不再承担互斥职责）。
+///
+/// 保留它的原因：安装目录里可能残留**已退出实例**的记录（强杀/旧版本），清理掉能让
+/// 卸载器/排查看到干净的事实；同时把「本目录发现别的实例记录」如实写进日志（诊断用，
+/// 不阻断、不覆盖别人的记录）。
 fn note_and_prune_instances(install_dir: &Path, own_shell_pid: u32) {
     let removed = ownership::prune_dead_instance_leases(install_dir);
     if !removed.is_empty() {
@@ -1782,8 +1810,10 @@ fn note_and_prune_instances(install_dir: &Path, own_shell_pid: u32) {
                 )
             })
             .collect();
-        log::warn!(
-            "[qio] 同一安装目录已有 {} 个实例在跑：{}；本实例继续启动，各自写自己的记录（互不覆盖）",
+        log::info!(
+            "[qio] 诊断：同一安装目录发现 {} 个其它实例记录：{}；\
+             全机单实例锁已保证本机只有一个活动实例（这些是已退出实例的残留记录，\
+             或升级前旧版本留下的进程）",
             listed.len(),
             listed.join("、")
         );
@@ -1904,7 +1934,10 @@ fn close_behavior_override() -> Option<String> {
 /// 显示主窗口：隐藏到托盘后必须能恢复（show + unminimize + focus 缺一不可）。
 ///
 /// 只隐藏、不重建窗口：后端不会被重新拉起，也不会出现「第二个实例」。
-fn show_main_window(app: &tauri::AppHandle) {
+///
+/// pub(crate)：单实例激活监听线程（single_instance.rs）复用同一条恢复路径 ——
+/// 同会话重复启动必须和托盘恢复表现一致（show + unminimize + focus），不许各写一份。
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         log::warn!("[qio] 找不到主窗口，无法从托盘恢复");
         return;
@@ -2195,6 +2228,34 @@ fn qio_close_ack(state: tauri::State<'_, Arc<ShellRuntime>>) {
 }
 
 fn main() {
+    // 全机单实例闸门：**必须在任何共享写操作之前**（Job Object / 日志目录探针 / 令牌文件 /
+    // 窗口 / 后端都算共享写操作）。锁是 Global 命名内核互斥（产品级 v1，与安装路径、
+    // Windows 账号、登录会话、是否提权、QIO 版本无关）；进程结束（含崩溃）由内核释放。
+    let instance = single_instance::acquire();
+    // 跨进程契约测试探针（仅 QIO_INSTANCE_PROBE 触发）：只走锁/激活/交接逻辑，
+    // 打一行 JSON 后退出 —— 不初始化日志、不碰数据目录、不建窗口、不拉后端。
+    if single_instance::probe_requested() {
+        single_instance::run_probe(instance);
+    }
+    match instance {
+        single_instance::Acquire::Primary(guard) => single_instance::install_guard(guard),
+        single_instance::Acquire::Duplicate { same_session } => {
+            if same_session {
+                // 同会话：acquire 已经把激活事件置位 → 已有实例会恢复/聚焦窗口。
+                eprintln!(
+                    "[qio] 已有 QIO 实例在本会话运行：已请求它恢复并聚焦主窗口，本进程退出（不会启动第二套应用/窗口/后端）"
+                );
+            } else {
+                // 不同会话/账号：本地无法唤醒另一个会话的窗口，给一次可关闭的说明后退出。
+                eprintln!(
+                    "[qio] 已有 QIO 实例在其它 Windows 会话/账号运行：提示用户使用已有窗口，本进程退出（不会启动第二套应用）"
+                );
+                single_instance::show_already_running_dialog();
+            }
+            std::process::exit(0);
+        }
+    }
+
     // 后端进程随这份 job 的生死而生死：壳没了，系统负责清干净，不留孤儿。
     let job = backend_job::create().map(Arc::new);
 
@@ -2340,6 +2401,10 @@ fn main() {
             };
             window_frame::init(app.handle(), &frame_state, &main_window);
             app.manage(Arc::clone(&runtime_for_setup));
+            // 全机单实例：窗口已就绪 → 开始监听「同会话重复启动」的激活事件。
+            // 事件在取锁后立刻创建（手动手重置）：首个实例仍在启动时到达的激活不会丢，
+            // 这里启动监听后立刻会被处理（show + unminimize + focus，不重建窗口/后端）。
+            single_instance::spawn_activation_listener(app.handle().clone());
             // R9 §11：系统托盘。创建失败只降级（关闭行为仍可用），不让应用起不来。
             if let Err(err) = setup_tray(app.handle()) {
                 log::error!(
@@ -2383,6 +2448,8 @@ fn main() {
             qio_prepare_for_update,
             qio_restore_backend,
             qio_refresh_updater_proxy,
+            // 更新重启交接：前端请求插件重启**之前**置位同会话交接事件（见 single_instance）。
+            qio_arm_relaunch,
             // 附件：点击「附件」时的原生文件选择（Win32 对话框给真实路径；不新增 crate）
             attachment_picker::pick_attachment_file,
             // R9：源文件引用入口——一次性返回真实路径与元信息（文件卡/附件来源登记用）。

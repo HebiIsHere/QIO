@@ -505,6 +505,17 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
         await release();
       }
     },
-    relaunch: () => relaunch(),
+    relaunch: async () => {
+      // 更新重启交接（桌面全机单实例）：新进程启动时旧进程可能还没退完，会看到单实例锁仍被占。
+      // 先把「这是更新重启」登记给壳（置位同会话交接事件），新实例据此等待旧进程释放锁，
+      // 而不是把自己当成「重复启动」弹提示后退出 —— 否则更新完成后应用看起来没重启。
+      // 登记失败只记一条 warn：自动更新不能因为交接事件不可用就卡住（新实例退回重复启动兜底）。
+      try {
+        await invokeCommand("qio_arm_relaunch");
+      } catch (error) {
+        console.warn("[qio] 重启前登记更新交接失败（继续重启；新实例会按重复启动处理）：", error);
+      }
+      await relaunch();
+    },
   };
 }

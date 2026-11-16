@@ -30,6 +30,13 @@ path = "src/bin/qio-uninstall-helper.rs"
 name = "uninstall_helper_cli"
 path = "src/tests_uninstall_helper_cli.rs"
 
+# 桌面全机单实例的**跨进程契约测试**：用 CARGO_BIN_EXE_qio 拉起真实二进制，
+# 在同一会话里验证「第一个 primary / 第二个 duplicate+激活 / 更新交接等待后接任」。
+# 同样放在 src/ 下（理由同上：集成测试才会构建 bin 并注入 CARGO_BIN_EXE_qio）。
+[[test]]
+name = "single_instance_contract"
+path = "src/tests_single_instance.rs"
+
 [features]
 # Tauri 标准特性：启用后调试构建也使用**内嵌前端产物**（custom protocol），不再依赖
 # dev server。发布构建（tauri build）本来就需要它；给 cargo build 调试时也用它，
@@ -71,6 +78,11 @@ sha2 = "0.10"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  # 全机单实例：CreateMutexW/CreateEventW 的 SECURITY_ATTRIBUTES 需要
+  # SECURITY_DESCRIPTOR + InitializeSecurityDescriptor/SetSecurityDescriptorDacl
+  # （显式 NULL DACL，保证跨账号/跨提权仍能打开同一个命名对象）。
+  # 只加 feature，不新增 crate（Cargo.lock 不变）。
+  "Win32_Security",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
   "Win32_System_Diagnostics_ToolHelp",

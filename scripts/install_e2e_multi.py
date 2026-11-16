@@ -7,9 +7,14 @@ B 的进程身份（pid + 创建时间 + 映像路径），再逐条比对。ins
 
 两种运行口径（开关区分，结论分别写清，绝不混读）：
 
-* **默认（新语义）**：两边都启动**真外壳** qio.exe（外壳写 sidecar.lease.json，退出删）。
-  卸载 A 后断言：A 的壳/sidecar/lease 全消失、A 目录被清空；B 的壳/sidecar/lease 原封不动
-  （pid + 创建时间逐条一致）、B 的端口仍能回答 /api/health；再卸载 B 断言 B 也干净。
+* **默认（新语义：全机单实例）**：装 A/B 两份安装 → 先启动 B（成为**唯一活动实例**）→
+  再启动 A（第二份安装必须被单实例锁拦截：退出 0，且**没有**第二套 shell/backend/lease/窗口）
+  → 卸载**非活动** A 不影响 B（B 的进程身份 + 创建时间 + 路径逐条一致、lease 原封不动、
+  /api/health 仍可用、窗口还在）→ 卸载**活动** B 时由卸载器按既有**进程归属**关闭 B 的壳与
+  sidecar，并清空安装目录。
+  为什么顺序变了：0.3.2-r9 起桌面壳是全机单实例（Global 命名互斥，见
+  frontend/src-tauri/src/single_instance.rs），同一台机器上不可能同时有两个活动 QIO ——
+  「两份安装并存」要验的是**第二份被拦住**、以及卸载非活动那份不动活动实例。
 * **--expect-legacy-name-kill（改动前产物，先失败的取证）**：旧卸载器按**映像名**杀
   qio-backend.exe。这个模式断言的方向**反过来**：B 的 sidecar 被杀掉 = 复现了要修的缺陷
   （记 PASS-by-repro，标题里写明「缺陷复现，不是产品通过」）。用它取"先失败"的证；
@@ -23,12 +28,13 @@ B 的进程身份（pid + 创建时间 + 映像路径），再逐条比对。ins
       → B 的**壳**被杀 → JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE（main.rs:511/530）关 job
       → B 的 sidecar 跟着死。
 
-  所以默认**两边都用真名 qio.exe 启动外壳**：A 卸载后，B 的壳与 B 的 sidecar 都必须原封不动
+  默认启动 B 的壳用**真名** qio.exe：卸载（非活动）A 后，B 的壳与 B 的 sidecar 都必须原封不动
   （C-044/C-047），谁没做到就 FAIL —— (b) 没修好这件事必须由断言说出来，不许靠装置绕过去。
   C-031/C-048 的诱饵（ping 改名的 qio.exe）是 (b) 的对照：它**活着**（模板那条按名字检查
   已被所有权守卫换掉）才算过；还被杀 = (b) 未修 → FAIL。
-  `--rename-b-shell` 是**诊断开关**：把 B 的壳复制成 qio-b-shell.exe（同一二进制、sha256 核对相同），
-  用来把 (a) 单独隔离出来看 —— 平时不要用它下结论。
+  `--rename-b-shell` 是**诊断开关**：把 B 的壳复制成 qio-b-shell.exe（同一二进制、sha256 核对相同）。
+  注意单实例互斥按**产品名**（Global\QIO.SingleInstance.v1）而不是映像名 —— 改名**不会**绕过
+  单实例锁；它只用于把 (a)「模板按映像名杀 qio.exe」的遗留行为单独隔离出来看，平时别用它下结论。
 
 硬约束：只按 **PID / 路径**收进程（绝不用 taskkill /IM）；断言不许为了保绿放宽；
 跑不起来就记 WARN / NOT VERIFIED 并贴原因。
@@ -249,6 +255,59 @@ def assert_dir_clean(install_dir: Path, cid: str, title: str) -> bool:
     return not residue
 
 
+def wait_process_exit(proc, timeout: float) -> int | None:
+    """等进程自己退出并返回退出码；超时返回 None（进程还活着）。
+
+    只用于「第二份安装被单实例锁拦截」：被拦截的壳应当**很快**自己 exit 0，
+    而不是变成一个还在跑的第二个实例。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        code = proc.poll()
+        if code is not None:
+            return code
+        time.sleep(0.2)
+    return None
+
+
+def wait_process_tree_stable(install_dir: Path, timeout: float = 60.0, settle: float = 2.0) -> list[dict]:
+    """等安装目录里的进程树稳定（身份指纹连续 settle 秒不变）再冻结基线。
+
+    后端是 launcher + onefile child 两段：lease 出现时 child 可能还没起。冻结到不完整的
+    进程树会让之后每次比较都假失败（实测：child 晚 ~0.5s 出现 → C-064/C-044 误报）。
+    """
+    deadline = time.time() + timeout
+    last_digest = ""
+    stable_since = 0.0
+    while time.time() < deadline:
+        items = base.processes_in_dir(install_dir)
+        digest = base.identity_digest(items)
+        if digest == last_digest:
+            if stable_since and time.time() - stable_since >= settle:
+                return items
+        else:
+            last_digest = digest
+            stable_since = time.time()
+        time.sleep(0.3)
+    return base.processes_in_dir(install_dir)
+
+
+def main_window_pids(pids) -> list[int]:
+    """这些 pid 里当前**持有可见主窗口**的那些（按 pid 归属，不按进程名/窗口标题）。
+
+    单实例验收要证明「没有第二套窗口」：被拦截的第二份安装不能留下任何窗口进程。
+    Windows 的 Process.MainWindowHandle 对每个外壳进程只给它的主窗口，正好够用。
+    """
+    wanted = [int(pid) for pid in pids if int(pid) > 0]
+    if not wanted:
+        return []
+    script = ("$ids=@(%s); Get-Process -Id $ids -ErrorAction SilentlyContinue | "
+              "Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -ExpandProperty Id"
+              % ",".join(str(pid) for pid in wanted))
+    _code, out = base.powershell(script, tag="multi-main-window-pids")
+    return [int(token) for token in out.split() if token.strip().isdigit()]
+
+
 def run_sandbox_fallback(args, dir_a: Path, dir_b: Path, work: Path,
                          proc_shell_a, proc_shell_b) -> int:
     """真外壳被本机沙箱挡住时的**受限口径**（哪一半验了、哪一半没验，分开写清）。
@@ -412,7 +471,8 @@ def finish(args, extra: dict) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="多份 QIO 安装并存：卸载 A 不动 B（真机 E2E）")
+    parser = argparse.ArgumentParser(
+        description="多份 QIO 安装并存（全机单实例）：第二份启动被拦截、卸载非活动安装不动活动实例（真机 E2E）")
     parser.add_argument("--installer", required=True, help="A 的安装包")
     parser.add_argument("--installer-b", default="", help="B 的安装包（默认与 A 同一个包）")
     parser.add_argument("--work-dir", default=str(ROOT / ".e2e-work-multi"))
@@ -427,8 +487,9 @@ def main() -> int:
                         help="改动前产物口径：断言 B 的 sidecar 被按名字连坐杀掉（缺陷复现，不是通过）")
     parser.add_argument("--keep-dirs", action="store_true", help="跑完不删安装目录（默认删，省盘）")
     parser.add_argument("--rename-b-shell", action="store_true",
-                        help="诊断开关：B 的壳改成 qio-b-shell.exe（避开模板按名字杀 qio.exe，"
-                             "把 (a) sidecar 所有权单独隔离出来；默认两边都用真名 qio.exe）")
+                        help="诊断开关：B 的壳复制成 qio-b-shell.exe（同一二进制）。单实例锁按"
+                             "产品名而非映像名，改名**不会**绕过锁；只用于隔离「模板按映像名"
+                             "杀 qio.exe」的遗留行为。默认 B 的壳用真名 qio.exe")
     args = parser.parse_args()
 
     args.work_dir = str(Path(args.work_dir).resolve())
@@ -450,7 +511,8 @@ def main() -> int:
 
     base.log("== 多安装并存 E2E ==")
     base.log("  口径     : %s" % ("**改动前产物：缺陷复现（--expect-legacy-name-kill）**" if legacy
-                                  else "新语义（真外壳 + lease；卸载 A 不动 B）"))
+                                  else "新语义（全机单实例）：先起 B（活动）→ A 的第二份启动被拦截 "
+                                       "→ 卸载非活动 A 不动 B → 卸载活动 B 按进程归属关闭并清目录"))
     base.log("  安装包 A : %s" % installer_a)
     base.log("  安装包 B : %s" % installer_b)
     base.log("  目录 A/B : %s / %s" % (dir_a, dir_b))
@@ -543,7 +605,9 @@ def main() -> int:
             assert_dir_clean(dir_b, "C-051", "改动前产物：卸载 B 后 B 目录被清空")
             return finish(args, {"mode": "legacy-repro", "exit_a": code, "exit_b": code_b2})
 
-        # ---------- 新语义：两边真外壳（默认都用真名，见文件头 (a)/(b) 两条路径） ----------
+        # ---------- 新语义（全机单实例）：B 活动；A 的第二份启动必须被拦截 ----------
+        # 顺序刻意如此：先起 B（本机唯一活动实例）→ 再起 A（第二份安装被拦）→
+        # 卸载非活动 A 不影响 B → 卸载活动 B 按既有进程归属关闭并清目录。
         shell_b_exe = dir_b / "qio.exe"
         if args.rename_b_shell:
             copy_b = dir_b / "qio-b-shell.exe"
@@ -551,42 +615,101 @@ def main() -> int:
             same_binary = sha256_of(dir_a / "qio.exe") == sha256_of(copy_b)
             base.record("C-014", "【诊断模式】B 的壳是同一份 qio.exe 的改名副本（sha256 相同）",
                         "PASS" if same_binary else "FAIL",
-                        "qio.exe sha256=%s / qio-b-shell.exe sha256=%s；改名只避开模板按映像名杀 "
-                        "qio.exe 那条遗留检查，lease/job 代码路径完全相同 —— 这一跑**不覆盖 (b)**"
+                        "qio.exe sha256=%s / qio-b-shell.exe sha256=%s；单实例互斥按**产品名**"
+                        "（Global\\QIO.SingleInstance.v1）不按映像名 —— 改名不会绕过锁，"
+                        "只用于把「模板按映像名杀 qio.exe」的遗留行为单独隔离出来看"
                         % (sha256_of(dir_a / "qio.exe")[:16], sha256_of(copy_b)[:16]))
             shell_b_exe = copy_b
         else:
-            base.record("C-014", "B 的壳用**真名** qio.exe 启动（断言覆盖 (b)：模板按名字杀 qio.exe）",
+            base.record("C-014", "B 的壳用**真名** qio.exe 启动（覆盖 (b)：模板按名字杀 qio.exe）",
                         "PASS" if (dir_b / "qio.exe").is_file() else "FAIL",
                         "B 的外壳=%s；默认口径就是要让模板那条按名字检查有机会连坐 B —— "
                         "它没连坐（下面 C-044/C-047/C-048）才算过" % shell_b_exe)
 
-        proc_shell_a, log_a = base.launch_shell(args, dir_a / "qio.exe", data_a, "multi-a")
-        lease_a = verify_lease(dir_a, "A", args.token, proc_shell_a, log_a)
+        # 1) 先启动 B：它必须成为本机**唯一活动实例**（主实例）。
         proc_shell_b, log_b = base.launch_shell(args, shell_b_exe, data_b, "multi-b")
+        # 启动是异步的：先等外壳真的写出 lease（含后端拉起），再核对 lease 内容。
+        # 直接 verify_lease() 会在窗口/后端还没起来时读到"没有 lease"，把正常启动误判成 FAIL。
+        base.wait_lease(dir_b, timeout=args.shell_timeout, proc=proc_shell_b)
         lease_b = verify_lease(dir_b, "B", args.token, proc_shell_b, log_b)
-        if lease_a is None or lease_b is None:
-            log_tail = (base.tail_text(log_a, 600) or "") + (base.tail_text(log_b, 600) or "")
+        if lease_b is None:
+            log_tail = base.tail_text(log_b, 600) or ""
             sandbox_blocked = ("PluginInitialization(\"log\"" in log_tail
                                or ("os error 5" in log_tail and "拒绝访问" in log_tail))
-            base.record("C-024", "两份安装的 lease 都出现（**真外壳**口径的前提）",
+            base.record("C-024", "活动实例 B 的 lease 出现（**真外壳**口径的前提）",
                         "WARN" if sandbox_blocked else "FAIL",
-                        "lease A=%s lease B=%s%s" % (lease_a is not None, lease_b is not None,
-                         "；判定：**本机沙箱限制**（真外壳启动即 panic，见 C-020-A/B）→ 真外壳那一半 NOT VERIFIED；"
+                        "lease B=%s%s" % (lease_b is not None,
+                         "；判定：**本机沙箱限制**（真外壳启动即 panic，见 C-020-B）→ 真外壳那一半 NOT VERIFIED；"
                          "改用受限口径（合成 lease）把「sidecar 所有权与 PID 定向」跑成硬结论"
                          if sandbox_blocked else
                          "；外壳起不来的原因不是已知沙箱签名 —— 按 FAIL 停在这里"))
             if not sandbox_blocked:
                 return finish(args, {"mode": "new-semantics"})
-            return run_sandbox_fallback(args, dir_a, dir_b, work, proc_shell_a, proc_shell_b)
+            return run_sandbox_fallback(args, dir_a, dir_b, work, None, proc_shell_b)
 
-        id_a = base.processes_in_dir(dir_a)
-        id_b = base.processes_in_dir(dir_b)
+        id_b = wait_process_tree_stable(dir_b)
         lease_b_hash = sha256_of(base.lease_path(dir_b))
-        base.record("C-030", "冻结两边进程身份 + B 的 lease 指纹", "PASS",
-                    "A: %s；B: %s；B lease sha256=%s"
-                    % (base.describe_processes(id_a), base.describe_processes(id_b),
-                       lease_b_hash[:16]))
+        base.record("C-030", "冻结活动实例 B 的进程身份 + lease 指纹", "PASS",
+                    "B: %s；B lease sha256=%s"
+                    % (base.describe_processes(id_b), lease_b_hash[:16]))
+        # 窗口创建是异步的：等它真的可见再冻结「只有一套窗口」的基线。
+        b_visible = base.wait_until(
+            lambda: base.window_visible(base.main_window_handle(proc_shell_b.pid)), 30)
+        b_hwnd = base.main_window_handle(proc_shell_b.pid)
+        base.record("C-032", "活动实例 B 的主窗口已出现且可见", "PASS" if b_visible else "FAIL",
+                    "pid=%s hwnd=%s visible=%s" % (proc_shell_b.pid, b_hwnd, b_visible))
+
+        # 2) 再启动**第二份安装** A：全机单实例锁必须拦住它（不能出现第二套应用）。
+        proc_shell_a, log_a = base.launch_shell(args, dir_a / "qio.exe", data_a, "multi-a")
+        exit_a = wait_process_exit(proc_shell_a, timeout=60.0)
+        log_tail_a = (base.tail_text(log_a, 800) or "").replace("\n", " ")
+        base.record("C-060", "第二份安装 A 的启动被单实例锁拦截（退出 0，而不是第二套应用）",
+                    "PASS" if exit_a == 0 else "FAIL",
+                    "exit=%s（期望 0）；A 日志尾部=%s" % (exit_a, log_tail_a[:300] or "（空）"))
+        if exit_a is None:
+            # 没被拦住：它现在是第二个实例 —— 先按 pid 收掉，避免后面的断言验错对象。
+            base.record("C-060b", "第二份安装没有被拦截（这是要修的缺陷，不是通过）", "FAIL",
+                        "A pid=%s 仍在运行；已按 pid 收掉，继续断言卸载路径" % proc_shell_a.pid)
+            base.kill_by_pid(proc_shell_a.pid, "cleanup-second-instance")
+            base.wait_processes_gone([proc_shell_a.pid], timeout=30)
+
+        # 被拦截的进程必须**什么都没写/没拉起**：lease、会话令牌、日志目录、sidecar 进程。
+        lease_a_absent = not base.lease_path(dir_a).exists()
+        token_a_absent = not base.shell_token_path(args, proc_shell_a.pid).exists()
+        logs_a_absent = not (data_a / "logs").exists()
+        base.record("C-061", "被拦截的 A 没有写 lease / 会话令牌 / 日志目录（没有启动第二套应用）",
+                    "PASS" if lease_a_absent and token_a_absent and logs_a_absent else "FAIL",
+                    "lease 不存在=%s 令牌文件不存在=%s 日志目录不存在=%s"
+                    % (lease_a_absent, token_a_absent, logs_a_absent))
+        procs_a = base.processes_in_dir(dir_a)
+        base.record("C-062", "被拦截的 A 没有拉起第二套 shell/backend 进程（按路径枚举为空）",
+                    "PASS" if not procs_a else "FAIL",
+                    "A 安装目录里的进程=%s" % base.describe_processes(procs_a))
+
+        # 3) 同一时刻只能有一套窗口：B 的窗口在，A 没有留下任何窗口进程。
+        window_pids_before = main_window_pids([proc_shell_b.pid])
+        window_pids_after = main_window_pids([proc_shell_b.pid, proc_shell_a.pid])
+        single_window = (window_pids_after == [proc_shell_b.pid]
+                         and window_pids_before == [proc_shell_b.pid])
+        b_hwnd_after = base.main_window_handle(proc_shell_b.pid)
+        base.record("C-063", "只有一套应用窗口（B 的窗口在；A 没有窗口进程）",
+                    "PASS" if single_window and base.window_visible(b_hwnd_after) else "FAIL",
+                    "持有主窗口的 pid=%s（B=%s；A=%s 已退出）；B hwnd=%s visible=%s"
+                    % (window_pids_after, proc_shell_b.pid, proc_shell_a.pid,
+                       b_hwnd_after, base.window_visible(b_hwnd_after)))
+
+        # 4) 第二份启动没有影响活动实例：B 的进程身份/lease/健康检查都必须原样。
+        id_b_after_second_launch = base.processes_in_dir(dir_b)
+        same_b_after_launch, why_b_after_launch = identities_equal(id_b, id_b_after_second_launch)
+        lease_b_hash_after_launch = (sha256_of(base.lease_path(dir_b))
+                                     if base.lease_path(dir_b).exists() else "")
+        base.record("C-064", "第二份安装被拦截没有影响活动实例 B（进程身份 + lease 指纹 + 健康检查）",
+                    "PASS" if same_b_after_launch and lease_b_hash_after_launch == lease_b_hash
+                    else "FAIL",
+                    "B 进程身份一致=%s（%s）；lease 指纹未变=%s"
+                    % (same_b_after_launch, why_b_after_launch,
+                       lease_b_hash_after_launch == lease_b_hash))
+        health_check(dir_b, proc_shell_b.pid, work, "B-active", args.token)
 
         # 对照：ping 改名的 qio.exe 诱饵 —— 模板按名字杀它的行为应该仍在
         decoy_dir = work / "decoy-qio"
@@ -602,30 +725,33 @@ def main() -> int:
         base.record("C-031", "对照：起一个 ping 改名的 qio.exe 诱饵", "PASS",
                     "pid=%s（用来验证模板 Uninstall 段「按映像名杀 qio.exe」这条行为仍在）" % decoy.pid)
 
-        # -- 卸载 A --
+        # 5) 卸载**非活动**安装 A：它没有活动实例，卸载不得影响 B。
+        base.record("C-065", "A 是非活动安装（从未成为实例）", "PASS",
+                    "A lease 不存在=%s；A 目录进程=%s"
+                    % (not base.lease_path(dir_a).exists(),
+                       base.describe_processes(base.processes_in_dir(dir_a))))
         code_un_a, _ = uninstall_package(dir_a, work, "multi-uninstall-a")
-        left_a = base.wait_processes_gone([item["pid"] for item in id_a] + [proc_shell_a.pid],
-                                          timeout=60)
-        base.record("C-041", "卸载 A 后 A 的壳与 sidecar 都退出（按路径 + pid 核对）",
+        left_a = base.wait_processes_gone([proc_shell_a.pid], timeout=60)
+        base.record("C-041", "卸载非活动 A 后 A 的壳进程确认退出（按 pid 核对）",
                     "FAIL" if left_a else "PASS",
                     "exit=%s；仍在：%s" % (code_un_a, left_a or "无（按路径枚举也为空：%s）"
                                           % base.processes_in_dir(dir_a)))
-        base.record("C-042", "卸载 A 后 A 的 lease 消失",
+        base.record("C-042", "卸载非活动 A 后 A 的 lease 不存在（本来就没写过）",
                     "FAIL" if base.lease_path(dir_a).exists() else "PASS",
-                    "%s %s" % (base.LEASE_NAME, "仍在" if base.lease_path(dir_a).exists() else "已消失"))
-        assert_dir_clean(dir_a, "C-043", "卸载 A 后 A 的安装目录被清空")
+                    "%s %s" % (base.LEASE_NAME, "仍在" if base.lease_path(dir_a).exists() else "不存在"))
+        assert_dir_clean(dir_a, "C-043", "卸载非活动 A 后 A 的安装目录被清空")
 
         after_b = base.processes_in_dir(dir_b)
         same_b, why_b = identities_equal(id_b, after_b)
-        base.record("C-044", "**卸载 A 没有动 B 的任何进程**（pid + 创建时间 + 路径逐条一致）",
+        base.record("C-044", "**卸载非活动 A 没有动活动实例 B 的任何进程**（pid + 创建时间 + 路径）",
                     "PASS" if same_b else "FAIL",
                     "卸载 A 前：%s；卸载 A 后：%s；%s"
                     % (base.describe_processes(id_b), base.describe_processes(after_b), why_b))
         lease_b_after, raw_b_after = base.read_lease(dir_b)
-        lease_problems_after = base.lease_problems(lease_b_after or {}, dir_b) if lease_b_after else \
+        lease_problems_after = base.lease_problems(lease_b_after, dir_b) if lease_b_after else \
             ["lease 文件不见了"]
         hash_same = base.lease_path(dir_b).exists() and sha256_of(base.lease_path(dir_b)) == lease_b_hash
-        base.record("C-045", "卸载 A 后 B 的 lease 原封不动且仍然合法",
+        base.record("C-045", "卸载非活动 A 后 B 的 lease 原封不动且仍然合法",
                     "PASS" if hash_same and not lease_problems_after else "FAIL",
                     "文件还在=%s 内容 sha256 未变=%s problems=%s"
                     % (base.lease_path(dir_b).exists(), hash_same, lease_problems_after or "无"))
@@ -641,23 +767,26 @@ def main() -> int:
                     "PASS" if decoy_alive else "FAIL",
                     "诱饵 qio.exe（ping 改名、没有 lease、没有主程序）pid=%s %s —— %s"
                     % (decoy.pid, "**仍然活着**" if decoy_alive else "**被按名字杀了**",
-                       "(b) 已修：没有归属证据的进程收不到杀（这正是本轮要的形状）"
+                       "(b) 已修：没有归属证据的进程收不到杀（这正是要修的形状，"
+                       "否则第二份安装被拦截时 B 会被连坐）"
                        if decoy_alive else
-                       "(b) **未修**：模板 Uninstall 段仍然按映像名杀 qio.exe —— 真名外壳并存会被连坐，"
-                       "上一条 C-044 若同时失败就是它的后果"))
+                       "(b) **未修**：模板 Uninstall 段仍然按映像名杀 qio.exe —— 卸载非活动 A 会把"
+                       "活动实例 B 的壳连坐杀掉，上一条 C-044 若同时失败就是它的后果"))
         if decoy_alive:
             base.kill_by_pid(decoy.pid, "cleanup-decoy")
 
-        # -- 卸载 B --
+        # 6) 卸载**活动**安装 B：卸载器按既有进程归属关闭 B 的壳与 sidecar，再清目录。
         code_un_b, _ = uninstall_package(dir_b, work, "multi-uninstall-b")
         left_b = base.wait_processes_gone([item["pid"] for item in after_b] + [proc_shell_b.pid],
                                           timeout=60)
-        base.record("C-051", "卸载 B 后 B 的壳与 sidecar 都退出",
-                    "FAIL" if left_b else "PASS", "exit=%s；仍在：%s" % (code_un_b, left_b or "无"))
-        base.record("C-052", "卸载 B 后 B 的 lease 消失",
+        base.record("C-051", "卸载**活动** B 后 B 的壳与 sidecar 都按进程归属关闭并退出",
+                    "FAIL" if left_b else "PASS",
+                    "exit=%s；仍在：%s" % (code_un_b, left_b or "无（按路径枚举也为空：%s）"
+                                          % base.processes_in_dir(dir_b)))
+        base.record("C-052", "卸载活动 B 后 B 的 lease 消失",
                     "FAIL" if base.lease_path(dir_b).exists() else "PASS",
                     "%s %s" % (base.LEASE_NAME, "仍在" if base.lease_path(dir_b).exists() else "已消失"))
-        assert_dir_clean(dir_b, "C-053", "卸载 B 后 B 的安装目录被清空")
+        assert_dir_clean(dir_b, "C-053", "卸载活动 B 后 B 的安装目录被清空")
         return finish(args, {"mode": "new-semantics"})
     finally:
         # 收尾：只按 PID / 路径；绝不用 /IM。产物目录默认删掉（两份安装加起来 300MB+）。

@@ -28,7 +28,7 @@ import { flushPromises } from "@vue/test-utils";
 import { useInteractiveStore } from "../interactive";
 import * as api from "../../services/interactive";
 import * as attachments from "../../services/attachments";
-import { cardLocalDraftStorageKey, readCardLocalDraft } from "../../interactive/drafts";
+import { cardLocalDraftStorageKey, readCardLocalDraft, writeCardLocalDraft } from "../../interactive/drafts";
 import { removeCard, updateCard } from "../../interactive/board";
 import type { BoardState } from "../../interactive/types";
 
@@ -74,8 +74,10 @@ const BOARD_A = "board_a";
 const BOARD_B = "board_b";
 const CARD_B = "card_b";
 const CARD_OTHER = "card_other";
+const CARD_A = "card_a";
 const KEY_B = "card:card_b";
 const KEY_OTHER = "card:card_other";
+const KEY_A = "card:card_a";
 
 type Store = ReturnType<typeof useInteractiveStore>;
 
@@ -351,7 +353,7 @@ describe("#46 第八轮 · 第 2 项：旧正式保存不得删除另一标签�
     expect(reopened.drafts[KEY_B], "重新打开编辑器恢复不到标签页 2 的新文字").toBe(tab2Text);
   });
 
-  it("2B 另一标签页的新稿已同步：旧回执到达后不得再发 removed，服务端更新的草稿仍在", async () => {
+  it("2B 另一标签页的新稿已同步：旧回执的删除请求被后端逐键版本守卫拒绝，服务端更新的草稿仍在", async () => {
     const cardB = textCard(CARD_B, "B 的旧正文");
     seedBoard(BOARD_B, [cardB], { drafts: { [KEY_B]: "B 的旧服务器草稿" }, rev: 3, keyVersions: { [KEY_B]: 3 } });
 
@@ -373,7 +375,8 @@ describe("#46 第八轮 · 第 2 项：旧正式保存不得删除另一标签�
     await tab2.flushDrafts();
     await settle();
     expect(books[BOARD_B].drafts[KEY_B], "前提：标签页 2 的新稿没有同步到服务端").toBe(tab2Text);
-    expect(books[BOARD_B].keyVersions[KEY_B], "前提：服务端逐键版本没有推进").toBeGreaterThan(3);
+    const serverVersionAfterTab2 = books[BOARD_B].keyVersions[KEY_B];
+    expect(serverVersionAfterTab2, "前提：服务端逐键版本没有推进").toBeGreaterThan(3);
 
     // 放行标签页 1 的旧回执，并让清除请求真的有机会发出
     putFlight.resolve({
@@ -386,13 +389,29 @@ describe("#46 第八轮 · 第 2 项：旧正式保存不得删除另一标签�
     await settle();
     await waitForDraftDebounce();
 
+    /**
+     * 第九轮已删除跨标签页同步标记：本页不再知道另一标签页刚同步过，可能按自己读到过的旧版本（3）
+     * 发一次 removed —— 保护由**后端逐键版本守卫**承担：请求消费的版本低于服务端当前版本，
+     * 服务端拒绝删除并回报 blockedRemovals。断言：服务端更新的草稿与版本都还在；
+     * 这次删除没有被服务端确认，界面不得显示成已删除。
+     */
+    expect(books[BOARD_B].drafts[KEY_B], "服务端上更新的草稿被旧回执清掉了").toBe(tab2Text);
+    expect(books[BOARD_B].keyVersions[KEY_B], "服务端更新的草稿版本被旧回执消费/推进").toBe(serverVersionAfterTab2);
     const removedCalls = draftCallsFor(BOARD_B).filter((call) => call.removed.includes(KEY_B));
     expect(
       removedCalls.length,
-      "旧正式保存回执仍对已被另一标签页更新过的草稿键发起了 removed",
-    ).toBe(0);
-    expect(books[BOARD_B].drafts[KEY_B], "服务端上更新的草稿被旧回执清掉了").toBe(tab2Text);
-    expect(books[BOARD_B].keyVersions[KEY_B], "服务端更新的草稿版本被旧回执消费/推进").toBeGreaterThan(3);
+      "旧回执没有发出删除请求：无法验证后端逐键版本守卫真的拒绝了这次删除",
+    ).toBeGreaterThan(0);
+    for (const call of removedCalls) {
+      expect(
+        call.keyVersions?.[KEY_B] ?? 0,
+        "删除请求没有带本页已知的旧版本（无法证明后端是因为版本更旧而拒绝）",
+      ).toBeLessThan(serverVersionAfterTab2 as number);
+    }
+    expect(
+      tab1.draftRemovalStateFor(KEY_B).status,
+      "后端拒绝这次删除后，界面不能显示成已删除 / 无事可做",
+    ).toBe("error");
   });
 });
 
@@ -562,5 +581,265 @@ describe("#46 第八轮 · 第 3 项：撤销正式编辑时保留对应草稿",
     expect(store.drafts[KEY_B], "正常完成后内存里的草稿没有清掉").toBeUndefined();
     expect(readCardLocalDraft(CARD_B), "正常完成后本机恢复副本没有清掉").toBeNull();
     expect(books[BOARD_B].drafts[KEY_B], "正常完成后服务端上的旧草稿没有清掉").toBeUndefined();
+  });
+});
+
+
+/**
+ * #46 第九轮：删除跨标签页草稿同步标记（共享 localStorage 的写 / 读 / 清除判定）。
+ *
+ * 旧实现每次草稿同步成功都把「逐键版本 + 正文」写进共享标记，清理旧草稿前先读它判断
+ * 「另一标签页是否已经同步过更新的版本」。该机制已整体移除：
+ * - 初始化草稿存储时只幂等清掉遗留的 `qio.draft.sync-marker.v1`（不动其它任何键）；
+ * - 同步成功不再写标记；
+ * - 「不误删另一标签页的新恢复副本」改由本机记录身份重读（expectLocal）+ 后端逐键版本守卫承担。
+ *
+ * 断言只看 store 公开状态、本机记录与真实 api.saveDrafts / saveBoardState 调用参数。
+ */
+describe("#46 第九轮 · 移除跨标签页草稿标记并清理旧键", () => {
+  const MARKER_KEY = "qio.draft.sync-marker.v1";
+
+  it("4A 初始化草稿存储时只清旧标记键：旧标记消失，真实未同步草稿与正式内容都保留", async () => {
+    const cardB = textCard(CARD_B, "B 的正式正文");
+    seedBoard(BOARD_B, [cardB], { drafts: { [KEY_B]: "B 的旧服务器草稿" }, rev: 3, keyVersions: { [KEY_B]: 3 } });
+    // 旧标记：带一段可识别的旧正文（第九轮以前写下的共享数据）
+    const markerText = "旧标记里的可识别旧正文-不得恢复";
+    localStorage.setItem(MARKER_KEY, JSON.stringify({ [BOARD_B]: { [KEY_B]: { version: 4, text: markerText } } }));
+    // 真实未同步草稿：只在本机的恢复副本（不能因为清旧键被删 / 被覆盖 / 被旧标记正文顶掉）
+    const localText = "真实未同步草稿（本机恢复记录）";
+    const localWritten = writeCardLocalDraft(CARD_B, localText, { boardId: BOARD_B, seq: 1 });
+    expect(localWritten.ok, "前提：真实未同步草稿没有写进本机").toBe(true);
+    const localVersion = readCardLocalDraft(CARD_B)?.version;
+    // 一个无关的草稿键：清旧键只能动标记本身
+    localStorage.setItem("qio.draft.chat.topic-a", JSON.stringify({ text: "聊天草稿要保留", updatedAt: 1, seq: 1 }));
+
+    // 初始化 store = 初始化草稿存储：旧标记必须被清掉
+    const fresh = createTab();
+    expect(localStorage.getItem(MARKER_KEY), "初始化后旧版跨标签页标记键仍然存在").toBeNull();
+    // 只动这一个键：真实未同步草稿与无关草稿都还在
+    expect(readCardLocalDraft(CARD_B)?.text, "初始化清旧键时把真实未同步草稿删了").toBe(localText);
+    expect(readCardLocalDraft(CARD_B)?.version, "初始化清旧键时推进/覆盖了真实未同步草稿的版本").toBe(localVersion);
+    expect(
+      localStorage.getItem("qio.draft.chat.topic-a") ?? "",
+      "初始化清旧键时误删/改动了无关草稿键",
+    ).toContain("聊天草稿要保留");
+
+    // 正式内容与本机恢复记录按原样恢复；旧标记里的正文一个字都不许出现
+    await fresh.selectBoard(BOARD_B);
+    expect(fresh.drafts[KEY_B], "真实未同步草稿没有被恢复").toBe(localText);
+    expect(Object.values(fresh.drafts).join("|"), "旧标记里的正文被当成草稿恢复了").not.toContain(markerText);
+    expect(
+      fresh.board?.cards.find((card) => card.id === CARD_B)?.content,
+      "正式内容被旧标记改写了",
+    ).toBe("B 的正式正文");
+    expect(books[BOARD_B].drafts[KEY_B], "初始化/恢复不得改动服务器上的正式草稿事实").toBe("B 的旧服务器草稿");
+  });
+
+  it("4B 草稿同步成功后不再写入旧标记键", async () => {
+    const cardB = textCard(CARD_B, "B 的正式正文");
+    seedBoard(BOARD_B, [cardB], { drafts: {}, rev: 3, keyVersions: {} });
+    const syncedText = "同步到服务端的草稿";
+
+    store = createTab();
+    await store.selectBoard(BOARD_B);
+    store.setCardDraftInput(CARD_B, { text: syncedText });
+    await store.flushDrafts();
+    await settle();
+    expect(books[BOARD_B].drafts[KEY_B], "前提：草稿没有同步到服务端").toBe(syncedText);
+    expect(localStorage.getItem(MARKER_KEY), "草稿同步成功后仍在写入旧版跨标签页标记键").toBeNull();
+
+    // 同一窗口再同步一版也不能写
+    store.setCardDraftInput(CARD_B, { text: syncedText + "（第二版）" });
+    await store.flushDrafts();
+    await settle();
+    expect(books[BOARD_B].drafts[KEY_B]).toBe(syncedText + "（第二版）");
+    expect(localStorage.getItem(MARKER_KEY), "第二次同步又写入了旧标记键").toBeNull();
+  });
+
+  it("4C 同一窗口内旧保存响应延迟时重新编辑同一张卡：旧回执不得清掉新草稿", async () => {
+    const cardB = textCard(CARD_B, "B 的旧正文");
+    seedBoard(BOARD_B, [cardB], { drafts: { [KEY_B]: "B 的旧服务器草稿" }, rev: 3, keyVersions: { [KEY_B]: 3 } });
+
+    store = createTab();
+    await store.selectBoard(BOARD_B);
+    store.setCardDraftInput(CARD_B, { text: "完成编辑前的第一版草稿" });
+    store.commit(updateCard(store.board!, CARD_B, { content: "正式编辑后的文字" }), "完成编辑");
+    store.requestDraftClear(KEY_B);
+
+    const putFlight = deferred<never>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(() => putFlight.promise as never);
+    const saving = store.saveNow();
+    await settle();
+    expect(vi.mocked(api.saveBoardState).mock.calls.length, "前提：正式保存已发出").toBe(1);
+
+    // 回执到达前用户又编辑同一张卡（同一窗口内的迟到回执）
+    const retyped = "回执到达前重新编辑的新草稿";
+    store.setCardDraftInput(CARD_B, { text: retyped });
+
+    putFlight.resolve({
+      ok: true,
+      seq: 4,
+      savedAt: NOW,
+      state: boardState(BOARD_B, [{ ...cardB, content: "正式编辑后的文字" }], 4),
+    } as never);
+    await saving;
+    await settle();
+
+    expect(store.drafts[KEY_B], "迟到的旧保存回执清掉了重新编辑的新草稿").toBe(retyped);
+    expect(readCardLocalDraft(CARD_B)?.text, "本机恢复副本被旧回执清掉了").toBe(retyped);
+    expect(store.pendingDraftClearKeys, "又编辑了新版本，旧清除登记却还在").not.toContain(KEY_B);
+    await store.flushDrafts();
+    await settle();
+    const removedCalls = draftCallsFor(BOARD_B).filter((call) => call.removed.includes(KEY_B));
+    expect(removedCalls.length, "重新编辑后仍对同一草稿键发起了 removed").toBe(0);
+  });
+
+  it("4D 本机清除写入失败后重试：旧草稿保留，补写 cleared 依据后才完成清除", async () => {
+    const cardB = textCard(CARD_B, "B 的旧正文");
+    seedBoard(BOARD_B, [cardB], { drafts: { [KEY_B]: "B 的旧服务器草稿" }, rev: 3, keyVersions: { [KEY_B]: 3 } });
+    const draftText = "完成编辑前还没同步的草稿";
+
+    store = createTab();
+    await store.selectBoard(BOARD_B);
+    store.setCardDraftInput(CARD_B, { text: draftText });
+    store.commit(updateCard(store.board!, CARD_B, { content: "正式编辑后的文字" }), "完成编辑");
+    store.requestDraftClear(KEY_B);
+    expect(readCardLocalDraft(CARD_B)?.kind, "前提：本机应有一条编辑草稿").toBe("draft");
+
+    // 让「写 cleared 依据」这一步真的失败（本机存储写入失败）
+    const cardLocalKey = cardLocalDraftStorageKey(CARD_B);
+    const originalSetItem = Storage.prototype.setItem;
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation((key: string, value: string) => {
+      if (key === cardLocalKey) throw new DOMException("模拟本机存储写入失败", "QuotaExceededError");
+      originalSetItem.call(localStorage, key, value);
+    });
+    try {
+      await store.saveNow();
+      await settle();
+    } finally {
+      setItemSpy.mockRestore();
+    }
+
+    // 本机那一步失败必须是可见失败，不能把磁盘上仍是草稿的记录当作已清掉
+    expect(readCardLocalDraft(CARD_B)?.kind, "本机清除写失败后磁盘上的编辑草稿不见了").toBe("draft");
+    expect(readCardLocalDraft(CARD_B)?.text, "本机清除写失败后旧草稿正文丢了").toBe(draftText);
+    expect(store.draftLocalStates[KEY_B]?.ok, "本机清除写失败没有如实显示").toBe(false);
+    expect(store.draftRemovalStateFor(KEY_B).status, "本机清除写失败后界面不能显示成等待服务器确认").toBe("error");
+
+    // 用户重试：先补写 cleared 依据（幂等），再由服务器确认清除
+    await store.retryDraftSave(KEY_B);
+    await settle();
+    const afterRetry = readCardLocalDraft(CARD_B);
+    expect(
+      afterRetry === null || afterRetry.kind === "cleared",
+      "重试没有补写 cleared 依据（重开后会当成编辑草稿把旧正文恢复出来）",
+    ).toBe(true);
+    expect(afterRetry?.text ?? "", "重试后磁盘上还留着旧草稿正文").toBe("");
+    expect(store.draftLocalStates[KEY_B]?.ok, "重试补写成功后本机状态仍是失败").toBe(true);
+    expect(store.draftRemovalStateFor(KEY_B).status, "服务器确认清除后删除状态没有收敛").not.toBe("error");
+    expect(books[BOARD_B].drafts[KEY_B], "重试后服务端上的旧草稿没有被清除").toBeUndefined();
+  });
+
+  it("4E 正式保存等待期间另一张卡写入草稿：旧回执只处理自己的键，另一张卡的草稿保留", async () => {
+    const cardB = textCard(CARD_B, "B 的旧正文");
+    const cardOther = textCard(CARD_OTHER, "另一张卡");
+    seedBoard(BOARD_B, [cardB, cardOther], {
+      drafts: { [KEY_B]: "B 的旧服务器草稿" },
+      rev: 3,
+      keyVersions: { [KEY_B]: 3 },
+    });
+
+    store = createTab();
+    await store.selectBoard(BOARD_B);
+    store.setCardDraftInput(CARD_B, { text: "B 完成编辑前的草稿" });
+    store.commit(updateCard(store.board!, CARD_B, { content: "正式编辑后的文字" }), "完成编辑");
+    store.requestDraftClear(KEY_B);
+    const putFlight = deferred<never>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(() => putFlight.promise as never);
+    const saving = store.saveNow();
+    await settle();
+    expect(vi.mocked(api.saveBoardState).mock.calls.length, "前提：正式保存已发出").toBe(1);
+
+    // 另一个标签页同时为另一张卡写入未同步草稿
+    const tab2 = createTab();
+    await tab2.selectBoard(BOARD_B);
+    const otherText = "另一张卡还没同步的草稿";
+    tab2.setCardDraftInput(CARD_OTHER, { text: otherText });
+    expect(readCardLocalDraft(CARD_OTHER)?.text, "前提：另一张卡的本机恢复副本没有写下").toBe(otherText);
+
+    putFlight.resolve({
+      ok: true,
+      seq: 4,
+      savedAt: NOW,
+      state: boardState(BOARD_B, [{ ...cardB, content: "正式编辑后的文字" }, cardOther], 4),
+    } as never);
+    await saving;
+    await settle();
+
+    expect(readCardLocalDraft(CARD_OTHER)?.text, "旧回执把另一张卡的本机恢复副本清掉了").toBe(otherText);
+    expect(readCardLocalDraft(CARD_OTHER)?.kind, "另一张卡的草稿被写成了「待清除」依据").toBe("draft");
+    expect(
+      draftCallsFor(BOARD_B).filter((call) => call.removed.includes(KEY_OTHER)).length,
+      "旧回执对另一张卡的草稿键发起了 removed",
+    ).toBe(0);
+    expect(store.drafts[KEY_OTHER], "当前 store 出现了另一张卡的草稿（串板）").toBeUndefined();
+  });
+
+  it("4F 正式保存等待期间切板：回执按原板清理，不碰当前板面的草稿与正文", async () => {
+    const cardA = textCard(CARD_A, "A 的正式正文");
+    const cardB = textCard(CARD_B, "B 的旧正文");
+    seedBoard(BOARD_A, [cardA], { drafts: {}, rev: 3, keyVersions: {} });
+    seedBoard(BOARD_B, [cardB], { drafts: { [KEY_B]: "B 的旧服务器草稿" }, rev: 3, keyVersions: { [KEY_B]: 3 } });
+
+    store = createTab();
+    await store.selectBoard(BOARD_B);
+    store.setCardDraftInput(CARD_B, { text: "B 完成编辑前的草稿" });
+    store.commit(updateCard(store.board!, CARD_B, { content: "正式编辑后的文字" }), "完成编辑");
+    store.requestDraftClear(KEY_B);
+    const putFlight = deferred<never>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(() => putFlight.promise as never);
+    const saving = store.saveNow();
+    await settle();
+
+    // 保存还在等待时就切到 A，并在 A 上继续写草稿
+    await store.selectBoard(BOARD_A);
+    const textA = "A 的草稿";
+    store.setCardDraftInput(CARD_A, { text: textA });
+
+    putFlight.resolve({
+      ok: true,
+      seq: 4,
+      savedAt: NOW,
+      state: boardState(BOARD_B, [{ ...cardB, content: "正式编辑后的文字" }], 4),
+    } as never);
+    await saving;
+    await settle();
+
+    expect(store.boardId, "回执把当前板面切走了").toBe(BOARD_A);
+    expect(store.drafts[KEY_A], "B 的旧保存回执清掉了 A 的草稿").toBe(textA);
+    expect(readCardLocalDraft(CARD_A)?.text, "B 的旧保存回执改动了 A 的本机恢复副本").toBe(textA);
+    expect(store.board?.cards.find((card) => card.id === CARD_A)?.content, "B 的回执改写了 A 的正文").toBe("A 的正式正文");
+    expect(readCardLocalDraft(CARD_B)?.kind, "B 的正式编辑落库后，B 的本机草稿依据没有按原板清理").toBe("cleared");
+    expect(
+      draftCallsFor(BOARD_A).filter((call) => call.removed.includes(KEY_A)).length,
+      "B 的旧保存回执对 A 的草稿键发起了 removed",
+    ).toBe(0);
+  });
+
+  it("4G 退出重开后恢复未同步草稿（不再依赖旧标记）", async () => {
+    const cardB = textCard(CARD_B, "B 的正式正文");
+    seedBoard(BOARD_B, [cardB], { drafts: {}, rev: 3, keyVersions: {} });
+    const text = "关闭前还没同步的草稿";
+
+    store = createTab();
+    await store.selectBoard(BOARD_B);
+    store.setCardDraftInput(CARD_B, { text });
+    expect(readCardLocalDraft(CARD_B)?.text, "前提：本机恢复副本没有写下").toBe(text);
+
+    // 退出重开：新的 pinia / store，同一 localStorage
+    const reopened = createTab();
+    await reopened.selectBoard(BOARD_B);
+    expect(reopened.drafts[KEY_B], "重开后恢复不到未同步草稿").toBe(text);
+    expect(reopened.hasCardDraft(CARD_B), "重开后这张卡没有被当成有草稿").toBe(true);
   });
 });

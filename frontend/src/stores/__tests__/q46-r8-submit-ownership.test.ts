@@ -24,6 +24,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { useInteractiveStore } from "../interactive";
 import * as api from "../../services/interactive";
+import * as approval from "../../interactive/approval";
 import type { BoardState, SubmissionResult } from "../../interactive/types";
 
 vi.mock("../../services/interactive", () => ({
@@ -43,6 +44,15 @@ vi.mock("../../services/interactive", () => ({
   fetchIntentViews: vi.fn(),
   createIntents: vi.fn(),
 }));
+
+/**
+ * 批次记录换成可观测的包装（其它仍是真实现）：跨板刷新会把「别的板面的新任务」
+ * 记进原板面的提交批次 —— 这里用它锁死「批次只归发起提交的原板」。
+ */
+vi.mock("../../interactive/approval", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../interactive/approval")>();
+  return { ...actual, recordIntentBatch: vi.fn(actual.recordIntentBatch) };
+});
 
 const NOW = "2026-11-16T00:00:00Z";
 const BOARD_A = "board_a";
@@ -203,6 +213,46 @@ function boardReadCounts() {
       vi.mocked(api.fetchIntents).mock.calls.filter((call) => String(call[0]) === id).length,
     fetchUnderstanding: (id: string) =>
       vi.mocked(api.fetchUnderstanding).mock.calls.filter((call) => String(call[0]) === id).length,
+  };
+}
+
+/** 一件等待审批的任务（用于「别的板面的新任务被记进 B 的提交批次」这个归属断言）。 */
+function pendingIntent(id: string, boardId: string = BOARD_A) {
+  return {
+    id,
+    boardId,
+    submissionId: null,
+    title: "任务-" + id,
+    summary: "",
+    status: "pending",
+    preview: { kind: "task" },
+    impact: { materials: [], consequence: "" },
+    dependsOn: [],
+    conflictsWith: [],
+    conflictKey: "",
+    materialRefs: [],
+    progress: { done: 0, total: 0, text: "" },
+    reason: "",
+    demo: true,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+}
+
+/** 两块板各自「整板 / 可见范围 / 任务清单」的请求次数快照（用来锁死「没对别的板面发读取」）。 */
+function readCounts() {
+  const counts = boardReadCounts();
+  return {
+    [BOARD_A]: {
+      board: counts.fetchBoardState(BOARD_A),
+      visible: counts.fetchVisibleRange(BOARD_A),
+      intents: counts.fetchIntents(BOARD_A),
+    },
+    [BOARD_B]: {
+      board: counts.fetchBoardState(BOARD_B),
+      visible: counts.fetchVisibleRange(BOARD_B),
+      intents: counts.fetchIntents(BOARD_B),
+    },
   };
 }
 
@@ -627,5 +677,214 @@ describe("一.1 提交归属于发起时的板面", () => {
     expect(String(store.submitError ?? ""), "B 上没有「结果未知、不要重复提交」的说明").toContain(
       "提交结果未知",
     );
+  });
+});
+
+/**
+ * #46（第九轮，第 3 项）：**提交后回读只归发起板**。
+ *
+ * 反例（基线 645e5a1f）：refreshAfterSubmit() 用全局 boardId / 全局 submitRefreshState：
+ * 在 B 提交、切到已经加载好的 A 之后，B 的提交后回读要么继续读 A（整板 / 可见范围 / 任务清单），
+ * 要么把失败写进 A 的刷新状态；回到 B 又看不到自己的失败，或者永远停在 pending。
+ *
+ * 本块锁死：
+ * 1. B 的回读在 A 显示时失败 → A 保持 idle（错误只回到 B，回 B 可见）；
+ * 2. B 的回读在 A 显示时成功 → A 不被刷新、也不记 B 的批次，回 B 后收敛为 idle；
+ * 3. B→A→B 后新的刷新成功，旧刷新迟到的失败不得覆盖新结果；
+ * 4. 在 B 点「重试刷新」后立刻切 A：不在 A 写状态、不对 A 发任何读取。
+ */
+describe("一.1b 提交后回读只归发起板（第九轮）", () => {
+  /** 在 B 点完成一次提交（POST 成功），并让提交后的整板回读挂起。 */
+  async function submitOnBWithRefreshInFlight() {
+    await openABothLoaded();
+    store.commit(editCard(store, "card_b", B_EDITED_TEXT), "改正文");
+    vi.mocked(api.submitBoard).mockResolvedValue(succeededResult(B_SAVED_SEQ) as never);
+    const refreshRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => refreshRead.promise as never);
+    const submitted = store.submit();
+    await settle();
+    return { refreshRead, submitted };
+  }
+
+  it("B 的提交后回读在 A 打开时失败：A 保持 idle，错误只回到 B", async () => {
+    const { refreshRead, submitted } = await submitOnBWithRefreshInFlight();
+    expect(store.boardId, "前提：B 的提交已经发出").toBe(BOARD_B);
+    expect(store.submitStatus, "前提：B 的提交请求已经成功").toBe("succeeded");
+    expect(store.submitRefreshState, "前提：B 的提交后刷新在飞").toBe("pending");
+
+    // 回读在飞期间切到已经加载好的 A
+    await store.selectBoard(BOARD_A);
+    await settle();
+    const atA = readCounts();
+
+    // B 的回读这时失败
+    refreshRead.reject(apiError(502, "B 提交后回读失败：服务端 502"));
+    await submitted;
+    await settle();
+
+    expect(store.boardId, "B 的提交后回读把当前板面切走了").toBe(BOARD_A);
+    expect(store.submitRefreshState, "B 的回读失败写进了 A 的刷新状态").toBe("idle");
+    expect(store.submitRefreshError, "B 的回读失败原因显示在 A 上").toBeNull();
+    expect(readCounts(), "B 的提交后回读对 A 发起了读取").toEqual(atA);
+    expect(submitCalls(), "提交后回读失败触发了重复提交").toHaveLength(1);
+
+    // 回到 B：失败属于 B
+    await store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.submitRefreshState, "切回 B 看不到自己的刷新失败").toBe("error");
+    expect(String(store.submitRefreshError ?? ""), "B 上看不到回读的真实失败原因").toContain("502");
+  });
+
+  it("B 的提交后回读在 A 打开时成功：A 不被刷新也不再记 B 的批次，回 B 后收敛为 idle", async () => {
+    // A 的清单里有一件新任务：旧实现会在 A 上刷新清单并把它记进 B 的提交批次
+    vi.mocked(api.fetchIntents).mockImplementation((async (id: string) => ({
+      intents: String(id) === BOARD_A ? [pendingIntent("intent_a_1")] : [],
+      conflicts: [],
+      batchAvailable: false,
+      recovery: { paused: [] },
+    })) as never);
+    const { refreshRead, submitted } = await submitOnBWithRefreshInFlight();
+    expect(store.submitRefreshState, "前提：B 的提交后刷新在飞").toBe("pending");
+
+    await store.selectBoard(BOARD_A);
+    await settle();
+    const atA = readCounts();
+    vi.mocked(approval.recordIntentBatch).mockClear();
+
+    // B 的回读这时成功返回（内容属于 B）
+    refreshRead.resolve(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ)) as never,
+    );
+    await submitted;
+    await settle();
+
+    expect(store.boardId, "B 的提交后回读把当前板面切走了").toBe(BOARD_A);
+    expect(store.submitRefreshState, "B 的成功回读写进了 A 的刷新状态").toBe("idle");
+    expect(readCounts(), "B 的提交后回读继续对 A 发起了读取").toEqual(atA);
+    expect(
+      vi.mocked(approval.recordIntentBatch).mock.calls,
+      "A 上新出现的任务被记进了 B 的提交批次（批次归属串板）",
+    ).toHaveLength(0);
+    expect(submitCalls(), "提交后回读触发了重复提交").toHaveLength(1);
+
+    // 回到 B 时服务器事实已经是保存/提交后的版本（seq 8）：延后的刷新读到的就是它
+    vi.mocked(api.fetchBoardState).mockResolvedValue(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ)) as never,
+    );
+    // 回到 B：延后的刷新按原板面收尾 → idle
+    await store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.submitRefreshState, "回 B 后延后的提交后刷新没有收尾（一直 pending）").toBe("idle");
+    expect(store.submitRefreshError).toBeNull();
+    expect(store.board?.boardId).toBe(BOARD_B);
+  });
+
+  it("B→A→B 之后新刷新成功：旧刷新迟到的失败不得覆盖新结果", async () => {
+    const { refreshRead, submitted } = await submitOnBWithRefreshInFlight();
+    expect(store.submitRefreshState, "前提：B 的旧提交后刷新在飞").toBe("pending");
+
+    // 旧刷新还在飞时切走再切回
+    await store.selectBoard(BOARD_A);
+    await settle();
+    await store.selectBoard(BOARD_B);
+    await settle();
+
+    // 回到 B 后用户点「重试刷新」：新的一次刷新读到提交后的新版本（seq 9）
+    vi.mocked(api.fetchBoardState).mockResolvedValueOnce(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ + 1)) as never,
+    );
+    const retried = await store.retrySubmitRefresh();
+    await settle();
+    expect(retried.ok, "新的刷新没有成功").toBe(true);
+    expect(store.submitRefreshState, "新刷新成功后状态不是 idle").toBe("idle");
+    expect(store.submitRefreshError).toBeNull();
+
+    // 旧刷新这时才失败返回：不得覆盖新一次的结果
+    refreshRead.reject(apiError(502, "旧刷新迟到失败：服务端 502"));
+    await submitted;
+    await settle();
+
+    expect(store.submitRefreshState, "旧代次的迟到失败覆盖了更新一次的成功结果").toBe("idle");
+    expect(store.submitRefreshError, "旧代次的迟到失败给新结果写入了错误").toBeNull();
+    expect(submitCalls(), "旧刷新失败触发了重复提交").toHaveLength(1);
+  });
+
+  it("在 B 点重试刷新后立刻切到 A：不在 A 写状态、不对 A 发读取", async () => {
+    await openABothLoaded();
+    store.commit(editCard(store, "card_b", B_EDITED_TEXT), "改正文");
+    vi.mocked(api.submitBoard).mockResolvedValue(succeededResult(B_SAVED_SEQ) as never);
+
+    // 第一次提交后的回读失败 → B 记录「刷新失败」并冻结了原板刷新上下文
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(async () => {
+      throw apiError(502, "B 提交后回读失败：服务端 502");
+    });
+    await store.submit();
+    await settle();
+    expect(store.boardId).toBe(BOARD_B);
+    expect(store.submitRefreshState, "前提：B 的提交后刷新失败").toBe("error");
+
+    // 点「重试刷新」：这次回读挂起，随后立刻切到 A
+    const retryRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => retryRead.promise as never);
+    const retrying = store.retrySubmitRefresh();
+    await settle();
+    await store.selectBoard(BOARD_A);
+    await settle();
+    const atA = readCounts();
+
+    retryRead.resolve(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ)) as never,
+    );
+    const retried = await retrying;
+    await settle();
+
+    expect(store.boardId, "B 的重试刷新把当前板面切走了").toBe(BOARD_A);
+    expect(retried.ok, "重试刷新在切板后仍报告成功").toBe(false);
+    expect(store.submitRefreshState, "B 的重试刷新写进了 A 的刷新状态").toBe("idle");
+    expect(store.submitRefreshError, "B 的重试刷新错误显示在 A 上").toBeNull();
+    expect(readCounts(), "B 的重试刷新继续对 A 发起了读取").toEqual(atA);
+    expect(submitCalls(), "重试刷新触发了重复提交").toHaveLength(1);
+
+    // 回到 B 时服务器事实已经是保存/提交后的版本（seq 8）
+    vi.mocked(api.fetchBoardState).mockResolvedValue(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ)) as never,
+    );
+    // 回到 B：延后的刷新按原板面收尾
+    await store.selectBoard(BOARD_B);
+    await settle();
+    expect(store.submitRefreshState, "回 B 后延后的重试刷新没有收尾").toBe("idle");
+    expect(store.submitRefreshError).toBeNull();
+  });
+
+  it("B 提交后回读只合并了旧草稿（未采纳板面事实）：不得置 idle，重试拿到新版本才收敛", async () => {
+    await openABothLoaded();
+    store.commit(editCard(store, "card_b", B_EDITED_TEXT), "改正文");
+    vi.mocked(api.submitBoard).mockResolvedValue(succeededResult(B_SAVED_SEQ) as never);
+
+    // 保存把 B 推到 seq 8；提交后的整板回读只返回旧版本 seq 7：
+    // refreshBoardFromServer 会返回 true，但只合并草稿、没有采纳板面事实 —— 本次刷新没有完成。
+    await store.submit();
+    await settle();
+
+    expect(store.boardId).toBe(BOARD_B);
+    expect(store.submitStatus, "前提：提交请求已经成功").toBe("succeeded");
+    expect(
+      store.submitRefreshState,
+      "回读只合并了旧草稿（没有采纳板面事实），刷新却被当成成功（idle）",
+    ).toBe("error");
+    expect(String(store.submitRefreshError ?? ""), "没有说明「这次回读没有被采纳」").toContain(
+      "没有被采纳",
+    );
+
+    // 重试：服务器给出提交后的新版本 seq 9 → 真正采纳 → 收敛为 idle
+    vi.mocked(api.fetchBoardState).mockResolvedValueOnce(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ + 1)) as never,
+    );
+    const retried = await store.retrySubmitRefresh();
+    await settle();
+    expect(retried.ok, "重试读到提交后的新版本却没有成功").toBe(true);
+    expect(store.submitRefreshState, "重试成功后状态不是 idle").toBe("idle");
+    expect(store.submitRefreshError).toBeNull();
+    expect(submitCalls(), "刷新/重试触发了重复提交").toHaveLength(1);
   });
 });

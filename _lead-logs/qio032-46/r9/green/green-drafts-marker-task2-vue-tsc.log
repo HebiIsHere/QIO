@@ -1,0 +1,4 @@
+﻿# Task 2 cwd: D:\qio-dev\q46-r9\frontend
+command: npx vue-tsc --noEmit
+exit code: 0
+(no output = 类型检查通过)

@@ -281,3 +281,36 @@ describe("一次更新操作使用自己的代理配置", () => {
     expect(mocks.check).toHaveBeenCalledWith({ proxy: "http://127.0.0.1:7890" });
   });
 });
+
+/**
+ * 更新重启交接（桌面全机单实例的必要一环）：安装器/插件重启应用时，旧进程可能还没退完，
+ * 新进程会看到单实例锁仍被占。前端必须在请求进程重启**之前**把「这是更新重启」登记给壳，
+ * 新进程据此等待旧进程释放锁，而不是把自己当成「重复启动」弹提示后退出。
+ *
+ * 断言的是**真实 service 实现的调用顺序**（mock 的是 Tauri 插件边界，不是我们自己的函数）。
+ */
+describe("更新重启交接：先登记 qio_arm_relaunch，再请求进程重启", () => {
+  it("relaunch() 先 invoke qio_arm_relaunch，再调用 plugin-process 的 relaunch", async () => {
+    const order: string[] = [];
+    routeCommands(order, { qio_arm_relaunch: () => true });
+    mocks.relaunch.mockImplementation(async () => {
+      order.push("process.relaunch");
+    });
+
+    const api = await tauriUpdaterApi();
+    await api.relaunch();
+
+    expect(order).toEqual(["qio_arm_relaunch", "process.relaunch"]);
+    expect(mocks.invoke).toHaveBeenCalledWith("qio_arm_relaunch");
+  });
+
+  it("登记失败不阻断重启（新实例退回重复启动兜底，不把用户卡在旧版本）", async () => {
+    mocks.invoke.mockRejectedValue(new Error("command qio_arm_relaunch not found"));
+    mocks.relaunch.mockResolvedValue(undefined);
+
+    const api = await tauriUpdaterApi();
+    await api.relaunch();
+
+    expect(mocks.relaunch).toHaveBeenCalledTimes(1);
+  });
+});

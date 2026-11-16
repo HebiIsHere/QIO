@@ -1,0 +1,20 @@
+﻿
+ RUN  v4.1.10 D:/qio-dev/q46-r9/frontend
+
+ ✓ src/stores/__tests__/q46-r8-submit-ownership.test.ts (10 tests) 7387ms
+     ✓ B 保存后在 A 上放行：提交只发往 B，版本用 B 本次保存确认的 8，A 收不到任何提交  746ms
+     ✓ B 保存失败：不发出任何提交，失败原因 / 候选 / 重试入口留在 B，A 不受影响  783ms
+     ✓ B 等待影响确认：本次不提交；切回 B 确认后只提交 B  737ms
+     ✓ B 的提交回执在 A 打开时才到：只更新 B（提交后读取 / 任务刷新不碰 A）  714ms
+     ✓ 后端已受理但浏览器没收到响应：查证只针对 B、沿用同一请求身份，重试不重复受理  796ms
+     ✓ B 的提交后回读在 A 打开时失败：A 保持 idle，错误只回到 B  711ms
+     ✓ B 的提交后回读在 A 打开时成功：A 不被刷新也不再记 B 的批次，回 B 后收敛为 idle  755ms
+     ✓ B→A→B 之后新刷新成功：旧刷新迟到的失败不得覆盖新结果  714ms
+     ✓ 在 B 点重试刷新后立刻切到 A：不在 A 写状态、不对 A 发读取  707ms
+     ✓ B 提交后回读只合并了旧草稿（未采纳板面事实）：不得置 idle，重试拿到新版本才收敛  720ms
+
+ Test Files  1 passed (1)
+      Tests  10 passed (10)
+   Start at  12:10:17
+   Duration  13.76s (transform 1.53s, setup 33ms, import 2.11s, tests 7.39s, environment 3.81s)
+
