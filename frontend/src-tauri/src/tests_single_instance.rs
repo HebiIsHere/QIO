@@ -3,9 +3,10 @@
 //! 为什么必须是跨进程：单实例的全部语义都在「两个进程同时存在」时才成立 ——
 //! 同一个进程里 CreateMutexW 会自我兼容（递归持有/ALREADY_EXISTS），测不出真实行为。
 //!
-//! 机制：qio.exe 在 main() 取锁分支之后带 QIO_INSTANCE_PROBE 探针（仅测试用）：
+//! 机制：qio.exe 在 main() 取锁分支之后带 QIO_INSTANCE_PROBE 探针（仅测试构建可用）：
 //! 只走锁/激活/交接逻辑，打印一行 JSON 后退出，不初始化日志、不碰数据目录、不建窗口、
-//! 不拉后端。测试用 CARGO_BIN_EXE_qio 拉起真实二进制。
+//! 不拉后端。测试用 CARGO_BIN_EXE_qio 拉起真实二进制（debug 构建，debug_assertions=true）；
+//! release/安装版按设计**恒忽略** QIO_INSTANCE_PROBE/QIO_INSTANCE_PROBE_SUFFIX（r10）。
 //!
 //! 覆盖（计划 Task 1 的 TDD 证据）：
 //! 1. 首个进程 primary；
@@ -13,7 +14,8 @@
 //! 3. 更新重启交接：旧实例置位 handoff 后延迟退出 → 新实例等待（不是直接判重复）后成为 primary。
 //!
 //! 隔离：每个用例用 QIO_INSTANCE_PROBE_SUFFIX 生成**独立锁名**（同名对象跨用例会互相抢锁，
-//! 让测试自己变成竞态源）。不同 Windows 账号/会话的互斥在本机单会话里无法制造，记 UNVERIFIED。
+//! 让测试自己变成竞态源）；后缀只在测试构建生效（见 single_instance::resolve_suffix）。
+//! 不同 Windows 账号/会话的互斥在本机单会话里无法制造，记 UNVERIFIED。
 
 #![cfg(windows)]
 

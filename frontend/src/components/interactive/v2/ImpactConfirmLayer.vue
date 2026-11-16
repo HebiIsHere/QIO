@@ -301,29 +301,41 @@ async function retrySave(): Promise<void> {
   }
 }
 
-/** 取消已经生效、但撤回还没被服务器事实确认：重新核对一次（只读，不保存）。 */
+/**
+ * 取消已经生效、但撤回还没被服务器事实确认：重新核对一次（只读，不保存）。
+ *
+ * #46（第十轮，Task 3）：这次「重新核对」必须记住它属于**哪块板面、哪一次撤回操作** ——
+ * 结果回来时用户可能已经切到 A，或同板又开始了新的撤回：
+ * - 结果只写回点击时的 ownerBoardId：A 上不显示 B 的提示，切回 B 才显示；
+ * - 同一次撤回已被新的撤回替换（opSeq 不同）时丢弃旧结果，不覆盖新操作的提示；
+ * - 以 store 的服务器事实为准：同一次撤回 active=false（已被同板采纳读取确认）时，
+ *   即使这次请求返回失败也只显示已取消，绝不把已确认说回等待/失败。
+ */
 async function retryCancelRecovery(): Promise<void> {
   if (retryBusy.value) return;
   retryBusy.value = true;
+  /** 点击那一刻的板面与撤回代次就是这次核对的归属（不是结果回来时的 store 状态）。 */
+  const ownerBoardId = store.boardId;
+  const opSeq = store.cancelRecovery?.opSeq;
+  const writeOutcome = (kind: LayerOutcomeKind, text: string): void => {
+    outcome.value = { kind, title: outcomeTitle(kind), text, paused: [], boardId: ownerBoardId };
+  };
   try {
     const result = await store.retryCancelRecovery();
-    if (result.ok) {
-      outcome.value = {
-        kind: "cancelled",
-        title: outcomeTitle("cancelled"),
-        text: "已取消：这次改动没有生效，任务继续。",
-        paused: [],
-        boardId: outcomeBoardId(),
-      };
-    } else {
-      outcome.value = {
-        kind: "cancelled_unconfirmed",
-        title: outcomeTitle("cancelled_unconfirmed"),
-        text: result.error || store.cancelRecovery?.reason || "撤回还没有被服务器事实确认",
-        paused: [],
-        boardId: outcomeBoardId(),
-      };
+    const current = store.cancelRecovery;
+    // 同一次撤回已经被同板新撤回替换：旧结果不是这次操作的结论，丢弃
+    if (current && typeof opSeq === "number" && current.opSeq !== opSeq) return;
+    const confirmed = Boolean(
+      current && typeof opSeq === "number" && current.opSeq === opSeq && !current.active,
+    );
+    if (confirmed || result.ok) {
+      writeOutcome("cancelled", "已取消：这次改动没有生效，任务继续。");
+      return;
     }
+    writeOutcome(
+      "cancelled_unconfirmed",
+      result.error || current?.reason || "撤回还没有被服务器事实确认",
+    );
   } finally {
     retryBusy.value = false;
   }

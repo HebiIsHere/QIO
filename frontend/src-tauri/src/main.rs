@@ -2232,8 +2232,9 @@ fn main() {
     // 窗口 / 后端都算共享写操作）。锁是 Global 命名内核互斥（产品级 v1，与安装路径、
     // Windows 账号、登录会话、是否提权、QIO 版本无关）；进程结束（含崩溃）由内核释放。
     let instance = single_instance::acquire();
-    // 跨进程契约测试探针（仅 QIO_INSTANCE_PROBE 触发）：只走锁/激活/交接逻辑，
-    // 打一行 JSON 后退出 —— 不初始化日志、不碰数据目录、不建窗口、不拉后端。
+    // 跨进程契约测试探针（仅测试构建 + QIO_INSTANCE_PROBE 触发；release/安装版恒 false，
+    // 即使继承了测试 env 也按正式实例启动）：只走锁/激活/交接逻辑，打一行 JSON 后退出
+    // —— 不初始化日志、不碰数据目录、不建窗口、不拉后端。
     if single_instance::probe_requested() {
         single_instance::run_probe(instance);
     }

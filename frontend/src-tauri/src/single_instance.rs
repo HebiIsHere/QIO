@@ -8,7 +8,13 @@
 //!   不需要任何退出清理逻辑，强杀之后也能立刻重开。
 //!
 //! 三个对象，职责分开（名字只与**产品 + 单实例协议版本**有关，与安装路径、Windows 账号、
-//! 登录会话、是否提权、QIO 版本都无关）：
+//! 登录会话、是否提权、QIO 版本都无关）。
+//!
+//! 注意：`QIO_INSTANCE_PROBE_SUFFIX` / `QIO_INSTANCE_PROBE` 这两个**测试**环境变量
+//! 只在测试构建（`cfg!(debug_assertions)`，即 cargo test 的 CARGO_BIN_EXE_qio）生效；
+//! release/安装版即使继承了它们，也始终使用固定产品锁名、按正式实例启动
+//! （判定集中在 `test_build_env_allowed`，语义由 `resolve_suffix` / `probe_requested_when`
+//! 的显式 allowed 参数单测覆盖）。
 //!
 //! 1. 'Global\QIO.SingleInstance.v1'（互斥，全机唯一）
 //!    取锁 = 获得「本机唯一活动实例」。创建时带**显式 NULL DACL**，所以跨账号/跨提权
@@ -38,7 +44,15 @@ pub const HANDOFF_EVENT_NAME: &str = "Local\\QIO.SingleInstance.Handoff.v1";
 ///
 /// 跨进程契约测试会并发启动多个真实 qio.exe；用独立后缀让每个用例拥有自己的锁名，
 /// 否则它们会互相抢锁，测试本身变成竞态源。
+///
+/// **只在测试构建生效**：正式构建（release/安装版）即使继承了这个变量也恒用产品锁名，
+/// 判定见 `test_build_env_allowed`。
 pub const SUFFIX_ENV: &str = "QIO_INSTANCE_PROBE_SUFFIX";
+/// 跨进程契约测试探针的环境变量名。
+///
+/// 与 [`SUFFIX_ENV`] 一样**只在测试构建生效**：正式构建恒不认（`probe_requested`
+/// 在 release 下恒 false），避免 release exe 因继承测试 env 而走「打印 JSON 后退出」。
+pub const PROBE_ENV: &str = "QIO_INSTANCE_PROBE";
 /// 后启动进程打开激活事件的重试预算：主实例取锁后立刻创建事件，但两个进程可能几乎
 /// 同时到达，给一个短暂重试窗口（期间不能等太久，否则重复启动的用户要干等）。
 pub const ACTIVATE_RETRY: Duration = Duration::from_secs(2);
@@ -67,10 +81,33 @@ fn sanitize_suffix(raw: &str) -> String {
     }
 }
 
-fn suffix() -> String {
+/// 测试构建是否允许「测试环境变量」生效（后缀隔离 + 跨进程探针）。
+///
+/// 判定依据是 `debug_assertions`：`cargo test` 通过 `CARGO_BIN_EXE_qio` 拉起的是
+/// debug 构建（debug_assertions=true）；`tauri build` / NSIS 安装版是 release 构建
+/// （debug_assertions=false）。这是编译期常量，用 `cfg!` 而不是 `#[cfg]`，让两条分支
+/// 都参与类型检查 —— 不会在 release 下把符号 cfg 掉、留下「环境变量被读却没人用」的隐患。
+fn test_build_env_allowed() -> bool {
+    cfg!(debug_assertions)
+}
+
+/// 名字后缀解析（显式 allowed 参数 = 可单测的正式构建语义）。
+///
+/// * allowed=false（正式构建）→ **完全不读环境变量**，恒返回空串 → 三个对象名固定为
+///   产品名，与安装路径/账号/会话/提权/版本无关；
+/// * allowed=true（测试构建）→ 按既有 sanitize 规则读 `QIO_INSTANCE_PROBE_SUFFIX`。
+pub fn resolve_suffix(allowed: bool) -> String {
+    if !allowed {
+        return String::new();
+    }
     std::env::var(SUFFIX_ENV)
         .map(|raw| sanitize_suffix(&raw))
         .unwrap_or_default()
+}
+
+fn suffix() -> String {
+    // 唯一一处 cfg! 接入：正式构建下恒为空后缀（产品锁名）。
+    resolve_suffix(test_build_env_allowed())
 }
 
 fn name_with(base: &str, suffix: &str) -> String {
@@ -89,12 +126,25 @@ pub fn handoff_event_name() -> String {
     name_with(HANDOFF_EVENT_NAME, &suffix())
 }
 
-/// 跨进程契约测试探针是否被请求（仅 QIO_INSTANCE_PROBE 环境变量触发）。
+/// 跨进程契约测试探针是否被请求。
 ///
 /// 探针只走「锁 / 激活 / 交接」逻辑，打印一行 JSON 后退出 —— 不初始化日志、不碰数据目录、
-/// 不建窗口、不拉后端。生产启动路径上这个函数恒为 false。
+/// 不建窗口、不拉后端。
+///
+/// **只在测试构建生效**：正式构建（release/安装版）恒为 false —— 即使进程环境里继承了
+/// `QIO_INSTANCE_PROBE`，也按正式实例正常启动（写 lease/建窗口/拉后端），绝不当探针退出。
 pub fn probe_requested() -> bool {
-    std::env::var("QIO_INSTANCE_PROBE")
+    // 与 resolve_suffix 共用同一个 cfg! 依据（test_build_env_allowed）。
+    probe_requested_when(test_build_env_allowed())
+}
+
+/// 显式 allowed 的同构实现：正式构建的 false 语义由它单测覆盖
+/// （cfg! 分支本身无法在 debug 测试构建里直接运行）。
+fn probe_requested_when(allowed: bool) -> bool {
+    if !allowed {
+        return false;
+    }
+    std::env::var(PROBE_ENV)
         .map(|raw| !raw.trim().is_empty())
         .unwrap_or(false)
 }
@@ -509,7 +559,7 @@ mod win {
     /// * 'acquire'（默认）：只取锁并报告角色；
     /// * 'hold'：主实例保持存活，可选等待激活 / 置位交接 / 延迟退出（由 QIO_INSTANCE_PROBE_* 控制）。
     pub fn run_probe(instance: Acquire) -> ! {
-        let mode = std::env::var("QIO_INSTANCE_PROBE")
+        let mode = std::env::var(PROBE_ENV)
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase();
@@ -678,5 +728,78 @@ mod tests {
         // 路径/空格/反斜杠/冒号不能进入对象名
         assert_eq!(sanitize_suffix("C:\\Users\\a b"), ".CUsersab");
         assert_eq!(sanitize_suffix("x/y:z"), ".xyz");
+    }
+
+    /// 读/写进程级环境变量的用例必须串行（cargo test 默认多线程）。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn formal_build_objects_are_fixed_product_names() {
+        // 正式构建（release / 安装版）：三个对象名恒为产品名，与安装路径、Windows
+        // 账号、登录会话、是否提权、QIO 版本都无关。
+        assert_eq!(resolve_suffix(false), "");
+        assert_eq!(name_with(LOCK_NAME, &resolve_suffix(false)), LOCK_NAME);
+        assert_eq!(
+            name_with(ACTIVATE_EVENT_NAME, &resolve_suffix(false)),
+            ACTIVATE_EVENT_NAME
+        );
+        assert_eq!(
+            name_with(HANDOFF_EVENT_NAME, &resolve_suffix(false)),
+            HANDOFF_EVENT_NAME
+        );
+    }
+
+    #[test]
+    fn formal_build_ignores_suffix_env_even_when_set() {
+        let _guard = env_guard();
+        std::env::set_var(SUFFIX_ENV, "inherited-a");
+        // allowed=false（正式构建语义）：即使进程继承了 QIO_INSTANCE_PROBE_SUFFIX 也
+        // 不读 → 空后缀 / 产品锁名。release exe 继承测试 env 时必须是这个结果。
+        assert_eq!(resolve_suffix(false), "");
+        assert_eq!(name_with(LOCK_NAME, &resolve_suffix(false)), LOCK_NAME);
+        // 测试构建（cargo test 的 debug 构建）仍按既有 sanitize 规则隔离锁名，
+        // 否则跨进程契约测试会互相抢锁。
+        if test_build_env_allowed() {
+            assert_eq!(resolve_suffix(true), ".inherited-a");
+            assert_eq!(suffix(), ".inherited-a");
+        }
+        std::env::remove_var(SUFFIX_ENV);
+    }
+
+    #[test]
+    fn probe_only_requested_in_test_build() {
+        let _guard = env_guard();
+        std::env::set_var(PROBE_ENV, "hold");
+        // 显式 allowed=false = 正式构建语义：即使 QIO_INSTANCE_PROBE 有值也恒 false
+        // （release exe 不允许因为继承测试 env 而走「探针：打印 JSON 后退出」）。
+        assert!(!probe_requested_when(false));
+        // 正式构建的 probe_requested() 只有一处 cfg! 接入：必须等价于显式参数版本。
+        assert_eq!(
+            probe_requested(),
+            probe_requested_when(test_build_env_allowed())
+        );
+        if test_build_env_allowed() {
+            assert!(probe_requested());
+            assert!(probe_requested_when(true));
+        }
+        std::env::remove_var(PROBE_ENV);
+    }
+
+    #[test]
+    fn test_build_gate_is_debug_assertions() {
+        // gating 依据：debug_assertions。cargo test 的 CARGO_BIN_EXE_qio 是 debug 构建，
+        // tauri build / 安装版是 release（debug_assertions=false）。
+        // 若有人用 --release 跑 cargo test，后缀隔离与探针的前提不成立：应尽早失败，
+        // 而不是悄悄让所有用例共用产品锁名。
+        assert!(
+            test_build_env_allowed(),
+            "cargo test 必须是 debug 构建（后缀隔离与探针依赖 debug_assertions）"
+        );
     }
 }

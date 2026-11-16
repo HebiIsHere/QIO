@@ -235,6 +235,17 @@ async function armPendingImpactOnB() {
   expect(store.pendingImpact!.boardId).toBe(BOARD_B);
 }
 
+/** 前提：B 上有影响确认；撤回一次并让回读失败 → cancelRecovery 停在「等待重新核对」。 */
+async function cancelOnBWithFailedRead() {
+  await armPendingImpactOnB();
+  vi.mocked(api.fetchBoardState).mockRejectedValueOnce(apiError(502, "撤回回读失败：服务端 502"));
+  await store.cancelImpact();
+  await settle();
+  expect(store.boardId).toBe(BOARD_B);
+  expect(store.cancelRecovery?.boardId, "撤回恢复状态不属于 B").toBe(BOARD_B);
+  expect(store.cancelRecovery?.active, "前提：撤回在等待服务器确认").toBe(true);
+}
+
 describe("三.7 较早的切板请求不得覆盖较新的选择", () => {
   it("先打开 B、再打开 A：B 的旧清单请求迟到，不得把当前板面与内容改回 B", async () => {
     // 先加载 A 作为「已经加载好的较新选择」目标
@@ -452,17 +463,6 @@ describe("三.8 同板面的旧撤回回执不得结束新撤回", () => {
  * 才报成功并结束等待；否则返回可重试失败、保持 active（同时断言界面读到的等待状态）。
  */
 describe("三.8b 撤回重试只在服务器事实确认后报成功（第九轮）", () => {
-  /** 前提：B 上有影响确认；撤回一次并让回读失败 → cancelRecovery 停在「等待重新核对」。 */
-  async function cancelOnBWithFailedRead() {
-    await armPendingImpactOnB();
-    vi.mocked(api.fetchBoardState).mockRejectedValueOnce(apiError(502, "撤回回读失败：服务端 502"));
-    await store.cancelImpact();
-    await settle();
-    expect(store.boardId).toBe(BOARD_B);
-    expect(store.cancelRecovery?.boardId, "撤回恢复状态不属于 B").toBe(BOARD_B);
-    expect(store.cancelRecovery?.active, "前提：撤回在等待服务器确认").toBe(true);
-  }
-
   it("expectSeq=7 只读到 6：重试不结算；读到 7 才报成功并结束等待", async () => {
     await cancelOnBWithFailedRead();
 
@@ -584,5 +584,74 @@ describe("三.8b 撤回重试只在服务器事实确认后报成功（第九轮
     await settle();
     expect(store.cancelRecovery?.active, "第二次撤回自己的成功回读没有结算").toBe(false);
     expect(store.cancelRecovery?.reason).toBeNull();
+  });
+});
+
+/**
+ * #46（第十轮，Task 3）：**这次撤回已被同板采纳读取确认后，迟到的重试结果不得谎报失败**。
+ *
+ * 反例（基线 70e475c2）：retryCancelRecovery() 的失败分支只看「这次请求本身失败」：
+ * - 重试在飞期间，同板另一次真正被采纳的读取已经确认这次撤回（active=false）；
+ * - 重试请求这时才抛错 → 旧实现仍返回 ok:false 并写失败原因（界面据此把已确认说回等待/失败）。
+ * 正确口径：该 owner+opSeq 已被确认时，失败重试返回 ok:true；settleCancelRecovery(false)
+ * 也绝不再把已确认（active=false）的撤回重开成等待；迟到的结果只结算它自己那次 opSeq。
+ */
+describe("三.8c 撤回已被同板采纳读取确认后，迟到的重试结果不谎报失败（第十轮）", () => {
+  it("同板采纳读取已确认后，重试请求迟到失败：不重开等待且返回 ok:true", async () => {
+    await cancelOnBWithFailedRead();
+    const opSeq = store.cancelRecovery?.opSeq;
+    expect(store.cancelRecovery?.active).toBe(true);
+
+    // 重试：请求挂起
+    const retryRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => retryRead.promise as never);
+    const retried = store.retryCancelRecovery();
+    await settle();
+    expect(store.cancelRecovery?.opSeq, "前提：重试针对同一次撤回").toBe(opSeq);
+
+    // 同板另一次真正被采纳的读取先确认这次撤回（采纳版本到达撤回基线）
+    const adoptedRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => adoptedRead.promise as never);
+    const confirming = store.refreshBoardFromServer(BOARD_B);
+    await settle();
+    adoptedRead.resolve(bPayload(B_SERVER_SEQ) as never);
+    await confirming;
+    await settle();
+    expect(store.cancelRecovery?.active, "前提：同板采纳读取已确认这次撤回").toBe(false);
+    expect(store.cancelRecovery?.opSeq).toBe(opSeq);
+
+    // 重试请求这时才失败
+    retryRead.reject(apiError(503, "重试读取迟到失败：服务端 503"));
+    const result = await retried;
+    await settle();
+
+    expect(result.ok, "撤回已被同板采纳读取确认，迟到的失败重试却谎报失败").toBe(true);
+    expect(store.cancelRecovery?.active, "迟到的失败重试重新打开了已确认的撤回").toBe(false);
+    expect(store.cancelRecovery?.reason, "迟到的失败重试给已确认的撤回写了失败原因").toBeNull();
+    expect(store.cancelRecovery?.boardId).toBe(BOARD_B);
+  });
+
+  it("切板后重试结果只结算原板：不在当前板建立撤回状态", async () => {
+    await cancelOnBWithFailedRead();
+    const retryRead = deferred<never>();
+    vi.mocked(api.fetchBoardState).mockImplementationOnce(() => retryRead.promise as never);
+    const retried = store.retryCancelRecovery();
+    await settle();
+    expect(store.cancelRecovery?.active).toBe(true);
+
+    // 重试在飞时切到 A：结果回来只属于 B，A 上不得出现撤回状态
+    store.boardId = BOARD_A;
+    retryRead.resolve(bPayload(B_SERVER_SEQ) as never);
+    const result = await retried;
+    await settle();
+    expect(result.ok, "板面已经切换，重试却报告成功").toBe(false);
+    expect(store.boardId).toBe(BOARD_A);
+    expect(store.cancelRecovery, "B 的迟到重试在 A 上建立了撤回状态").toBeNull();
+
+    // 回到 B：这次撤回仍在等待，失败原因归 B
+    store.boardId = BOARD_B;
+    expect(store.cancelRecovery?.boardId).toBe(BOARD_B);
+    expect(store.cancelRecovery?.active).toBe(true);
+    expect(String(store.cancelRecovery?.reason ?? "")).toContain("板面已经切换");
   });
 });

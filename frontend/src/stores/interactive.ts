@@ -4483,8 +4483,26 @@ writeSaveResultToStashedSession(ownerBoardId, {
    * 放在 store 而不是组件里：意图只有两个来源 —— 演示入口与提交后的 QIO 回复，
    * 两条路径都经过这里，记录一次就够，不需要任何组件知道这件事。
    */
-  function recordNewIntents(before: Set<string>, batchKey: string) {
-    const fresh = intents.value.filter((item) => !before.has(item.id)).map((item) => item.id);
+  function recordNewIntents(
+    before: Set<string>,
+    batchKey: string,
+    submissionId?: string | null,
+  ) {
+    const ownerSubmissionId = typeof submissionId === "string" ? submissionId.trim() : "";
+    /** 基线非空 = 可信增量（发起提交时冻结的任务清单），空基线不拿来猜归属。 */
+    const hasTrustedBaseline = before.size > 0;
+    const fresh = intents.value
+      .filter((item) => {
+        // 没有服务端归属（走原增量口径）：演示入口、理解同步等既有调用方不变
+        if (!ownerSubmissionId) return !before.has(item.id);
+        const itemSubmissionId =
+          typeof item.submissionId === "string" ? item.submissionId.trim() : "";
+        // #46（第十轮）：服务端明确归属优先 —— 只有本次提交产生的任务进本次批次
+        if (itemSubmissionId) return itemSubmissionId === ownerSubmissionId;
+        // 没有归属字段的意图：只在可信增量基线时按原增量逻辑保留
+        return hasTrustedBaseline && !before.has(item.id);
+      })
+      .map((item) => item.id);
     if (fresh.length) recordIntentBatch(batchKey, fresh);
   }
 
@@ -4769,7 +4787,9 @@ writeSaveResultToStashedSession(ownerBoardId, {
         deferredSubmission.deferredRefreshAfterSubmit = null;
         // #46（第九轮，第 3 项）：延后的提交后刷新也走**同一入口**（按原板面冻结上下文收尾，
         // 不先写全局 pending 再调「无主」刷新）。
-        await refreshAfterSubmit(boardId.value, deferred.intentsBefore, deferred.batchKey);
+        await refreshAfterSubmit(boardId.value, deferred.intentsBefore, deferred.batchKey, {
+          submissionId: deferred.submissionId ?? null,
+        });
         if (!contextIsValid()) return;
       }
       /**
@@ -6350,6 +6370,8 @@ writeSaveResultToStashedSession(ownerBoardId, {
     gen: number;
     intentsBefore: string[];
     batchKey: string;
+    /** #46（第十轮）：查证恢复的本次提交 id —— 刷新后只按它归组本次提交产生的意图。 */
+    submissionId?: string | null;
   }
   interface BoardSubmissionSession {
     boardId: string;
@@ -6378,8 +6400,17 @@ writeSaveResultToStashedSession(ownerBoardId, {
     draftsNotPromoted: { cardId: string; reason: string }[];
     /** 提交期间切走时，提交成功要清掉的勾选（结算推后到回到原板面）。 */
     deferredCheckedClear: { cleared: string[]; atSeq: Map<string, number> } | null;
-    /** 提交期间切走时的提交后任务刷新（回到原板面后按原板面执行）。 */
-    deferredRefreshAfterSubmit: { intentsBefore: string[]; batchKey: string } | null;
+    /**
+     * 提交期间切走时的提交后任务刷新（回到原板面后按原板面执行）。
+     *
+     * #46（第十轮）：同时保存**发起提交时冻结的任务基线**与**服务端提交 id** ——
+     * 不能再写死空基线，否则回到原板面后旧任务会被当成「本次新任务」记进本次批次。
+     */
+    deferredRefreshAfterSubmit: {
+      intentsBefore: string[];
+      batchKey: string;
+      submissionId?: string | null;
+    } | null;
     /**
      * #46（第九轮，第 3 项）：最近一次提交后刷新的冻结上下文（发起板面 / 代次 / 批次 / 任务基线）。
      * retrySubmitRefresh() 复用它 —— 点击后立刻切板也仍然按原板面与原批次收尾。
@@ -6785,7 +6816,8 @@ writeSaveResultToStashedSession(ownerBoardId, {
          * 查证使用**同一板面、同一请求身份**（identity.boardId / clientRequestId），
          * 查到就恢复受理事实，查不到继续「结果未知」；绝不重复 POST。
          */
-        await confirmAcceptanceAfterUnclear(ownerBoardId);
+        // #46（第十轮）：带上发起提交时冻结的任务基线 —— 查证成功后的刷新按它 + 服务端归属归组
+        await confirmAcceptanceAfterUnclear(ownerBoardId, intentsBefore);
         restorePromotedDraftsForOwner(ownerBoardId, promotedCandidates);
         return null;
       }
@@ -6978,8 +7010,11 @@ writeSaveResultToStashedSession(ownerBoardId, {
     ownerBoardId: string,
     intentsBeforeInput: Iterable<string>,
     batchKey: string,
+    /** #46（第十轮）：本次提交在服务端的 id（查证恢复时给出），按它归组本次批次。 */
+    options: { submissionId?: string | null } = {},
   ): Promise<boolean> {
     const intentsBefore = [...intentsBeforeInput];
+    const submissionId = options.submissionId ?? null;
     const gen = (submitRefreshGenByBoard.get(ownerBoardId) ?? 0) + 1;
     submitRefreshGenByBoard.set(ownerBoardId, gen);
     /**
@@ -6991,6 +7026,7 @@ writeSaveResultToStashedSession(ownerBoardId, {
       gen,
       intentsBefore: [...intentsBefore],
       batchKey,
+      submissionId,
     });
     const isLatestGen = () => (submitRefreshGenByBoard.get(ownerBoardId) ?? 0) === gen;
     const ownerIsCurrent = () => boardId.value === ownerBoardId && statusBoardId === ownerBoardId;
@@ -7007,7 +7043,7 @@ writeSaveResultToStashedSession(ownerBoardId, {
     const deferRemaining = (): false => {
       if (!isLatestGen()) return false;
       patchOwner({
-        deferredRefreshAfterSubmit: { intentsBefore: [...intentsBefore], batchKey },
+        deferredRefreshAfterSubmit: { intentsBefore: [...intentsBefore], batchKey, submissionId },
         submitRefreshState: "pending",
       });
       return false;
@@ -7063,7 +7099,7 @@ writeSaveResultToStashedSession(ownerBoardId, {
     if (!isLatestGen()) return false;
     if (!ownerIsCurrent()) return deferRemaining();
     // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
-    recordNewIntents(new Set(intentsBefore), batchKey);
+    recordNewIntents(new Set(intentsBefore), batchKey, submissionId);
     patchOwner({
       submitRefreshState: "idle",
       submitRefreshError: null,
@@ -7087,7 +7123,9 @@ writeSaveResultToStashedSession(ownerBoardId, {
     const frozen = submitRefreshContextFor(owner);
     const intentsBefore = frozen ? [...frozen.intentsBefore] : [...intentIdSet()];
     const batchKey = frozen ? frozen.batchKey : "session:submission:retry:" + Date.now();
-    const ok = await refreshAfterSubmit(owner, intentsBefore, batchKey);
+    const ok = await refreshAfterSubmit(owner, intentsBefore, batchKey, {
+      submissionId: frozen?.submissionId ?? null,
+    });
     if (ok) return { ok: true };
     const ownerState = readSubmissionFor(owner);
     if (ownerState.deferredRefreshAfterSubmit) {
@@ -7832,18 +7870,26 @@ writeSaveResultToStashedSession(ownerBoardId, {
     const opSeq = state.opSeq;
     const expectSeq = Number(state.expectSeq ?? 0) || 0;
     const readSeqBefore = boardReadSeq;
+    /**
+     * #46（第十轮，Task 3）：这次重试的请求可能**迟到**于这次撤回的确认。
+     * 界面会拿失败结果覆盖已确认结论（把「已确认」说回「等待/失败」），所以先看 store 事实：
+     * 同一 owner + opSeq 的撤回已被同板采纳读取确认（active=false）时，本次失败不谎报，
+     * 返回 ok:true；只有仍然 active 时才写可重试的失败原因。
+     * 另：settleCancelRecovery(false, ...) 自身也只在 active 时生效，不会重开已确认的撤回。
+     */
+    const confirmedForThisOp = (): boolean => {
+      const current = cancelRecoveryByBoard.value[owner];
+      return Boolean(current && current.opSeq === opSeq && !current.active);
+    };
     const settleUnconfirmed = (reason: string): { ok: boolean; error?: string } => {
+      if (confirmedForThisOp()) return { ok: true };
       settleCancelRecovery(false, reason, owner, opSeq);
       return { ok: false, error: reason };
     };
     try {
       const applied = await refreshBoardFromServer(owner);
-      if (!applied) {
-        const current = cancelRecoveryByBoard.value[owner];
-        // 期间已经有真正采纳的读取把这次撤回确认掉了：只结算一次，不重复报错
-        if (current && current.opSeq === opSeq && !current.active) return { ok: true };
-        return settleUnconfirmed("撤回还没有被服务器事实确认（板面已经切换）");
-      }
+      // 期间已经有真正采纳的读取把这次撤回确认掉了：settleUnconfirmed 只结算一次，不重复报错
+      if (!applied) return settleUnconfirmed("撤回还没有被服务器事实确认（板面已经切换）");
       const adopted = adoptedReadFor(owner);
       const readAdvanced = adopted !== null && adopted.readSeq > readSeqBefore;
       const current = cancelRecoveryByBoard.value[owner];
@@ -8123,6 +8169,12 @@ writeSaveResultToStashedSession(ownerBoardId, {
    */
   async function confirmAcceptanceAfterUnclear(
     ownerBoardIdArg?: string,
+    /**
+     * #46（第十轮）：发起这次提交时**冻结的任务清单基线**（可信增量依据）。
+     * submit() 内传入；页面重载恢复（restorePendingSubmission）没有基线时传 null/undefined，
+     * 此时只认服务端明确归属（intent.submissionId），不拿空基线当增量。
+     */
+    intentsBaseline?: Iterable<string> | null,
   ): Promise<AcceptanceLookup | null> {
     /**
      * #46（第八轮，第 1 项）：受理查证属于**发起提交的原板面与同一请求身份**。
@@ -8237,12 +8289,28 @@ writeSaveResultToStashedSession(ownerBoardId, {
      * 已经切走时按原板面会话延后（绝不对当前板面发起原板的提交后读取）。
      */
     const lookupBatchKey = "session:submission:" + acceptance.submissionId;
+    /**
+     * #46（第十轮）：查证恢复的提交只有一个批次来源 —— 服务端的 submissionId。
+     * 刷新上下文同时带上冻结基线（没有就是 null，只信服务端归属），
+     * 绝不再写死空基线（否则旧任务会被当成本次新任务记进本次批次）。
+     */
+    const baseline = intentsBaseline ? [...intentsBaseline] : null;
+    const refreshContext = { submissionId: acceptance.submissionId };
     if (ownerIsCurrent()) {
-      await refreshAfterSubmit(ownerBoardId, intentIdSet(), lookupBatchKey);
+      await refreshAfterSubmit(
+        ownerBoardId,
+        baseline ?? intentIdSet(),
+        lookupBatchKey,
+        refreshContext,
+      );
       void startUnderstandingPolling();
     } else {
       setOwned({
-        deferredRefreshAfterSubmit: { intentsBefore: [], batchKey: lookupBatchKey },
+        deferredRefreshAfterSubmit: {
+          intentsBefore: baseline ?? [],
+          batchKey: lookupBatchKey,
+          submissionId: acceptance.submissionId,
+        },
         deferredUnderstandingPolling: true,
         submitRefreshState: "pending",
       });

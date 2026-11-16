@@ -888,3 +888,191 @@ describe("一.1b 提交后回读只归发起板（第九轮）", () => {
     expect(submitCalls(), "刷新/重试触发了重复提交").toHaveLength(1);
   });
 });
+
+/**
+ * #46（第十轮，Task 2）：**查证成功后的刷新按原提交归组**。
+ *
+ * 反例（基线 70e475c2）：confirmAcceptanceAfterUnclear() 在 owner 不在当前时把
+ * `deferredRefreshAfterSubmit: { intentsBefore: [] }`（空基线）写死；回到原板面后
+ * recordNewIntents(new Set([]), batchKey) 把原板面的旧任务与本次提交的新任务一起
+ * 记进本次提交批次（旧任务被改写到本次批次里，批量列表跟着串批）。
+ *
+ * 本块锁死：
+ * 1. B 的提交回执丢失、在 A 显示时按身份查证成功 → 切回 B：服务端明确归属本次提交
+ *    （intent.submissionId === acceptance.submissionId）的任务进本次批次；旧任务留在原批次
+ *    （本地批次映射不被改写），且 submitBoard 只调用 1 次（后端只受理一次）；
+ * 2. owner 当前时的查证刷新同样只把本次新任务记进本次批次（按服务端归属，而不是本地增量）。
+ */
+describe("一.1c 查证成功后按原提交归组（第十轮）", () => {
+  /** 一件带服务端归属的任务（submissionId 是服务端写入的本次/历史提交 id）。 */
+  function intentOfSubmission(id: string, boardId: string, submissionId: string | null) {
+    return { ...pendingIntent(id, boardId), submissionId } as never;
+  }
+
+  /** 服务端按请求身份返回的受理记录（submissionId = 服务端生成的提交 id）。 */
+  function acceptanceOf(clientRequestId: string, submissionId: string) {
+    return {
+      acceptance: {
+        clientRequestId,
+        submissionId,
+        status: "succeeded",
+        delivery: {
+          delivered: true,
+          reason: "",
+          detail: "",
+          understandingId: "u_new",
+          status: "accepted",
+        },
+        understandingId: "u_new",
+        understandingStatus: "accepted",
+        createdAt: NOW,
+      },
+    } as never;
+  }
+
+  it("B 的回执丢失、在 A 显示时查证成功：切回 B 只把本次新任务记进本次批次，旧任务留在原批次", async () => {
+    const oldIntent = intentOfSubmission("i_old", BOARD_B, "sub_old");
+    const newIntent = intentOfSubmission("i_new", BOARD_B, "sub_new");
+    // B 上已经加载过一件更早提交产生的旧任务（服务端归属 sub_old）
+    let bIntents: unknown[] = [oldIntent];
+    vi.mocked(api.fetchIntents).mockImplementation((async (id: string) => ({
+      intents: String(id) === BOARD_B ? bIntents : [],
+      conflicts: [],
+      batchAvailable: false,
+      recovery: { paused: [] },
+    })) as never);
+
+    await openABothLoaded();
+    expect(store.intents.map((item) => item.id), "前提：B 的旧任务已加载").toEqual(["i_old"]);
+    store.commit(editCard(store, "card_b", B_EDITED_TEXT), "改正文");
+
+    const saveFlight = deferred<void>();
+    vi.mocked(api.saveBoardState).mockImplementationOnce(async (_id, candidate) => {
+      await saveFlight.promise;
+      const snapshot = candidate as BoardState;
+      return {
+        ok: true,
+        seq: B_SAVED_SEQ,
+        savedAt: NOW,
+        state: { ...snapshot, boardId: BOARD_B, seq: B_SAVED_SEQ },
+      } as never;
+    });
+    const submitFlight = deferred<never>();
+    vi.mocked(api.submitBoard).mockImplementationOnce(() => submitFlight.promise as never);
+    const acceptanceFlight = deferred<never>();
+    vi.mocked(api.fetchAcceptance).mockImplementationOnce(() => acceptanceFlight.promise as never);
+
+    const saving = store.saveNow();
+    const submitting = store.submit();
+    await settle();
+    // 挂起 B 的保存回执期间切到 A：提交回执丢失时 A 正在显示
+    await store.selectBoard(BOARD_A);
+    await settle();
+    saveFlight.resolve();
+    await saving;
+    await settle();
+    expect(submitCalls().length, "前提：B 的提交已经发出").toBe(1);
+    const requestId = submitCalls()[0].clientRequestId;
+
+    // 提交请求没有得到回执（没有 status → 结果未知）：按同一身份查证 B
+    submitFlight.reject(new Error("网络中断，没有收到回执"));
+    await settle();
+    const lookups = acceptanceCalls();
+    expect(lookups.length, "结果未知时没有按请求身份查证受理情况").toBe(1);
+    expect(lookups[0].boardId, "受理查证发到了切板后的 A（应查发起提交的 B）").toBe(BOARD_B);
+    expect(lookups[0].clientRequestId, "受理查证的身份不是这次提交的身份").toBe(requestId);
+    expect(store.boardId, "前提：查证期间显示的是 A").toBe(BOARD_A);
+
+    // 查证在 A 显示时成功；B 的清单里同时出现旧的与本次提交产生的任务
+    bIntents = [oldIntent, newIntent];
+    vi.mocked(approval.recordIntentBatch).mockClear();
+    acceptanceFlight.resolve(acceptanceOf(requestId, "sub_new"));
+    await submitting;
+    await settle();
+
+    expect(store.boardId, "查证结果把当前板面切走了").toBe(BOARD_A);
+    expect(store.submitStatus, "B 的查证结果写到了 A 的提交状态上").toBe("idle");
+    expect(store.lastAcceptance, "B 的查证结果出现在 A 上").toBeNull();
+
+    // 切回 B：延后的提交后刷新按原提交归组。服务器事实已是提交后的版本 seq 8。
+    vi.mocked(api.fetchBoardState).mockResolvedValue(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ)) as never,
+    );
+    await store.selectBoard(BOARD_B);
+    await settle();
+
+    const batches = vi.mocked(approval.recordIntentBatch).mock.calls;
+    expect(batches, "本次查证后的刷新没有记录批次（或记录了多次）").toHaveLength(1);
+    expect(
+      batches[0][0],
+      "批次键不是本次提交（查证恢复的 submissionId）",
+    ).toBe("session:submission:sub_new");
+    expect(batches[0][1], "本次批次里混进了 B 的旧任务（旧任务被改写到本次提交批次）").toEqual([
+      "i_new",
+    ]);
+    const oldIntentNow = store.intents.find((item) => item.id === "i_old")!;
+    expect(
+      approval.batchKeyOf(oldIntentNow),
+      "旧任务的批次被改写成本次提交（应留在它原来的 sub_old 批次）",
+    ).toBe("submission:sub_old");
+    expect(submitCalls(), "查证/刷新触发了重复提交（后端重复受理）").toHaveLength(1);
+    expect(store.submitStatus, "切回 B 看不到查证恢复的受理结果").toBe("succeeded");
+    expect(store.submitAcceptedByLookup, "切回 B 丢掉了「按身份查证确认受理」的事实").toBe(true);
+  });
+
+  it("owner 当前时查证刷新：也按服务端归属只记本次新任务，不把旧任务并进本次批次", async () => {
+    const oldIntent = intentOfSubmission("i_old", BOARD_B, "sub_old");
+    const newIntent = intentOfSubmission("i_new", BOARD_B, "sub_new");
+    // B 的本地清单在提交时是空的（旧任务此前没读到）：只有在查证后的这次刷新里才出现
+    let bIntents: unknown[] = [];
+    vi.mocked(api.fetchIntents).mockImplementation((async (id: string) => ({
+      intents: String(id) === BOARD_B ? bIntents : [],
+      conflicts: [],
+      batchAvailable: false,
+      recovery: { paused: [] },
+    })) as never);
+
+    await openABothLoaded();
+    store.commit(editCard(store, "card_b", B_EDITED_TEXT), "改正文");
+
+    const submitFlight = deferred<never>();
+    vi.mocked(api.submitBoard).mockImplementationOnce(() => submitFlight.promise as never);
+    const acceptanceFlight = deferred<never>();
+    vi.mocked(api.fetchAcceptance).mockImplementationOnce(() => acceptanceFlight.promise as never);
+
+    const submitting = store.submit();
+    await settle();
+    expect(submitCalls().length, "前提：B 的提交已经发出").toBe(1);
+    const requestId = submitCalls()[0].clientRequestId;
+
+    submitFlight.reject(new Error("网络中断，没有收到回执"));
+    await settle();
+    expect(acceptanceCalls().length, "结果未知时没有按请求身份查证").toBe(1);
+
+    // 查证成功时 B 仍是当前板面：清单里出现旧任务（此前未加载）与本次新任务
+    bIntents = [oldIntent, newIntent];
+    vi.mocked(api.fetchBoardState).mockResolvedValue(
+      boardPayload(boardState(BOARD_B, [textCard("card_b", B_EDITED_TEXT)], B_SAVED_SEQ)) as never,
+    );
+    vi.mocked(approval.recordIntentBatch).mockClear();
+    acceptanceFlight.resolve(acceptanceOf(requestId, "sub_new"));
+    await submitting;
+    await settle();
+
+    const batches = vi.mocked(approval.recordIntentBatch).mock.calls;
+    expect(batches, "查证后的刷新没有记录批次（或记录了多次）").toHaveLength(1);
+    expect(batches[0][0], "批次键不是本次提交").toBe("session:submission:sub_new");
+    expect(
+      batches[0][1],
+      "本次批次里混进了旧任务（没有按服务端归属只记本次新任务）",
+    ).toEqual(["i_new"]);
+    const oldIntentNow = store.intents.find((item) => item.id === "i_old")!;
+    expect(
+      approval.batchKeyOf(oldIntentNow),
+      "旧任务的批次被改写成本次提交",
+    ).toBe("submission:sub_old");
+    expect(submitCalls(), "查证/刷新触发了重复提交（后端重复受理）").toHaveLength(1);
+    expect(store.submitStatus, "查证成功后没有恢复受理结果").toBe("succeeded");
+    expect(store.submitAcceptedByLookup, "没有记录「按身份查证确认受理」的事实").toBe(true);
+  });
+});
