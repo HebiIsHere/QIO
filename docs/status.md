@@ -5,6 +5,8 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
+最后核对：2026-11-16（**QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
+
 最后核对：2026-11-16（**QIO 0.3.2 · #46 第十轮返修（正式构建固定产品锁名 / 查证成功后按原提交归组 / 撤回「重新核对」跟随原板与最终结果）：实现、定向回归、类型检查、Rust 测试与 Windows 安装版 env 过敏 / 覆盖升级验证完成；未跑全量、未触发 CI、未合并 main、未打标签、未发布**：从 `fix/qio032-46-r9` 远端最新提交 `70e475c2`（开工 fetch 核对 origin 同 SHA）继续，红基线 worktree `D:\qio-dev\_q46-r10-baseline`（同 SHA、产品代码零改动）。
 
 ① **本轮三项修复**：**(1) 正式构建固定产品锁名** —— `single_instance.rs` 新增 `test_build_env_allowed() = cfg!(debug_assertions)`：正式构建（release / 安装版）恒用 `Global\QIO.SingleInstance.v1` / `Local\...Activate.v1` / `Local\...Handoff.v1`，**完全不读** `QIO_INSTANCE_PROBE_SUFFIX` 与 `QIO_INSTANCE_PROBE`；测试构建（cargo test 的 CARGO_BIN_EXE_qio，debug）保留后缀隔离与探针。后缀解析抽成 `resolve_suffix(allowed)`、探针判定抽成 `probe_requested_when(allowed)` 并加 4 条单测（正式语义由显式参数覆盖），active 行为语义零改动。**(2) 查证成功后按原提交归组** —— `confirmAcceptanceAfterUnclear(ownerBoardId, baseline?)` 在 submit 未知回执路径传入发起提交时冻结的 `intentsBefore`；查证成功后的刷新上下文带 `acceptance.submissionId`，离板延后时 `deferredRefreshAfterSubmit` 同时保存基线 + submissionId（不再写死空基线）；`recordNewIntents(before, batchKey, submissionId?)` 按服务端明确归属（`intent.submissionId === submissionId`）归组，无归属字段的意图只在可信增量基线时保留 —— 旧任务留在原批次、本次新任务归入本次提交，查证路径不重复 POST（后端只受理一次）。**(3) 撤回「重新核对」跟随原板与最终结果** —— `ImpactConfirmLayer.vue` 点击时冻结 `ownerBoardId` 与 `opSeq`，结果只写回原板（A 不出现 B 的提示，切回 B 才显示）、opSeq 已被新撤回替换时丢弃旧结果；store `retryCancelRecovery()` 增加 `confirmedForThisOp()`：同一次撤回 `active === false` 时即使本次请求失败也返回 `ok:true`，`settleCancelRecovery(false)` 保持「已确认不被迟到失败重开、迟到结果只影响对应 opSeq」。
@@ -6418,3 +6420,14 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **验证（本地、fake/mock 模型，非真实厂商）：** 相关后端定向 pytest、前端定向 vitest、`npx vue-tsc --noEmit` 与 `python scripts/check_docs.py` 通过（具体数字不写入本文件，日志在证据目录）；真实 fake 模型触发一次 read_attachment 真实读取失败，界面默认只有一句「这次没读到文件内容（1 个文件）」（展开工具卡后才出现第二处详情），工具卡显示原因/下一步与诊断、无模型内部指令；后端工具记录保留 `code=file_read_failed` 与原始错误；答案注记无重复，任务栏无该单次失败条目；浏览器实际完成同名不同文件预览打开/切换/收起且无陈旧成功文案；800×600 执行记录滚动/关闭/Esc/焦点回归通过（探针输出与截图在证据目录）。
 - **未验证边界：** 安装版/Tauri 壳内真实窗口与不同 DPI/系统缩放；真实厂商模型与真实附件读取（本轮只证明 QIO 自身链路与界面事实，不代表厂商行为）；完整全量后端/前端测试与远端 CI 未执行（本轮按要求未发起）；刷新后的历史工具卡没有持久化的 file_read 对象，文件名/具体原因回退到 code/category 级可读文案（后端 tool-records 完整错误仍可诊断）。
 - **证据：** `D:\qio-dev\pm032-records-evidence\integration\`：`backend-tool-record-full.json`（code=file_read_failed 与原始错误）、`backend-assistant-message.json`（raw 无 annotation）、`backend-task-feed.json`、`fault-turn.json`、`backend-pytest.log`、`frontend-vitest.log`、`frontend-vue-tsc.log`、`check-docs-before.log`、`steps-*.json` 与 `shots/`（预览、文件读取失败、800×600 执行记录截图）。
+
+### P113 — v0.3.3 发布（2026-11-16）
+
+- **Status：** completed
+- 基线/分支：`origin/main` @ `082f881f`（v0.3.1）→ 快进合并 `fix/qio032-46-r9`（含 `v0.3.2` 全量与 #46 第七至十轮，216 个提交）→ release commit `58d325bc`。tag `v0.3.3`（annotated `c979652c`）指向 `58d325bc`；GitHub Release v0.3.3 已发布（exe / .sig / latest.json）。
+- 构建：`scripts/build_installer.ps1 -DistDir D:\qio-dev\dist-0.3.3-release`（带更新签名私钥 + 口令，模型 + 自带 Python 运行时 + sidecar + 卸载助手 + tauri build + NSIS 补丁 + minisign 签名 + latest.json），产出 `QIO_0.3.3_x64-setup.exe` 129,203,424 字节 / SHA256 `a9d521c633fe1537788ea60a197837fe7391133cc649bc9a0530205160b2a2a1`。
+- 发布闸门：18 PASS / 0 FAIL / 0 SKIP（tauri.conf 版本、受测 commit=58d325bc、安装包哈希与 SHA256SUMS、latest.json 版本/无 BOM/签名结构、bundle 配置、卸载契约、NSIS 载荷版本、sidecar 与 release 构建逐字节一致、内置模型、构建 manifest `signing=signed`、实际更新签名产物），结果已写入 `docs/releases/release-history.jsonl`（受测 SHA + 安装包哈希 + 逐项结果）。
+- CI：push main 触发 run `43828778826`，10 个 job 中 8 成功；`frontend`（`acceptance-i2v2-page-recovery` / `acceptance-i2v2-page-tasks` 两条断言）与 `rust (ubuntu-24.04)`（Linux 上 Windows-only `window_frame` 代码 `hwnd` 等编译错误）失败。这两个失败 job 与 v0.3.2 发布 run `43187569376` 完全相同，属 0.3.2 既有问题，不是本轮 #46 改动引入；按用户要求发布，如实记录。
+- 发布验证：公开 latest.json（`https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json`）HTTP 200、`version=0.3.3`，下载内容与本地 latest.json SHA256 一致；Release 资产 `QIO_0.3.3_x64-setup.exe` 129,203,424 字节、`.sig` 412 字节、`latest.json` 880 字节均已上传。更新下载 URL 使用 `ghfast.top` 加速（沿用 v0.3.1 故障后的口径）。
+- 未验证边界：真实签名更新链路端到端（latest.json 下载 → minisign 校验 → 自动安装）未完整跑；跨 Windows 账号 / 登录会话未实测（UNVERIFIED）；安装版 GUI 真机矩阵（窗口框架三模式、DPI、穿透、升级/卸载 GUI）沿用 0.3.2 口径未在本轮补测；Windows Authenticode 代码签名未做。
+- 证据：`docs/releases/v0.3.3.md`、`docs/releases/release-history.jsonl`、`D:\qio-dev\dist-0.3.3-release\`（安装包、签名、latest.json、build manifest、gate-result.json）、`_lead-logs/qio032-46/r10/logs/build-0.3.3.log` 与 `publish-0.3.3.log`。
