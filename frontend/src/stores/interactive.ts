@@ -1599,6 +1599,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   const draftRequestInFlightBoards = new Set<string>();
   /**
+   * #46（第八轮，第 5 项）：**同一失败版本**不自动重发。
+   *
+   * 反例（真实浏览器）：A 的草稿 PUT 返回 503 后，B / C 的输入又触发新的 flush；
+   * 每次 flush 都是新的队列，于是 A 的同一份失败草稿被自动重试（用户还没点重试）。
+   * 这里按板面记住「失败时的写入代次」：版本没变就不再自动发送（失败态与重试入口可见），
+   * 用户输入新版（代次前进）或明确点重试才重新处理。
+   */
+  const failedDraftVersionsByBoard = new Map<string, Map<string, number>>();
+  /**
    * 用户已清除、但服务端还没确认的草稿键（§11.2）。
    *
    * 键是**草稿键**（`card:<id>`），值是这次清除针对的本机版本号：
@@ -5593,7 +5602,21 @@ writeSaveResultToStashedSession(ownerBoardId, {
       : Object.keys(book.drafts).filter(
           (key) => (book.keySeq.get(key) ?? 0) > (book.savedKeySeq.get(key) ?? 0),
         );
-    const keys = unsaved.filter((key) => !conflictKeys.has(key));
+    const failed = failedDraftVersionsByBoard.get(ownerBoardId);
+    const seqOf = (key: string): number =>
+      isCurrent ? draftKeySeq.get(key) ?? 0 : book.keySeq.get(key) ?? 0;
+    if (failed) {
+      // 有更新输入（代次前进）的键恢复可发送；失败的同一版本继续停住
+      for (const [key, version] of [...failed]) {
+        if (seqOf(key) !== version) failed.delete(key);
+      }
+      if (!failed.size) failedDraftVersionsByBoard.delete(ownerBoardId);
+    }
+    const keys = unsaved.filter(
+      (key) =>
+        !conflictKeys.has(key) &&
+        !(failed && failed.has(key) && failed.get(key) === seqOf(key)),
+    );
     const entries = isCurrent ? [...pendingRemovals] : [...book.removals];
     const removalEntries = entries.filter(([key]) => !conflictKeys.has(key));
     return { isCurrent, conflictKeys, keys, removalEntries };
@@ -5826,6 +5849,13 @@ writeSaveResultToStashedSession(ownerBoardId, {
               if (ownerNowForError && isStaleReceipt(atSeq, keySeq)) continue;
               if (ownerNowForError) setDraftState(key, "error", lastError);
               else ownerBook.states = { ...ownerBook.states, [key]: { status: "error", error: lastError } };
+              // 记住失败时的版本：同一版本不再自动重发（等用户重试 / 输入新版）
+              {
+                const failedMap =
+                  failedDraftVersionsByBoard.get(ownerBoardId) ?? new Map<string, number>();
+                failedMap.set(key, keySeq);
+                failedDraftVersionsByBoard.set(ownerBoardId, failedMap);
+              }
             }
             for (const [key, entry] of removalsAtRequest) {
               // 已经被新版本取代的清除不属于这次请求
@@ -5947,6 +5977,7 @@ writeSaveResultToStashedSession(ownerBoardId, {
               ownerBook.savedKeySeq.set(key, keySeq);
               ownerBook.states = { ...ownerBook.states, [key]: { status: "saved", error: null } };
             }
+            failedDraftVersionsByBoard.get(ownerBoardId)?.delete(key);
             /**
              * 记录「这条草稿已经同步到的服务端版本」（共享 localStorage）：
              * 其他标签页清理旧草稿前用它判断是否有更新版本，避免用旧版本发 removed。
@@ -6135,6 +6166,16 @@ writeSaveResultToStashedSession(ownerBoardId, {
     if (!key) {
       for (const item of pendingRemovals.keys()) if (!keys.includes(item)) keys.push(item);
     }
+    /**
+     * #46（第八轮，第 5 项）：用户明确点重试 = 解除「同一失败版本不自动重发」的停住标记，
+     * 这些键（以及它们所属板面）立即重新进入可发送队列。
+     */
+    for (const item of [...keys, ...pendingLocalRemovals.keys()]) {
+      const boardOfKey = draftBoardOf(item);
+      const failedMap = failedDraftVersionsByBoard.get(boardOfKey);
+      if (failedMap) failedMap.delete(item);
+    }
+    if (key) failedDraftVersionsByBoard.get(boardId.value)?.delete(key);
     /**
      * 本机副本删除失败过：这次先真的把它删掉（13）。
      * 删成功的键在本轮**不再**被下面的「本机写入」补写回去 —— 用户已经明确放弃这份副本，

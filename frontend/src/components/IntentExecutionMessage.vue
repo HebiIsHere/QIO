@@ -188,7 +188,11 @@ async function openBoardResult() {
      * #46（第八轮，第 7 项）：这次打开已经被更新的一次选择取代
      * （用户先点了这条、又打开另一块板面）—— 不为旧操作跳转，也不显示误导性的失败提示。
      */
-    if (located.superseded || !store.isBoardSelectionCurrent(located.selectionSeq)) return;
+    if (located.superseded) return;
+    // 真实 store 会给 selectionSeq；只有它能证明这次打开仍是有效的一次选择。
+    if (typeof located.selectionSeq === "number" && !store.isBoardSelectionCurrent(located.selectionSeq)) {
+      return;
+    }
     if (!located.ok) {
       resultNotice.value = "没能定位到这块板面：" + (located.reason || "原因未知");
       return;

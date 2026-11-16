@@ -1,0 +1,39 @@
+{
+  "runId": "mwija2bc",
+  "at": "2026-11-16T00:39:00.361Z",
+  "base": "http://127.0.0.1:5203",
+  "api": "http://127.0.0.1:8736",
+  "provider": "http://127.0.0.1:8809",
+  "cdpPort": 9350,
+  "out": "D:\\qio-dev\\q46-r8\\_lead-logs\\qio032-46\\r8\\final\\g6e",
+  "mode": "r8",
+  "pass": 0,
+  "fail": 1,
+  "observe": 0,
+  "total": 1,
+  "results": [
+    {
+      "name": "s6a 场景未跑完",
+      "ok": false,
+      "observe": false,
+      "detail": {
+        "error": "Error: 页面脚本异常：SyntaxError: Invalid or unexpected token\n    at Page.eval (file:///D:/qio-dev/q46-r8/scripts/verify-pm-qio032/cdp.mjs:208:13)\n    at async s6a (file:///D:/qio-dev/q46-r8/_lead-logs/qio032-46/r8/verify/r8-s6s7.mjs:84:5)\n    at async main (file:///D:/qio-dev/q46-r8/_lead-logs/qio032-46/r8/verify/run-48.mjs:65:7)\n    at async file:///D:/qio-dev/q46-r8/_lead-logs/qio032-46/r8/verify/run-48.mjs:84:17"
+      }
+    }
+  ],
+  "simulated": [
+    {
+      "scenario": "s6a",
+      "kind": "fulfill500",
+      "what": "对 new.txt 的上传 POST 注入 500（上传请求来自真实页面；old.txt 为真实上传/保存）"
+    },
+    {
+      "scenario": "s6a",
+      "kind": "drive-fallback",
+      "what": "文件卡工具栏不可见，替换动作改由公开 store 入口发起（上传/失败注入/重试仍为真实页面）"
+    }
+  ],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。",
+  "stamp": "2026-11-16T00:36:58.296Z"
+}

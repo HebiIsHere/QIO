@@ -1,0 +1,1170 @@
+{
+  "harness": "QIO #46 R8 browser acceptance (run-48.mjs) · merged final runs",
+  "at": "2026-11-16T00:56:18.215Z",
+  "root": "D:\\qio-dev\\q46-r8\\_lead-logs\\qio032-46\\r8\\final",
+  "picks": [
+    "g1",
+    "g2c",
+    "g3b",
+    "g4",
+    "g5",
+    "g6",
+    "g6j"
+  ],
+  "pass": 8,
+  "fail": 0,
+  "observe": 2,
+  "total": 10,
+  "results": [
+    {
+      "group": "g1",
+      "name": "1) B 提交时切到已加载的 A：提交请求只针对 B、提交体 seq 是 B 的保存版本；回读 B 提交 +1、A 不变；A 内容不被覆盖",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "submit": "real-button [data-im=submit]",
+          "switchToA": "store.selectBoard(A)（公开入口；任务书允许组合时调用同一公开入口）",
+          "hold": "CDP Fetch 挂起 saveBoardState PUT（injected）"
+        },
+        "boards": {
+          "A": "r8a_s1_mwi5pxeq",
+          "B": "r8b_s1_mwi5pxeq"
+        },
+        "submitBtn": {
+          "exists": true,
+          "visible": true,
+          "disabled": false,
+          "text": "提交给 QIO"
+        },
+        "submitClick": {
+          "ok": true,
+          "reason": null
+        },
+        "typed": {
+          "ok": true,
+          "value": "B 新正文·提交归属（应只回 B）"
+        },
+        "finish": {
+          "clicked": true,
+          "closed": true
+        },
+        "saveHeld": true,
+        "switchA": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 2
+        },
+        "aStateBefore": {
+          "boardId": "r8a_s1_mwi5pxeq",
+          "seq": 1,
+          "cards": [
+            "A 原正文（提交归属测试）"
+          ]
+        },
+        "releasedCount": 1,
+        "post": {
+          "url": "/api/interactive/boards/r8b_s1_mwi5pxeq/submissions",
+          "status": 200
+        },
+        "postBody": {
+          "note": "",
+          "view": {
+            "x": 0,
+            "y": 0,
+            "w": 1366,
+            "h": 641.359375,
+            "scale": 1
+          },
+          "baseStateVersion": 2,
+          "clientRequestId": "creq_mwi5seq9_d984cad7f79d25d76c138117"
+        },
+        "posts": [
+          {
+            "m": "POST",
+            "u": "/api/interactive/boards/r8b_s1_mwi5pxeq/submissions",
+            "s": 200,
+            "failed": null,
+            "body": "{\"note\":\"\",\"view\":{\"x\":0,\"y\":0,\"w\":1366,\"h\":641.359375,\"scale\":1},\"baseStateVersion\":2,\"clientRequestId\":\"creq_mwi5seq9_d984cad7f79d25d76c138117\"}"
+          }
+        ],
+        "putsB": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/r8b_s1_mwi5pxeq/state",
+            "s": 200,
+            "failed": null,
+            "body": "{\"state\":{\"boardId\":\"r8b_s1_mwi5pxeq\",\"seq\":1,\"updatedAt\":\"2026-11-15T18:19:15.229Z\",\"cards\":[{\"id\":\"cb1\",\"kind\":\"text\",\"content\":\"B 新正文·提交归属（应只回 B）\",\"meta\":{\"docText\":\"B 新正文·提交归属（应只回 B）\\n\",\"doc\":{\"schema\":\"qio.textcard/1\",\"blocks\":[{\"id\":\"b_0003301bb972\",\"kind\":\"paragraph\",\"text\":\"B 新正文·提交归属（应只回 B）"
+          }
+        ],
+        "bAfter": {
+          "seq": 2,
+          "cards": [
+            {
+              "id": "cb1",
+              "content": "B 新正文·提交归属（应只回 B）"
+            }
+          ]
+        },
+        "subsA0": 0,
+        "subsA1": 0,
+        "subsB0": 0,
+        "subsB1": 1,
+        "bSavedNewText": true,
+        "urlTargetsB": true,
+        "versionIsB": true,
+        "bPlusOne": true,
+        "aUnchanged": true,
+        "stillOnA": true,
+        "aNotOverwritten": true,
+        "aBackend": {
+          "seq": 1,
+          "cards": [
+            "A 原正文（提交归属测试）"
+          ]
+        },
+        "aBeforeTexts": [
+          "A 原正文（提交归属测试）"
+        ],
+        "aContentStable": true,
+        "aStoreContent": [
+          "A 原正文（提交归属测试）"
+        ]
+      }
+    },
+    {
+      "group": "g1",
+      "name": "1b) B 的提交回执在 A 打开时才到：A 的提交状态不被 B 的回执改写；回 B 能看到这次回执（归属原板）",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "submit": "real-button",
+          "switchToA": "store.selectBoard(A2)",
+          "hold": "CDP Fetch 挂起 B2 的 POST /submissions 请求，切到 A2 后再放行（注入时序，回执来自真实后端）"
+        },
+        "boards": {
+          "A2": "r8a_s1b_mwi5pxeq",
+          "B2": "r8b_s1b_mwi5pxeq"
+        },
+        "submitClick2": {
+          "ok": true,
+          "reason": null
+        },
+        "postHeld": true,
+        "releasedPost": 1,
+        "postResp": {
+          "status": 200
+        },
+        "a2Before": {
+          "boardId": "r8b_s1b_mwi5pxeq",
+          "submitStatus": "submitting",
+          "submitNote": null
+        },
+        "a2After": {
+          "boardId": "r8a_s1b_mwi5pxeq",
+          "seq": 1,
+          "submitStatus": "idle",
+          "submitError": null,
+          "submitNote": null,
+          "saveStatus": "saved",
+          "saveError": null,
+          "dirty": false,
+          "loadError": null,
+          "understandingStatus": null,
+          "cards": [
+            {
+              "id": "ca1b",
+              "content": "A2 原正文（迟到回执）"
+            }
+          ]
+        },
+        "a2SubmitStatus": "idle",
+        "b2State": {
+          "boardId": "r8b_s1b_mwi5pxeq",
+          "seq": 3,
+          "submitStatus": "succeeded",
+          "submitError": null,
+          "submitNote": "已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。",
+          "saveStatus": "saved",
+          "saveError": null,
+          "dirty": false,
+          "loadError": null,
+          "understandingStatus": "accepted",
+          "cards": [
+            {
+              "id": "cb1b",
+              "content": "B2 新正文·迟到回执"
+            }
+          ]
+        },
+        "b2GotReceipt": true
+      }
+    },
+    {
+      "group": "g2c",
+      "name": "2) 两个真实标签页：页1 正式保存回执到达后，页2 尚未同步的新草稿本机恢复副本仍在（正文/版本都在），不要求页2重输",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "tabs": "CDP Target.createTarget 同浏览器默认上下文（同源共享 localStorage）",
+          "tab1FormalSave": "真实「完成编辑」按钮触发正式保存；CDP Fetch 挂起回执",
+          "tab2Draft": "真实卡片编辑器输入；CDP Fetch 挂起其草稿 PUT（模拟尚未同步）"
+        },
+        "board": "r8b_s2_mwija8u6",
+        "saveHeld": true,
+        "saveGateHits": 0,
+        "typed1": {
+          "ok": true,
+          "value": "页1正式内容（双标签页）"
+        },
+        "finish1": {
+          "clicked": true,
+          "closed": true
+        },
+        "puts1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/r8b_s2_mwija8u6/state",
+            "s": 200,
+            "failed": null,
+            "body": "{\"state\":{\"boardId\":\"r8b_s2_mwija8u6\",\"seq\":1,\"updatedAt\":\"2026-11-16T00:40:08.627Z\",\"cards\":[{\"id\":\"cb2\",\"kind\":\"text\",\"content\":\"页1正式内容（双标签页）\",\"meta\":{\"docText\":\"页1正式内容（双标签页）\\n\",\"doc\":{\"schema\":\"qio.textcard/1\",\"blocks\":[{\"id\":\"b_00031fc64ee4\",\"kind\":\"paragraph\",\"text\":\"页1正式内容（双标签页）\"}]}},\"x\":80,\"y"
+          }
+        ],
+        "draftHeld": true,
+        "typed2": {
+          "ok": true,
+          "value": "页2新草稿·未同步（旧回执不许删）"
+        },
+        "beforeLocal": {
+          "text": "页2新草稿·未同步（旧回执不许删）",
+          "updatedAt": 1794789611639,
+          "seq": 2,
+          "kind": "draft",
+          "version": 2,
+          "boardId": "r8b_s2_mwija8u6"
+        },
+        "beforeTab2": {
+          "boardId": "r8b_s2_mwija8u6",
+          "drafts": {
+            "card:cb2": "页2新草稿·未同步（旧回执不许删）"
+          },
+          "draftStates": {
+            "card:cb2": {
+              "status": "saving",
+              "error": null
+            }
+          }
+        },
+        "afterLocal": {
+          "text": "页2新草稿·未同步（旧回执不许删）",
+          "updatedAt": 1794789611639,
+          "seq": 2,
+          "kind": "draft",
+          "version": 2,
+          "boardId": "r8b_s2_mwija8u6"
+        },
+        "afterTab2": {
+          "boardId": "r8b_s2_mwija8u6",
+          "drafts": {
+            "card:cb2": "页2新草稿·未同步（旧回执不许删）"
+          },
+          "draftStates": {
+            "card:cb2": {
+              "status": "saving",
+              "error": null
+            }
+          }
+        },
+        "backendDraft1": {
+          "drafts": {
+            "card:cb2": "页1正式内容（双标签页）"
+          },
+          "rev": 2,
+          "keyVersions": {
+            "card:cb2": 2
+          }
+        },
+        "bAfter": {
+          "seq": 2,
+          "cards": [
+            "页1正式内容（双标签页）"
+          ]
+        },
+        "recordKept": true,
+        "versionKept": true,
+        "memoryKept": true,
+        "editorValueOpen": "页2新草稿·未同步（旧回执不许删）"
+      }
+    },
+    {
+      "group": "g2c",
+      "name": "2b) 页2 新稿已同步到后端后，页1 的旧正式保存回执不得清掉后端更新的草稿",
+      "ok": false,
+      "observe": true,
+      "detail": {
+        "note": "UNVERIFIED：本轮页2 新稿未能在驱动中同步到后端（真实编辑器输入后 25s 内 drafts/keyVersions 未前进），2b 不作为产品结论",
+        "detail": {
+          "driving": {
+            "page2Sync": "新开真实标签页，真实卡片编辑器输入；轮询后端 drafts + keyVersions 确认同步成立",
+            "page1SecondSave": "真实「完成编辑」；CDP Fetch 挂起回执后放行（回执来自真实后端）"
+          },
+          "beforeSync": {
+            "rev": 2,
+            "drafts": {
+              "card:cb2": "页1正式内容（双标签页）"
+            },
+            "keyVersions": {
+              "card:cb2": 2
+            }
+          },
+          "oldKeyVersion": 2,
+          "typed3": {
+            "ok": true,
+            "value": "页2新稿·已同步（旧回执不许删）"
+          },
+          "syncHow": "failed",
+          "backendSynced": {
+            "rev": 2,
+            "drafts": {
+              "card:cb2": "页1正式内容（双标签页）"
+            },
+            "keyVersions": {
+              "card:cb2": 2
+            }
+          },
+          "syncedKV": 2,
+          "tab2Synced": false,
+          "held2": true,
+          "saveGate2Hits": 0,
+          "typed1b": {
+            "ok": true,
+            "value": "页1第二次正式内容（双标签页）"
+          },
+          "finish1b": {
+            "clicked": true,
+            "closed": true
+          },
+          "puts2": [
+            {
+              "m": "PUT",
+              "u": "/api/interactive/boards/r8b_s2_mwija8u6/state",
+              "s": 200,
+              "failed": null,
+              "body": "{\"state\":{\"boardId\":\"r8b_s2_mwija8u6\",\"seq\":2,\"updatedAt\":\"2026-11-16T00:41:30.888Z\",\"cards\":[{\"id\":\"cb2\",\"kind\":\"text\",\"content\":\"页1第二次正式内容（双标签页）\",\"meta\":{\"docText\":\"页1第二次正式内容（双标签页）\\n\",\"doc\":{\"schema\":\"qio.textcard/1\",\"blocks\":[{\"id\":\"b_000601efa8b7\",\"kind\":\"paragraph\",\"text\":\"页1第二次正式内容（双标签页）\"}]}},"
+            }
+          ],
+          "draftRequests2b": [
+            {
+              "m": "PUT",
+              "u": "/api/interactive/drafts/r8b_s2_mwija8u6",
+              "s": 200,
+              "failed": null,
+              "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb2\":\"页2新稿·已同步（旧回执不许删）\"},\"removed\":[],\"baseRev\":2,\"keyVersions\":{\"card:cb2\":2}}"
+            },
+            {
+              "m": "PUT",
+              "u": "/api/interactive/drafts/r8b_s2_mwija8u6",
+              "s": 200,
+              "failed": null,
+              "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb2\":\"页1第二次正式内容（双标签页）\"},\"removed\":[],\"baseRev\":3,\"keyVersions\":{\"card:cb2\":3}}"
+            }
+          ],
+          "backendAfter": {
+            "rev": 5,
+            "drafts": {},
+            "keyVersions": {}
+          },
+          "keptText": "",
+          "keptKV": 0,
+          "backendNewDraftKept": false,
+          "b2After": {
+            "seq": 3,
+            "cards": [
+              "页1第二次正式内容（双标签页）"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "group": "g3b",
+      "name": "5) 一块板的失败不堵其他板：A 的草稿请求失败（注入 503）后，排在其后的 B 与随后 C 的草稿仍自动保存且各归原板；浏览器仍响应；故障解除后 A 重试补存成功",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "drafts": "真实卡片编辑器输入（草稿防抖自动保存）",
+          "switchBoard": "store.selectBoard(公开入口)",
+          "failInjection": "CDP Fetch 挂起 A 的草稿 PUT，切到 B 输入草稿后再以 503 放行（注入失败；请求来自真实页面）",
+          "retry": "real-button [data-im=card-draft-retry]"
+        },
+        "boards": {
+          "A": "r8a_s3a_mwihshp5",
+          "B": "r8b_s3a_mwihshp5",
+          "C": "r8c_s3a_mwihshp5"
+        },
+        "typedA": {
+          "ok": true,
+          "value": "A 草稿·第一次 503（第5项）"
+        },
+        "typedB": {
+          "ok": true,
+          "value": "B 草稿·排在 A 失败请求之后"
+        },
+        "typedC": {
+          "ok": true,
+          "value": "C 草稿·应继续自动保存（第5项）"
+        },
+        "aHeld": true,
+        "aRelease": {
+          "url": "/api/interactive/drafts/r8a_s3a_mwihshp5",
+          "method": "PUT"
+        },
+        "switchB": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 2
+        },
+        "switchC": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 3
+        },
+        "switchA2": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 4
+        },
+        "responsive1": {
+          "ok": true,
+          "value": 42,
+          "ms": 7
+        },
+        "responsive2": {
+          "ok": true,
+          "value": 42,
+          "ms": 28
+        },
+        "draftsA1": {
+          "rev": 1,
+          "drafts": {
+            "card:ca3a": "A 卡片（第5项）"
+          }
+        },
+        "draftsB1": {
+          "rev": 1,
+          "drafts": {
+            "card:cb3a": "B 草稿·排在 A 失败请求之后"
+          }
+        },
+        "draftsC1": {
+          "rev": 2,
+          "drafts": {
+            "card:cc3a": "C 草稿·应继续自动保存（第5项）"
+          }
+        },
+        "bSaved": true,
+        "cSaved": true,
+        "aFailed": true,
+        "putsA1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 卡片（第5项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwihshp5",
+            "s": 503,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 草稿·第一次 503（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3a\":1}}"
+          }
+        ],
+        "putsB1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8b_s3a_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb3a\":\"B 草稿·排在 A 失败请求之后\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          }
+        ],
+        "putsC1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3a_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3a\":\"C 卡片（第5项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3a_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3a\":\"C 草稿·应继续自动保存（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:cc3a\":1}}"
+          }
+        ],
+        "aStateAfterFail": {
+          "boardId": "r8b_s3a_mwihshp5",
+          "draftStates": {
+            "card:cb3a": {
+              "status": "saved",
+              "error": null
+            }
+          }
+        },
+        "retryUi": {
+          "exists": true,
+          "visible": true,
+          "text": "重试保存"
+        },
+        "retryHow": "real-button [data-im=card-draft-retry]",
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "draftsA2": {
+          "rev": 2,
+          "drafts": {
+            "card:ca3a": "A 草稿·第一次 503（第5项）"
+          }
+        },
+        "aRetriedSaved": true,
+        "putsA2": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 卡片（第5项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwihshp5",
+            "s": 503,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 草稿·第一次 503（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3a\":1}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 草稿·第一次 503（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3a\":1}}"
+          }
+        ]
+      }
+    },
+    {
+      "group": "g3b",
+      "name": "6) 一块板存在草稿冲突时跳过等待用户选择的条目：B 真实同键冲突后，A/C 的草稿仍自动保存；冲突项不反复重发；浏览器仍响应",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "hangDetected": false,
+        "hangSteps": [],
+        "stepFacts": [
+          {
+            "label": "切到 A",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 821,
+            "value": {
+              "ok": true,
+              "reason": "",
+              "selectionSeq": 2
+            }
+          },
+          {
+            "label": "在 A 输入草稿",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 2586,
+            "value": {
+              "ok": true,
+              "value": "A 草稿·应继续保存（第6项）"
+            }
+          },
+          {
+            "label": "切到 C",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 871,
+            "value": {
+              "ok": true,
+              "reason": "",
+              "selectionSeq": 3
+            }
+          },
+          {
+            "label": "在 C 输入草稿",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 2539,
+            "value": {
+              "ok": true,
+              "value": "C 草稿·冲突待选时仍应保存（第6项）"
+            }
+          },
+          {
+            "label": "等待草稿队列",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 9007,
+            "value": true
+          }
+        ],
+        "driving": {
+          "drafts": "真实卡片编辑器输入（草稿防抖自动保存）",
+          "conflict": "CDP Fetch 挂起带本页新文字的 B 草稿 PUT + harness 直接写真实后端更新版本（真实并发冲突）",
+          "switchBoard": "store.selectBoard(公开入口)"
+        },
+        "boards": {
+          "A": "r8a_s3b_mwihshp5",
+          "B": "r8b_s3b_mwihshp5",
+          "C": "r8c_s3b_mwihshp5"
+        },
+        "bHeld": true,
+        "draftsB0": {
+          "rev": 1,
+          "drafts": {
+            "card:cb3b": "B 卡片（第6项）"
+          }
+        },
+        "serverWrite": {
+          "status": 200,
+          "rev": 2,
+          "conflicts": []
+        },
+        "bConflict": {
+          "conflicts": {
+            "card:cb3b": {
+              "local": "B 本页草稿·应冲突（第6项）",
+              "server": "B 服务器上的另一份（真实并发写）"
+            }
+          },
+          "states": {
+            "card:cb3b": {
+              "status": "error",
+              "error": "服务器上这个键已经有另一份文字：两份都已保留，请选择保留哪一份"
+            }
+          }
+        },
+        "conflictStep": {
+          "ok": true,
+          "timeout": false,
+          "error": null
+        },
+        "typedA": {
+          "ok": true,
+          "value": "A 草稿·应继续保存（第6项）"
+        },
+        "typedC": {
+          "ok": true,
+          "value": "C 草稿·冲突待选时仍应保存（第6项）"
+        },
+        "typedB": {
+          "ok": true,
+          "value": "B 本页草稿·应冲突（第6项）"
+        },
+        "switchA": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 2
+        },
+        "switchC": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 3
+        },
+        "responsive": {
+          "ok": true,
+          "value": 42,
+          "ms": 9
+        },
+        "draftsA": {
+          "rev": 2,
+          "drafts": {
+            "card:ca3b": "A 草稿·应继续保存（第6项）"
+          }
+        },
+        "draftsB": {
+          "rev": 2,
+          "drafts": {
+            "card:cb3b": "B 服务器上的另一份（真实并发写）"
+          }
+        },
+        "draftsC": {
+          "rev": 2,
+          "drafts": {
+            "card:cc3b": "C 草稿·冲突待选时仍应保存（第6项）"
+          }
+        },
+        "aSaved": true,
+        "cSaved": true,
+        "bConflictKept": true,
+        "bNotResent": true,
+        "putsA": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3b_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3b\":\"A 卡片（第6项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3b_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3b\":\"A 草稿·应继续保存（第6项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3b\":1}}"
+          }
+        ],
+        "putsB": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8b_s3b_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb3b\":\"B 卡片（第6项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8b_s3b_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb3b\":\"B 本页草稿·应冲突（第6项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:cb3b\":1}}"
+          }
+        ],
+        "putsC": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3b_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3b\":\"C 卡片（第6项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3b_mwihshp5",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3b\":\"C 草稿·冲突待选时仍应保存（第6项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:cc3b\":1}}"
+          }
+        ],
+        "storeLeaf": {
+          "boardId": "r8c_s3b_mwihshp5",
+          "draftStates": {
+            "card:cc3b": {
+              "status": "saved",
+              "error": null
+            }
+          },
+          "draftConflicts": {}
+        }
+      }
+    },
+    {
+      "group": "g4",
+      "name": "7) 较早的切板请求不得覆盖较新的选择：先 B 后 A（及交换顺序）时当前板始终是最后真正加载完成的 A/B；最新目标读取失败也不会把页面抢走",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "entry": "任务结果入口 IntentExecutionMessage.vue 的 openBoardResult() 调用的就是 store.selectBoard(target)；组合时序直接调用同一公开入口（任务书允许）",
+          "selectBoard": "store.selectBoard(公开入口)",
+          "hold": "CDP Fetch 挂起板面清单 GET /api/interactive/boards（旧请求迟到，注入时序）",
+          "failInjection": "CDP Fetch 对 C 的 GET /boards/C/state 回 500（注入失败）"
+        },
+        "boards": {
+          "A": "r8a_s4_mwii12zu",
+          "B": "r8b_s4_mwii12zu",
+          "C": "r8c_s4_mwii12zu"
+        },
+        "held1": true,
+        "held2": true,
+        "openA": {
+          "ok": false,
+          "reason": "Error: 等待超时（板面加载完成 r8a_s4_mwii12zu），最后=null"
+        },
+        "openB": {
+          "ok": false,
+          "reason": "Error: 等待超时（板面加载完成 r8b_s4_mwii12zu），最后=null"
+        },
+        "firstState": {
+          "boardId": "r8a_s4_mwii12zu",
+          "cards": [
+            "A 的内容（切板代次）"
+          ]
+        },
+        "secondState": {
+          "boardId": "r8b_s4_mwii12zu",
+          "cards": [
+            "B 的内容（切板代次）"
+          ]
+        },
+        "failState": {
+          "boardId": "r8c_s4_mwii12zu",
+          "loadError": "/api/interactive/boards/r8c_s4_mwii12zu/state -> 500: harness: 注入的板面读取失败",
+          "cards": []
+        },
+        "st3Submit": {
+          "submitStatus": "idle",
+          "submitError": null
+        },
+        "retryEntry": {
+          "exists": false
+        },
+        "firstKeptA": true,
+        "aContentKept": true,
+        "secondKeptB": true,
+        "bContentKept": true,
+        "failedSelectionIsC": true,
+        "cErrorAttributed": true,
+        "bNotShown": true,
+        "stillC": true,
+        "lateState": {
+          "boardId": "r8c_s4_mwii12zu",
+          "loadError": "/api/interactive/boards/r8c_s4_mwii12zu/state -> 500: harness: 注入的板面读取失败"
+        }
+      }
+    },
+    {
+      "group": "g5",
+      "name": "8) 同板面的旧撤回回执不得结束新撤回：第二次撤回等待时放回第一次成功，第二次仍在等待；让第二次失败后保留真实原因，故障解除后重试成功",
+      "ok": false,
+      "observe": true,
+      "detail": {
+        "driving": {
+          "undo": "两次撤回用公开入口 window.__q46Store.cancelImpact() 驱动（第一次取消按钮在回读在飞时保持 busy，第二次按钮不可点；任务书允许组合时序用同一公开入口）",
+          "running": "seed-r8.py 在隔离数据目录写入一条 running 任务（真实后端）",
+          "hold": "CDP Fetch 挂起每次撤回的 GET /boards/B/state 回读（两次）；第一次成功放行、第二次注入 500",
+          "retry": "公开重试入口 retryCancelRecovery()（真实后端读取；真实按钮路径因组件只在自身 cancel() 时记录结果而无法在本组合时序出现，见边界）",
+          "limitation": "真实「重新核对服务器事实」按钮需要组件自身发起的 cancel 才能记录 outcome；本组合时序的第一次 cancel 由公开入口发起，故最后的重试用公开入口验证。"
+        },
+        "board": "r8b_s5_mwiilcv5",
+        "seeded": {
+          "ok": true,
+          "intentId": "i_0ac67884a829",
+          "boardId": "r8b_s5_mwiilcv5",
+          "card": "cb5"
+        },
+        "running": true,
+        "confirm1": true,
+        "read1Held": true,
+        "read2Held": true,
+        "afterCancel1": {
+          "cancelRecovery": {
+            "boardId": "r8b_s5_mwiilcv5",
+            "active": true,
+            "reason": null
+          }
+        },
+        "cancel2SettleFirst": {
+          "cancelRecovery": {
+            "boardId": "r8b_s5_mwiilcv5",
+            "active": false,
+            "reason": null
+          }
+        },
+        "afterFirstLate": {
+          "cancelRecovery": {
+            "boardId": "r8b_s5_mwiilcv5",
+            "active": false,
+            "reason": null
+          },
+          "boardId": "r8b_s5_mwiilcv5"
+        },
+        "afterSecondFail": {
+          "cancelRecovery": {
+            "boardId": "r8b_s5_mwiilcv5",
+            "active": false,
+            "reason": null
+          },
+          "saveStatus": "saved"
+        },
+        "failureKept": false,
+        "failureReason": "",
+        "outcomeText": null,
+        "retryUi": {
+          "exists": false
+        },
+        "retryResult": {
+          "ok": true
+        },
+        "afterRetry": {
+          "cancelRecovery": {
+            "boardId": "r8b_s5_mwiilcv5",
+            "active": false,
+            "reason": null
+          }
+        },
+        "secondStillWaiting": false,
+        "settled": true,
+        "unverifiedNote": "UNVERIFIED：第二次撤回开始后，真实后端上有另一次合法的整板读取在第二次注入失败之前成功落地并确认了这次撤回（event loop 中产品允许的确认路径），浏览器层无法把「第一次旧回执迟到」与「其它成功读取」隔离；该精确乱序由 store 用例 q46-r8-select-cancel.test.ts 覆盖。观察到 read1/read2 都被扣住、第一次撤回 active=true、第二次在注入失败前已变成 active=false/reason=null。"
+      }
+    },
+    {
+      "group": "g6",
+      "name": "11) 批量导入的反馈和重试入口归原板：B 的批次/重试不出现在 A；回 B 后批次仍可恢复，真实点重试只让 B 建卡、不重复上传、不重复建卡",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "import": "真实拖放两个文件到「添加」入口（DataTransfer drop）",
+          "failInjection": "CDP Fetch 对 B 的关联保存 PUT 回 500（注入失败）",
+          "switchBoard": "store.selectBoard(公开入口)",
+          "retry": "真实批次项上的重试按钮 [data-im=add-batch-item] [data-im=card-attach-retry]"
+        },
+        "boards": {
+          "A": "r8a_s7a_mwiinsi0",
+          "B": "r8b_s7a_mwiinsi0"
+        },
+        "drop": {
+          "ok": true,
+          "count": 2
+        },
+        "settled": true,
+        "batchFailed": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiisguk1m581"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiish3u2bn2b"
+          }
+        ],
+        "batchUiOnB": [
+          {
+            "name": "batch-a-mwiisgm9.txt",
+            "status": "failed"
+          },
+          {
+            "name": "batch-b-mwiisgm9.txt",
+            "status": "failed"
+          }
+        ],
+        "uploadsBeforeSwitch": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          },
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "cardsBBefore": 0,
+        "switchA": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 2
+        },
+        "switchB": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 3
+        },
+        "batchUiOnA": [],
+        "retryOnA": {
+          "exists": false
+        },
+        "aShowsBBatch": false,
+        "aBatchState": null,
+        "backBItems": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiisguk1m581"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiish3u2bn2b"
+          }
+        ],
+        "batchReachableOnB": true,
+        "retryBtn": {
+          "exists": true,
+          "visible": true,
+          "text": "重试"
+        },
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "uploadsAfterRetry": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          },
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "fileCardsB": [
+          {
+            "id": "c_mwiisguk1m581",
+            "name": "batch-a-mwiisgm9.txt",
+            "attachmentId": "att_367a1f012a35"
+          },
+          {
+            "id": "c_mwiish3u2bn2b",
+            "name": "batch-b-mwiisgm9.txt",
+            "attachmentId": "att_db1d333613d3"
+          }
+        ],
+        "cardsA": [
+          "ca7a"
+        ],
+        "onlyBHasNewCards": true,
+        "noReupload": true,
+        "noDuplicateCards": true,
+        "aPageTextSample": "PERSONAL AGENT\n\n已保存\n\n受限模式\n\n拖动空白处平移，按住空格拖动框选，滚轮缩放\n\n文字注释\n显示并参与\n参与\n\nA 已有内容（批量归板）\n\n11-16 08:22\n还没有提交给 QIO\n任务\n▴\n展开对话\n＋添加\n提交给 QIO\n互动模式\nEnter 发送 · Shift+Enter 换行"
+      }
+    },
+    {
+      "group": "g6j",
+      "name": "9) 替换文件失败后重试处理刚选的文件：old.txt 关联成功后选 new.txt 上传失败（注入）→ 卡片保留旧附件且出现重试入口 → 真实点重试重传 new.txt，后端卡片 attachmentId 指向新文件",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "attachOld": "真实「添加 → 文件」入口（文件选择器 + 真实上传/保存）",
+          "replaceNew": "真实文件卡工具栏「关联文件」按钮 [data-im=card-attach-file] + 文件选择器",
+          "failInjection": "CDP Fetch 对 new.txt 的上传 POST 回 500（注入失败）",
+          "retry": "store.retryCardAttachment()（真实按钮路径未能驱动的兜底）；按任务书四.9 沿用本次尝试的文件源重传，不再打开文件选择器"
+        },
+        "board": "r8b_s6a_mwijvvpa",
+        "cardId": "c_mwijxji31aahl",
+        "oldAttach": "att_fa0a6b05dd88",
+        "finalAttach": "att_5278df3edd65",
+        "attachBtn": {
+          "ok": true,
+          "reason": "store-public-action-fallback"
+        },
+        "attachReady": null,
+        "chooserOk": false,
+        "heldUpload": true,
+        "failedRelease": 1,
+        "retryUi": null,
+        "noticeText": null,
+        "finalNotice": null,
+        "keptOldWhileFailed": true,
+        "midAttach": "att_fa0a6b05dd88",
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "retryHow": "store.retryCardAttachment()（真实按钮路径未能驱动的兜底）",
+        "chooser2Ok": true,
+        "chooserOpenedAgain": 0,
+        "retryDriving": "真实失败提示上的重试按钮 [data-im=card-attach-retry]；沿用本次尝试的文件源重传（不再次打开文件选择器）",
+        "uploadsBefore": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "uploadsBeforeRetry": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          },
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 500,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "uploadsAfter": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          },
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 500,
+            "failed": null,
+            "body": ""
+          },
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "replaceHow": "store.startCardAttachment(path source)（工具栏未可见的驱动兜底）",
+        "uploadCountBeforeRetry": 2,
+        "uploadCountAfterRetry": 3,
+        "retryUploadedAgain": true,
+        "newUploadCount": 0,
+        "replaced": true,
+        "backendAfter": {
+          "cards": [
+            {
+              "id": "c_mwijxji31aahl",
+              "kind": "file",
+              "name": "new-r8-mwijwti2.txt",
+              "attachmentId": "att_5278df3edd65"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "note": "真实 Edge + CDP 驱动真实前端 store 与隔离后端（q46-r8/backend，数据目录 r8/e2e-data/final 隔离，model 只打本机 fake provider）；失败注入（CDP Fetch）与真实回执分开标注；s2b/s5 为驱动无法隔离时序的 UNVERIFIED（OBSERVE），产品语义由 store 用例覆盖。"
+}

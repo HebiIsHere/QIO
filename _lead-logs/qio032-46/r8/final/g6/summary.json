@@ -1,0 +1,248 @@
+{
+  "runId": "mwiinsi8",
+  "at": "2026-11-16T00:23:28.559Z",
+  "base": "http://127.0.0.1:5203",
+  "api": "http://127.0.0.1:8736",
+  "provider": "http://127.0.0.1:8809",
+  "cdpPort": 9345,
+  "out": "D:\\qio-dev\\q46-r8\\_lead-logs\\qio032-46\\r8\\final\\g6",
+  "mode": "r8",
+  "pass": 1,
+  "fail": 1,
+  "observe": 0,
+  "total": 2,
+  "results": [
+    {
+      "name": "9) 替换文件失败后重试处理刚选的文件：old.txt 关联成功后选 new.txt 上传失败（注入）→ 卡片保留旧附件且出现重试入口 → 真实点重试重传 new.txt，后端卡片 attachmentId 指向新文件",
+      "ok": false,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "attachOld": "真实「添加 → 文件」入口（文件选择器 + 真实上传/保存）",
+          "replaceNew": "真实文件卡工具栏「关联文件」按钮 [data-im=card-attach-file] + 文件选择器",
+          "failInjection": "CDP Fetch 对 new.txt 的上传 POST 回 500（注入失败）",
+          "retry": "真实失败提示上的重试按钮 [data-im=card-attach-retry]（重新选择文件）"
+        },
+        "board": "r8b_s6a_mwiinsi0",
+        "cardId": "c_mwiip5w01wasa",
+        "oldAttach": "att_03b4e39feaf3",
+        "finalAttach": "att_03b4e39feaf3",
+        "attachBtn": {
+          "ok": false,
+          "reason": "not-visible"
+        },
+        "chooserOk": false,
+        "heldUpload": false,
+        "failedRelease": 0,
+        "retryUi": null,
+        "noticeText": null,
+        "finalNotice": null,
+        "keptOldWhileFailed": true,
+        "midAttach": "att_03b4e39feaf3",
+        "retryClick": {
+          "ok": false,
+          "reason": "not-found"
+        },
+        "chooser2Ok": true,
+        "chooserOpenedAgain": 0,
+        "retryDriving": "真实失败提示上的重试按钮 [data-im=card-attach-retry]；沿用本次尝试的文件源重传（不再次打开文件选择器）",
+        "uploadsBefore": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "uploadsBeforeRetry": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "uploadsAfter": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "newUploadCount": 0,
+        "replaced": false,
+        "backendAfter": {
+          "cards": [
+            {
+              "id": "c_mwiip5w01wasa",
+              "kind": "file",
+              "name": "old-r8-mwiioiu0.txt",
+              "attachmentId": "att_03b4e39feaf3"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "11) 批量导入的反馈和重试入口归原板：B 的批次/重试不出现在 A；回 B 后批次仍可恢复，真实点重试只让 B 建卡、不重复上传、不重复建卡",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "import": "真实拖放两个文件到「添加」入口（DataTransfer drop）",
+          "failInjection": "CDP Fetch 对 B 的关联保存 PUT 回 500（注入失败）",
+          "switchBoard": "store.selectBoard(公开入口)",
+          "retry": "真实批次项上的重试按钮 [data-im=add-batch-item] [data-im=card-attach-retry]"
+        },
+        "boards": {
+          "A": "r8a_s7a_mwiinsi0",
+          "B": "r8b_s7a_mwiinsi0"
+        },
+        "drop": {
+          "ok": true,
+          "count": 2
+        },
+        "settled": true,
+        "batchFailed": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiisguk1m581"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiish3u2bn2b"
+          }
+        ],
+        "batchUiOnB": [
+          {
+            "name": "batch-a-mwiisgm9.txt",
+            "status": "failed"
+          },
+          {
+            "name": "batch-b-mwiisgm9.txt",
+            "status": "failed"
+          }
+        ],
+        "uploadsBeforeSwitch": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          },
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "cardsBBefore": 0,
+        "switchA": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 2
+        },
+        "switchB": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 3
+        },
+        "batchUiOnA": [],
+        "retryOnA": {
+          "exists": false
+        },
+        "aShowsBBatch": false,
+        "aBatchState": null,
+        "backBItems": [
+          {
+            "key": "item_0",
+            "name": "batch-a-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiisguk1m581"
+          },
+          {
+            "key": "item_1",
+            "name": "batch-b-mwiisgm9.txt",
+            "status": "failed",
+            "error": "/api/interactive/boards/r8b_s7a_mwiinsi0/state -> 500: harness: 注入的批量关联保存失败",
+            "cardId": "c_mwiish3u2bn2b"
+          }
+        ],
+        "batchReachableOnB": true,
+        "retryBtn": {
+          "exists": true,
+          "visible": true,
+          "text": "重试"
+        },
+        "retryClick": {
+          "ok": true,
+          "reason": null
+        },
+        "uploadsAfterRetry": [
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          },
+          {
+            "m": "POST",
+            "u": "/api/attachments/upload",
+            "s": 200,
+            "failed": null,
+            "body": ""
+          }
+        ],
+        "fileCardsB": [
+          {
+            "id": "c_mwiisguk1m581",
+            "name": "batch-a-mwiisgm9.txt",
+            "attachmentId": "att_367a1f012a35"
+          },
+          {
+            "id": "c_mwiish3u2bn2b",
+            "name": "batch-b-mwiisgm9.txt",
+            "attachmentId": "att_db1d333613d3"
+          }
+        ],
+        "cardsA": [
+          "ca7a"
+        ],
+        "onlyBHasNewCards": true,
+        "noReupload": true,
+        "noDuplicateCards": true,
+        "aPageTextSample": "PERSONAL AGENT\n\n已保存\n\n受限模式\n\n拖动空白处平移，按住空格拖动框选，滚轮缩放\n\n文字注释\n显示并参与\n参与\n\nA 已有内容（批量归板）\n\n11-16 08:22\n还没有提交给 QIO\n任务\n▴\n展开对话\n＋添加\n提交给 QIO\n互动模式\nEnter 发送 · Shift+Enter 换行"
+      }
+    }
+  ],
+  "simulated": [
+    {
+      "scenario": "s6a",
+      "kind": "fulfill500",
+      "what": "对 new.txt 的上传 POST 注入 500（上传请求来自真实页面；old.txt 为真实上传/保存）"
+    },
+    {
+      "scenario": "s7a",
+      "kind": "fulfill500",
+      "what": "对 B 的关联保存 PUT 注入 500（批次导入与文件上传来自真实页面）"
+    }
+  ],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。",
+  "stamp": "2026-11-16T00:19:39.152Z"
+}

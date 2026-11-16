@@ -1,0 +1,8 @@
+== QIO #46 第八轮（R8）浏览器验收 runId=2026-11-16T00:42:07.598Z
+base=http://127.0.0.1:5203 api=http://127.0.0.1:8736 provider=http://127.0.0.1:8809 out=D:\qio-dev\q46-r8\_lead-logs\qio032-46\r8\final\g6f only=["s6a"]
+wt=D:/qio-dev/q46-r8 dataDir=D:\qio-dev\q46-r8\_lead-logs\qio032-46\r8\e2e-data\final cdp=9352
+
+---- s6a 第9项 附件替换重试 ----
+[FAIL] s6a 场景未跑完 :: {"error":"Error: 页面脚本异常：SyntaxError: Invalid or unexpected token\n    at Page.eval (file:///D:/qio-dev/q46-r8/scripts/verify-pm-qio032/cdp.mjs:208:13)\n    at async s6a (file:///D:/qio-dev/q46-r8/_lead-logs/qio032-46/r8/verify/r8-s6s7.mjs:84:5)\n    at async main (file:///D:/qio-dev/q46-r8/_lead-logs/qio032-46/r8/verify/run-48.mjs:65:7)\n    at async file:///D:/qio-dev/q46-r8/_lead-logs/qio032-46/r8/verify/run-48.mjs:84:17"}
+
+== 结果：PASS 0 / FAIL 1 / OBSERVE 0 / TOTAL 1 ==

@@ -1,0 +1,425 @@
+{
+  "runId": "mwi69sid",
+  "at": "2026-11-15T18:37:09.758Z",
+  "base": "http://127.0.0.1:5201",
+  "api": "http://127.0.0.1:8736",
+  "provider": "http://127.0.0.1:8809",
+  "cdpPort": 9335,
+  "out": "D:\\qio-dev\\q46-r8\\_lead-logs\\qio032-46\\r8\\final\\g3",
+  "mode": "r8",
+  "pass": 1,
+  "fail": 1,
+  "observe": 0,
+  "total": 2,
+  "results": [
+    {
+      "name": "5) 一块板的失败不堵其他板：A 的草稿请求失败（注入 503）后，排在其后的 B 与随后 C 的草稿仍自动保存且各归原板；浏览器仍响应；故障解除后 A 重试补存成功",
+      "ok": false,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "drafts": "真实卡片编辑器输入（草稿防抖自动保存）",
+          "switchBoard": "store.selectBoard(公开入口)",
+          "failInjection": "CDP Fetch 挂起 A 的草稿 PUT，切到 B 输入草稿后再以 503 放行（注入失败；请求来自真实页面）",
+          "retry": "store-public-action"
+        },
+        "boards": {
+          "A": "r8a_s3a_mwi69si4",
+          "B": "r8b_s3a_mwi69si4",
+          "C": "r8c_s3a_mwi69si4"
+        },
+        "typedA": {
+          "ok": true,
+          "value": "A 草稿·第一次 503（第5项）"
+        },
+        "typedB": {
+          "ok": true,
+          "value": "B 草稿·排在 A 失败请求之后"
+        },
+        "typedC": {
+          "ok": true,
+          "value": "C 草稿·应继续自动保存（第5项）"
+        },
+        "aHeld": true,
+        "aRelease": {
+          "url": "/api/interactive/drafts/r8a_s3a_mwi69si4",
+          "method": "PUT"
+        },
+        "switchB": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 2
+        },
+        "switchC": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 3
+        },
+        "switchA2": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 4
+        },
+        "responsive1": {
+          "ok": true,
+          "value": 42,
+          "ms": 23
+        },
+        "responsive2": {
+          "ok": true,
+          "value": 42,
+          "ms": 25
+        },
+        "draftsA1": {
+          "rev": 2,
+          "drafts": {
+            "card:ca3a": "A 草稿·第一次 503（第5项）"
+          }
+        },
+        "draftsB1": {
+          "rev": 1,
+          "drafts": {
+            "card:cb3a": "B 草稿·排在 A 失败请求之后"
+          }
+        },
+        "draftsC1": {
+          "rev": 2,
+          "drafts": {
+            "card:cc3a": "C 草稿·应继续自动保存（第5项）"
+          }
+        },
+        "bSaved": true,
+        "cSaved": true,
+        "aFailed": false,
+        "putsA1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 卡片（第5项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwi69si4",
+            "s": 503,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 草稿·第一次 503（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3a\":1}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 草稿·第一次 503（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3a\":1}}"
+          }
+        ],
+        "putsB1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8b_s3a_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb3a\":\"B 草稿·排在 A 失败请求之后\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          }
+        ],
+        "putsC1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3a_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3a\":\"C 卡片（第5项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3a_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3a\":\"C 草稿·应继续自动保存（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:cc3a\":1}}"
+          }
+        ],
+        "aStateAfterFail": {
+          "boardId": "r8b_s3a_mwi69si4",
+          "draftStates": {
+            "card:cb3a": {
+              "status": "saved",
+              "error": null
+            }
+          }
+        },
+        "retryUi": {
+          "exists": false
+        },
+        "retryHow": "store-public-action",
+        "retryClick": {
+          "ok": true,
+          "reason": "store.retryDraftSave()（页面没有可见的卡片草稿重试入口）"
+        },
+        "draftsA2": {
+          "rev": 2,
+          "drafts": {
+            "card:ca3a": "A 草稿·第一次 503（第5项）"
+          }
+        },
+        "aRetriedSaved": true,
+        "putsA2": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 卡片（第5项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwi69si4",
+            "s": 503,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 草稿·第一次 503（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3a\":1}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3a_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3a\":\"A 草稿·第一次 503（第5项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3a\":1}}"
+          }
+        ]
+      }
+    },
+    {
+      "name": "6) 一块板存在草稿冲突时跳过等待用户选择的条目：B 真实同键冲突后，A/C 的草稿仍自动保存；冲突项不反复重发；浏览器仍响应",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "hangDetected": false,
+        "hangSteps": [],
+        "stepFacts": [
+          {
+            "label": "切到 A",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 1979,
+            "value": {
+              "ok": true,
+              "reason": "",
+              "selectionSeq": 2
+            }
+          },
+          {
+            "label": "在 A 输入草稿",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 2835,
+            "value": {
+              "ok": true,
+              "value": "A 草稿·应继续保存（第6项）"
+            }
+          },
+          {
+            "label": "切到 C",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 2523,
+            "value": {
+              "ok": true,
+              "reason": "",
+              "selectionSeq": 3
+            }
+          },
+          {
+            "label": "在 C 输入草稿",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 2835,
+            "value": {
+              "ok": true,
+              "value": "C 草稿·冲突待选时仍应保存（第6项）"
+            }
+          },
+          {
+            "label": "等待草稿队列",
+            "ok": true,
+            "timeout": false,
+            "skipped": false,
+            "error": null,
+            "ms": 9004,
+            "value": true
+          }
+        ],
+        "driving": {
+          "drafts": "真实卡片编辑器输入（草稿防抖自动保存）",
+          "conflict": "CDP Fetch 挂起带本页新文字的 B 草稿 PUT + harness 直接写真实后端更新版本（真实并发冲突）",
+          "switchBoard": "store.selectBoard(公开入口)"
+        },
+        "boards": {
+          "A": "r8a_s3b_mwi69si4",
+          "B": "r8b_s3b_mwi69si4",
+          "C": "r8c_s3b_mwi69si4"
+        },
+        "bHeld": true,
+        "draftsB0": {
+          "rev": 1,
+          "drafts": {
+            "card:cb3b": "B 卡片（第6项）"
+          }
+        },
+        "serverWrite": {
+          "status": 200,
+          "rev": 2,
+          "conflicts": []
+        },
+        "bConflict": {
+          "conflicts": {
+            "card:cb3b": {
+              "local": "B 本页草稿·应冲突（第6项）",
+              "server": "B 服务器上的另一份（真实并发写）"
+            }
+          },
+          "states": {
+            "card:cb3b": {
+              "status": "error",
+              "error": "服务器上这个键已经有另一份文字：两份都已保留，请选择保留哪一份"
+            }
+          }
+        },
+        "conflictStep": {
+          "ok": true,
+          "timeout": false,
+          "error": null
+        },
+        "typedA": {
+          "ok": true,
+          "value": "A 草稿·应继续保存（第6项）"
+        },
+        "typedC": {
+          "ok": true,
+          "value": "C 草稿·冲突待选时仍应保存（第6项）"
+        },
+        "typedB": {
+          "ok": true,
+          "value": "B 本页草稿·应冲突（第6项）"
+        },
+        "switchA": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 2
+        },
+        "switchC": {
+          "ok": true,
+          "reason": "",
+          "selectionSeq": 3
+        },
+        "responsive": {
+          "ok": true,
+          "value": 42,
+          "ms": 48
+        },
+        "draftsA": {
+          "rev": 2,
+          "drafts": {
+            "card:ca3b": "A 草稿·应继续保存（第6项）"
+          }
+        },
+        "draftsB": {
+          "rev": 2,
+          "drafts": {
+            "card:cb3b": "B 服务器上的另一份（真实并发写）"
+          }
+        },
+        "draftsC": {
+          "rev": 2,
+          "drafts": {
+            "card:cc3b": "C 草稿·冲突待选时仍应保存（第6项）"
+          }
+        },
+        "aSaved": true,
+        "cSaved": true,
+        "bConflictKept": true,
+        "bNotResent": true,
+        "putsA": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3b_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3b\":\"A 卡片（第6项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8a_s3b_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:ca3b\":\"A 草稿·应继续保存（第6项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:ca3b\":1}}"
+          }
+        ],
+        "putsB": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8b_s3b_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb3b\":\"B 卡片（第6项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8b_s3b_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb3b\":\"B 本页草稿·应冲突（第6项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:cb3b\":1}}"
+          }
+        ],
+        "putsC": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3b_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3b\":\"C 卡片（第6项）\"},\"removed\":[],\"baseRev\":0,\"keyVersions\":{}}"
+          },
+          {
+            "m": "PUT",
+            "u": "/api/interactive/drafts/r8c_s3b_mwi69si4",
+            "s": 200,
+            "failed": null,
+            "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cc3b\":\"C 草稿·冲突待选时仍应保存（第6项）\"},\"removed\":[],\"baseRev\":1,\"keyVersions\":{\"card:cc3b\":1}}"
+          }
+        ],
+        "storeLeaf": {
+          "boardId": "r8c_s3b_mwi69si4",
+          "draftStates": {
+            "card:cc3b": {
+              "status": "saved",
+              "error": null
+            }
+          },
+          "draftConflicts": {}
+        }
+      }
+    }
+  ],
+  "simulated": [
+    {
+      "scenario": "s3a",
+      "kind": "hold+fulfill503",
+      "what": "CDP Fetch 挂起 A 的新草稿 PUT，再以 503 放行（注入失败；请求来自真实页面）"
+    },
+    {
+      "scenario": "s3b",
+      "kind": "hold",
+      "what": "CDP Fetch 挂起带本页新文字的 B 草稿 PUT；harness 直接写一版更新的服务端草稿制造真实同键冲突"
+    }
+  ],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。",
+  "stamp": "2026-11-15T18:32:50.581Z"
+}

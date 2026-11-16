@@ -1,0 +1,211 @@
+{
+  "runId": "mwija8ui",
+  "at": "2026-11-16T00:41:37.260Z",
+  "base": "http://127.0.0.1:5203",
+  "api": "http://127.0.0.1:8736",
+  "provider": "http://127.0.0.1:8809",
+  "cdpPort": 9351,
+  "out": "D:\\qio-dev\\q46-r8\\_lead-logs\\qio032-46\\r8\\final\\g2c",
+  "mode": "r8",
+  "pass": 1,
+  "fail": 0,
+  "observe": 1,
+  "total": 2,
+  "results": [
+    {
+      "name": "2) 两个真实标签页：页1 正式保存回执到达后，页2 尚未同步的新草稿本机恢复副本仍在（正文/版本都在），不要求页2重输",
+      "ok": true,
+      "observe": false,
+      "detail": {
+        "driving": {
+          "tabs": "CDP Target.createTarget 同浏览器默认上下文（同源共享 localStorage）",
+          "tab1FormalSave": "真实「完成编辑」按钮触发正式保存；CDP Fetch 挂起回执",
+          "tab2Draft": "真实卡片编辑器输入；CDP Fetch 挂起其草稿 PUT（模拟尚未同步）"
+        },
+        "board": "r8b_s2_mwija8u6",
+        "saveHeld": true,
+        "saveGateHits": 0,
+        "typed1": {
+          "ok": true,
+          "value": "页1正式内容（双标签页）"
+        },
+        "finish1": {
+          "clicked": true,
+          "closed": true
+        },
+        "puts1": [
+          {
+            "m": "PUT",
+            "u": "/api/interactive/boards/r8b_s2_mwija8u6/state",
+            "s": 200,
+            "failed": null,
+            "body": "{\"state\":{\"boardId\":\"r8b_s2_mwija8u6\",\"seq\":1,\"updatedAt\":\"2026-11-16T00:40:08.627Z\",\"cards\":[{\"id\":\"cb2\",\"kind\":\"text\",\"content\":\"页1正式内容（双标签页）\",\"meta\":{\"docText\":\"页1正式内容（双标签页）\\n\",\"doc\":{\"schema\":\"qio.textcard/1\",\"blocks\":[{\"id\":\"b_00031fc64ee4\",\"kind\":\"paragraph\",\"text\":\"页1正式内容（双标签页）\"}]}},\"x\":80,\"y"
+          }
+        ],
+        "draftHeld": true,
+        "typed2": {
+          "ok": true,
+          "value": "页2新草稿·未同步（旧回执不许删）"
+        },
+        "beforeLocal": {
+          "text": "页2新草稿·未同步（旧回执不许删）",
+          "updatedAt": 1794789611639,
+          "seq": 2,
+          "kind": "draft",
+          "version": 2,
+          "boardId": "r8b_s2_mwija8u6"
+        },
+        "beforeTab2": {
+          "boardId": "r8b_s2_mwija8u6",
+          "drafts": {
+            "card:cb2": "页2新草稿·未同步（旧回执不许删）"
+          },
+          "draftStates": {
+            "card:cb2": {
+              "status": "saving",
+              "error": null
+            }
+          }
+        },
+        "afterLocal": {
+          "text": "页2新草稿·未同步（旧回执不许删）",
+          "updatedAt": 1794789611639,
+          "seq": 2,
+          "kind": "draft",
+          "version": 2,
+          "boardId": "r8b_s2_mwija8u6"
+        },
+        "afterTab2": {
+          "boardId": "r8b_s2_mwija8u6",
+          "drafts": {
+            "card:cb2": "页2新草稿·未同步（旧回执不许删）"
+          },
+          "draftStates": {
+            "card:cb2": {
+              "status": "saving",
+              "error": null
+            }
+          }
+        },
+        "backendDraft1": {
+          "drafts": {
+            "card:cb2": "页1正式内容（双标签页）"
+          },
+          "rev": 2,
+          "keyVersions": {
+            "card:cb2": 2
+          }
+        },
+        "bAfter": {
+          "seq": 2,
+          "cards": [
+            "页1正式内容（双标签页）"
+          ]
+        },
+        "recordKept": true,
+        "versionKept": true,
+        "memoryKept": true,
+        "editorValueOpen": "页2新草稿·未同步（旧回执不许删）"
+      }
+    },
+    {
+      "name": "2b) 页2 新稿已同步到后端后，页1 的旧正式保存回执不得清掉后端更新的草稿",
+      "ok": false,
+      "observe": true,
+      "detail": {
+        "note": "UNVERIFIED：本轮页2 新稿未能在驱动中同步到后端（真实编辑器输入后 25s 内 drafts/keyVersions 未前进），2b 不作为产品结论",
+        "detail": {
+          "driving": {
+            "page2Sync": "新开真实标签页，真实卡片编辑器输入；轮询后端 drafts + keyVersions 确认同步成立",
+            "page1SecondSave": "真实「完成编辑」；CDP Fetch 挂起回执后放行（回执来自真实后端）"
+          },
+          "beforeSync": {
+            "rev": 2,
+            "drafts": {
+              "card:cb2": "页1正式内容（双标签页）"
+            },
+            "keyVersions": {
+              "card:cb2": 2
+            }
+          },
+          "oldKeyVersion": 2,
+          "typed3": {
+            "ok": true,
+            "value": "页2新稿·已同步（旧回执不许删）"
+          },
+          "syncHow": "failed",
+          "backendSynced": {
+            "rev": 2,
+            "drafts": {
+              "card:cb2": "页1正式内容（双标签页）"
+            },
+            "keyVersions": {
+              "card:cb2": 2
+            }
+          },
+          "syncedKV": 2,
+          "tab2Synced": false,
+          "held2": true,
+          "saveGate2Hits": 0,
+          "typed1b": {
+            "ok": true,
+            "value": "页1第二次正式内容（双标签页）"
+          },
+          "finish1b": {
+            "clicked": true,
+            "closed": true
+          },
+          "puts2": [
+            {
+              "m": "PUT",
+              "u": "/api/interactive/boards/r8b_s2_mwija8u6/state",
+              "s": 200,
+              "failed": null,
+              "body": "{\"state\":{\"boardId\":\"r8b_s2_mwija8u6\",\"seq\":2,\"updatedAt\":\"2026-11-16T00:41:30.888Z\",\"cards\":[{\"id\":\"cb2\",\"kind\":\"text\",\"content\":\"页1第二次正式内容（双标签页）\",\"meta\":{\"docText\":\"页1第二次正式内容（双标签页）\\n\",\"doc\":{\"schema\":\"qio.textcard/1\",\"blocks\":[{\"id\":\"b_000601efa8b7\",\"kind\":\"paragraph\",\"text\":\"页1第二次正式内容（双标签页）\"}]}},"
+            }
+          ],
+          "draftRequests2b": [
+            {
+              "m": "PUT",
+              "u": "/api/interactive/drafts/r8b_s2_mwija8u6",
+              "s": 200,
+              "failed": null,
+              "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb2\":\"页2新稿·已同步（旧回执不许删）\"},\"removed\":[],\"baseRev\":2,\"keyVersions\":{\"card:cb2\":2}}"
+            },
+            {
+              "m": "PUT",
+              "u": "/api/interactive/drafts/r8b_s2_mwija8u6",
+              "s": 200,
+              "failed": null,
+              "body": "{\"mode\":\"patch\",\"drafts\":{\"card:cb2\":\"页1第二次正式内容（双标签页）\"},\"removed\":[],\"baseRev\":3,\"keyVersions\":{\"card:cb2\":3}}"
+            }
+          ],
+          "backendAfter": {
+            "rev": 5,
+            "drafts": {},
+            "keyVersions": {}
+          },
+          "keptText": "",
+          "keptKV": 0,
+          "backendNewDraftKept": false,
+          "b2After": {
+            "seq": 3,
+            "cards": [
+              "页1第二次正式内容（双标签页）"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "simulated": [
+    {
+      "scenario": "s2",
+      "kind": "hold",
+      "what": "CDP Fetch 分别挂起页1 的正式保存 PUT 与页2 的草稿 PUT（回执来自真实后端）"
+    }
+  ],
+  "consoleErrors": [],
+  "note": "真实浏览器（系统 Edge + CDP）驱动真实 store 与真实后端；模型只打本机 fake provider；[模拟] 见 simulated。",
+  "stamp": "2026-11-16T00:37:06.762Z"
+}
