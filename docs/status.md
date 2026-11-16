@@ -6431,3 +6431,12 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 发布验证：公开 latest.json（`https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json`）HTTP 200、`version=0.3.3`，下载内容与本地 latest.json SHA256 一致；Release 资产 `QIO_0.3.3_x64-setup.exe` 129,203,424 字节、`.sig` 412 字节、`latest.json` 880 字节均已上传。更新下载 URL 使用 `ghfast.top` 加速（沿用 v0.3.1 故障后的口径）。
 - 未验证边界：真实签名更新链路端到端（latest.json 下载 → minisign 校验 → 自动安装）未完整跑；跨 Windows 账号 / 登录会话未实测（UNVERIFIED）；安装版 GUI 真机矩阵（窗口框架三模式、DPI、穿透、升级/卸载 GUI）沿用 0.3.2 口径未在本轮补测；Windows Authenticode 代码签名未做。
 - 证据：`docs/releases/v0.3.3.md`、`docs/releases/release-history.jsonl`、`D:\qio-dev\dist-0.3.3-release\`（安装包、签名、latest.json、build manifest、gate-result.json）、`_lead-logs/qio032-46/r10/logs/build-0.3.3.log` 与 `publish-0.3.3.log`。
+
+### P114 — v0.3.3 CI 回归修复（首屏板面规范化 / 陈旧断言 / Linux 窗口层隔离）（2026-11-16）
+
+- **Status：** completed
+- 触发：v0.3.3 发布 run 的 \`frontend\`（页面级验收 + windowFramePlacement）与 \`rust (ubuntu-24.04)\` 失败（归因见 P113 与 \`docs/releases/v0.3.3.md\`）。
+- 修复：**(a)** \`frontend/src/stores/interactive.ts\` 的 \`load()\`：首次加载默认板面允许服务端规范化 id —— 板面读取落定后把 \`contextBoardId\` 更新为服务端 id，并用它读取可见范围 / 任务清单 / 意图视图；不再把「服务端规范化」误判成切板。新增 store 回归 \`q46-r11-load-board-normalization\`（旧代码红：可见范围 0 次；新代码绿）。**(b)** \`windowFramePlacement\` 旧调用断言：fixture 去掉无效 top/bottom（0 视为未提供），期望 \`top=30\` 与实现一致。**(c)** \`frontend/src-tauri/src/main.rs\`：\`window_frame\` 模块 \`#[cfg(windows)]\` 隔离；托盘窗口事件与窗口初始化/退出按平台分派；非 Windows 只建普通主窗口；窗口 IPC 经 \`window_ipc\` 门面（Windows 真实命令 / 非 Windows 可编译占位）。Linux \`cargo check\` 从 39 个错误降到 0。
+- 验证：前端定向回归（q46-r7/r8、页面级验收、e2、windowFrame、ImpactConfirm、n8 与新增回归）全绿；\`vue-tsc --noEmit\` 0；\`cargo test --bin qio\` 58 passed、单实例跨进程契约 3 passed；\`cargo check\` 0。CI run \`43872314668\`（main push，受测提交 \`fb56335a\`）：\`frontend\` / \`rust (ubuntu-24.04)\` / \`backend (py3.11)\` 均通过（py3.11 前一次失败为计时敏感用例，按既有口径复跑通过）。
+- 边界：本轮只修 CI 回归，不重新构建/不发布安装包（v0.3.3 已发布资产不变，这些修复进入后续版本）；backend (windows-latest) 结论以 Actions 完整 run 为准。
+- 证据：\`_lead-logs/qio032-46/r11/\`（红/绿日志、定向回归日志）；提交 \`e32b4756\`（frontend + window layer）、\`fb56335a\`（Linux IPC 引用收口）。
