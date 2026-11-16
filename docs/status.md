@@ -5,6 +5,15 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
+最后核对：2026-11-16（**QIO 0.3.2 · #46 第九轮修复（桌面全机单实例 / 删除跨标签页草稿标记 / 提交后回读只归发起板 / 撤回重试以服务器事实为准）：实现、本地定向回归、类型检查、Rust 跨进程契约测试、Windows 安装版真机验收与真实 QIO 窗口验收完成；未跑全量、未触发 CI、未合并 main、未打标签、未发布**：从 `fix/qio032-46-board-state` 远端最新提交 `645e5a1f`（验收 SHA，开工 fetch 核对 origin 同 SHA、本地旧分支落后 2 个提交）建立独立工作树与修复分支 `fix/qio032-46-r9`；红基线 worktree `D:\qio-dev\_q46-r9-baseline`（同 SHA、产品代码零改动）。按本轮纪律只做本地定向测试、类型检查、Rust 定向测试、Windows 安装版真机验收与隔离数据的真实 QIO 窗口验收；未跑全量、未触发 CI（提交信息带 `[skip ci]`）、未合并 main、未打标签、未发布、未改变生产更新源。
+
+① **本轮修复**：**(1) 桌面全机单实例** —— 新增 `frontend/src-tauri/src/single_instance.rs`：`Global\QIO.SingleInstance.v1` 命名互斥（显式 NULL DACL，安装路径 / Windows 账号 / 登录会话 / 是否提权 / 版本同一套规则；`CreateMutexW` 建不出来时 fail-closed，绝不静默放行第二套应用；进程结束含崩溃由内核释放，强杀后可重开），取得锁后 main 才写日志 / 令牌、建窗口、拉后端；同会话重复启动置位 `Local\...Activate.v1` 并 exit 0，主实例窗口就绪后监听事件并复用 `show_main_window()` 恢复 / 最小化 / 聚焦（托盘隐藏也能唤出）；异会话显示可关闭「QIO 已在此电脑运行」后 exit 0；更新重启新增 `qio_arm_relaunch` 交接事件（`services/updater.ts` 的 relaunch() 先登记再请求 plugin-process relaunch），新进程等待旧进程释放锁（≤30s）再接任；`install_e2e_multi.py` 默认口径改为「B 活动 → A 第二份启动被拦 → 卸载非活动 A 不动 B → 卸载活动 B 按归属关闭」。**(2) 删除跨标签页草稿标记** —— `interactive.ts` 删除 `recordDraftSyncMarker()` / `draftServerVersionAdvancedElsewhere()` / 同步成功后的写入 / `clearDraft` 的标记保留分支；`useInteractiveStore` 初始化幂等清除旧键 `qio.draft.sync-marker.v1`（只动该键、不读值、不输出正文、存储失败沿用容错）；保留 `requestDraftClear()` 与正式保存对账、按板草稿版本、后端逐键版本守卫、`expectLocal` 本机记录身份重读（有红绿证据表明不能简化）。**(3) 提交后回读只归发起板** —— `refreshAfterSubmit(ownerBoardId, ...)` 冻结发起板 / 提交批次 / 刷新代次，整板、可见范围、任务清单全部显式归原板；每个 await 后校验代次与板面，离板把未开始步骤延后回原板 `deferredRefreshAfterSubmit`，真实失败经 `patchSubmissionFor()` 归原板；只有「本次刷新实际采纳了板面事实」（`boardReadAdoption` 的 readSeq 前进）才置 idle，`refreshBoardFromServer` 返回未采纳 / 子读取失败都算未完成；`retrySubmitRefresh()` 复用原板冻结上下文。**(4) 撤回重试只在服务器事实确认后成功** —— `settleCancelRecovery()` 成功必须带有限有效 seq>0 且 ≥ expectSeq（缺版本 / NaN / 旧版本 / 操作被替换不结算）；`retryCancelRecovery()` 用「本次读取实际采纳 + readSeq 前进 + 采纳 seq≥expectSeq + opSeq 匹配」判定，不再用界面缓存 seq 冒充；迟到成功 / 失败只结算对应 opSeq。
+
+② **逐项结果（先红后绿；红基线独立 worktree、产品代码零改动）**：第 2 项 `q46-r8-drafts-protect.test.ts` 基线 3 failed / 10 passed → 产品 13 passed（新增 4A–4G；原 2B 按新语义改写：客户端不再主动阻止旧版本 removed，由后端逐键版本守卫拒绝，服务端数据保留、界面如实 error）；相邻 q46-r7 六文件 + drafts-queue + f01 共 8 文件 37 passed。第 3 项 `q46-r8-submit-ownership.test.ts` 基线 5 failed / 5 passed → 产品 10 passed（新增：B 回读在 A 显示时失败 / 成功、B→A→B 旧代次迟到失败不覆盖、重试后立刻切 A、只合并草稿未采纳不得 idle）。第 4 项 `q46-r8-select-cancel.test.ts` 基线 3 failed / 6 passed（另 2 条护栏基线即绿）→ 产品 9 passed（旧版本 6 / 版本缺失 / NaN 回执 / 切板 / 同板连续撤回）。第 1 项 Rust 跨进程契约（`cargo test --test single_instance_contract`）：基线 0 passed / 3 failed（无探针 / 无闸门，60s 无输出）→ 产品 3 passed（primary / duplicate+activated / handoff 等待后接任）；`cargo test --bin qio` 54 passed；`cargo check` 0 error 0 warning；updater 交接顺序 `updaterFlow.test.ts` 基线 1 failed → 产品 12 passed，updater service+store+timers 38 passed。
+③ **本地定向测试与类型检查（本轮实际跑过的命令与结果）**：`cd frontend`；`npx vitest run`（q46-r7 六文件 + q46-r8 六文件 + updaterFlow + updater store/timers）→ 15 files / 112 passed；`npx vue-tsc --noEmit` → exit 0；`python -m py_compile scripts/install_e2e_multi.py` → exit 0、`--help` 正常。证据：`_lead-logs/qio032-46/r9/{red,green}/`。
+④ **Windows 安装版真机验收（在 0.3.2 安装目录上替换为本轮 release qio.exe；隔离 QIO_DATA_DIR/TEMP/LOCALAPPDATA，WebView2 CDP）**：`win_instance_accept.py` → PASS 11 / FAIL 0 / UNVERIFIED 1：(S1) 普通重复启动：第二进程 exit 0，无第二后端 / 第二份 lease / 第二窗口，首实例窗口与后端正常；(S2) 快速同时启动：只剩一套；(S3) 首实例尚未就绪时第二次启动：登记激活、exit 0、只有一套；(S4) 最小化后再次启动：恢复并聚焦（iconic true→false）；(S5) 隐藏到托盘后再次启动：窗口重新显示；(S6) 不同安装目录重复启动：第二份被拦，B 目录无进程 / lease / 窗口；(S7) 强制结束后重开：锁由内核释放、可重新启动；(S8) 更新期间停 / 恢复后端：锁持续持有，重复启动仍被拦（经 CDP 调真实 IPC `qio_prepare_for_update` / `qio_restore_backend`）；(S9) 更新重启交接：经 CDP 调真实 IPC `qio_arm_relaunch` + `plugin:process|restart`，新 pid 接任、旧进程退出、全程单窗口单后端。S10 另一 Windows 账号 / 登录会话未验证（本机只有当前会话，创建第二个账号需管理员且会改动机器账号）。真实 QIO 窗口验收（同一 QIO 窗口 + 真实隔离后端 + fake provider，CDP Fetch 注入时序）：B1 旧标记清理（旧键消失、真实未同步草稿与正式内容保留）/ B2 正常完成编辑清旧稿（服务端正式内容落库、旧草稿清、本机记录清）/ B3 B 提交后回读在 A 显示时失败（A idle、B error、A 0 次 / B 1 次受理）/ B4 B 点重试刷新后立刻切 A（A 无状态无读取、回 B 自动收尾）/ B5 撤回重试读到旧版本不结算、达到 expectSeq 后才成功 / B6 重试读到版本缺失 / 读取失败不结算且保持「重新核对」（真实窗口把注入落成传输失败；精确的 seq=0 缺失语义由 store 用例覆盖）—— 结果见 `_lead-logs/qio032-46/r9/logs/accept-board.log` 与 `_win-r9/board-run2/out/results.json`。`install_e2e_multi.py` 默认口径已用本轮**未签名 NSIS 测试安装包**（`-UnsignedTestArtifact` 同类开关：`createUpdaterArtifacts=false` 的临时 override，**不是可发布产物**）在真机跑通：首跑 30 项 PASS / 2 项 FAIL，定位为测试装置竞态（启动后未等 lease、冻结进程身份时 onefile child 尚未出现），修正为「先 `wait_lease` 再核对」与「冻结前等进程树稳定」后复跑 **32 项 PASS / 0 WARN / 0 FAIL**，含第二份安装被拦（C-060…C-064）、卸载非活动 A 不动 B（C-041…C-048，含按映像名杀 qio.exe 的对照仍 PASS）、卸载活动 B 按进程归属关闭并清目录（C-051…C-053）；证据见 `_lead-logs/qio032-46/r9/logs/install-e2e-multi.log` 与 `_e2e-multi-r9e/summary.json`。
+⑤ **已知限制 / 未验证**：未跑前后端全量、未触发 CI、未合并 main、未打标签、未发布。(a) 删除跨标签页标记后：后端拒绝旧 removed 时客户端已写下的本机 cleared 依据不回滚，重开应用后「另一标签页已同步的新草稿」在编辑器不再自动恢复显示（服务端数据未丢）；桌面端已是全机单实例、单 WebView，跨标签页不再是运行形态，本轮接受为已知可见性降级。(b) 更新重启交接低风险残留：用户点「立即重启」但 plugin relaunch 失败 / 被取消时 handoff 保持置位，之后一次普通启动会先等 ≤30s 再走同会话激活（慢，但不会出现第二套应用）；本轮未加 disarm 命令。(c) 跨 Windows 账号 / 会话的异会话弹框路径、真实 NSIS 覆盖升级（无签名更新源 / 安装器）与「更新成功后自动打开新版」未在本机验证；S9 只证明同一版本经真实 relaunch IPC 的交接。(d) 毫秒级双击并发由内核原子性保证，本机未做压测。
+
 最后核对：2026-11-16（**QIO 0.3.2 · #46 第八轮修复（提交归属原板 / 草稿清除与读取保护 / 草稿队列 / 切板与撤回代次 / 附件尝试身份与归板）：实现、本地定向回归、前端类型检查与隔离后端浏览器验收完成；浏览器验收 PASS 8 / OBSERVE 2 / FAIL 0（2 项因驱动无法隔离时序如实记 UNVERIFIED，产品语义由 store 定向用例覆盖）**：从 `fix/qio032-46-board-state` 远端最新提交 `c9fedc60744911c088ebc082faceef266ca3048b` 建立独立工作树 `D:\qio-dev\q46-r8`（开工 fetch 核对 origin 同 SHA、无后续提交），红基线 worktree `D:\qio-dev\_q46-r8-baseline`（同 SHA、产品代码零改动）。按本轮纪律只做本地定向测试、类型检查与隔离后端浏览器验收，未跑全量、未触发 CI（推送提交信息带 `[skip ci]`）、未合并 main、未打标签、未发布、未改变生产更新源。
 
 ① **本轮修复（主要入口 `frontend/src/stores/interactive.ts`，另动 `components/IntentExecutionMessage.vue`、`components/interactive/AddMenu.vue`）**：**(1) 提交始终回发起板面** —— `submit()` 入口冻结发起板、提交身份、视口与保存依据；保存回执后只读原板面的保存事实决定下一步（B 正常保存才提交 B，版本用 B 本次确认的保存 seq；B 等待影响确认 / 保存失败 / 候选变更时在 B 保留状态与重试入口）；提交回执 / 受理查证 / 重试身份 / 提交后草稿恢复 / 任务刷新按板面会话记账（新增 `BoardSubmissionSession`），切走写回原板、切回可见；未知回执用 `identity.boardId + clientRequestId` 精确查证，不重复 POST。**(2) 旧正式保存不得删除另一标签页的新恢复副本** —— 待清除登记冻结原板 / 卡片 / 草稿版本 / 本机记录版本 + 内容指纹；清理前重读实际存储，身份对不上保留新记录；跨标签页草稿同步标记（共享 localStorage）阻止旧版本发 `removed`；后端删除继续用逐键版本守卫。**(3) 撤销正式编辑保留草稿** —— 登记绑定正式编辑期望形态（正文 + 适用 meta / 删除），保存回执必须证明该形态真的落库；撤销 / 替换让登记失效（stale），重做后形态再次对上才允许清。**(4) 迟到读取不得显示旧稿** —— `refreshBoardFromServer` 增加读取代次（更新的读取已发出则整次响应丢弃）、回执板面身份校验、草稿存簿版本与逐键版本成对应用；正式板面版本与草稿版本分别判断。**(5) 单板失败不堵其他板** —— flush 失败只停该板该版本并记录原因，继续处理其他板；失败版本保留「重试保存」入口，新编辑 / 明确重试才重发。**(6) 冲突板不卡队列** —— 先判定「可发送」再选板，只剩等用户选择的冲突板跳过；runner 唯一在途引用、所有退出路径 finally 清理，重复进入只登记再来一轮（修复基线 flush 自旋导致浏览器卡死）。**(7) 切板代次** —— `selectBoard()` 入口登记代次，清单 / 整板读取 / 路由跳转 / 失败提示 / 加载结束都核对；`IntentExecutionMessage` 只为仍有效的打开操作跳转。**(8) 撤回代次** —— 撤回状态带 `opSeq` 与 `expectSeq`；整板回读 / 保存成功结算绑定发起时操作与服务器版本，旧成功 / 旧失败都不能关闭更新的撤回。**(9) 替换文件失败后的重试** —— 可复用附件缓存带 `attemptId`，只允许当前等待恢复的这次尝试复用；上传失败沿用内存文件源重传（同名不同内容按尝试区分）；迟到旧上传不写缓存。**(10) 旧保存只结算它包含的关联** —— 结算同时用「回执板面状态」与「本次请求候选快照」核对，旧保存失败不再误标新附件。**(11) 批量导入反馈与重试归原板** —— 当前批次 / 汇总 / 在途按板面取值，A 不显示 B 的批次与重试；`AddMenu` 切板恢复目标板自己的批次入口。**(12) 撤销关联后结束失效等待** —— 候选里「卡片 + 附件」关系消失（撤销 / 替换 / 删除）立刻结束旧尝试等待，旧回执不复活；重做 / 重跑后重新等包含它的保存回执。
@@ -3480,13 +3489,13 @@ GitHub 直链与 `gh` 上传本身是通的。
 - **所有权记录**：以前路径固定为安装目录下的单个文件，后写的覆盖先写的，**先退出的实例会删掉后启动实例的记录**
   → **已修**：权威记录改为按实例区分的 `sidecar.lease.<shell_pid>.json`（别人覆盖不到），
   旧名单文件仍写一份兼容镜像（已被另一个活实例占用时不覆盖）；退出只删自己那份，
-  镜像只在「记的正是本进程」时删；重复启动同目录会识别并列出已有实例（不阻断合法多实例），
+  镜像只在「记的正是本进程」时删；重复启动同目录会识别并列出已有实例（不阻断合法多实例——**该口径自 2026-11-16 起已被全机单实例取代**：同一台电脑只允许一个 QIO，第二份启动被拦截并退出，见文首最新一轮），
   只清理「外壳进程已不存在」的死记录。受控验证：把实现换回旧语义 → 新用例红
   （两个实例落在同一个文件里、候选数 1 对 2、清理与识别同样错），换回新版全绿；
   真实进程端到端（同一安装目录两个实例）实测：`--check-only` 能看到两个实例，
   `--close-installation` 后四个进程全灭、两份记录都清掉。
 - 真实多实例并发（两个**安装态**外壳同时首启共享数据目录、同目录重复启动、掉电下的原子发布）
-  **未复现/未跑**，复现条件已写明。
+  **未复现/未跑**，复现条件已写明。（该多实例运行口径自 2026-11-16 起不再是产品行为：全机单实例锁已阻止同机第二套应用。）
 
 ### 六、本轮实测（命令与结果）
 
@@ -3509,7 +3518,7 @@ GitHub 直链与 `gh` 上传本身是通的。
 - 检索整段搬进了执行器（静态核查确认是只读路径）；若以后这条路径加入写操作，需要重新评估。
 - 按钮位置在页面被 CSS 缩放时用「探测参考原点 + 比例」自校准，属于测量式定位；正常窗口不受影响。
 - 停止后端「杀不掉的进程」分支、真实 VPN/死代理场景没有构造条件，未测。
-- 多实例共享数据目录/同目录重复启动的**真实安装态**并发未复现（复现条件已写明）；
+- 多实例共享数据目录/同目录重复启动的**真实安装态**并发未复现（复现条件已写明；自 2026-11-16 起同机重复启动被全机单实例锁拦截，不再是产品运行形态）；
   模型同步的掉电窗口未测。
 
 ---
@@ -3653,7 +3662,7 @@ GitHub 直链与 `gh` 上传本身是通的。
 
 - 实例存的存活判定依赖心跳 + pid 探测：心跳新鲜时不看 pid（避免误判），
   因此「进程刚被杀、心跳还没过期」这一段仍会被判成存活——恢复会推迟到心跳过期，不会误中断。
-- R05 的「另一活实例的任务不被抢」有受控用例覆盖；**真实多实例并发**没有在本机复现。
+- R05 的「另一活实例的任务不被抢」有受控用例覆盖；**真实多实例并发**没有在本机复现。（桌面壳自 2026-11-16 起全机单实例；此处的多实例指历史/后端恢复语义。）
 - `repair_orphan` 只有库层与只读出口，没有新增 HTTP 修复端点（未在本轮授权范围内定权限语义）。
 - 文本兼容模式只做了**本地严格请求结构校验**，没有对任何真实厂商端点做前后对照，
   因此不对「所有厂商原先都失败」下结论。
