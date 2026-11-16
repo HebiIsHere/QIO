@@ -2523,7 +2523,7 @@ fn main() {
             window_ipc::qio_set_hit_regions,
             window_ipc::qio_get_window_frame,
             window_ipc::qio_window_action,
-            window_frame::commands::qio_set_passthrough
+            window_ipc::qio_set_passthrough
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
