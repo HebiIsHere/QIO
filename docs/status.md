@@ -5,6 +5,8 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
+最后核对：2026-11-17（**QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
+
 最后核对：2026-11-17（**凭据厂商新增 Command Code / OpenCode（套餐 vs API 调用）已实现并验证；QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
 
 最后核对：2026-11-16（**QIO 0.3.2 · #46 第十轮返修（正式构建固定产品锁名 / 查证成功后按原提交归组 / 撤回「重新核对」跟随原板与最终结果）：实现、定向回归、类型检查、Rust 测试与 Windows 安装版 env 过敏 / 覆盖升级验证完成；未跑全量、未触发 CI、未合并 main、未打标签、未发布**：从 `fix/qio032-46-r9` 远端最新提交 `70e475c2`（开工 fetch 核对 origin 同 SHA）继续，红基线 worktree `D:\qio-dev\_q46-r10-baseline`（同 SHA、产品代码零改动）。
@@ -6454,3 +6456,14 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 验证：后端 \`pytest tests/test_model_catalog.py tests/test_identify.py tests/test_credentials.py tests/test_credential_endpoint_api.py\` 全部通过（新增预设字段/地址/计费方式断言）；前端凭据表单与模型设置定向 vitest 通过；\`vue-tsc --noEmit\` 0；\`check_docs.py\` 通过。
 - 边界：未发版；「能否调用/额度」仍由保存后的一次真实请求验证，预设只给默认值；OpenCode Go 建议的 \`x-opencode-session\` 会话头 QIO 未发送（第三方客户端可用，但配额/路由统计以服务端为准）；Command Code 的 Provider 按量档位与模型可用性以服务端账单/目录为准，界面不写死价格。
 - 证据：\`backend/src/agent/credentials/providers.py\`、\`backend/tests/test_model_catalog.py\`、\`frontend/src/services/api.ts\`；提交见本轮 git log。
+
+### P116 — v0.3.4 发布（2026-11-17）
+
+- **Status：** completed
+- 基线：\`main\` @ \`6241783e\`（0.3.3 + 板面规范化/上传超时修复 + Command Code / OpenCode 厂商）→ release commit \`d4670bd3\`。tag \`v0.3.4\`（annotated \`00c77ec0\`）指向该提交；GitHub Release v0.3.4 已发布（exe / .sig / latest.json）。
+- 构建：\`scripts/build_installer.ps1 -DistDir D:\qio-dev\dist-0.3.4-release\`（模型 + 自带 Python 运行时 + sidecar + 卸载助手 + tauri build + NSIS 补丁 + minisign 签名 + latest.json），产出 \`QIO_0.3.4_x64-setup.exe\` 129,200,744 字节 / SHA256 \`f3c1fbb986507d2d9564b72e90a7bafdeb52dc92223dbe2f2bfc9462bdabffb9\`。
+- 发布闸门：18 PASS / 0 FAIL / 0 SKIP（受测 commit=\`d4670bd3\`、安装包哈希与 SHA256SUMS、latest.json 版本/无 BOM/签名 key id、NSIS 载荷 0.3.4、sidecar 与 release 构建逐字节一致、模型清单、构建 manifest \`signing=signed\`）；结果写入 \`docs/releases/release-history.jsonl\`。
+- CI：push main 触发 run \`44037155678\`，**10/10 job 全部 success**（frontend、backend py3.11/py3.12/windows、rust windows/ubuntu、install e2e、docs、frozen worker、preflight）。
+- 发布验证：公开 latest.json（\`https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json\`）HTTP 200、\`version=0.3.4\`，内容与本地 latest.json SHA256 一致；Release 资产 exe / .sig / latest.json 均已上传；下载 URL 走 \`ghfast.top\` 加速。
+- 未验证边界：真实签名更新链路端到端、跨 Windows 账号/会话、安装版 GUI 真机矩阵、Windows Authenticode（沿用 0.3.3 口径）。
+- 证据：\`docs/releases/v0.3.4.md\`、\`dist-0.3.4-release/\`、\`_lead-logs/qio032-46/r11/build-0.3.4.log\` 与 \`publish-0.3.4.log\`。
