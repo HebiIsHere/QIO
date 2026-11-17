@@ -5,7 +5,7 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
-最后核对：2026-11-16（**QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
+最后核对：2026-11-17（**凭据厂商新增 Command Code / OpenCode（套餐 vs API 调用）已实现并验证；QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
 
 最后核对：2026-11-16（**QIO 0.3.2 · #46 第十轮返修（正式构建固定产品锁名 / 查证成功后按原提交归组 / 撤回「重新核对」跟随原板与最终结果）：实现、定向回归、类型检查、Rust 测试与 Windows 安装版 env 过敏 / 覆盖升级验证完成；未跑全量、未触发 CI、未合并 main、未打标签、未发布**：从 `fix/qio032-46-r9` 远端最新提交 `70e475c2`（开工 fetch 核对 origin 同 SHA）继续，红基线 worktree `D:\qio-dev\_q46-r10-baseline`（同 SHA、产品代码零改动）。
 
@@ -6440,3 +6440,17 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 验证：前端定向回归（q46-r7/r8、页面级验收、e2、windowFrame、ImpactConfirm、n8 与新增回归）全绿；\`vue-tsc --noEmit\` 0；\`cargo test --bin qio\` 58 passed、单实例跨进程契约 3 passed；\`cargo check\` 0。CI run \`43872314668\`（main push，受测提交 \`fb56335a\`）：\`frontend\` / \`rust (ubuntu-24.04)\` / \`backend (py3.11)\` 均通过（py3.11 前一次失败为计时敏感用例，按既有口径复跑通过）。
 - 边界：本轮只修 CI 回归，不重新构建/不发布安装包（v0.3.3 已发布资产不变，这些修复进入后续版本）；backend (windows-latest) 结论以 Actions 完整 run 为准。
 - 证据：\`_lead-logs/qio032-46/r11/\`（红/绿日志、定向回归日志）；提交 \`e32b4756\`（frontend + window layer）、\`fb56335a\`（Linux IPC 引用收口）。
+
+### P115 — 凭据厂商新增 Command Code / OpenCode，区分套餐与 API 调用（2026-11-17）
+
+- **Status：** completed
+- 需求：凭据可选厂商增加 **Command Code** 与 **OpenCode**，并区分「套餐（订阅额度）」与「API 调用（按量计费）」两种接入方式，避免用户拿订阅 Key 往按量地址发、或反过来。
+- 实现：\`backend/src/agent/credentials/providers.py\` 的 \`ProviderPreset\` 增加 \`billing\`/\`billing_label\`（\`plan\`→套餐、\`api\`→API 调用，随 \`/api/credentials/providers\` 下发）；新增四条预设：
+  - \`commandcode\`「Command Code（套餐）」：\`https://api.commandcode.ai/provider/v1\`，默认 \`deepseek/deepseek-v4-flash\`；说明 GOAT/Pro/Max/Team 套餐的 API Key 计入套餐用量，**Go 套餐不含 API 访问**；Claude 系列在高级设置改用 Anthropic 协议（同一地址）。
+  - \`commandcode-api\`「Command Code（API 调用）」：同一地址，Provider 按量套餐按实际调用计费。
+  - \`opencode-go\`「OpenCode Go（套餐）」：\`https://opencode.ai/inference/go/openai/v1\`，Go / Go Plus / Go Teams 订阅含固定月额度。
+  - \`opencode\`「OpenCode（API 调用）」：\`https://opencode.ai/inference/openai/v1\`，OpenCode Console 充值按量计费；免费模型仅 OpenCode 客户端可用。
+  前端 \`ProviderPreset\` 类型补 \`billing\`/\`billing_label\` 可选字段；预设名称直接带「（套餐）/（API 调用）」后缀，下拉与说明沿用现有厂商提示，不新增硬编码列表。
+- 验证：后端 \`pytest tests/test_model_catalog.py tests/test_identify.py tests/test_credentials.py tests/test_credential_endpoint_api.py\` 全部通过（新增预设字段/地址/计费方式断言）；前端凭据表单与模型设置定向 vitest 通过；\`vue-tsc --noEmit\` 0；\`check_docs.py\` 通过。
+- 边界：未发版；「能否调用/额度」仍由保存后的一次真实请求验证，预设只给默认值；OpenCode Go 建议的 \`x-opencode-session\` 会话头 QIO 未发送（第三方客户端可用，但配额/路由统计以服务端为准）；Command Code 的 Provider 按量档位与模型可用性以服务端账单/目录为准，界面不写死价格。
+- 证据：\`backend/src/agent/credentials/providers.py\`、\`backend/tests/test_model_catalog.py\`、\`frontend/src/services/api.ts\`；提交见本轮 git log。

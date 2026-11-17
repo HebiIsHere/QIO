@@ -35,6 +35,15 @@ KINDS = (KIND_OPENAI, KIND_ANTHROPIC)
 
 CUSTOM_PROVIDER_ID = "custom"
 
+# 计费/接入方式：同一家厂商可能有「订阅套餐」与「按量 API 调用」两种 Key。
+# 只用于界面区分与说明，不改变请求协议（地址/模型仍按预设填写）。
+BILLING_PLAN = "plan"
+BILLING_API = "api"
+BILLING_LABELS = {
+    BILLING_PLAN: "套餐",
+    BILLING_API: "API 调用",
+}
+
 
 @dataclass(frozen=True)
 class ProviderPreset:
@@ -61,6 +70,8 @@ class ProviderPreset:
     regions: tuple[str, ...] = ()
     # 有接入类型差异的服务商（例如 AI Studio API Key vs Vertex AI 的接入方式）。
     entry_types: tuple[str, ...] = ()
+    # 计费/接入方式：套餐（订阅额度）或 API 调用（按量计费）。空串 = 不区分。
+    billing: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +90,8 @@ class ProviderPreset:
             "discovery_note": self.discovery_note,
             "regions": list(self.regions),
             "entry_types": list(self.entry_types),
+            "billing": self.billing,
+            "billing_label": BILLING_LABELS.get(self.billing, ""),
         }
 
 
@@ -95,6 +108,42 @@ PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset(
         "anthropic", "Anthropic", KIND_ANTHROPIC, "https://api.anthropic.com/v1",
         "claude-sonnet-4", ("sk-ant-",),
+    ),
+    # ── Command Code：同一家厂商区分「套餐」与「API 调用」────────────────────
+    # 官方 Provider API：OpenAI Chat Completions 与 Anthropic Messages 同一 base。
+    # 除 Go 套餐外，GOAT / Pro / Max / Team 套餐都带 API 访问；Provider 是按量套餐。
+    ProviderPreset(
+        "commandcode", "Command Code（套餐）", KIND_OPENAI,
+        "https://api.commandcode.ai/provider/v1",
+        "deepseek/deepseek-v4-flash",
+        billing=BILLING_PLAN,
+        note="GOAT / Pro / Max / Team 套餐的 API Key 计入套餐用量；"
+        "Go 套餐不含 API 访问。Claude 系列模型请把连接协议改为 Anthropic（同一地址）。",
+    ),
+    ProviderPreset(
+        "commandcode-api", "Command Code（API 调用）", KIND_OPENAI,
+        "https://api.commandcode.ai/provider/v1",
+        "deepseek/deepseek-v4-flash",
+        billing=BILLING_API,
+        note="Provider 按量套餐：按实际调用计费，不占用订阅额度。"
+        "Claude 系列模型请把连接协议改为 Anthropic（同一地址）。",
+    ),
+    # ── OpenCode：订阅（Go）与按量 API（Console）是两套地址 ────────────────
+    ProviderPreset(
+        "opencode-go", "OpenCode Go（套餐）", KIND_OPENAI,
+        "https://opencode.ai/inference/go/openai/v1",
+        "deepseek-v4.1-flash",
+        billing=BILLING_PLAN,
+        note="OpenCode Go / Go Plus / Go Teams 订阅含固定月额度；"
+        "API Key 来自 OpenCode Console 的 Go 订阅，不是按量 Console 余额。",
+    ),
+    ProviderPreset(
+        "opencode", "OpenCode（API 调用）", KIND_OPENAI,
+        "https://opencode.ai/inference/openai/v1",
+        "gpt-6-luna",
+        billing=BILLING_API,
+        note="OpenCode Console 充值后按量计费（非 Go 订阅）；"
+        "免费模型需要 OpenCode 客户端，第三方客户端请用付费模型。",
     ),
     ProviderPreset(
         "glm", "GLM（智谱）", KIND_OPENAI, "https://open.bigmodel.cn/api/paas/v4",

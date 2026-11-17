@@ -388,6 +388,31 @@ def test_public_catalog_marks_openrouter_and_is_offline():
     assert len(list_presets()) >= 16
 
 
+def test_commandcode_and_opencode_distinguish_plan_vs_api():
+    """同一家厂商的「套餐」与「API 调用」必须是两条独立预设，地址/说明不能混。"""
+    presets = {p.id: p for p in list_presets()}
+    # Command Code：套餐（GOAT/Pro/Max/Team）与 Provider 按量调用共用同一 base；
+    # Go 套餐不含 API，地址相同但说明必须把区别讲清楚。
+    cc_plan = presets["commandcode"]
+    cc_api = presets["commandcode-api"]
+    assert cc_plan.billing == "plan" and cc_plan.to_dict()["billing_label"] == "套餐"
+    assert cc_api.billing == "api" and cc_api.to_dict()["billing_label"] == "API 调用"
+    assert cc_plan.base_url == cc_api.base_url == "https://api.commandcode.ai/provider/v1"
+    assert "Go" in cc_plan.note and "API" in cc_plan.note
+    # OpenCode：Go 订阅与 Console 按量是两套地址，不能互相冒充。
+    oc_plan = presets["opencode-go"]
+    oc_api = presets["opencode"]
+    assert oc_plan.billing == "plan" and oc_api.billing == "api"
+    assert oc_plan.base_url == "https://opencode.ai/inference/go/openai/v1"
+    assert oc_api.base_url == "https://opencode.ai/inference/openai/v1"
+    assert oc_plan.base_url != oc_api.base_url
+    assert oc_plan.suggested_model and oc_api.suggested_model
+    # 两条预设都要能被按名称找到，且协议都是 OpenAI 兼容（Claude 模型可由高级设置改协议）。
+    for pid in ("commandcode", "commandcode-api", "opencode-go", "opencode"):
+        assert find_preset(pid) is not None
+        assert find_preset(pid).kind == "openai"
+
+
 # ---------------------------------------------------------------------------
 # 按模型验证（服务层，用 conftest 的 fake verify）
 # ---------------------------------------------------------------------------

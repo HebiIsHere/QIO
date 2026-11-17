@@ -225,6 +225,9 @@ export interface ProviderPreset {
   discovery_note?: string;
   regions?: string[];
   entry_types?: string[];
+  /** plan 套餐 | api API 调用；空/缺省 = 该厂商不区分计费方式（老后端可能不返回）。 */
+  billing?: string;
+  billing_label?: string;
 }
 
 /** 一次可用性验证的结果。「保存成功」与「验证通过」是两件事。 */
