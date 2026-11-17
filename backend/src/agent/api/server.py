@@ -74,6 +74,7 @@ from agent.services.attachments import (
 )
 # 上传作业：接收端 / 工作线程 / 收尾共享同一份终态（round 4 问题三）
 from agent.services.attachment_upload import (
+    NORMAL_SETTLE_SECONDS as UPLOAD_NORMAL_SETTLE_SECONDS,
     SETTLE_SECONDS as UPLOAD_SETTLE_SECONDS,
     # 桥接队列深度搬进了作业模块；名字继续在这里可用（容量口径的唯一来源，验收用例读它）
     UPLOAD_QUEUE_DEPTH,
@@ -2041,11 +2042,13 @@ def create_app(
                 await job.close_input(abort=bool(too_large or read_error))
         try:
             try:
-                # 有界等工作线程收尾：它可能卡在**不可中断的磁盘调用**里（契约 §1.2）。
-                # 卡住时不谎报「已退出」，保留真实状态（worker_done 不会被置位），
-                # 如实收尾、清掉可能已落盘的副本，并让迟到的结果无法提交 ready。
+                # 有界等工作线程收尾：正常上传给与最大体积相称的预算（慢盘/杀软下
+                # 100 MB 的拷贝+哈希可能超过 5 秒）；只有取消/关闭路径才用短的
+                # UPLOAD_SETTLE_SECONDS。卡住时不谎报「已退出」，保留真实状态
+                # （worker_done 不会被置位），如实收尾、清掉可能已落盘的副本，
+                # 并让迟到的结果无法提交 ready。
                 outcome = await asyncio.wait_for(
-                    asyncio.shield(worker), timeout=UPLOAD_SETTLE_SECONDS
+                    asyncio.shield(worker), timeout=UPLOAD_NORMAL_SETTLE_SECONDS
                 )
             except asyncio.TimeoutError:
                 # 真实来源写进服务端日志：CI 曾只看到 500，没有正文，无法判断是

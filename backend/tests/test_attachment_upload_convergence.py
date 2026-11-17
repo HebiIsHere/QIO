@@ -433,7 +433,10 @@ async def test_late_worker_result_cannot_commit_ready(async_app, monkeypatch):
     """
     from agent.api import server as server_mod
 
+    # 正常上传路径用 NORMAL_SETTLE_SECONDS（与取消路径分离）；本用例验证的是
+    # 「工作线程卡死后正常上传也有界返回 500」，两条预算都压到 3 秒。
     monkeypatch.setattr(server_mod, "UPLOAD_SETTLE_SECONDS", 3.0)
+    monkeypatch.setattr(server_mod, "UPLOAD_NORMAL_SETTLE_SECONDS", 3.0)
     created = _spy_jobs(monkeypatch)
     ctx = async_app.state.ctx
     gate = threading.Event()
