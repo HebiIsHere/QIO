@@ -94,22 +94,6 @@ function cleanId(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-/**
- * 输入区模式入口的布局（#88）：按对话区**实际可用宽度**提前切换，而不是看视口宽度。
- *
- * inline  = 模式入口在输入框左侧的第一列：输入列（≤860）+ 两侧模式入口（约 92px）
- *           + 列间距都放得下时才用；stacked = 模式入口移到输入框上方、与输入框同一条
- *           860 列，圆点永远不会被侧列裁掉。
- * jsdom / 首帧量不到宽度（0）时返回 stacked：先保证入口完整可见，量到真实宽度后重算。
- */
-export const CONVERSATION_INLINE_MIN_WIDTH = 1108;
-
-export function conversationComposerLayout(availableWidth: number): "inline" | "stacked" {
-  const width = Number(availableWidth);
-  if (!Number.isFinite(width) || width <= 0) return "stacked";
-  return width >= CONVERSATION_INLINE_MIN_WIDTH ? "inline" : "stacked";
-}
-
 /** 读取本机保存的面板高度（损坏 / 越界一律忽略，返回 null 让调用方用默认值）。 */
 export function parseStoredConversationHeight(raw: string | null | undefined): number | null {
   if (typeof raw !== "string" || !raw.trim()) return null;

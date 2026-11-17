@@ -89,3 +89,67 @@ export function toolbarAvailableWidth(el: HTMLElement, reserveProbe?: HTMLElemen
   const width = Math.min(Number.isFinite(cap) && cap > 0 ? cap : stageWidth, stageWidth - reserve - edgeGap);
   return Number.isFinite(width) && width > 0 ? width : 0;
 }
+
+/* --------------------------------------------------------------------------
+ * rail（互动页底部「操作行」）形态的分档（2026-11-17 互动底部操作区改版）
+ *
+ * rail=true 时工具栏不再是「两行栅格 + 胶囊底」，而是一条透明单行：先省略能由图标说明的
+ * 文字（full → icons），再把低频工具收进右侧「更多」（icons → more）。
+ * 与 toolbarBand 同一个教训：档位必须由**工具栏自己的实测宽度**决定（BoardToolbar 用
+ * ResizeObserver + getBoundingClientRect().width 量），不能用视口媒体查询 ——
+ * 操作行嵌在聊天面板里，窗口很宽但面板/侧栏把它挤窄时视口断点根本不触发。
+ *
+ * 阈值来历（2026-11-17 用系统 Edge headless 1000×600 + 临时 lab 页挂真实组件、
+ * 真实 tokens/CSS/字体实测 getBoundingClientRect；校准点就是下面三个常量，改之前先重跑）：
+ * - icons 下界 300px：icons 档行上常驻 6 个控件 —— 添加（图标 32）+ 撤销 32 + 重做 32 +
+ *   书签 32 + 详情（图标 32）+ 提交（实测「提交给 QIO」89.25，最长态「用同一身份重试」111.5），
+ *   加 5 个 4px 等距间隙：常规内容 269.25px，最长态 291.5px —— 300 留 8.5px 余量。
+ * - full 下界 344px：full 档额外露出「添加」文字（55.5）；「详情」在悬浮/rail 下仍是图标（compact），
+ *   这里只会计入图标本身的 32px）。按钮横向内边距
+ *   统一 8px 后常规内容 303.75px，最长提交态 326px —— 344 留 18px 余量。
+ *   为什么不是更大：当前 InteractiveConversation 的右侧槽宽 = max(96, 面板宽/2 - 62)，
+ *   面板最宽 860 → 槽宽最大只有 368px；下界若取 430 则 full 永远进不去（死档）。
+ *   取 344 = 368 - 24，保证 1000×600 能进 full，且缩窄后从 icons 回到最大宽度 368 时
+ *   刚好满足滞回、能恢复 full。
+ * - 24px 滞回：缩小时立即降档、放大时多出 24px 才升档，阈值附近连续拖动不会来回跳档
+ *   （与 TOOLBAR_BAND_HYSTERESIS 同一理由）。若父组件槽宽上限变了，重跑 lab 重新校准。
+ * ------------------------------------------------------------------------ */
+export type RailToolbarMode = "full" | "icons" | "more";
+
+/** 进入 full 档（添加 / 详情带文字）所需的最小实测宽度（px）：= 最大槽宽 368 - 滞回 24。 */
+export const RAIL_TOOLBAR_FULL_MIN = 344;
+/** 进入 icons 档所需的最小实测宽度（px）；再窄就是 more。 */
+export const RAIL_TOOLBAR_ICONS_MIN = 300;
+/** 升档滞回余量（px）：缩小时立即降档，放大时多出这么多才升档。 */
+export const RAIL_TOOLBAR_HYSTERESIS = 24;
+
+export interface RailToolbarModeInput {
+  /** 操作行工具栏自己的实测宽度（px）；量不到时给 0，表示「保持上一档」。 */
+  available: number;
+  /** 上一档；首次计算传 undefined（初始 full，绝不用 0 当作最窄）。 */
+  previous?: RailToolbarMode;
+}
+
+/**
+ * 由操作行自己的实测宽度决定三档。缩小时立即降档（宁可早点省略文字 / 收进更多，
+ * 也不要把一行按钮挤到换行或撑高）；放大时带滞回，避免阈值附近抖动。
+ */
+export function railToolbarMode({ available, previous }: RailToolbarModeInput): RailToolbarMode {
+  const width = Number.isFinite(available) ? Math.max(0, available) : 0;
+  // 量不到（jsdom / 首帧 / 容器还没布局）就保持上一档；初始 full —— 绝不因为量不到就降成 more
+  if (width <= 0) return previous ?? "full";
+  if (previous === "full") {
+    // 缩窄：立即降档。先省文字（icons），再收工具（more）
+    if (width >= RAIL_TOOLBAR_FULL_MIN) return "full";
+    return width >= RAIL_TOOLBAR_ICONS_MIN ? "icons" : "more";
+  }
+  if (previous === "icons") {
+    // 从 icons 回 full 要多出滞回余量；继续缩窄时立即降 more
+    if (width >= RAIL_TOOLBAR_FULL_MIN + RAIL_TOOLBAR_HYSTERESIS) return "full";
+    return width >= RAIL_TOOLBAR_ICONS_MIN ? "icons" : "more";
+  }
+  // previous === "more"：回上一档同样要带滞回
+  if (width >= RAIL_TOOLBAR_FULL_MIN + RAIL_TOOLBAR_HYSTERESIS) return "full";
+  if (width >= RAIL_TOOLBAR_ICONS_MIN + RAIL_TOOLBAR_HYSTERESIS) return "icons";
+  return "more";
+}

@@ -520,12 +520,13 @@ const boardSize = computed(() => {
                 :auto-collapse-on-board-action="true"
                 :extra-entries="recoveryEntries"
               >
-                <template #composer-leading>
+                <template #mode-switch>
                   <ConversationModeSwitch class="im-mode-switch" />
                 </template>
                 <template #toolbar>
                   <BoardToolbar
                     ref="toolbarRef"
+                    rail
                     floating
                     :inert="boardReadOnly || undefined"
                     :bookmarks-open="bookmarksOpen"
@@ -621,15 +622,19 @@ const boardSize = computed(() => {
   transform: translateX(-50%);
   /* 浮在板面卡片工具栏之上；审批对话框仍由统一层/Teleport 处理。 */
   z-index: calc(var(--im-z-dialog) + 20);
-  /* #88：宽窗给输入区与模式入口更多横向空间；实际切换仍按组件实测宽度。 */
-  width: min(calc(100% - 24px), 1180px);
+  /* 2026-11 底部操作区：对话卡与消息列/输入胶囊同轴（860），线框才真正包住左右操作按钮。 */
+  width: min(calc(100% - 24px), 860px);
   min-width: 0;
   pointer-events: none;
 }
 .im-floating-chat > .im-conversation-slot {
   pointer-events: auto;
 }
-/* 三块彼此独立：消息面板、工具栏、输入胶囊各自有表面，不再套一张大卡片。 */
+/*
+  互动模式底部操作区（2026-11）：
+  - 线框 / 玻璃 / 常驻把手 / 操作行 / 胶囊的视觉都在 InteractiveConversation 内部；
+  - 页面只给这个浮层定位、宽度与指针事件，不再给工具栏套整条胶囊、也不再有独立的收起条。
+*/
 .im-floating-chat :deep(.ic) {
   padding: 0;
   border: 0;
@@ -638,84 +643,24 @@ const boardSize = computed(() => {
   box-shadow: none;
   backdrop-filter: none;
 }
-.im-floating-chat :deep(.ic-stream) {
-  width: 100%;
-  max-width: 860px;
-  margin: 0 auto;
-  /* FU7：栏本体透明，模糊由组件内的 ::before 承担（板面从栏后透出）。 */
-  border: 1px solid color-mix(in srgb, var(--border-strong) 65%, transparent);
-  border-radius: var(--qio-ui-radius);
-  background: transparent;
-  box-shadow: var(--shadow-2);
+/* 模式切换现在在操作行左侧：高度对齐独立工具按钮，命中区/焦点态保留。 */
+.im-mode-switch {
+  flex: none;
+  min-width: 0;
 }
-.im-floating-chat :deep(.ic-toolbar) {
-  max-width: 860px;
-  margin-bottom: var(--sp-2);
+.im-mode-switch :deep(.mode-btn) {
+  height: 30px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
 }
-/*
- * #76：工具区是一整条**连续、轻量**的承载面（一枚胶囊），不是散落在板面上的按钮：
- * 卡片文字与连线只会从这条面的后方经过，不会从按钮之间的空隙穿出来；
- * 留白由这条面的内边距 + 按钮间距共同保证，按钮本身退回透明表面。
- */
-.im-floating-chat :deep(.ic-toolbar .board-toolbar) {
-  padding: 2px var(--sp-2);
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 70%, transparent);
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
-  -webkit-backdrop-filter: blur(10px) saturate(1.04);
-  backdrop-filter: blur(10px) saturate(1.04);
-  box-shadow: var(--shadow-1);
+.im-mode-switch :deep(.mode-btn:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
-.im-floating-chat :deep(.ic-toolbar .tb-sep) {
-  display: none;
-}
-.im-floating-chat :deep(.ic-toolbar .tb-btn) {
-  height: 32px;
-  padding: 0 var(--sp-3);
-  border-radius: var(--r-pill);
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-}
-.im-floating-chat :deep(.ic-toolbar .tb-btn:hover:not(:disabled)) {
-  background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
-  border-color: var(--border-subtle);
-}
-.im-floating-chat :deep(.ic-toolbar .tb-icon-btn) {
-  min-width: 32px;
-  padding: 0 var(--sp-1);
-}
-.im-floating-chat :deep(.ic-toolbar .tb-main) {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: var(--sp-2);
-}
-.im-floating-chat :deep(.ic-toolbar .tb-edit),
-.im-floating-chat :deep(.ic-toolbar .tb-submit),
-.im-floating-chat :deep(.ic-toolbar .submit-cluster) {
-  display: contents;
-}
-.im-floating-chat :deep(.ic-toolbar .actions) {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-.im-floating-chat :deep(.ic-dock) {
-  padding: 0;
-}
-.im-floating-chat :deep(.ic-composer) {
-  /* FU5：输入行内部用三列 grid 居中输入列 —— 外层不能再限制成 860，
-     否则 grid 两侧的 1fr 没有可用空间，输入列又会整体右偏。 */
-  width: 100%;
-  max-width: none;
-  margin: 0;
-}
-.im-floating-chat :deep(.ic-bar) {
-  width: fit-content;
-  min-height: 26px;
-  margin-bottom: var(--sp-1);
+@media (max-width: 640px) {
+  /* 最窄窗口：模式切换只留圆点（aria-label / 提示仍在），给把手与工具让位。 */
+  .im-mode-switch :deep(.mode-text) { display: none; }
+  .im-mode-switch :deep(.mode-btn) { padding: 0 var(--sp-1); }
 }
 @media (max-width: 700px) {
   .im-floating-chat {
@@ -727,10 +672,6 @@ const boardSize = computed(() => {
 .im-conversation-slot {
   width: 100%;
   min-width: 0;
-}
-.im-mode-switch {
-  flex: none;
-  padding-bottom: 8px;
 }
 /* #07：任务入口的读取失败标记（只加一个小点，不改按钮宽度与排列）。 */
 .im-entry-err {
@@ -768,9 +709,6 @@ const boardSize = computed(() => {
 .im-load-failed-title { margin: 0; font-size: var(--fs-base); color: var(--text-strong); }
 .im-load-failed-text { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.7; }
 .im-load-failed-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
-@media (max-width: 700px) {
-  .im-mode-switch { padding-bottom: 6px; }
-}
 
 .im-board-stage {
   position: relative;

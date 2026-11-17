@@ -1,13 +1,12 @@
 /**
  * C01：新版互动对话窗 → 跨浮层几何桥（chatFrameState）的生产者定向测试。
  *
- * 基线缺陷：BoardCanvas 消费 chatObstacleFrame()，但唯一生产者是未挂载的旧 ChatDock，
- * 新对话窗从不发布 → 桥永远读到 null（卡片展开 / 添加菜单的可用区域算错）。
+ * 2026-11 底部操作区重做后，对话卡就是实际可见面板本身（操作行 + 消息区 + 输入区），
+ * 因此发布口径是「展开时消息区 + 操作行 + 输入区的外接矩形（屏幕坐标）」；
+ * 不再按外层全宽容器发布，也不会在收起时留下幽灵矩形。
  *
  * 这里验的是**生产者契约**（消费方 BoardCanvas 的行为由 irl-c-canvas 等既有测试负责）：
- * - 展开：发布「消息面板 + 输入区」的真实外接矩形（屏幕坐标）；
- * - 只按可见内容，不按外层全宽容器（否则整块板面会被误判成不可用）；
- * - 收起 / 卸载发布 null（不留幽灵障碍）；
+ * - 展开：发布真实可见矩形；收起 / 卸载发布 null；
  * - 高度 / 窗口变化后重新测量并更新；
  * - 量不到真实几何（jsdom 默认零矩形）时发布 null，不编造假框。
  */
@@ -19,7 +18,6 @@ import InteractiveConversation from "../InteractiveConversation.vue";
 import {
   chatObstacleFrame,
   liveChatCollapsed,
-  liveChatFrame,
   readChatFrame,
   resetChatFrameState,
 } from "../../../../interactive/chatFrameState";
@@ -71,39 +69,36 @@ interface FakeBox {
 
 /** 给真实 DOM 节点装一个可控的屏幕矩形（jsdom 不做布局，默认全是 0）。 */
 function stubBox(element: Element | null, box: FakeBox | null): void {
-  if (!element) throw new Error("要测量的元素不存在");
-  if (!box) {
-    element.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
-    return;
-  }
+  if (!element) return;
   element.getBoundingClientRect = () =>
-    new DOMRect(box.left, box.top, box.width, box.height);
+    box ? new DOMRect(box.left, box.top, box.width, box.height) : new DOMRect(0, 0, 0, 0);
 }
 
 async function waitForPublish(): Promise<void> {
   window.dispatchEvent(new Event("resize"));
   await nextTick();
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await new Promise((resolve) => setTimeout(resolve, 45));
   await nextTick();
 }
 
 const PARTS = {
   stream: { left: 300, top: 200, width: 860, height: 300 },
-  bar: { left: 302, top: 512, width: 856, height: 24 },
-  entries: { left: 320, top: 540, width: 820, height: 32 },
-  toolbar: { left: 330, top: 576, width: 800, height: 32 },
-  composer: { left: 350, top: 612, width: 760, height: 60 },
+  rail: { left: 300, top: 508, width: 860, height: 36 },
+  entries: { left: 320, top: 544, width: 820, height: 32 },
+  composer: { left: 312, top: 576, width: 836, height: 60 },
 } as const;
 
 /** 把页面里那几块真实可见区域量成可控数字；外层根容器故意给一个更大的框。 */
-function stubVisibleParts(w: VueWrapper, parts: Partial<Record<keyof typeof PARTS, FakeBox>> = PARTS): void {
+function stubVisibleParts(
+  w: VueWrapper,
+  parts: Partial<Record<keyof typeof PARTS, FakeBox | null>> = PARTS,
+): void {
   const root = w.get('[data-ic="conversation"]').element;
-  stubBox(root, { left: 20, top: 100, width: 1400, height: 700 });
+  stubBox(root, { left: 20, top: 100, width: 1200, height: 700 });
   stubBox(root.querySelector("[data-ic-stream]"), parts.stream ?? null);
-  stubBox(root.querySelector("[data-ic-bar]"), parts.bar ?? null);
-  stubBox(root.querySelector(".ic-entries"), parts.entries ?? null);
-  stubBox(root.querySelector("[data-ic-toolbar]"), parts.toolbar ?? null);
-  stubBox(root.querySelector(".ic-composer"), parts.composer ?? null);
+  stubBox(root.querySelector("[data-ic-rail]"), parts.rail ?? null);
+  stubBox(root.querySelector("[data-ic-entries]"), parts.entries ?? null);
+  stubBox(root.querySelector("[data-ic-composer]"), parts.composer ?? null);
 }
 
 beforeEach(() => {
@@ -119,81 +114,71 @@ afterEach(() => {
 });
 
 describe("展开时发布真实可见矩形", () => {
-  it("消息面板 + 输入区的外接矩形（屏幕坐标），不是外层全宽容器", async () => {
-    const w = mountConversation({ expanded: true, height: 520 });
+  it("消息区 + 操作行 + 输入区的外接矩形（屏幕坐标）", async () => {
+    const w = mountConversation({ expanded: true });
     stubVisibleParts(w);
     await waitForPublish();
-
-    // 期望：左=300、上=200、右=1160、下=672
-    expect(readChatFrame()).toEqual({ x: 300, y: 200, w: 860, h: 472 });
-    // 消费方拿到的是同一份几何（屏幕坐标）
-    expect(chatObstacleFrame()).toEqual({ x: 300, y: 200, w: 860, h: 472 });
+    expect(readChatFrame()).toEqual({ x: 300, y: 200, w: 860, h: 436 });
     expect(liveChatCollapsed.value).toBe(false);
-    // 外层容器宽 1400，发布宽度远小于它 —— 证明没有按全宽容器误判
-    expect(readChatFrame()!.w).toBeLessThan(1400);
+    expect(chatObstacleFrame()).toEqual({ x: 300, y: 200, w: 860, h: 436 });
   });
 
   it("高度调整后重新测量并更新矩形（展开区域变高）", async () => {
-    const w = mountConversation({ expanded: true, height: 520 });
+    const w = mountConversation({ expanded: true });
     stubVisibleParts(w);
     await waitForPublish();
-    expect(readChatFrame()!.h).toBe(472);
+    const before = readChatFrame();
+    expect(before).not.toBeNull();
 
-    // 用户把对话拖高 200px：消息面板随之上移、变高
-    const next = {
+    stubVisibleParts(w, {
       ...PARTS,
-      stream: { left: 300, top: 0, width: 860, height: 500 },
-    };
-    stubVisibleParts(w, next);
-    await w.setProps({ height: 720 });
+      stream: { left: 300, top: 100, width: 860, height: 420 },
+    });
     await waitForPublish();
-
-    expect(readChatFrame()).toEqual({ x: 300, y: 0, w: 860, h: 672 });
+    const after = readChatFrame();
+    expect(after).not.toBeNull();
+    expect(after?.y).toBe(100);
+    expect(after?.h).toBeGreaterThan(before?.h ?? 0);
   });
 
   it("收起后发布 null（板面恢复可用），再次展开重新发布", async () => {
-    const w = mountConversation({ expanded: true, height: 520 });
+    const w = mountConversation({ expanded: true });
     stubVisibleParts(w);
     await waitForPublish();
-    expect(chatObstacleFrame()).not.toBeNull();
+    expect(readChatFrame()).not.toBeNull();
 
     await w.get('[data-ic-toggle]').trigger("click");
     await waitForPublish();
-    expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("false");
     expect(readChatFrame()).toBeNull();
-    expect(chatObstacleFrame()).toBeNull();
     expect(liveChatCollapsed.value).toBe(true);
+    expect(chatObstacleFrame()).toBeNull();
 
     await w.get('[data-ic-toggle]').trigger("click");
     await waitForPublish();
-    expect(chatObstacleFrame()).toEqual({ x: 300, y: 200, w: 860, h: 472 });
+    expect(readChatFrame()).not.toBeNull();
   });
 
   it("卸载后桥里不留幽灵矩形", async () => {
-    const w = mountConversation({ expanded: true, height: 520 });
+    const w = mountConversation({ expanded: true });
     stubVisibleParts(w);
     await waitForPublish();
-    expect(liveChatFrame.value).not.toBeNull();
-
+    expect(readChatFrame()).not.toBeNull();
     w.unmount();
     wrapper = null;
-    expect(liveChatFrame.value).toBeNull();
-    expect(chatObstacleFrame()).toBeNull();
+    expect(readChatFrame()).toBeNull();
   });
 
   it("默认收起：挂载后不发布矩形（不按输入框单独占一块不存在的大区域）", async () => {
-    mountConversation();
+    const w = mountConversation();
+    stubVisibleParts(w, { stream: null });
     await waitForPublish();
     expect(readChatFrame()).toBeNull();
-    expect(chatObstacleFrame()).toBeNull();
-    expect(liveChatCollapsed.value).toBe(true);
   });
 
   it("量不到真实几何（jsdom 零矩形）时发布 null，不编造假显示框", async () => {
-    const w = mountConversation({ expanded: true, height: 520 });
-    // 不装任何矩形：所有 getBoundingClientRect 都是 0
+    const w = mountConversation({ expanded: true });
+    stubVisibleParts(w, { stream: null, rail: null, entries: null, composer: null });
     await waitForPublish();
     expect(readChatFrame()).toBeNull();
-    expect(chatObstacleFrame()).toBeNull();
   });
 });

@@ -1,14 +1,16 @@
 <!--
-  底部互动对话区（Phase 3-B）：输入区在下、会话流朝上展开。
+  底部互动对话区（Phase 3-B / 互动模式底部操作区 2026-11）。
 
-  契约：docs/interactive-page-v2-contract.md §6.4。
-  - 复用现有 MessageStream / Composer / ComposerEntries / 会话 store，**不新建简化模型**：
-    发送/停止/排队/媒体/草稿/失败恢复/五入口全部由这些既有组件承担；
-  - 展开 / 收起只改变**显示**：不卸载 Composer、不清草稿与附件、不停止回复、不动排队；
-  - 高度可以拖动（分隔条）或用键盘调整，口径与视口约束在 conversationLayout 的纯函数里；
+  契约：docs/interactive-page-v2-contract.md §6.4；本次按用户确认的「互动模式底部操作区」重做显示层：
+  - 收起：一条轻量操作行（左＝模式切换 + 真实状态，中＝常驻把手，右＝板面工具）+ 下方独立胶囊输入框；
+  - 展开：消息区从操作行上方长出，操作行仍在输入框上方；同一根把手留在**面板顶边**，
+    顶边由把手与左右两段细线接成，两侧细线沿面板边向下、到输入胶囊水平中线前淡出；
+  - 线框用两条镜像 SVG 开放路径按弧长揭示（慢-快-慢临界阻尼，与高度同帧更新）；
+  - 玻璃材质集中在聊天面板：按真实面板范围裁剪、随揭示渐显，板面从后面透出；
+  - 开合 / 拖高只改显示：不卸载 Composer、不清草稿与附件、不停止回复、不动排队；
   - 板面操作（interactive store 的 lastOpLabel 前进）时自动收起，但回复继续 —— 收起不是停止；
-  - 互动绑定由 props 可信传入（board/submission/intent），只作为发送选项投影给会话层，
-    绝不拼进用户原文（板面提交与聊天发送是两件事）。
+  - 高度拖动 / 键盘 / 记忆口径仍在 conversationLayout 的纯函数；动效与线框几何在 conversationMotion；
+  - 真实可见几何继续发布到 chatFrameState（展开发布、收起 / 卸载发布 null）。
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
@@ -30,11 +32,18 @@ import {
   CONVERSATION_MIN_HEIGHT,
   clampConversationHeight,
   conversationBindingForSend,
-  conversationComposerLayout,
   conversationStatusText,
   parseStoredConversationHeight,
   type ConversationBinding,
 } from "./conversationLayout";
+import {
+  CONVERSATION_MOTION,
+  conversationFrameGeometry,
+  createMotionAxis,
+  motionRateFor,
+  stepMotionAxis,
+  type MotionAxis,
+} from "./conversationMotion";
 
 const props = withDefaults(
   defineProps<{
@@ -79,28 +88,35 @@ const interactive = useInteractiveStore();
 const session = useSessionStore();
 const uid = useId();
 const panelId = "ic-panel-" + uid;
-const barId = "ic-bar-" + uid;
+const fadeId = "ic-frame-fade-" + uid;
 
+/* ── DOM 引用 ───────────────────────────────────────────────────────────── */
+const rootEl = ref<HTMLElement | null>(null);
+const glassEl = ref<HTMLElement | null>(null);
+const outlineEl = ref<SVGSVGElement | null>(null);
+const leftPathEl = ref<SVGPathElement | null>(null);
+const rightPathEl = ref<SVGPathElement | null>(null);
+const streamWrapEl = ref<HTMLElement | null>(null);
+const railEl = ref<HTMLElement | null>(null);
+const entriesEl = ref<HTMLElement | null>(null);
+const composerEl = ref<HTMLElement | null>(null);
+const leverEl = ref<HTMLButtonElement | null>(null);
+
+/* ── 展开状态 / 高度记忆（口径不变：记忆的是「展开时整块面板总高」） ──────── */
 const expandedState = ref(Boolean(props.expanded));
-/** 只有真正展开过一次才挂载会话流：之后用 v-show 保留滚动位置与已渲染内容。 */
+/** 只有真正展开过一次才挂载会话流：之后用高度 0 收起，保留滚动位置与已渲染内容。 */
 const openedOnce = ref(Boolean(props.expanded));
-/** 初始高度：显式 prop 优先，其次本机记忆，最后默认值（都在视口口径内）。 */
-function bootstrapHeight(): number {
-  if (props.height > 0) return effectiveHeight(props.height);
-  return effectiveHeight(readStoredHeight() ?? CONVERSATION_DEFAULT_HEIGHT);
+
+function viewportHeight(): number {
+  /* 可见内容区高度：透明留白窗里不再把 2*pad 算进可用高度 */
+  return typeof window === "undefined" ? 0 : contentViewport().height;
 }
-const panelHeight = ref(bootstrapHeight());
 
 const storageKey = computed(
   () =>
     props.storageKey ||
     "qio-interactive-conversation:" + (props.binding?.boardId?.trim() || "default") + ":height",
 );
-
-function viewportHeight(): number {
-  /* 可见内容区高度：透明留白窗里不再把 2*pad 算进可用高度 */
-  return typeof window === "undefined" ? 0 : contentViewport().height;
-}
 
 function effectiveHeight(value: number): number {
   return clampConversationHeight(value, {
@@ -126,25 +142,245 @@ function writeStoredHeight(value: number): void {
   }
 }
 
+/** 初始高度：显式 prop 优先，其次本机记忆，最后默认值（都在视口口径内）。 */
 function initialHeight(): number {
   if (props.height > 0) return effectiveHeight(props.height);
   const stored = readStoredHeight();
   return effectiveHeight(stored ?? CONVERSATION_DEFAULT_HEIGHT);
 }
 
+const panelHeight = ref(initialHeight());
+/** 操作行 + 事项行 + 输入区（不含消息区）的实测高度：面板总高 - 消息区高。 */
+const chromeHeight = ref(0);
+
+watch(panelHeight, (value) => writeStoredHeight(value));
+
+/* ── 动效：临界阻尼轴（高度 / 揭示同一时间步） ──────────────────────────── */
+const heightAxis: MotionAxis = createMotionAxis(0, 0);
+const revealAxis: MotionAxis = createMotionAxis(0, 0);
+/** 当前消息区显示高度（px，动画值） */
+const streamShown = ref(0);
+/** 消息区是否可见（收起动画归零后隐藏，保留 DOM 与阅读位置；挂载即展开时首帧就可见） */
+const streamVisible = ref(Boolean(props.expanded));
+const dragging = ref(false);
+const reduced = ref(false);
+
+const rootMediaQuery: MediaQueryList | null =
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
+
+function prefersReducedMotion(): boolean {
+  return Boolean(rootMediaQuery?.matches);
+}
+
+let motionRaf: number | null = null;
+let lastFrameTs = 0;
+
+function motionAllowed(): boolean {
+  if (prefersReducedMotion()) return false;
+  const root = rootEl.value;
+  if (!root || typeof root.getBoundingClientRect !== "function") return false;
+  /* jsdom / 隐藏中的面板量不到真实宽度：直接落最终几何，不做看起来动不了的动画。 */
+  const rect = root.getBoundingClientRect();
+  return Boolean(rect && rect.width > 0);
+}
+
+function measureChromeHeight(): number {
+  const root = rootEl.value;
+  if (!root) return 0;
+  const streamH = streamWrapEl.value?.offsetHeight ?? 0;
+  return Math.max(0, root.offsetHeight - streamH);
+}
+
+/** 用当前状态重算两个目标值（展开：记忆总高 - 固定区；收起：0 / 0）。 */
+function syncTargets(): void {
+  chromeHeight.value = measureChromeHeight();
+  const open = expandedState.value;
+  heightAxis.target = open ? Math.max(0, panelHeight.value - chromeHeight.value) : 0;
+  revealAxis.target = open ? 1 : 0;
+}
+
+function snapToTargets(): void {
+  heightAxis.value = heightAxis.target;
+  heightAxis.velocity = 0;
+  revealAxis.value = revealAxis.target;
+  revealAxis.velocity = 0;
+  streamShown.value = Math.max(0, heightAxis.value);
+}
+
+function stopMotion(): void {
+  if (motionRaf !== null) {
+    window.cancelAnimationFrame(motionRaf);
+    motionRaf = null;
+  }
+}
+
+function startMotion(): void {
+  if (!motionAllowed()) {
+    stopMotion();
+    snapToTargets();
+    drawFrame();
+    return;
+  }
+  if (motionRaf !== null) return;
+  lastFrameTs = performance.now();
+  motionRaf = window.requestAnimationFrame(stepMotion);
+}
+
+function stepMotion(now: number): void {
+  motionRaf = null;
+  const dt = Math.min(CONVERSATION_MOTION.dtMax, Math.max(0, (now - lastFrameTs) / 1000));
+  lastFrameTs = now;
+  const opening = revealAxis.target === 1 && revealAxis.value < 1;
+  const rate = motionRateFor({ opening, dragging: dragState !== null && dragState.moved });
+  const settledHeight = stepMotionAxis(heightAxis, dt, rate, CONVERSATION_MOTION.heightEpsilon);
+  const settledReveal = stepMotionAxis(revealAxis, dt, rate, CONVERSATION_MOTION.revealEpsilon);
+  streamShown.value = Math.max(0, heightAxis.value);
+  drawFrame();
+  if (settledHeight && settledReveal) {
+    streamShown.value = Math.max(0, heightAxis.value);
+    drawFrame();
+    return;
+  }
+  motionRaf = window.requestAnimationFrame(stepMotion);
+}
+
+/* ── 线框 / 玻璃 / 面板几何（每帧从实时 DOM 量，同一帧更新） ─────────────── */
+function rectOf(element: Element | null | undefined): DOMRect | null {
+  if (!element || typeof (element as HTMLElement).getBoundingClientRect !== "function") return null;
+  const rect = (element as HTMLElement).getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return null;
+  return rect;
+}
+
+/** 输入胶囊的实测矩形（线框淡出终点 = 胶囊水平中线）。 */
+function composerCapsuleRect(): DOMRect | null {
+  const capsule = composerEl.value?.querySelector<HTMLElement>(".input-pill") ?? null;
+  return rectOf(capsule) ?? rectOf(composerEl.value);
+}
+
+let lastFrame: ReturnType<typeof conversationFrameGeometry> | null = null;
+
+function drawFrame(): void {
+  const root = rootEl.value;
+  if (!root) return;
+  const streamH = Math.max(0, streamShown.value);
+  root.style.setProperty("--ic-stream-h", streamH.toFixed(2) + "px");
+  root.style.setProperty("--ic-panel-h", Math.round(streamH + chromeHeight.value) + "px");
+  const showStream = streamH > 0.5;
+  if (streamVisible.value !== showStream) streamVisible.value = showStream;
+
+  const reveal = Math.min(1, Math.max(0, revealAxis.value));
+  root.dataset.icReveal = reveal.toFixed(4);
+
+  const rootRect = typeof root.getBoundingClientRect === "function" ? root.getBoundingClientRect() : null;
+  const leverRect = rectOf(leverEl.value);
+  const inputRect = composerCapsuleRect();
+  const width = Math.round(rootRect?.width ?? root.clientWidth ?? 0);
+  const frame = conversationFrameGeometry({
+    panelWidth: width,
+    leverWidth: leverRect?.width ?? 0,
+    leverTop: (leverRect?.top ?? 0) - (rootRect?.top ?? 0),
+    leverHeight: leverRect?.height ?? 0,
+    inputTop: (inputRect?.top ?? 0) - (rootRect?.top ?? 0),
+    inputHeight: inputRect?.height ?? 0,
+    reveal,
+  });
+  lastFrame = frame;
+
+  /* 操作行左右两组共用一个确定宽度：右侧槽（板面工具栏）据此实测自身可用宽度并降级。 */
+  root.style.setProperty("--ic-rail-side", Math.max(96, Math.floor(width / 2 - 62)) + "px");
+  root.dataset.icFramePathLength = frame.pathLength.toFixed(2);
+  root.dataset.icFrameHorizontal = frame.horizontalLength.toFixed(2);
+  root.dataset.icCornerReveal = frame.cornerReveal.toFixed(4);
+
+  /* 玻璃：只覆盖实际面板范围（顶边 = 把手中心），水平按揭示长度裁剪、透明度随进度渐显。 */
+  const glass = glassEl.value;
+  if (glass) {
+    glass.style.top = frame.leverY.toFixed(2) + "px";
+    glass.style.setProperty("--ic-glass-inset", frame.glassInset.toFixed(2) + "px");
+    /* 透明度跟揭示进度走（宽度量不到时也保持正确语义；裁剪量由几何给出）。 */
+    glass.style.opacity = reveal.toFixed(4);
+  }
+
+  /* 线框：宽度 = 面板宽，高度 = 胶囊水平中线；两条镜像路径按弧长用 dasharray 揭示。 */
+  const outline = outlineEl.value;
+  if (outline) {
+    outline.toggleAttribute("hidden", !frame.visible);
+    const svgWidth = Math.max(0, Math.round(frame.width));
+    const svgHeight = Math.max(0, Math.round(frame.height));
+    outline.setAttribute("width", String(svgWidth));
+    outline.setAttribute("height", String(svgHeight));
+    outline.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
+    outline.style.width = svgWidth + "px";
+    outline.style.height = svgHeight + "px";
+  }
+  /* 渐变端点按实测几何逐帧写入（不依赖模板 ref：defs 内的 SVG 节点直接查询最稳）。 */
+  const fade = outlineEl.value?.querySelector<SVGLinearGradientElement>("linearGradient") ?? null;
+  if (fade) {
+    fade.setAttribute("y1", String(frame.fadeY1));
+    fade.setAttribute("y2", String(frame.fadeY2));
+  }
+  const dash = reveal >= 1 ? "none" : frame.strokeDasharray;
+  if (leftPathEl.value) {
+    leftPathEl.value.setAttribute("d", frame.leftPath);
+    leftPathEl.value.style.strokeDasharray = dash;
+  }
+  if (rightPathEl.value) {
+    rightPathEl.value.setAttribute("d", frame.rightPath);
+    rightPathEl.value.style.strokeDasharray = dash;
+  }
+
+  schedulePublishGeometry();
+}
+
+/* ── 开合（只改显示） ───────────────────────────────────────────────────── */
+const leverLabel = computed(() => (expandedState.value ? "收起对话" : "展开对话"));
+const leverTip = computed(() =>
+  expandedState.value
+    ? "收起对话；上下拖动调整高度（↑/↓ 每次 " +
+      CONVERSATION_KEYBOARD_STEP +
+      "px，Home/End 到两端）"
+    : "展开对话（点击，或把焦点移入输入框也会展开）",
+);
+
+function applyExpandedState(value: boolean, emitEvent: boolean): void {
+  if (expandedState.value === value) return;
+  expandedState.value = value;
+  if (value) openedOnce.value = true;
+  if (emitEvent) {
+    emit("update:expanded", value);
+    if (value) emit("expand");
+    else emit("collapse");
+  }
+  syncTargets();
+  startMotion();
+  schedulePublishGeometry();
+}
+
+function setExpanded(next: boolean): void {
+  applyExpandedState(Boolean(next), true);
+}
+
+const expand = () => setExpanded(true);
+const collapse = () => setExpanded(false);
+const toggle = () => setExpanded(!expandedState.value);
+
 watch(
   () => props.expanded,
-  (value) => {
-    if (expandedState.value === value) return;
-    expandedState.value = value;
-    if (value) openedOnce.value = true;
-  },
+  (value) => applyExpandedState(Boolean(value), false),
 );
 
 watch(
   () => props.height,
   (value) => {
-    if (value > 0) panelHeight.value = effectiveHeight(value);
+    if (!(value > 0)) return;
+    panelHeight.value = effectiveHeight(value);
+    if (expandedState.value) {
+      syncTargets();
+      startMotion();
+    }
   },
 );
 
@@ -153,74 +389,12 @@ watch(
   () => [props.minHeight, props.maxHeight] as const,
   () => {
     panelHeight.value = effectiveHeight(panelHeight.value);
+    syncTargets();
+    startMotion();
   },
 );
 
-watch(panelHeight, (value) => writeStoredHeight(value));
-
-onMounted(() => {
-  // 视口可能在挂载时才可读（jsdom / 首次渲染）：再对齐一次口径
-  panelHeight.value = initialHeight();
-  // 首次也记一次：下次打开保持同一高度（记忆的是「用户看到的那一档」）
-  writeStoredHeight(panelHeight.value);
-  if (expandedState.value) openedOnce.value = true;
-  /**
-   * 互动页的历史入口（R5b）：普通对话页负责首次加载；直接进入 / 刷新互动页时
-   * history 仍是 idle，只调 reloadHistoryIfStale（idle 下是空操作）会让确认后的
-   * 执行记录永远等不到刷新。这里复用同一个既有 loadHistory（同一接口、同一去重与
-   * 话题归属保护，不轮询、不伪造记录、不跳页），已加载过则继续走既有 stale 刷新。
-   */
-  if (session.history.status === "idle") void session.loadHistory();
-  else void session.reloadHistoryIfStale();
-});
-
-/** 展开 / 收起：只动显示，不调用会话层的任何方法（回复、草稿、附件、排队都不受影响）。 */
-function setExpanded(next: boolean): void {
-  const value = Boolean(next);
-  if (expandedState.value === value) return;
-  expandedState.value = value;
-  if (value) openedOnce.value = true;
-  emit("update:expanded", value);
-  if (value) emit("expand");
-  else emit("collapse");
-}
-
-const expand = () => setExpanded(true);
-const collapse = () => setExpanded(false);
-const toggle = () => setExpanded(!expandedState.value);
-
-/*
- * #40：展开时注册一层共用 Esc 层级栈（打开越晚的层越靠上）。
- * 只收显示：不清草稿、不停止正在回复、不动排队；确认框 / 输入法选字由共用层级栈优先。
- */
-let disposeEscape: (() => void) | null = null;
-function syncEscapeLayer(open: boolean): void {
-  if (open && !disposeEscape) {
-    disposeEscape = registerEscapeLayer({
-      id: "interactive-conversation",
-      active: () => expandedState.value,
-      onEscape: () => {
-        // 正在拖动高度时，Esc 先取消这次拖动（恢复拖动前的高度），不收起已展开的对话。
-        if (drag) {
-          onResizeCancel();
-          return true;
-        }
-        collapse();
-        return true;
-      },
-    });
-  } else if (!open && disposeEscape) {
-    disposeEscape();
-    disposeEscape = null;
-  }
-}
-watch(expandedState, (value) => syncEscapeLayer(value), { immediate: true });
-onBeforeUnmount(() => {
-  disposeEscape?.();
-  disposeEscape = null;
-});
-
-/** 收起态 / 展开态共用的一句真实状态（回复没有被收起打断时要看得见）。 */
+/* ── 收起态 / 展开态共用的一句真实状态 ─────────────────────────────────── */
 const statusText = computed(() =>
   conversationStatusText({
     turnRunning: session.turnRunning,
@@ -228,8 +402,6 @@ const statusText = computed(() =>
     hasDraft: Boolean(String(session.draft ?? "").trim()),
   }),
 );
-
-const open = computed(() => expandedState.value);
 
 /**
  * 板面操作自动收起：interactive store 的 lastOpLabel 只在 commit（板面操作）时前进，
@@ -246,76 +418,132 @@ watch(
   },
 );
 
-/* ── 高度调整（分隔条：指针拖动 + 键盘） ────────────────────────────────── */
-interface ResizeDrag {
+/* ── 同一根把手：点击开合 / 展开态拖动调高 / 键盘（Esc 走层级栈） ───────── */
+interface LeverDrag {
+  pointerId: number | null;
   startY: number;
-  startHeight: number;
+  startTotal: number;
   moved: boolean;
 }
 
-let drag: ResizeDrag | null = null;
+let dragState: LeverDrag | null = null;
+let suppressClick = false;
 
-function removeResizeListeners(): void {
-  document.removeEventListener("pointermove", onResizeMove, true);
-  document.removeEventListener("pointerup", onResizeEnd, true);
-  document.removeEventListener("pointercancel", onResizeCancel, true);
-  document.removeEventListener("keydown", onResizeKeydown, true);
+function displayedTotalHeight(): number {
+  return Math.max(0, heightAxis.value) + chromeHeight.value;
 }
 
-function onResizeMove(event: Event): void {
-  if (!drag) return;
-  const pointer = event as MouseEvent;
-  const delta = drag.startHeight - (pointer.clientY - drag.startY);
-  const next = effectiveHeight(delta);
-  if (Math.abs(next - drag.startHeight) >= 1) drag.moved = true;
-  panelHeight.value = next;
-  emit("update:height", next);
+function removeDragListeners(): void {
+  document.removeEventListener("pointermove", onLeverPointerMove, true);
+  document.removeEventListener("pointerup", onLeverPointerUp, true);
+  document.removeEventListener("pointercancel", onLeverPointerCancel, true);
 }
 
-function onResizeEnd(): void {
-  if (!drag) return;
-  const moved = drag.moved;
-  drag = null;
-  removeResizeListeners();
-  if (moved) emit("resize-end", panelHeight.value);
-}
-
-function onResizeCancel(): void {
-  if (!drag) return;
-  const before = drag.startHeight;
-  drag = null;
-  removeResizeListeners();
-  panelHeight.value = before;
-  emit("update:height", before);
-}
-
-function onResizeKeydown(event: Event): void {
-  if (!drag) return;
-  if ((event as KeyboardEvent).key !== "Escape") return;
-  (event as KeyboardEvent).preventDefault();
-  onResizeCancel();
-}
-
-function onResizePointerDown(event: MouseEvent): void {
-  if (drag) return;
+function onLeverPointerDown(event: PointerEvent): void {
   if (event.button !== undefined && event.button !== 0) return;
-  drag = { startY: event.clientY, startHeight: panelHeight.value, moved: false };
+  /* 收起状态：只做点击开合，不进入拖动（与预览一致）。 */
+  if (!expandedState.value) return;
+  dragState = {
+    pointerId: typeof event.pointerId === "number" ? event.pointerId : null,
+    startY: event.clientY,
+    startTotal: displayedTotalHeight(),
+    moved: false,
+  };
+  suppressClick = false;
   emit("resize-start");
-  document.addEventListener("pointermove", onResizeMove, true);
-  document.addEventListener("pointerup", onResizeEnd, true);
-  document.addEventListener("pointercancel", onResizeCancel, true);
-  document.addEventListener("keydown", onResizeKeydown, true);
+  if (dragState.pointerId !== null) {
+    try {
+      leverEl.value?.setPointerCapture?.(dragState.pointerId);
+    } catch {
+      // 合成事件没有真实指针：忽略即可，window 上的监听仍然可用
+    }
+  }
+  document.addEventListener("pointermove", onLeverPointerMove, true);
+  document.addEventListener("pointerup", onLeverPointerUp, true);
+  document.addEventListener("pointercancel", onLeverPointerCancel, true);
   event.preventDefault();
+}
+
+function onLeverPointerMove(event: PointerEvent): void {
+  if (!dragState) return;
+  if (
+    dragState.pointerId !== null &&
+    typeof event.pointerId === "number" &&
+    event.pointerId !== dragState.pointerId
+  ) {
+    return;
+  }
+  const delta = dragState.startY - event.clientY;
+  if (!dragState.moved && Math.abs(delta) < 4) return;
+  dragState.moved = true;
+  dragging.value = true;
+  const total = effectiveHeight(dragState.startTotal + delta);
+  panelHeight.value = total;
+  const streamTarget = Math.max(0, total - chromeHeight.value);
+  heightAxis.value = streamTarget;
+  heightAxis.target = streamTarget;
+  heightAxis.velocity = 0;
+  /* 拖动时线框随面板实时伸缩：已经展开就保持全揭示，展开途中则继续完成揭示。 */
+  if (revealAxis.target > 0) {
+    revealAxis.target = 1;
+    if (revealAxis.value >= 0.999) revealAxis.value = 1;
+  }
+  streamShown.value = Math.max(0, heightAxis.value);
+  drawFrame();
+  emit("update:height", total);
+  schedulePublishGeometry();
+}
+
+function onLeverPointerUp(): void {
+  if (!dragState) return;
+  const moved = dragState.moved;
+  dragState = null;
+  dragging.value = false;
+  removeDragListeners();
+  if (!moved) return;
+  suppressClick = true;
+  writeStoredHeight(panelHeight.value);
+  emit("resize-end", panelHeight.value);
+  syncTargets();
+  startMotion();
+}
+
+function onLeverPointerCancel(): void {
+  if (!dragState) return;
+  const before = dragState.startTotal;
+  dragState = null;
+  dragging.value = false;
+  removeDragListeners();
+  /* Esc / pointercancel 取消这次拖动后，松手产生的 click 不能再开合一次（只取消拖动）。 */
+  suppressClick = true;
+  panelHeight.value = effectiveHeight(before);
+  syncTargets();
+  startMotion();
+  schedulePublishGeometry();
+}
+
+function onLeverClick(event: MouseEvent): void {
+  /* 点击与超过阈值的拖动分开：真实指针 click（detail > 0）在拖动结束后不再开合；
+     键盘 Enter / Space 产生的 click（detail === 0）照常开合。 */
+  if (suppressClick && event.detail > 0) {
+    suppressClick = false;
+    return;
+  }
+  suppressClick = false;
+  toggle();
 }
 
 const handleMin = computed(() => effectiveHeight(props.minHeight));
 const handleMax = computed(() => effectiveHeight(props.maxHeight));
 
-/** 键盘调整高度：上下方向键 ±步长，Home / End 到两端（与拖动共用同一套夹取）。 */
-function onHandleKeydown(event: KeyboardEvent): void {
+/** 键盘：↑/↓ 每次 ±步长，Home/End 到两端（与拖动共用同一套夹取）；Enter/Space 是原生 click 开合。 */
+function onLeverKeydown(event: KeyboardEvent): void {
   const keys = ["ArrowUp", "ArrowDown", "Home", "End"];
   if (!keys.includes(event.key)) return;
   event.preventDefault();
+  if (!expandedState.value) {
+    expand();
+  }
   let next = panelHeight.value;
   if (event.key === "ArrowUp") next += CONVERSATION_KEYBOARD_STEP;
   else if (event.key === "ArrowDown") next -= CONVERSATION_KEYBOARD_STEP;
@@ -323,62 +551,55 @@ function onHandleKeydown(event: KeyboardEvent): void {
   else next = handleMax.value;
   next = effectiveHeight(next);
   panelHeight.value = next;
+  writeStoredHeight(next);
   emit("update:height", next);
   emit("resize-end", next);
+  syncTargets();
+  startMotion();
 }
+
+/* ── Esc 层级：拖动中先取消拖动（恢复拖动前高度），再收起对话 ───────────── */
+let disposeEscape: (() => void) | null = null;
+
+function syncEscapeLayer(openState: boolean): void {
+  if (openState && !disposeEscape) {
+    disposeEscape = registerEscapeLayer({
+      id: "interactive-conversation",
+      active: () => expandedState.value,
+      onEscape: () => {
+        if (dragState) {
+          onLeverPointerCancel();
+          return true;
+        }
+        collapse();
+        return true;
+      },
+    });
+  } else if (!openState && disposeEscape) {
+    disposeEscape();
+    disposeEscape = null;
+  }
+}
+watch(expandedState, (value) => syncEscapeLayer(value), { immediate: true });
+onBeforeUnmount(() => {
+  disposeEscape?.();
+  disposeEscape = null;
+});
 
 function focusInput(): void {
   if (typeof document === "undefined") return;
   document.getElementById("composer-input")?.focus();
 }
 
-onBeforeUnmount(removeResizeListeners);
-
-/* ------------------------------------------------------------------
- * C01：把**真实可见几何**发布给跨浮层避让桥（chatFrameState）
- *
- * 消费方 BoardCanvas 一直读 chatObstacleFrame()；本组件是这条桥在互动页的唯一生产者
- * （展开时发布，收起 / 卸载发布 null）。
- *
- * 发布口径（COMMON §4.3 / 简报 §1 C01）：
- * - 只量**实际可见内容**：展开时的消息面板 + 输入区（入口条 / 工具栏 / 输入框各自
- *   最大 860px、居中），不量外层全宽容器 —— 否则会把整块板面误判成不可用；
- * - 屏幕坐标（视口左上角为原点），与 BoardCanvas 的消费口径一致；
- * - 展开才发布矩形；收起 / 卸载发布 null（收起时输入区常驻但按既有契约不让浮层避让，
- *   也不留幽灵矩形）;
- * - 触发：挂载、展开 / 收起、高度变化、窗口 resize、根元素尺寸变化（ResizeObserver）。
- *   板面平移缩放不会移动这块浮层（它与画布同级、固定在舞台底部）；它带来的
- *   滚动条 / 舞台尺寸变化会经 ResizeObserver 触发重新测量，每次测量都读实时 DOM，
- *   不缓存、不从 localStorage 恢复任何假显示框。
- * - 用 requestAnimationFrame 合并同一帧内的多次触发；卸载时取消待执行的测量。
- * ------------------------------------------------------------------ */
-const rootEl = ref<HTMLElement | null>(null);
-/** #88：模式入口布局按对话区**实际可用宽度**切换；首帧量不到时先按 stacked（入口完整可见）。 */
-const composerLayout = ref<"inline" | "stacked">("stacked");
-function syncComposerLayout(): void {
-  const el = rootEl.value;
-  if (!el) return;
-  const rect = typeof el.getBoundingClientRect === "function" ? el.getBoundingClientRect() : null;
-  const width = Math.round(rect?.width ?? 0);
-  if (width > 0) composerLayout.value = conversationComposerLayout(width);
-}
-/** 实际可见的组成块：消息面板（展开时）+ 输入区四块（各自居中、最大 860px）。 */
-const VISIBLE_PART_SELECTORS = ["[data-ic-bar]", ".ic-entries", "[data-ic-toolbar]", ".ic-composer"] as const;
-
-function rectOf(element: Element | null | undefined): DOMRect | null {
-  if (!element || typeof (element as HTMLElement).getBoundingClientRect !== "function") return null;
-  const rect = (element as HTMLElement).getBoundingClientRect();
-  if (!(rect.width > 0 && rect.height > 0)) return null;
-  return rect;
-}
+/* ── chatFrameState：发布真实可见几何（展开 → 矩形；收起 / 卸载 → null） ── */
+const VISIBLE_PART_SELECTORS = ["[data-ic-stream]", "[data-ic-rail]", "[data-ic-entries]", "[data-ic-composer]"] as const;
 
 /** 当前实际可见内容的外接矩形（屏幕坐标）；量不到真实几何时返回 null（不编造）。 */
 function measureVisibleFrame(): ChatFrame | null {
   const root = rootEl.value;
   if (!root) return null;
   const parts: DOMRect[] = [];
-  // 消息面板：只有展开且真的渲染出来了才算（v-show 隐藏时不计入）
-  if (expandedState.value && openedOnce.value) {
+  if (expandedState.value) {
     const stream = rectOf(root.querySelector<HTMLElement>("[data-ic-stream]"));
     if (stream) parts.push(stream);
   }
@@ -405,7 +626,6 @@ function measureVisibleFrame(): ChatFrame | null {
 
 let publishRaf: number | null = null;
 
-/** 立即按当前 DOM 发布一次：展开 → 真实可见矩形；收起 → null（不让浮层避让不存在的空间）。 */
 function publishGeometryNow(): void {
   if (!expandedState.value) {
     publishChatFrame(null, true);
@@ -426,45 +646,83 @@ function schedulePublishGeometry(): void {
   });
 }
 
+/* ── 布局变化：窗口 / 操作行 / 事项行 / 输入区尺寸变化后重算夹取与目标 ───── */
 let observer: ResizeObserver | null = null;
-let resizeBound = false;
 
-function onWindowResize(): void {
-  syncComposerLayout();
+function onGeometryChanged(): void {
+  const chrome = measureChromeHeight();
+  if (Math.abs(chrome - chromeHeight.value) > 0.5) chromeHeight.value = chrome;
+  if (expandedState.value) {
+    heightAxis.target = Math.max(0, panelHeight.value - chromeHeight.value);
+    startMotion();
+  } else {
+    drawFrame();
+  }
   schedulePublishGeometry();
 }
 
+function onWindowResize(): void {
+  panelHeight.value = effectiveHeight(panelHeight.value);
+  onGeometryChanged();
+  syncTargets();
+  startMotion();
+}
+
+function onReducedMotionChange(): void {
+  reduced.value = prefersReducedMotion();
+  if (reduced.value) {
+    stopMotion();
+    snapToTargets();
+    drawFrame();
+  }
+}
+
 onMounted(() => {
-  if (typeof window !== "undefined") {
-    window.addEventListener("resize", onWindowResize);
-    resizeBound = true;
+  panelHeight.value = initialHeight();
+  writeStoredHeight(panelHeight.value);
+  if (expandedState.value) openedOnce.value = true;
+  reduced.value = prefersReducedMotion();
+  rootMediaQuery?.addEventListener?.("change", onReducedMotionChange);
+  window.addEventListener("resize", onWindowResize);
+  if (typeof ResizeObserver !== "undefined") {
+    observer = new ResizeObserver(() => onGeometryChanged());
+    for (const target of [railEl.value, entriesEl.value, composerEl.value]) {
+      if (target) observer.observe(target);
+    }
   }
-  // 根元素尺寸 = 消息面板 + 输入区整体外框：展开 / 收起 / 拖高 / 窗口变化 / 滚动条出现
-  // 都会让它变化。元素尺寸变化不改变可见内容宽度时，下一次测量结果相同，发布幂等。
-  const root = rootEl.value;
-  if (root && typeof ResizeObserver !== "undefined") {
-    observer = new ResizeObserver(() => {
-      syncComposerLayout();
-      schedulePublishGeometry();
-    });
-    observer.observe(root);
-  }
-  syncComposerLayout();
-  schedulePublishGeometry();
+  chromeHeight.value = measureChromeHeight();
+  heightAxis.value = expandedState.value ? Math.max(0, panelHeight.value - chromeHeight.value) : 0;
+  heightAxis.target = heightAxis.value;
+  revealAxis.value = expandedState.value ? 1 : 0;
+  revealAxis.target = revealAxis.value;
+  streamShown.value = Math.max(0, heightAxis.value);
+  streamVisible.value = streamShown.value > 0.5;
+  drawFrame();
+  publishGeometryNow();
+  /**
+   * 互动页的历史入口（R5b）：普通对话页负责首次加载；直接进入 / 刷新互动页时
+   * history 仍是 idle，只调 reloadHistoryIfStale（idle 下是空操作）会让确认后的
+   * 执行记录永远等不到刷新。这里复用同一个既有 loadHistory（同一接口、同一去重与
+   * 话题归属保护，不轮询、不伪造记录、不跳页），已加载过则继续走既有 stale 刷新。
+   */
+  if (session.history.status === "idle") void session.loadHistory();
+  else void session.reloadHistoryIfStale();
 });
 
 // 展开 / 收起 / 高度变化后 DOM 已更新，下一帧按新几何重新发布
 watch([expandedState, panelHeight, openedOnce], () => schedulePublishGeometry(), { flush: "post" });
 
 onBeforeUnmount(() => {
-  if (typeof window !== "undefined" && resizeBound) window.removeEventListener("resize", onWindowResize);
-  resizeBound = false;
-  observer?.disconnect();
-  observer = null;
-  if (publishRaf !== null && typeof window !== "undefined") {
+  stopMotion();
+  removeDragListeners();
+  if (publishRaf !== null) {
     window.cancelAnimationFrame(publishRaf);
     publishRaf = null;
   }
+  if (typeof window !== "undefined") window.removeEventListener("resize", onWindowResize);
+  rootMediaQuery?.removeEventListener?.("change", onReducedMotionChange);
+  observer?.disconnect();
+  observer = null;
   // 卸载 = 这块空间不存在了：必须清空，不留幽灵障碍
   publishChatFrame(null, false);
 });
@@ -478,10 +736,17 @@ defineExpose({
   height: panelHeight,
   /** 只读给定向测试：当前可见内容的外接矩形（与发布值同一份算法） */
   measureVisibleFrame,
+  /** 只读给定向测试 / E2E：最后一帧的线框几何（与画面同一份算法） */
+  frameGeometry: () => lastFrame,
 });
 
 /** 发送绑定投影：只保留会话层认识的字段；没有绑定就是普通聊天（不带板面身份）。 */
 const sendBinding = computed(() => conversationBindingForSend(props.binding));
+
+function onComposerPointerDown(): void {
+  /* 点击输入区（附件 / 文本 / 发送都在胶囊内）同样自动展开；只改显示。 */
+  expand();
+}
 </script>
 
 <template>
@@ -490,58 +755,79 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
     class="ic"
     data-ic="conversation"
     :data-ic-expanded="expandedState ? 'true' : 'false'"
-    :data-ic-layout="composerLayout"
-    :style="{ '--ic-panel-h': panelHeight + 'px' }"
+    :data-ic-dragging="dragging ? 'true' : undefined"
+    :data-ic-reduced="reduced ? 'true' : undefined"
     role="region"
     :aria-label="title + '（底部互动对话）'"
   >
-    <!-- 会话流：第一次展开才挂载，之后只隐藏 —— 收起不等于清空阅读位置与已渲染内容 -->
-    <div v-if="openedOnce" v-show="expandedState" class="ic-stream" data-ic-stream :id="panelId">
-      <!-- #86：唯一的聊天开合入口在输入区旁（.ic-bar 的同一个开合按钮），
-           消息滚动区上方不再叠一个重复的关闭按钮。 -->
-      <MessageStream empty-variant="interactive" />
+    <!-- 玻璃材质：只覆盖真实面板范围，随揭示渐显；板面从后面透出（每帧由 JS 更新裁剪/透明度）。 -->
+    <div ref="glassEl" class="ic-glass" data-ic-glass aria-hidden="true"></div>
+
+    <!-- 顶边线框：把手 + 两条镜像开放路径；按弧长揭示（SVG 尺寸/路径每帧更新）。 -->
+    <svg ref="outlineEl" class="ic-outline" data-ic-frame aria-hidden="true" hidden>
+      <defs>
+        <linearGradient :id="fadeId" x1="0" y1="0" x2="0" y2="1" gradientUnits="userSpaceOnUse">
+          <stop offset="0" style="stop-color: var(--border-strong)" />
+          <stop offset="1" style="stop-color: var(--border-strong); stop-opacity: 0" />
+        </linearGradient>
+      </defs>
+      <path
+        ref="leftPathEl"
+        data-ic-frame-path="left"
+        :style="{ stroke: 'url(#' + fadeId + ')' }"
+      />
+      <path
+        ref="rightPathEl"
+        data-ic-frame-path="right"
+        :style="{ stroke: 'url(#' + fadeId + ')' }"
+      />
+    </svg>
+
+    <!-- 会话流：第一次展开才挂载，之后只把高度收为 0 —— 收起不等于清空阅读位置与已渲染内容。 -->
+    <div
+      v-if="openedOnce"
+      ref="streamWrapEl"
+      class="ic-stream-wrap"
+      data-ic-stream-wrap
+      :style="{ visibility: streamVisible ? 'visible' : 'hidden' }"
+      :aria-hidden="expandedState ? 'false' : 'true'"
+      :inert="expandedState ? undefined : true"
+    >
+      <div class="ic-stream" data-ic-stream :id="panelId">
+        <MessageStream empty-variant="interactive" />
+      </div>
     </div>
 
-    <!-- 高度分隔条：指针拖动 / 上下方向键；收起时不占位 -->
-    <div
-      v-if="expandedState"
-      class="ic-resize"
-      data-ic-resize
-      role="separator"
-      aria-orientation="horizontal"
-      :aria-label="title + '高度调整（上下方向键，Home/End 到两端）'"
-      :aria-valuemin="handleMin"
-      :aria-valuemax="handleMax"
-      :aria-valuenow="panelHeight"
-      :aria-valuetext="panelHeight + ' 像素'"
-      tabindex="0"
-      @pointerdown="onResizePointerDown"
-      @keydown="onHandleKeydown"
-    ></div>
+    <!-- 操作行：左＝模式切换 + 真实状态；中＝常驻把手（绝对居中，不随左右内容宽度偏移）；右＝板面工具。 -->
+    <div ref="railEl" class="ic-rail" data-ic-rail>
+      <div class="ic-rail-left">
+        <slot name="mode-switch" />
+        <span v-if="statusText" class="ic-status mono" data-ic-status role="status">{{ statusText }}</span>
+      </div>
+      <button
+        ref="leverEl"
+        class="ic-lever"
+        data-ic-toggle
+        data-ic-resize
+        type="button"
+        :aria-expanded="expandedState ? 'true' : 'false'"
+        :aria-controls="panelId"
+        :aria-label="leverLabel"
+        v-qio-tip="leverTip"
+        @click="onLeverClick"
+        @pointerdown="onLeverPointerDown"
+        @keydown="onLeverKeydown"
+      >
+        <span class="ic-lever-bar" aria-hidden="true"></span>
+      </button>
+      <div class="ic-rail-right">
+        <slot name="toolbar" />
+      </div>
+    </div>
 
     <div class="ic-dock">
-      <!-- 收起条：状态（回复中/排队/草稿）+ 唯一的展开入口 -->
-      <div class="ic-bar" data-ic-bar :id="barId">
-        <span v-if="statusText" class="ic-status mono" role="status" data-ic-status>{{ statusText }}</span>
-        <button
-          class="ic-toggle"
-          type="button"
-          data-ic-toggle
-          :aria-expanded="expandedState ? 'true' : 'false'"
-          :aria-controls="panelId"
-          :aria-label="expandedState ? '收起对话' : '展开对话'"
-          v-qio-tip="expandedState ? '收起对话' : '展开对话'"
-          @click="toggle"
-        >
-          <span class="ic-toggle-mark" aria-hidden="true">{{ expandedState ? "▾" : "▴" }}</span>
-          {{ expandedState ? "收起对话" : "展开对话" }}
-        </button>
-        <span class="ic-bar-spacer"></span>
-        <slot name="header-extra" />
-      </div>
-
       <!-- 五入口（附件 / 失败恢复 / 排队 / 历史继续 / 话题建议 / 审批）：始终在输入区正上方 -->
-      <div class="ic-entries">
+      <div ref="entriesEl" class="ic-entries" data-ic-entries>
         <ComposerEntries context="interactive" :extra-entries="props.extraEntries">
           <template #extra-panel="scope">
             <slot name="extra-panel" v-bind="scope" />
@@ -549,23 +835,21 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
         </ComposerEntries>
       </div>
 
-      <!-- 板面工具栏：固定在输入区上方；对话展开时消息在它上方增长，它和输入区不动。 -->
-      <div class="ic-toolbar" data-ic-toolbar>
-        <slot name="toolbar" />
-      </div>
-
       <!-- 输入区：始终挂载；收起只改变可见区域，不清草稿 / 附件 / 排队，也不停止回复。
            点击 / 聚焦输入区时自动展开消息面板。 -->
-      <div class="ic-composer" @focusin="expand">
-        <div class="ic-composer-row">
-          <slot name="composer-leading" />
-          <div class="ic-composer-input">
-            <Composer :chat-binding="sendBinding">
-              <template #leading>
-                <slot name="leading" />
-              </template>
-            </Composer>
-          </div>
+      <div
+        ref="composerEl"
+        class="ic-composer"
+        data-ic-composer
+        @focusin="expand"
+        @pointerdown="onComposerPointerDown"
+      >
+        <div class="ic-composer-input">
+          <Composer :chat-binding="sendBinding">
+            <template #leading>
+              <slot name="leading" />
+            </template>
+          </Composer>
         </div>
       </div>
     </div>
@@ -574,6 +858,7 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
 
 <style scoped>
 .ic {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -581,94 +866,77 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   font-family: var(--sans);
   color: var(--text-primary);
 }
-/* 展开：面板高度来自本机记忆 / 拖动；会话流占满剩余，输入区固定在底部。 */
-.ic[data-ic-expanded="true"] {
-  height: var(--ic-panel-h);
-  min-height: 0;
+/*
+  玻璃材质集中在聊天面板（只此一处）：
+  - 顶边从把手中心开始，按真实面板范围裁到顶角 14px 圆角，底部保持开口；
+  - clip-path 与 opacity 每帧由 JS 写入（水平随线框揭示渐开、整体渐显）；
+  - 板面内容从玻璃后面透出，明暗主题都用 bg-base 混合保证消息可读。
+*/
+.ic-glass {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: var(--ic-glass-top, 17px);
+  z-index: 0;
+  pointer-events: none;
+  border-radius: var(--qio-ui-radius) var(--qio-ui-radius) 0 0;
+  background: color-mix(in srgb, var(--bg-base) 54%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.06);
+  backdrop-filter: blur(16px) saturate(1.06);
+  clip-path: inset(
+    0 var(--ic-glass-inset, 50%) 0 var(--ic-glass-inset, 50%) round var(--qio-ui-radius)
+      var(--qio-ui-radius) 0 0
+  );
+  opacity: var(--ic-glass-opacity, 0);
+}
+/* 浏览器不支持 backdrop-filter：退回更实的半透明底（不假装有模糊）。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ic-glass {
+    background: color-mix(in srgb, var(--bg-base) 90%, transparent);
+  }
+}
+/* 顶边线框：两条镜像开放路径，stroke 颜色由渐变（顶边实、胶囊中线透明）给出。 */
+.ic-outline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+}
+.ic-outline path {
+  fill: none;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* 消息区：高度按帧动画（0 = 收起），内容保留在 DOM 里（滚动位置 / 已渲染内容不丢）。 */
+.ic-stream-wrap {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  height: var(--ic-stream-h, 0px);
+  overflow: hidden;
+  min-width: 0;
 }
 .ic-stream {
   position: relative;
+  display: flex;
+  width: 100%;
+  max-width: 860px;
+  height: 100%;
+  margin: 0 auto;
+  overflow: hidden;
+  background: transparent;
+}
+.ic-stream :deep(.stream) {
   flex: 1;
   min-height: 0;
-  display: flex;
-  margin: 0 var(--sp-3);
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
-  border-radius: var(--r-lg);
-  /* FU7：对话栏透明 + 背景高斯模糊（板面从栏后透出）。 */
+  height: 100%;
+  /* 顶边（把手 + 细线）占掉 30px：第一条消息不被线框压住。 */
+  padding-top: 30px;
   background: transparent;
-}
-/*
-  FU7 底层：整栏一层弱模糊 + 很淡的半透明底（只负责“透出板面”，不负责文字区域）。
-  不把 backdrop-filter 直接放在 .ic-stream 上：那样会给子元素建立 backdrop root，
-  文字块自己的更强模糊就不再采样板面了。放在 ::before 这一层，文字块仍在它之上。
-*/
-.ic-stream::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--bg-base) 30%, transparent);
-  -webkit-backdrop-filter: blur(12px) saturate(1.06);
-  backdrop-filter: blur(12px) saturate(1.06);
-}
-.ic-stream > * {
-  position: relative;
-  z-index: 1;
-}
-/* 消息流自己原来是整块不透明底：在互动面板里必须让位给模糊层。 */
-.ic-stream :deep(.stream) {
-  background: transparent;
-}
-/*
-  FU7 文字层：无框文字（用户消息 / 过程行 / 系统事实）下方再叠一层更强的高斯模糊。
-  羽化 mask 让边界是“渐变过渡”，既和周围模糊有区别、又不会出现硬边；
-  模糊层挂在文字块上，随消息滚动一起移动（不需要 JS 同步）。
-*/
-.ic-stream :deep(.user-bubble),
-.ic-stream :deep(.process-line),
-.ic-stream :deep(.system-fact) {
-  position: relative;
-  isolation: isolate;
-}
-.ic-stream :deep(.user-bubble)::before,
-.ic-stream :deep(.process-line)::before,
-.ic-stream :deep(.system-fact)::before {
-  content: "";
-  position: absolute;
-  inset: -10px -14px;
-  z-index: -1;
-  border-radius: 18px;
-  pointer-events: none;
-  -webkit-backdrop-filter: blur(26px) saturate(1.08);
-  backdrop-filter: blur(26px) saturate(1.08);
-  background: color-mix(in srgb, var(--bg-base) 10%, transparent);
-  -webkit-mask-image: linear-gradient(
-      to bottom,
-      transparent 0%,
-      #000 14%,
-      #000 86%,
-      transparent 100%
-    ),
-    linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
-  -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(
-      to bottom,
-      transparent 0%,
-      #000 14%,
-      #000 86%,
-      transparent 100%
-    ),
-    linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
-  mask-composite: intersect;
-}
-/* 浏览器不支持 backdrop-filter：退回半透明底（不假装有模糊）。 */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .ic-stream::before {
-    background: color-mix(in srgb, var(--bg-base) 88%, transparent);
-  }
 }
 .ic-stream :deep(.empty) {
   padding: 0 var(--sp-3);
@@ -678,53 +946,43 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   font-size: clamp(20px, 5vw, 34px);
   overflow-wrap: anywhere;
 }
-.ic-stream :deep(.stream) {
-  flex: 1;
-  min-height: 0;
-  height: 100%;
-  padding-top: var(--sp-5);
-}
-/* 分隔条：10px 手势带 + 中间一枚短横；视觉克制，热区清楚。 */
-.ic-resize {
+/*
+  操作行：透明底；左右两组等距内边距，把手绝对居中（左右宽度变化不影响居中）。
+  刻意不给 .ic-rail 自身 position：把手是面板顶边的控件（展开后消息区把操作行往下推，
+  把手仍留在面板顶部），所以它的绝对定位包含块必须是 .ic（见 .ic-lever），而不是这一行。
+*/
+.ic-rail {
   flex: none;
-  position: relative;
-  height: 10px;
-  margin: 2px var(--sp-3) 0;
-  cursor: ns-resize;
-  touch-action: none;
-}
-.ic-resize::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 42px;
-  height: 2px;
-  transform: translate(-50%, -50%);
-  border-radius: var(--r-pill);
-  background: var(--border-strong);
-}
-.ic-resize:hover::after,
-.ic-resize:focus-visible::after {
-  background: var(--accent);
-}
-.ic-resize:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
-}
-.ic-dock {
-  flex: none;
-  min-width: 0;
-  padding: 0 var(--sp-3) var(--sp-2);
-}
-.ic-bar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
-  max-width: 860px;
-  margin: 0 auto;
-  min-height: 32px;
+  min-height: 36px;
+  padding: 1px var(--sp-2);
+  background: transparent;
+}
+.ic-rail-left,
+.ic-rail-right {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
   min-width: 0;
+  /* 给中间的把手留出空间：左右内容再长也不会压到手柄。 */
+  max-width: var(--ic-rail-side, calc(50% - 62px));
+}
+.ic-rail-right {
+  /* 确定宽度：板面工具栏（rail）量到的是真实可用宽度，而不是自身内容宽度。 */
+  flex: 0 0 auto;
+  width: var(--ic-rail-side, calc(50% - 62px));
+}
+.ic-rail-left {
+  justify-content: flex-start;
+  gap: var(--sp-2);
+}
+.ic-rail-right {
+  justify-content: flex-end;
 }
 .ic-status {
   min-width: 0;
@@ -734,135 +992,77 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
-.ic-toggle {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  height: 26px;
-  padding: 0 var(--sp-2);
-  border: 1px solid transparent;
-  border-radius: var(--r-pill);
-  background: none;
-  font: inherit;
-  font-size: var(--fs-xs);
-  color: var(--text-secondary);
+/* 常驻把手：扁长外形（5px 长条）+ 32px 命中区；收起时点击开合，展开时点击收起、上下拖动调高。 */
+.ic-lever {
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: clamp(52px, 15%, 112px);
+  height: 32px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
+  touch-action: none;
 }
-.ic-toggle:hover {
-  color: var(--text-strong);
-  background: var(--layer-hover);
-  border-color: var(--border-subtle);
+.ic-lever-bar {
+  display: block;
+  width: 100%;
+  height: 5px;
+  border-radius: 4px;
+  background: var(--border-strong);
+  transition: background var(--dur-fast) var(--ease);
 }
-.ic-toggle:focus-visible {
+.ic-lever:hover .ic-lever-bar,
+.ic-lever:focus-visible .ic-lever-bar {
+  background: color-mix(in srgb, var(--accent) 58%, var(--border-strong));
+}
+.ic[data-ic-expanded="true"] .ic-lever {
+  cursor: ns-resize;
+}
+.ic[data-ic-dragging="true"] .ic-lever-bar {
+  background: var(--accent);
+}
+.ic-lever:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.ic-toggle-mark {
-  color: var(--text-faint);
-}
-.ic-bar-spacer {
-  flex: 1;
+/* 输入区：始终挂载；胶囊宽度跟随面板（自己的轮廓收住整组界面）。 */
+.ic-dock {
+  position: relative;
+  z-index: 1;
+  flex: none;
   min-width: 0;
+  padding: 0 var(--sp-3) var(--sp-2);
 }
 .ic-entries {
-  max-width: 860px;
-  margin: 0 auto;
-  min-width: 0;
-}
-
-.ic-toolbar {
-  min-width: 0;
-  max-width: 860px;
-  margin: 0 auto var(--sp-2);
   width: 100%;
-}
-/*
-  输入行（FU5）：三列 grid —— 左侧 1fr | 中间输入列（≤860）| 右侧 1fr。
-  * 输入列因此在面板内**真正居中**：不再被模式切换占掉的宽度推右；
-  * 模式切换（composer-leading 槽位）放第一列、靠右紧贴输入列左侧，不占输入列宽度；
-  * 窄窗（≤700）改单列：模式切换在输入上方、左对齐。
-  * 两侧 1fr 允许收缩（minmax(0, …)），窄面板不会溢出。
-*/
-.ic-composer-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 860px) minmax(0, 1fr);
-  align-items: end;
-  column-gap: var(--sp-3);
-  max-width: none;
-  margin: 0;
-  min-width: 0;
-}
-.ic-composer-input {
-  grid-column: 2;
-  min-width: 0;
-}
-/* 槽位内容由父级渲染（slot）：用 :slotted 才能给它定列。 */
-.ic-composer-row :slotted(.im-mode-switch) {
-  grid-column: 1;
-  justify-self: end;
-  align-self: end;
-  min-width: 0;
-  /* FU5：再往左让 20px —— 模式切换文字不要贴到输入胶囊的圆角/描边。 */
-  margin-right: 20px;
-}
-/*
-  #88：切换依据是对话区**实际可用宽度**（conversationComposerLayout 在组件里实测后写到
-  data-ic-layout 上），不是视口宽度 —— 悬浮对话卡被最大宽度钳住时，视口再宽侧列也放不下模式入口，
-  圆点会被裁掉。stacked 时模式入口在输入框上方、与输入框共用同一条 860 列：
-  工具栏（max-width 860、居中）与输入框同轴，不再用 padding-left 硬挪工具组。
-*/
-[data-ic-layout="stacked"] .ic-composer-row {
-  grid-template-columns: minmax(0, 1fr);
-  position: relative;
   max-width: 860px;
   margin: 0 auto;
-  row-gap: 4px;
-}
-[data-ic-layout="stacked"] .ic-composer-input {
-  grid-column: 1;
-}
-/* 工具组与输入框同一条 860 列：不再用 padding-left 硬挪，命中区域与视觉轴一致。 */
-[data-ic-layout="stacked"] .ic-toolbar {
-  max-width: 860px;
-  margin-left: auto;
-  margin-right: auto;
-}
-[data-ic-layout="stacked"] .ic-composer-row :slotted(.im-mode-switch) {
-  position: static;
-  grid-column: 1;
-  grid-row: 1;
-  justify-self: start;
-  align-self: start;
-  margin-right: 0;
-  padding-bottom: 2px;
-  z-index: 2;
-}
-@media (max-width: 700px) {
-  .ic-composer-row {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: 6px;
-    align-items: stretch;
-  }
-  .ic-composer-row :slotted(.im-mode-switch) {
-    grid-column: 1;
-    grid-row: 1;
-    justify-self: start;
-    align-self: start;
-    margin-right: 0;
-  }
-  .ic-composer-input {
-    grid-column: 1;
-    grid-row: 2;
-  }
+  min-width: 0;
 }
 .ic-composer {
-  /* 外层必须铺满面板，grid 的三列才有「两侧 1fr」可用（max-width 交给中间列）。 */
   width: 100%;
   max-width: none;
   margin: 0;
   min-width: 0;
+}
+.ic-composer :deep(.composer) {
+  /* 旧布局把输入列钳在 860 内；现在线框与操作行同宽，胶囊也铺满这条 860 列。 */
+  max-width: none;
+}
+.ic-composer-input {
+  width: 100%;
+  min-width: 0;
+}
+/* 减少动画：直接落最终几何，只保留项目既有短淡入淡出。 */
+.ic[data-ic-reduced="true"] .ic-glass,
+.ic[data-ic-reduced="true"] .ic-outline {
+  transition: opacity var(--dur-fast) var(--ease);
 }
 </style>

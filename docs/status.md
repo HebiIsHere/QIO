@@ -6467,3 +6467,18 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 发布验证：公开 latest.json（\`https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json\`）HTTP 200、\`version=0.3.4\`，内容与本地 latest.json SHA256 一致；Release 资产 exe / .sig / latest.json 均已上传；下载 URL 走 \`ghfast.top\` 加速。
 - 未验证边界：真实签名更新链路端到端、跨 Windows 账号/会话、安装版 GUI 真机矩阵、Windows Authenticode（沿用 0.3.3 口径）。
 - 证据：\`docs/releases/v0.3.4.md\`、\`dist-0.3.4-release/\`、\`_lead-logs/qio032-46/r11/build-0.3.4.log\` 与 \`publish-0.3.4.log\`。
+
+### P117 — 互动模式底部操作区重做（常驻把手 / 线框弧长揭示 / 玻璃面板 / 工具栏 rail）（2026-11-17）
+
+- **Status：** completed
+- 需求：按用户确认的互动预览重做互动页底部操作区（形态与动效参考 `C:\Users\zxy\Downloads\QIO_Animated_Chat_Preview.html`，实现以仓库真实组件、主题令牌与真实数据为准）：收起＝轻量操作行（左模式切换 / 中常驻把手 / 右板面工具）+ 独立胶囊输入；展开＝消息区在操作行上方长出，同一根把手固定在面板顶边，顶边由把手与左右两段细线接成，两侧线包住左右操作按钮、到输入胶囊实测水平中线处完全淡出；线框按弧长揭示（两条镜像 SVG 开放路径），高度与揭示在同一时间步临界阻尼补间（展开 11 s⁻¹ / 常规收起 21 s⁻¹ / 拖动跟手 45 s⁻¹）；玻璃材质集中在聊天面板、按真实面板范围裁剪；减少动画直接落最终几何。
+- 实现：
+  - 新建 `frontend/src/components/interactive/v2/conversationMotion.ts`：临界阻尼轴（dt 夹取 / 吸附）、解析进度与反解、镜像路径 + 解析弧长 + dasharray 揭示 + 玻璃裁剪/渐显 + 渐变色端点；纯函数可离线单测。
+  - 重写 `frontend/src/components/interactive/v2/InteractiveConversation.vue`：消息区 / 操作行 / 事项行 / 胶囊结构；`#mode-switch` / `#toolbar` 槽；同一根把手（点击开合、展开态拖动、↑/↓/Home/End、Esc 层级先取消拖动再收起，点击与超过阈值的拖动分开）；点击或聚焦输入区自动展开；开合 / 拖动只改显示并保持草稿、附件、排队、生成与阅读位置；chatFrameState 继续发布真实可见矩形（收起 / 卸载 null）；减少动画直接落位。
+  - `frontend/src/views/InteractiveView.vue`：模式切换移入操作行左侧、工具栏走 rail 形态、浮层宽度与消息列/胶囊同轴（860）；删除旧收起条与整条胶囊工具栏覆盖。
+  - `frontend/src/components/interactive/BoardToolbar.vue`：`rail` prop（默认关闭时 dock 行为不变）——透明单行、独立按钮、按自有实测宽度 full→icons→more 三档降级（撤销 / 重做 / 书签 / 提交详情收进「更多」，更多面板 Esc / 外点 / 焦点回位）；`AddMenu.vue` 增 `iconOnly`；`SubmitCluster.vue` 增 `hideDetails` 与 `openDetails()`；`frontend/src/interactive/toolbarLayout.ts` 增 `railToolbarMode`（阈值按真实渲染实测校准）。
+  - 测试：新增动效 / 线框几何单测、底部操作区布局守卫、rail 工具栏与三档降级单测；更新对话区 / 几何桥 / 页面壳守卫；删除随旧布局失效的输入区模式入口用例。
+- 验证：`npx vue-tsc --noEmit` exit 0；前端全量 vitest 与定向回归通过（日志见证据）；系统 Edge + CDP 实机（隔离数据域 + 本机 fake provider）：1000×600 点击→两侧横线首次到角 229.7ms（帧量化 231.1ms；预览同尺寸基准 218.4ms；验收窗 190–250ms），左右同步且起点 = 把手端点、竖边接续、SVG 高 = 胶囊中线 245、同帧更新 49/0/0；展开高度 50%/90% = 172.4/372.8ms、settle 847.2ms，收起 settle 462.9ms；线框离屏渲染像素确证可见；工具栏三档（1000/1440=full、900=icons、800/720=more）与更多菜单、暗/亮主题、1440/1000/900/800/720 视口、排队（「正在回复 · 已排队 1 条」）与待确认入口、键盘 / 拖动 / 拖动中 Esc / 减少动画 / 窗口变化、chatFrameState（展开矩形、收起 / 卸载 null）、草稿 / 附件 / 滚动 / 发送 / 提交 / 模式切换不变量均通过；实机取证 PASS 50 / FAIL 0 / UNVERIFIED 0，无页面 console error。
+- 边界：未做 Tauri 安装版真机验收；fake provider 只证明 QIO 自身链路，不证明真实厂商 / Tauri 原生窗口 / Windows 原生拖放；触屏 / 触控笔手势未覆盖。动画「到角」时刻位于上一帧与首个满足帧之间（报告同时给出线性插值与帧量化值）。
+- 证据：`_lead-logs/interactive-action/final/{summary.json,report.md,shots/}`（逐项结果与截图）、`_lead-logs/interactive-action/preview-baseline.json`（预览基准）、`scripts/verify-interactive-action/run.ps1`（一键复跑）；改动文件见本轮提交。
+

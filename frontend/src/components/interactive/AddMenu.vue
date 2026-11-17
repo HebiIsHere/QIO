@@ -66,6 +66,17 @@ interface AddItem {
   hint: string;
 }
 
+const props = withDefaults(
+  defineProps<{
+    /**
+     * rail 的 icons / more 档：隐藏「添加」文字，只留「＋」图标。
+     * 默认 false 时按钮仍是「＋添加」，既有 dock / 悬浮行为不变。
+     */
+    iconOnly?: boolean;
+  }>(),
+  { iconOnly: false },
+);
+
 const store = useInteractiveStore();
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
@@ -655,14 +666,18 @@ onBeforeUnmount(() => {
     <button
       ref="trigger"
       class="tb-btn"
+      :class="{ 'is-icon-only': props.iconOnly }"
       type="button"
       data-im="add-menu"
       aria-haspopup="menu"
       :aria-expanded="open"
-      v-qio-tip="'添加文字卡或材料：文字卡（文字 / 链接 / 代码） / 文件（图片是文件附件）'"
+      :data-icon-only="props.iconOnly ? 'true' : undefined"
+      :aria-label="props.iconOnly ? '添加' : undefined"
+      :title="props.iconOnly ? '添加' : undefined"
+      v-qio-tip="props.iconOnly ? '添加' : '添加文字卡或材料：文字卡（文字 / 链接 / 代码） / 文件（图片是文件附件）'"
       @click="toggle"
     >
-      <span class="plus" aria-hidden="true">＋</span>添加
+      <span class="plus" aria-hidden="true">＋</span><span class="tb-label">添加</span>
     </button>
 
     <!--
@@ -787,6 +802,30 @@ onBeforeUnmount(() => {
 .tb-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .tb-btn[aria-expanded="true"] { color: var(--text-strong); border-color: var(--border-strong); background: var(--bg-inset); }
 .plus { color: var(--link); }
+/*
+  rail 的 icons / more 档：只留「＋」图标，按钮尺寸与操作行其它图标按钮一致（32×32）。
+  文字退成读屏可见（sr-only）而不是直接删除：视觉上隐藏，但可访问名称由 aria-label「添加」
+  与这段文字共同兜底（v-qio-tip 的悬停说明也保留），不会变成一个无名称按钮。
+*/
+.tb-btn.is-icon-only {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.tb-btn.is-icon-only .tb-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 
 /*
   悬浮列：菜单与附件提示从「添加」按钮上方展开。
