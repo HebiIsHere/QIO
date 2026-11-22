@@ -649,9 +649,10 @@ const boardSize = computed(() => {
   min-width: 0;
 }
 .im-mode-switch :deep(.mode-btn) {
-  height: 30px;
+  /* 与右侧独立工具按钮同高、同字号：左侧入口和右侧工具是一个操作行。 */
+  height: 32px;
   padding: 0 var(--sp-2);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
 }
 .im-mode-switch :deep(.mode-btn:focus-visible) {
   outline: 2px solid var(--focus-ring);

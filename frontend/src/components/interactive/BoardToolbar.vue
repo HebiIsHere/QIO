@@ -709,11 +709,20 @@ function moreOpenSubmitDetails(): void {
   border-color: var(--accent);
 }
 
-/* AddMenu 的按钮在子组件里：scoped 样式用 :deep 透进去，与行上其它按钮同一套外观 */
+/* AddMenu 的按钮在子组件里：scoped 样式用 :deep 透进来，与行上其它按钮同一套外观
+   （问题一：同一操作行里的按钮只保留一种尺寸/圆角/描边/底色/禁用态/图标色）。 */
 [data-tb-rail="true"] :deep(.add .tb-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
   height: 32px;
   padding: 0 var(--sp-2);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  line-height: 1;
 }
 [data-tb-rail="true"] :deep(.add .tb-btn.is-icon-only) {
   min-width: 32px;
@@ -725,6 +734,8 @@ function moreOpenSubmitDetails(): void {
   background: var(--bg-inset);
   border-color: var(--border-strong);
 }
+/* 「＋」跟其它图标一样用当前文字色，不再单独用链接色（样式混乱来源之一）。 */
+[data-tb-rail="true"] :deep(.add .plus) { color: currentColor; }
 
 /* SubmitCluster 的 .actions（详情 + 提交）在行内；历史 / 统计不占操作行（compact 档也不渲染） */
 [data-tb-rail="true"] :deep(.sc-history),
@@ -734,10 +745,33 @@ function moreOpenSubmitDetails(): void {
   justify-self: auto;
 }
 [data-tb-rail="true"] :deep(.actions .details) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 32px;
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
+  line-height: 1;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
+}
+[data-tb-rail="true"] :deep(.actions .details:hover) {
+  color: var(--text-strong);
+  border-color: var(--border-strong);
+}
+[data-tb-rail="true"] :deep(.actions .details[aria-expanded="true"]) {
+  color: var(--text-strong);
+  background: var(--bg-inset);
+  border-color: var(--border-strong);
+}
+[data-tb-rail="true"] :deep(.actions .details:disabled) {
+  opacity: 1;
+  color: var(--text-faint);
+  background: var(--bg-inset);
+  border-color: var(--border-subtle);
+  cursor: default;
 }
 [data-tb-rail="true"] :deep(.actions .sc-details-icon) {
   width: 32px;
@@ -747,19 +781,24 @@ function moreOpenSubmitDetails(): void {
   border-radius: var(--qio-ui-radius);
 }
 [data-tb-rail="true"] :deep(.actions .sc-details-icon svg) { width: 16px; height: 16px; }
-/* 主提交按钮：操作行唯一的强调色操作；高度与行内其它控件一致。
-   禁用时换成中性块（不只靠透明度），仍能看清「提交给 QIO」这行字。 */
+/* 主提交按钮：操作行唯一的强调色操作；尺寸/圆角/内边距与相邻按钮一致。
+   禁用时换成与其它按钮相同的中性块（不只靠透明度），仍能看清「提交给 QIO」这行字。 */
 [data-tb-rail="true"] :deep(.actions .submit) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 32px;
-  padding: 0 var(--sp-3);
+  padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
+  line-height: 1;
+  border: 1px solid transparent;
   border-radius: var(--qio-ui-radius);
 }
 [data-tb-rail="true"] :deep(.actions .submit:disabled) {
   opacity: 1;
-  color: var(--text-muted);
+  color: var(--text-faint);
   background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
+  border-color: var(--border-subtle);
 }
 
 /*

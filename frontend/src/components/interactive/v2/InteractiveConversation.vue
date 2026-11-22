@@ -329,6 +329,14 @@ function drawFrame(): void {
   });
   lastFrame = frame;
 
+  /* 消息 / 滚动指示条只在可见顶边线以下绘制（把手中心线）：防止滚动内容或滚动条溢到边框上方。 */
+  root.style.setProperty("--ic-frame-top", Math.max(0, frame.leverY).toFixed(2) + "px");
+  /* 空态没有可滚动内容：标记 data-ic-empty 以隐藏滚动指示条；
+     空态的位置由 .ic-stream 的顶部 clip + 自身 40px 偏移保证，不会被滚动内容带出边框。 */
+  const scrollHost = streamEl.value?.querySelector<HTMLElement>(".stream") ?? null;
+  const emptyOverlay = scrollHost?.querySelector<HTMLElement>(".empty") ?? null;
+  if (emptyOverlay) root.dataset.icEmpty = "true";
+  else delete root.dataset.icEmpty;
   /* 操作行左右两组共用一个确定宽度：右侧槽（板面工具栏）据此实测自身可用宽度并降级。 */
   root.style.setProperty("--ic-rail-side", Math.max(96, Math.floor(width / 2 - 62)) + "px");
   root.dataset.icFramePathLength = frame.pathLength.toFixed(2);
@@ -962,6 +970,9 @@ function onComposerPointerDown(): void {
   margin: 0 auto;
   overflow: hidden;
   background: transparent;
+  /* 消息 / 滚动条只在「可见顶边线」以下绘制：面板顶到把手中心 17px 属于边框区域，
+     不让滚动内容或指示条从这里溢到边框外（clip 值由 drawFrame 按实测 leverY 写入）。 */
+  clip-path: inset(var(--ic-frame-top, 17px) 0 0 0);
 }
 .ic-stream :deep(.stream) {
   flex: 1;
@@ -973,9 +984,6 @@ function onComposerPointerDown(): void {
   /* 开合时消息区高度随面板变化：关掉浏览器滚动锚定，消息内容才能与把手同速升降；
      历史插入/阅读位置的锚定由 MessageStream 自己的逻辑负责（见 readingAnchor）。 */
   overflow-anchor: none;
-  /* 空态覆盖层（.empty）锚定到面板消息区（.ic-stream）而不是滚动视口（.stream）：
-     否则 scrollTop 非零时空态会跟着滚、跑到把手上方；这里只为互动面板调整包含块。 */
-  position: static;
 }
 /* 空态：与把手同速升降（固定在面板顶边下方 40px），底边被操作行裁切；
    把手永远在消息上方且不遮挡。虚化由 .ic-stream 的 opacity/filter 统一驱动。 */
@@ -983,6 +991,10 @@ function onComposerPointerDown(): void {
   inset: 0 0 auto 0;
   justify-content: flex-start;
   padding: var(--ic-empty-top, 40px) var(--sp-3) 0;
+}
+/* 空态没有可滚动内容：不显示 QIO 滚动指示条（贴底 settle 早期会把空态算成可滚动）。 */
+.ic[data-ic-empty="true"] :deep(.qio-scroll-rail) {
+  display: none !important;
 }
 .ic-stream :deep(.empty .greet) {
   max-width: 100%;
@@ -1001,7 +1013,9 @@ function onComposerPointerDown(): void {
   justify-content: space-between;
   gap: var(--sp-2);
   min-height: 36px;
-  padding: 1px var(--sp-2);
+  /* 与 .ic-dock（输入胶囊）共用同一水平内边距：左侧模式按钮与胶囊左边界对齐，
+     右侧提交按钮与胶囊右边界对齐（问题一）。 */
+  padding: 1px var(--sp-3);
   background: transparent;
 }
 .ic-rail-left,

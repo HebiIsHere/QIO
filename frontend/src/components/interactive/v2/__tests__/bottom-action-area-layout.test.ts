@@ -20,6 +20,7 @@ const conversation = readFileSync(
   resolve(SRC, "components/interactive/v2/InteractiveConversation.vue"),
   "utf8",
 );
+const toolbar = readFileSync(resolve(SRC, "components/interactive/BoardToolbar.vue"), "utf8");
 
 function block(source: string, selector: string): string {
   const start = source.indexOf(selector + " {");
@@ -65,6 +66,23 @@ describe("操作行：左模式切换 / 中常驻把手 / 右板面工具", () =
     expect(conversation).toContain("--ic-rail-side");
     const right = block(conversation, ".ic-rail-right");
     expect(right).toContain("width: var(--ic-rail-side");
+  });
+
+  it("问题一：左右入口与输入胶囊同边界；右侧按钮同一套尺寸/禁用态/图标色", () => {
+    // 胶囊左右各 12px（.ic-dock 内边距），操作行也必须是 12px，否则左右各差 4px。
+    const rail = block(conversation, ".ic-rail");
+    expect(rail).toContain("padding: 1px var(--sp-3)");
+    // 左侧模式入口与右侧工具同高、同字号（不再 30px vs 32px）。
+    const mode = block(view, ".im-mode-switch :deep(.mode-btn)");
+    expect(mode).toContain("height: 32px");
+    expect(mode).toContain("font-size: var(--fs-sm)");
+    // 右侧：文字/图标/详情/提交都是 32px 高、同一套描边/底色/字号/圆角。
+    expect(toolbar).toContain('[data-tb-rail="true"] .tb-btn');
+    expect(toolbar).toContain("height: 32px");
+    expect(toolbar).toContain('[data-tb-rail="true"] :deep(.add .plus)');
+    expect(toolbar).toMatch(/\[data-tb-rail="true"\] :deep\(\.add \.plus\)\s*\{[^}]*color:\s*currentColor/);
+    expect(toolbar).toMatch(/\[data-tb-rail="true"\] :deep\(\.actions \.submit\)\s*\{[^}]*padding: 0 var\(--sp-2\)/);
+    expect(toolbar).toMatch(/\[data-tb-rail="true"\] :deep\(\.actions \.submit:disabled\)\s*\{[^}]*color: var\(--text-faint\)/);
   });
 
   it("模式切换在页面接线里进入 #mode-switch 槽，工具栏进入 #toolbar 槽并走 rail 形态", () => {
@@ -124,6 +142,12 @@ describe("动效与降级：出现/消失同速非线性；消息随把手升降
 
   it("消息流关闭浏览器滚动锚定：开合时消息内容与把手同速升降", () => {
     expect(conversation).toContain("overflow-anchor: none");
+    // 消息 / 滚动指示条只在顶边线以下绘制，不能溢到边框外（用户 2026-11-22 实机反馈）。
+    expect(conversation).toContain("--ic-frame-top");
+    expect(conversation).toContain("clip-path: inset(var(--ic-frame-top");
+    expect(conversation).toContain("data-ic-empty");
+    // 不能再把 .stream 改成 position: static：QIO 滚动指示条依赖它做滚动偏移补偿。
+    expect(conversation).not.toContain("position: static");
   });
 
   it("消息内容随下沉虚化：与开合同一进度，驱动 .ic-stream 的 opacity/filter", () => {

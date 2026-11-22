@@ -6498,3 +6498,17 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 边界：未做 Tauri 安装版真机验收；fake provider 只证明 QIO 自身链路；虚化半径 6px、虚化窗口 0.5→0.15 进度为演示确认口径，后续可调；旧预览 216ms 到角口径已失效，仅作历史参照。
 - 证据：`_lead-logs/interactive-action/{summary.json,report.md,shots/}`、`_lead-logs/impl-verify/final/{result.json,shots/}`、`_lead-logs/impl-verify/rec/{real-open-close.gif,real-close-slow.gif,real-open-close-montage.png}`、`_lead-logs/demo/`（确认用演示页）；改动文件见本轮提交。
 
+### P119 — 互动底部操作区：消息/滚动条溢到边框外修复 + 操作行左右对齐与右侧按钮统一（2026-11-22）
+
+- **Status：** completed
+- 来源：用户实机截图反馈——滚动会话时消息与 QIO 滚动指示条出现在面板顶边线以上、滚动条穿过边框；以及之前的问题一（模式切换与输入胶囊未左对齐、右侧按钮样式不一致）。
+- 修复 1（溢出）：
+  - `InteractiveConversation.vue` 的消息区 `.ic-stream` 增加顶部裁切 `clip-path: inset(var(--ic-frame-top, 17px) 0 0 0)`，`--ic-frame-top` 由 `drawFrame` 按实测把手中心写入：滚动消息与 QIO 滚动指示条只在顶边线以下绘制，不再溢到边框/把手上方。
+  - 撤销上一版把 `.stream` 改成 `position: static` 的做法：QIO 滚动指示条依赖滚动容器做滚动偏移补偿，改成 static 后指示条会随 scrollTop 漂出面板；恢复 MessageStream 自己的 `position: relative` 后滚动条重新贴住面板内缘。
+  - 空态：用 `data-ic-empty` 隐藏滚动指示条（贴底 settle 早期会把空态算成可滚动），并继续保证空态距面板顶边 40px；顶部裁切作为兜底，不再依赖与 MessageStream 抢写 scrollTop。
+- 修复 2（问题一对齐）：`.ic-rail` 左右内边距 8px → 12px，与输入胶囊同边界；模式切换高度 30px → 32px、字号与右侧工具一致。实测（1000×600）：模式按钮左缘 82 = 胶囊左缘 82，右侧工具组/提交按钮右缘 918 = 胶囊右缘 918，行内按钮全部 32px。
+- 修复 3（问题一右侧按钮统一，`BoardToolbar.vue` rail 样式）：添加 / 撤销 / 重做 / 书签 / 详情 / 提交统一 32px 高、14px 圆角、`--sp-2` 内边距、同一描边 / 底色 / 字号；「＋」改为继承文字色；提交按钮补透明描边以与禁用态同尺寸；所有禁用态统一为 `--text-faint` + `--bg-inset` + `--border-subtle`（不再有的半透明、有的换底）。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest 33 passed；实机 1000×600 隔离数据域截图与量值：滚动消息 + 滚动条时内容顶边被裁在 271+17px 的顶边线以下、滚动条右缘 927 < 面板右缘 930、顶边线以上无可见消息像素；空态 offset 恒 40px、`data-ic-empty` 时指示条 `display: none`；取证 harness 仍 **PASS 52 / FAIL 0 / UNVERIFIED 0**；前端全量 `npm test` 全绿。
+- 边界：顶部裁切只作用于消息区的视觉绘制，不改变滚动位置 / 元素测量（chatFrameState 与消息同步测量仍用未裁切矩形）；窄窗口三档工具栏由 harness 多视口检查覆盖。
+- 证据：`_lead-logs/fix-20261122/{rail-metrics.json,metrics.json,shots/}`（操作行前后对照、溢出修复前后截图）；harness 见 `_lead-logs/interactive-action/`；改动文件见本轮提交。
+
