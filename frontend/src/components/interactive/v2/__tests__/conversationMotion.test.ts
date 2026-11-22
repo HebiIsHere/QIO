@@ -1,20 +1,18 @@
 /**
  * conversationMotion 纯函数单测（motion-core）。
  *
- * 契约：`_lead-logs/interactive-action/PLAN.md` §3.1（冻结接口）与 §5 验收。
- * 参考实现：预览 `QIO_Animated_Chat_Preview.html` 的 approach()/drawFrame()。
- * 覆盖：临界阻尼轴单步、解析进度与反解、镜像 SVG 几何/揭示/dasharray/玻璃裁剪、
- *       976/112/0/32/230/56 参考几何的「到角」校准，以及非法输入的稳健回退。
+ * 契约（2026-11-17 用户确认的演示修订）：
+ * - 线框「出现 / 消失」共用同一条 650ms、easeInOutCubic（慢-快-慢）时间轴；
+ * - 消息内容随下沉虚化：进度进入窗口后 opacity 1→0、blur 0→6px；
+ * - 线框几何（镜像路径 / 弧长揭示 / dasharray / 玻璃裁剪）口径不变。
  */
 import { describe, expect, it } from "vitest";
 import {
   CONVERSATION_MOTION,
+  conversationContentMist,
   conversationFrameGeometry,
-  createMotionAxis,
-  criticallyDampedDuration,
-  criticallyDampedProgress,
-  motionRateFor,
-  stepMotionAxis,
+  easeInOutCubic,
+  easedProgress,
   type ConversationFrameGeometry,
   type ConversationFrameInput,
 } from "../conversationMotion";
@@ -87,234 +85,136 @@ function pathNumbers(path: string): number[] {
   return (path.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
 }
 
-describe("CONVERSATION_MOTION：冻结常量", () => {
-  it("与 PLAN §3.1 完全一致", () => {
+
+describe("CONVERSATION_MOTION：冻结的时间轴与虚化参数", () => {
+  it("与用户确认的演示口径完全一致", () => {
     expect(CONVERSATION_MOTION).toEqual({
-      openRate: 11,
-      closeRate: 21,
-      dragRate: 45,
-      dtMax: 0.04,
-      heightEpsilon: 0.25,
-      revealEpsilon: 0.0015,
+      durationMs: 650,
+      progressEpsilon: 0.0015,
+      mistBlurPx: 6,
+      mistStartProgress: 0.5,
+      mistEndProgress: 0.15,
     });
   });
 });
 
-describe("createMotionAxis：轴工厂", () => {
-  it("默认 value=target=0、velocity=0", () => {
-    expect(createMotionAxis()).toEqual({ value: 0, velocity: 0, target: 0 });
+describe("easeInOutCubic：慢-快-慢非线性缓动", () => {
+  it("端点与中点精确：f(0)=0、f(0.5)=0.5、f(1)=1", () => {
+    expect(easeInOutCubic(0)).toBe(0);
+    expect(easeInOutCubic(0.5)).toBe(0.5);
+    expect(easeInOutCubic(1)).toBe(1);
   });
 
-  it("只给 value 时 target 跟随 value（初始静止）", () => {
-    expect(createMotionAxis(294)).toEqual({ value: 294, velocity: 0, target: 294 });
+  it("已知取值：f(0.25)=0.0625、f(0.75)=0.9375（慢起慢收）", () => {
+    expect(easeInOutCubic(0.25)).toBeCloseTo(0.0625, 12);
+    expect(easeInOutCubic(0.75)).toBeCloseTo(0.9375, 12);
   });
 
-  it("value 与 target 可分别给定（收起态初始化）", () => {
-    expect(createMotionAxis(0, 258)).toEqual({ value: 0, velocity: 0, target: 258 });
-  });
-
-  it("每次返回新对象，不共享状态", () => {
-    expect(createMotionAxis()).not.toBe(createMotionAxis());
-  });
-});
-
-describe("motionRateFor：拖动 > 展开 > 收起", () => {
-  it("拖动优先 45，其次展开 11，其余收起 21", () => {
-    expect(motionRateFor({ opening: true, dragging: true })).toBe(CONVERSATION_MOTION.dragRate);
-    expect(motionRateFor({ opening: false, dragging: true })).toBe(45);
-    expect(motionRateFor({ opening: true, dragging: false })).toBe(CONVERSATION_MOTION.openRate);
-    expect(motionRateFor({ opening: false, dragging: false })).toBe(CONVERSATION_MOTION.closeRate);
-  });
-});
-
-describe("stepMotionAxis：单步临界阻尼逼近", () => {
-  it("rate=11、dt=1/60 时单调、无过冲，约 1s 内 settled 且吸附到 target", () => {
-    const axis = createMotionAxis(0, 1);
-    const dt = 1 / 60;
-    let settledAt = -1;
-    let previous = axis.value;
-    for (let step = 1; step <= 120; step += 1) {
-      const settled = stepMotionAxis(axis, dt, CONVERSATION_MOTION.openRate, CONVERSATION_MOTION.revealEpsilon);
-      // 单调不减
-      expect(axis.value).toBeGreaterThanOrEqual(previous);
-      // 无过冲
-      expect(axis.value).toBeLessThanOrEqual(axis.target + 1e-9);
-      previous = axis.value;
-      if (settled) {
-        settledAt = step;
-        break;
-      }
-    }
-    expect(settledAt).toBeGreaterThan(0);
-    expect(settledAt).toBeLessThanOrEqual(60); // ≤1s（参考用例实测 ~0.80s）
-    expect(axis.value).toBe(axis.target);
-    expect(axis.velocity).toBe(0);
-  });
-
-  it("离散单步与解析临界阻尼进度一致（同一初始条件下逐帧对齐）", () => {
-    const axis = createMotionAxis(0, 1);
-    const dt = 1 / 60;
-    for (let step = 1; step <= 120; step += 1) {
-      const settled = stepMotionAxis(axis, dt, 11, CONVERSATION_MOTION.revealEpsilon);
-      if (settled) break;
-      expect(axis.value).toBeCloseTo(criticallyDampedProgress(step / 60, 11), 12);
+  it("时间镜像对称：f(x)+f(1-x)=1（出现 / 消失共用同一条曲线）", () => {
+    for (const x of [0.05, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.95]) {
+      expect(easeInOutCubic(x) + easeInOutCubic(1 - x)).toBeCloseTo(1, 12);
     }
   });
 
-  it("高度轴（epsilon=0.25）同样在约 1s 内 settled", () => {
-    const axis = createMotionAxis(0, 196);
-    let settledAt = -1;
-    for (let step = 1; step <= 120; step += 1) {
-      if (stepMotionAxis(axis, 1 / 60, 11, CONVERSATION_MOTION.heightEpsilon)) {
-        settledAt = step;
-        break;
-      }
-    }
-    expect(settledAt).toBeGreaterThan(0);
-    expect(settledAt).toBeLessThanOrEqual(60);
-    expect(axis.value).toBe(196);
-    expect(axis.velocity).toBe(0);
-  });
-
-  it("已经在 target 上时立即 settled（velocity 清零）", () => {
-    const axis = createMotionAxis(294, 294);
-    expect(stepMotionAxis(axis, 1 / 60, 11, 0.25)).toBe(true);
-    expect(axis.value).toBe(294);
-    expect(axis.velocity).toBe(0);
-
-    const resting = { value: 10, velocity: 8, target: 10 };
-    expect(stepMotionAxis(resting, 1 / 60, 11, 0.25)).toBe(true);
-    expect(resting.value).toBe(10);
-    expect(resting.velocity).toBe(0);
-  });
-
-  it("dt 先夹到 [0, dtMax]：dt=1 与 dt=dtMax 等价", () => {
-    const clamped = createMotionAxis(0, 1);
-    stepMotionAxis(clamped, 1, 11, 0.0015);
-    const explicit = createMotionAxis(0, 1);
-    stepMotionAxis(explicit, CONVERSATION_MOTION.dtMax, 11, 0.0015);
-    expect(clamped.value).toBe(explicit.value);
-    expect(clamped.velocity).toBe(explicit.velocity);
-    // 冻结公式在首帧的确定值（dt=0.04、rate=11 的一次积分）
-    expect(clamped.value).toBeCloseTo(0.07258755364027636, 12);
-    expect(clamped.velocity).toBeCloseTo(3.117136278042404, 12);
-  });
-
-  it("负值 / NaN dt 视为 0：不移动、不 settled", () => {
-    for (const dt of [-1, Number.NaN, -Number.NaN]) {
-      const axis = createMotionAxis(0, 1);
-      expect(stepMotionAxis(axis, dt, 11, 0.0015)).toBe(false);
-      expect(axis.value).toBe(0);
-      expect(axis.velocity).toBe(0);
-    }
-  });
-
-  it("快速反向：target 中途翻转时 value 连续、不跳变，最终吸附新 target", () => {
-    const axis = createMotionAxis(0, 1);
-    for (let step = 0; step < 10; step += 1) {
-      stepMotionAxis(axis, 1 / 60, CONVERSATION_MOTION.openRate, CONVERSATION_MOTION.revealEpsilon);
-    }
-    const before = axis.value;
-    const beforeVelocity = axis.velocity;
-    expect(before).toBeGreaterThan(0);
-    expect(beforeVelocity).toBeGreaterThan(0);
-
-    axis.target = 0;
-    const settledImmediately = stepMotionAxis(axis, 1 / 60, CONVERSATION_MOTION.closeRate, CONVERSATION_MOTION.revealEpsilon);
-    expect(settledImmediately).toBe(false);
-    // 连续：单帧位移远小于剩余距离（实测约 0.011，任一点跳变都会远大于此）
-    expect(Math.abs(axis.value - before)).toBeLessThan(0.05);
-
-    let settled = false;
-    for (let step = 0; step < 240 && !settled; step += 1) {
-      settled = stepMotionAxis(axis, 1 / 60, CONVERSATION_MOTION.closeRate, CONVERSATION_MOTION.revealEpsilon);
-    }
-    expect(settled).toBe(true);
-    expect(axis.value).toBe(0);
-    expect(axis.velocity).toBe(0);
-  });
-
-  it("揭示轴与高度轴同 rate 同步：同一时间步归一化进度一致", () => {
-    const heightAxis = createMotionAxis(0, 196);
-    const revealAxis = createMotionAxis(0, 1);
-    const dt = 1 / 60;
-    for (let step = 1; step <= 40; step += 1) {
-      const heightSettled = stepMotionAxis(heightAxis, dt, 11, CONVERSATION_MOTION.heightEpsilon);
-      const revealSettled = stepMotionAxis(revealAxis, dt, 11, CONVERSATION_MOTION.revealEpsilon);
-      expect(heightSettled).toBe(false);
-      expect(revealSettled).toBe(false);
-      const heightProgress = heightAxis.value / 196;
-      expect(heightProgress).toBeCloseTo(revealAxis.value, 12);
-      expect(heightProgress).toBeCloseTo(criticallyDampedProgress(step / 60, 11), 12);
-    }
-  });
-});
-
-describe("criticallyDampedProgress：解析进度", () => {
-  it("t<=0 返回 0；rate<=0 视为瞬间完成", () => {
-    expect(criticallyDampedProgress(0, 11)).toBe(0);
-    expect(criticallyDampedProgress(-0.3, 11)).toBe(0);
-    expect(criticallyDampedProgress(Number.NaN, 11)).toBe(0);
-    expect(criticallyDampedProgress(1, 0)).toBe(1);
-    expect(criticallyDampedProgress(1, -11)).toBe(1);
-  });
-
-  it("1-(1+rt)e^{-rt} 的已知取值", () => {
-    expect(criticallyDampedProgress(1 / 11, 11)).toBeCloseTo(1 - 2 / Math.E, 12);
-    expect(criticallyDampedProgress(1, 11)).toBeCloseTo(0.9997995795905169, 12);
-    expect(criticallyDampedProgress(1, 21)).toBeCloseTo(1 - 22 * Math.exp(-21), 12);
-  });
-
-  it("随时间单调不减且夹在 [0,1]", () => {
+  it("单调不减，且中间最快：半程斜率明显大于两端", () => {
     let previous = 0;
-    for (let step = 0; step <= 240; step += 1) {
-      const value = criticallyDampedProgress(step / 60, 11);
+    for (let step = 0; step <= 200; step += 1) {
+      const value = easeInOutCubic(step / 200);
       expect(value).toBeGreaterThanOrEqual(previous);
-      expect(value).toBeGreaterThanOrEqual(0);
-      expect(value).toBeLessThanOrEqual(1);
       previous = value;
     }
-    expect(criticallyDampedProgress(10, 11)).toBe(1);
+    const midSlope = easeInOutCubic(0.55) - easeInOutCubic(0.45);
+    const headSlope = easeInOutCubic(0.1) - easeInOutCubic(0);
+    const tailSlope = easeInOutCubic(1) - easeInOutCubic(0.9);
+    expect(midSlope).toBeGreaterThan(headSlope * 5);
+    expect(midSlope).toBeGreaterThan(tailSlope * 5);
+  });
+
+  it("输入夹到 [0,1]，NaN 视为 0", () => {
+    expect(easeInOutCubic(-3)).toBe(0);
+    expect(easeInOutCubic(3)).toBe(1);
+    expect(easeInOutCubic(Number.NaN)).toBe(0);
   });
 });
 
-describe("criticallyDampedDuration：反解到角时间", () => {
-  it("progress<=0 → 0；progress>=1 或 rate<=0 → Infinity", () => {
-    expect(criticallyDampedDuration(0, 11)).toBe(0);
-    expect(criticallyDampedDuration(-0.5, 11)).toBe(0);
-    expect(criticallyDampedDuration(Number.NaN, 11)).toBe(0);
-    expect(criticallyDampedDuration(1, 11)).toBe(Number.POSITIVE_INFINITY);
-    expect(criticallyDampedDuration(1.5, 11)).toBe(Number.POSITIVE_INFINITY);
-    expect(criticallyDampedDuration(0.5, 0)).toBe(Number.POSITIVE_INFINITY);
-    expect(criticallyDampedDuration(0.5, -11)).toBe(Number.POSITIVE_INFINITY);
+describe("easedProgress：线性时间 → 缓动进度", () => {
+  it("0 / 半程 / 全程：0、0.5、1", () => {
+    expect(easedProgress(0, 650)).toBe(0);
+    expect(easedProgress(325, 650)).toBe(0.5);
+    expect(easedProgress(650, 650)).toBe(1);
   });
 
-  it("与 criticallyDampedProgress 互为反函数（多进度 × 多 rate）", () => {
-    for (const rate of [11, 21, 45]) {
-      for (const progress of [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99]) {
-        const duration = criticallyDampedDuration(progress, rate);
-        expect(duration).toBeGreaterThan(0);
-        expect(criticallyDampedProgress(duration, rate)).toBeCloseTo(progress, 9);
-      }
+  it("duration<=0 视为瞬间完成；非法输入安全", () => {
+    expect(easedProgress(0, 0)).toBe(1);
+    expect(easedProgress(10, -1)).toBe(1);
+    expect(easedProgress(Number.NaN, 650)).toBe(0);
+    expect(easedProgress(100, Number.NaN)).toBe(1);
+  });
+
+  it("非线性：前 10% 时间只走约 0.4%，接近结束时收尾变慢", () => {
+    expect(easedProgress(65, 650)).toBeCloseTo(0.004, 6);
+    expect(easedProgress(585, 650)).toBeGreaterThan(0.99);
+  });
+});
+
+describe("出现 / 消失同速：同一时间轴的两个方向", () => {
+  it("展开进度 p(t) 与收起剩余 1-p(t) 时间镜像：全程时长相同", () => {
+    const D = CONVERSATION_MOTION.durationMs;
+    for (const t of [0, 60, 130, 250, 325, 400, 520, 650]) {
+      const opening = easedProgress(t, D);
+      const closing = 1 - opening;
+      // 收起进度 = 1 - 展开进度，时长同为 D；进度曲线互相镜像
+      expect(opening + closing).toBeCloseTo(1, 12);
+      // 时间镜像：ease(t)+ease(D-t)=1 —— 收起进度恰等于 1-展开进度
+      expect(easedProgress(D - t, D)).toBeCloseTo(closing, 12);
     }
   });
 
-  it("Lead 指定目标：进度 0.690 在 rate=11 下 ≈ 216–218ms", () => {
-    const duration = criticallyDampedDuration(0.69, 11);
-    expect(duration).toBeGreaterThan(0.21);
-    expect(duration).toBeLessThan(0.225);
-    expect(duration).toBeCloseTo(0.2175, 3);
+  it("完整出现与完整消失都恰好在 durationMs 结束（不存在某一方向更快）", () => {
+    const D = CONVERSATION_MOTION.durationMs;
+    expect(easedProgress(D - 1, D)).toBeLessThan(1);
+    expect(easedProgress(D, D)).toBe(1);
+    const closeAtHalf = 1 - easedProgress(D / 2, D);
+    expect(closeAtHalf).toBe(0.5);
+  });
+});
+
+describe("conversationContentMist：消息随下沉虚化", () => {
+  it("展开态 / 进度 >= 窗口起点：完全不虚化", () => {
+    for (const progress of [1, 0.8, 0.6, 0.5]) {
+      expect(conversationContentMist(progress)).toEqual({ mist: 0, opacity: 1, blurPx: 0 });
+    }
   });
 
-  it("参考几何的到角校准：cornerReveal 反解落在 0.19–0.245s", () => {
-    const geometry = conversationFrameGeometry(CALIBRATION_INPUT);
-    // 冻结公式（horizontal/pathLength）在 976/112/0/32/230/56 下为 421.25/671.241 = 0.6276；
-    // PLAN §3.1 备注的 ≈0.690 与「216ms」是同一目标进度的两种口径（0.690 ↔ 217.5ms），
-    // 这里同时把两者写进测试：公式真值 + 时长区间，保证冻结几何与 Lead 的时长验收口径都被覆盖。
-    expect(geometry.cornerReveal).toBe(0.6276);
-    const duration = criticallyDampedDuration(geometry.cornerReveal, 11);
-    expect(duration).toBeGreaterThanOrEqual(0.19);
-    expect(duration).toBeLessThanOrEqual(0.245);
+  it("进度 <= 窗口终点：完全消失（透明度 0 + 6px 模糊）", () => {
+    for (const progress of [0.15, 0.1, 0, Number.NaN, -1]) {
+      expect(conversationContentMist(progress)).toEqual({ mist: 1, opacity: 0, blurPx: 6 });
+    }
+  });
+
+  it("窗口中点：mist 0.5、opacity 0.5、blur 3px（smoothstep 中点）", () => {
+    expect(conversationContentMist(0.325)).toEqual({ mist: 0.5, opacity: 0.5, blurPx: 3 });
+  });
+
+  it("进度从 1 降到 0：透明度单调减、模糊单调增、始终有界", () => {
+    let previous = conversationContentMist(1);
+    for (let step = 1; step <= 100; step += 1) {
+      const current = conversationContentMist(1 - step / 100);
+      expect(current.mist).toBeGreaterThanOrEqual(previous.mist);
+      expect(current.opacity).toBeLessThanOrEqual(previous.opacity);
+      expect(current.blurPx).toBeGreaterThanOrEqual(previous.blurPx);
+      expect(current.mist).toBeGreaterThanOrEqual(0);
+      expect(current.mist).toBeLessThanOrEqual(1);
+      expect(current.blurPx).toBeGreaterThanOrEqual(0);
+      expect(current.blurPx).toBeLessThanOrEqual(CONVERSATION_MOTION.mistBlurPx);
+      previous = current;
+    }
+  });
+
+  it("展开与收起共用同一映射：同一进度得到同一虚化值", () => {
+    for (const progress of [0.45, 0.35, 0.25, 0.18]) {
+      expect(conversationContentMist(progress)).toEqual(conversationContentMist(progress));
+    }
   });
 });
 

@@ -5,7 +5,7 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
-最后核对：2026-11-17（**QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
+最后核对：2026-11-22（**互动底部操作区动效修订已实现并验证：线框出现/消失同速 + 同一 easeInOutCubic（慢-快-慢）、消息内容随把手同速升降并在下沉时虚化；实机取证 PASS 52 / FAIL 0 / UNVERIFIED 0；QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
 
 最后核对：2026-11-17（**凭据厂商新增 Command Code / OpenCode（套餐 vs API 调用）已实现并验证；QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
 
@@ -6481,4 +6481,20 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 验证：`npx vue-tsc --noEmit` exit 0；前端全量 vitest 与定向回归通过（日志见证据）；系统 Edge + CDP 实机（隔离数据域 + 本机 fake provider）：1000×600 点击→两侧横线首次到角 229.7ms（帧量化 231.1ms；预览同尺寸基准 218.4ms；验收窗 190–250ms），左右同步且起点 = 把手端点、竖边接续、SVG 高 = 胶囊中线 245、同帧更新 49/0/0；展开高度 50%/90% = 172.4/372.8ms、settle 847.2ms，收起 settle 462.9ms；线框离屏渲染像素确证可见；工具栏三档（1000/1440=full、900=icons、800/720=more）与更多菜单、暗/亮主题、1440/1000/900/800/720 视口、排队（「正在回复 · 已排队 1 条」）与待确认入口、键盘 / 拖动 / 拖动中 Esc / 减少动画 / 窗口变化、chatFrameState（展开矩形、收起 / 卸载 null）、草稿 / 附件 / 滚动 / 发送 / 提交 / 模式切换不变量均通过；实机取证 PASS 50 / FAIL 0 / UNVERIFIED 0，无页面 console error。
 - 边界：未做 Tauri 安装版真机验收；fake provider 只证明 QIO 自身链路，不证明真实厂商 / Tauri 原生窗口 / Windows 原生拖放；触屏 / 触控笔手势未覆盖。动画「到角」时刻位于上一帧与首个满足帧之间（报告同时给出线性插值与帧量化值）。
 - 证据：`_lead-logs/interactive-action/final/{summary.json,report.md,shots/}`（逐项结果与截图）、`_lead-logs/interactive-action/preview-baseline.json`（预览基准）、`scripts/verify-interactive-action/run.ps1`（一键复跑）；改动文件见本轮提交。
+
+### P118 — 互动底部操作区动效修订：线框出现/消失同速非线性 + 消息随把手同步/下沉虚化（2026-11-22）
+
+- **Status：** completed
+- 需求（用户 2026-11-17 演示修订，2026-11-22 确认实现）：问题三实际是「边框线消失明显快于出现」——出现与消失必须同速，且两个方向都使用非线性动画；消息内容的下降/消失速度要和扁长把手同步，把手永远在消息上方、不遮住上升/下降中的消息；在此基础上再叠加消息虚化。
+- 实现：
+  - `frontend/src/components/interactive/v2/conversationMotion.ts`：移除「展开 11 / 收起 21」两条临界阻尼轴，改为单条 **650ms、`easeInOutCubic`（慢-快-慢）时间轴**（中途反向按剩余距离等比缩短）；新增 `conversationContentMist(progress)` 纯函数（进度 ≥0.5 不虚化、≤0.15 完全消失：opacity 1→0 + blur 0→6px，smoothstep）。
+  - `frontend/src/components/interactive/v2/InteractiveConversation.vue`：高度 / 线框揭示 / 内容虚化共用同一个归一化 `progress`；点击开合 650ms 同速非线性，拖动保持直接跟手、线框保持全揭示，减少动画直接落位；空态覆盖层固定在面板顶边下方 40px（`--ic-empty-top`），随把手同速升降；消息流关闭浏览器滚动锚定（`overflow-anchor: none`），否则浏览器 scrollTop 修正会吃掉消息区随把手的位移；`.empty` 的绝对定位包含块改为 `.ic-stream`，空态不再随 scrollTop 滚动/跑到把手上方。
+  - 测试：`conversationMotion.test.ts` 重写（时间轴对称 / 非线性 / 虚化映射 / 几何口径不变）；`bottom-action-area-layout.test.ts` 守卫更新（同速非线性、消息跟随、虚化、overflow-anchor、空态偏移）；MessageStream 无产品改动。
+  - 取证 harness：`scripts/verify-interactive-action/frames.mjs` 口径改为 650ms 慢-快-慢（到角窗口 0.28–0.62s），新增「出现/消失 settle 差 ≤120ms」「25/50/75% 进度符合 easeInOutCubic」两项断言；反向 / 拖动场景抓取时机按新时间轴调整。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest（动效 / 布局 / 对话区 / 几何桥 / MessageStream）全绿；系统 Edge + CDP 实机（隔离数据域 + fake provider，1000×600）：
+  - 线框：点击→到角 386.6ms（帧量化 391.9ms）；展开 settle 675.4ms、收起 settle 657.6ms（同速差 17.8ms）；展开归一化进度 25%/50%/75% = 0.056/0.492/0.940，收起 = 0.055/0.489/0.940（时间镜像）；高度与揭示同帧更新 37 同帧 / 1 reveal-only / 0 height-only。
+  - 消息同步：空态内容顶 = 面板顶 +40px 恒定、与把手底间距 20.5px、0 重叠帧、逐帧位移误差 0；有消息时消息区与面板逐帧同步误差 0（scrollTop 不变）；收起时 opacity 单调 1→0、blur 0→6px，把手全程在消息上方。
+  - 不变量：拖动跟手（抓握 255 → 253/273/280）与松手保留、快速反向连续、减少动画落位、草稿 / 附件 / 排队 / 滚动位置 / 发送 / 模式切换 / chatFrameState 均通过；实机取证 **PASS 52 / FAIL 0 / UNVERIFIED 0**，无页面 console error。
+- 边界：未做 Tauri 安装版真机验收；fake provider 只证明 QIO 自身链路；虚化半径 6px、虚化窗口 0.5→0.15 进度为演示确认口径，后续可调；旧预览 216ms 到角口径已失效，仅作历史参照。
+- 证据：`_lead-logs/interactive-action/{summary.json,report.md,shots/}`、`_lead-logs/impl-verify/final/{result.json,shots/}`、`_lead-logs/impl-verify/rec/{real-open-close.gif,real-close-slow.gif,real-open-close-montage.png}`、`_lead-logs/demo/`（确认用演示页）；改动文件见本轮提交。
 

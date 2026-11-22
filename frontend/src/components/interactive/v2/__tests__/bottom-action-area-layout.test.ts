@@ -107,14 +107,39 @@ describe("顶边线框与玻璃：面板范围 / 镜像路径 / 胶囊中线淡�
   });
 });
 
-describe("动效与降级：同一时间步更新高度与揭示；减少动画直接落最终几何", () => {
-  it("使用临界阻尼动效模块（展开 11 / 收起 21 / 拖动 45 在模块内单测）", () => {
+describe("动效与降级：出现/消失同速非线性；消息随把手升降并虚化；减少动画直接落最终几何", () => {
+  it("线框与高度共用一条 easeInOutCubic 时间轴（存在与消失同速，时长常量在模块内单测）", () => {
     expect(conversation).toContain("conversationMotion");
-    expect(conversation).toContain("stepMotionAxis");
-    expect(conversation).toContain("motionRateFor");
+    expect(conversation).toContain("easeInOutCubic");
     expect(conversation).toContain("CONVERSATION_MOTION");
+    expect(conversation).toContain("progressAnim");
     // 高度与揭示在同一帧内先后更新（同一 time step），不是两条独立 CSS transition
     expect(conversation).toContain("drawFrame()");
+    // 旧的「展开 11 / 收起 21」两条独立弹簧轴已移除
+    expect(conversation).not.toContain("stepMotionAxis");
+    expect(conversation).not.toContain("motionRateFor");
+    expect(conversation).not.toContain("heightAxis");
+    expect(conversation).not.toContain("revealAxis");
+  });
+
+  it("消息流关闭浏览器滚动锚定：开合时消息内容与把手同速升降", () => {
+    expect(conversation).toContain("overflow-anchor: none");
+  });
+
+  it("消息内容随下沉虚化：与开合同一进度，驱动 .ic-stream 的 opacity/filter", () => {
+    expect(conversation).toContain("conversationContentMist");
+    expect(conversation).toContain("dataset.icMist");
+    expect(conversation).toContain("stream.style.opacity");
+    expect(conversation).toContain("blur(");
+  });
+
+  it("消息内容固定在面板顶边下方、与把手同速升降（不垂直居中，把手永远在消息上方）", () => {
+    const empty = conversation.slice(conversation.indexOf(".ic-stream :deep(.empty)"));
+    expect(empty.slice(0, 400)).toContain("inset: 0 0 auto 0");
+    expect(empty.slice(0, 400)).toContain("justify-content: flex-start");
+    expect(empty.slice(0, 400)).toContain("var(--ic-empty-top, 40px)");
+    // 点击开合降低到同一条时间轴：收起 / 展开走同一个 startMotion
+    expect(conversation).toContain("startMotion()");
   });
 
   it("减少动画：监听 prefers-reduced-motion，直接落位 + 极短淡入淡出", () => {

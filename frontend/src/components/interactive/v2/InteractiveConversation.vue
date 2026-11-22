@@ -5,7 +5,10 @@
   - 收起：一条轻量操作行（左＝模式切换 + 真实状态，中＝常驻把手，右＝板面工具）+ 下方独立胶囊输入框；
   - 展开：消息区从操作行上方长出，操作行仍在输入框上方；同一根把手留在**面板顶边**，
     顶边由把手与左右两段细线接成，两侧细线沿面板边向下、到输入胶囊水平中线前淡出；
-  - 线框用两条镜像 SVG 开放路径按弧长揭示（慢-快-慢临界阻尼，与高度同帧更新）；
+  - 线框用两条镜像 SVG 开放路径按弧长揭示：出现 / 消失同速，共用一条
+    easeInOutCubic（慢-快-慢）时间轴，与高度同帧更新；
+  - 消息内容固定在面板顶边下方、与把手同速升降；被操作行裁切时同步虚化（blur + 淡出），
+    把手始终在消息上方、不遮挡消息；
   - 玻璃材质集中在聊天面板：按真实面板范围裁剪、随揭示渐显，板面从后面透出；
   - 开合 / 拖高只改显示：不卸载 Composer、不清草稿与附件、不停止回复、不动排队；
   - 板面操作（interactive store 的 lastOpLabel 前进）时自动收起，但回复继续 —— 收起不是停止；
@@ -38,11 +41,9 @@ import {
 } from "./conversationLayout";
 import {
   CONVERSATION_MOTION,
+  conversationContentMist,
   conversationFrameGeometry,
-  createMotionAxis,
-  motionRateFor,
-  stepMotionAxis,
-  type MotionAxis,
+  easeInOutCubic,
 } from "./conversationMotion";
 
 const props = withDefaults(
@@ -97,6 +98,7 @@ const outlineEl = ref<SVGSVGElement | null>(null);
 const leftPathEl = ref<SVGPathElement | null>(null);
 const rightPathEl = ref<SVGPathElement | null>(null);
 const streamWrapEl = ref<HTMLElement | null>(null);
+const streamEl = ref<HTMLElement | null>(null);
 const railEl = ref<HTMLElement | null>(null);
 const entriesEl = ref<HTMLElement | null>(null);
 const composerEl = ref<HTMLElement | null>(null);
@@ -155,11 +157,13 @@ const chromeHeight = ref(0);
 
 watch(panelHeight, (value) => writeStoredHeight(value));
 
-/* ── 动效：临界阻尼轴（高度 / 揭示同一时间步） ──────────────────────────── */
-const heightAxis: MotionAxis = createMotionAxis(0, 0);
-const revealAxis: MotionAxis = createMotionAxis(0, 0);
+/* ── 动效：单条缓动时间轴（高度 / 揭示 / 虚化同一进度；出现与消失同速） ──── */
+/** 归一化开合进度：0 收起、1 展开（消息高度、线框揭示、内容虚化共用）。 */
+const progress = ref(0);
 /** 当前消息区显示高度（px，动画值） */
 const streamShown = ref(0);
+/** 正在进行的开合动画；中途反向时从当前进度重启，时长按剩余距离等比缩短。 */
+let progressAnim: { from: number; to: number; startedAt: number; durationMs: number } | null = null;
 /** 消息区是否可见（收起动画归零后隐藏，保留 DOM 与阅读位置；挂载即展开时首帧就可见） */
 const streamVisible = ref(Boolean(props.expanded));
 const dragging = ref(false);
@@ -175,7 +179,6 @@ function prefersReducedMotion(): boolean {
 }
 
 let motionRaf: number | null = null;
-let lastFrameTs = 0;
 
 function motionAllowed(): boolean {
   if (prefersReducedMotion()) return false;
@@ -193,53 +196,82 @@ function measureChromeHeight(): number {
   return Math.max(0, root.offsetHeight - streamH);
 }
 
-/** 用当前状态重算两个目标值（展开：记忆总高 - 固定区；收起：0 / 0）。 */
-function syncTargets(): void {
-  chromeHeight.value = measureChromeHeight();
-  const open = expandedState.value;
-  heightAxis.target = open ? Math.max(0, panelHeight.value - chromeHeight.value) : 0;
-  revealAxis.target = open ? 1 : 0;
+/** 展开态消息区目标高度（面板总高 - 操作行/事项行/输入区实测高度）。 */
+function openStreamHeight(): number {
+  return Math.max(0, panelHeight.value - chromeHeight.value);
 }
 
-function snapToTargets(): void {
-  heightAxis.value = heightAxis.target;
-  heightAxis.velocity = 0;
-  revealAxis.value = revealAxis.target;
-  revealAxis.velocity = 0;
-  streamShown.value = Math.max(0, heightAxis.value);
+/** 进度 → 消息区高度（px）；非法进度按 0 处理。 */
+function streamHeightAt(value: number): number {
+  const p = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+  return Math.max(0, openStreamHeight() * p);
+}
+
+/** 当前展开状态对应的目标进度。 */
+function targetProgress(): number {
+  return expandedState.value ? 1 : 0;
+}
+
+/** 用当前状态重算固定区高度（操作行 / 事项行 / 输入区，不含消息区）。 */
+function syncTargets(): void {
+  chromeHeight.value = measureChromeHeight();
+}
+
+/** 直接落到指定进度（减少动画 / 量不到真实宽度时的降级路径）。 */
+function snapToProgress(target: number): void {
+  stopMotion();
+  progress.value = Math.min(1, Math.max(0, Number.isFinite(target) ? target : 0));
+  streamShown.value = streamHeightAt(progress.value);
 }
 
 function stopMotion(): void {
+  progressAnim = null;
   if (motionRaf !== null) {
     window.cancelAnimationFrame(motionRaf);
     motionRaf = null;
   }
 }
 
+/**
+ * 启动 / 继续开合动画：出现与消失都是 durationMs（650ms）的 easeInOutCubic；
+ * 中途反向时从当前进度出发、时长按剩余距离等比缩短，速度口径保持一致。
+ */
 function startMotion(): void {
   if (!motionAllowed()) {
-    stopMotion();
-    snapToTargets();
+    snapToProgress(targetProgress());
     drawFrame();
     return;
   }
-  if (motionRaf !== null) return;
-  lastFrameTs = performance.now();
-  motionRaf = window.requestAnimationFrame(stepMotion);
+  const target = targetProgress();
+  const distance = Math.abs(target - progress.value);
+  if (distance <= CONVERSATION_MOTION.progressEpsilon) {
+    stopMotion();
+    progress.value = target;
+    streamShown.value = streamHeightAt(target);
+    drawFrame();
+    return;
+  }
+  progressAnim = {
+    from: progress.value,
+    to: target,
+    startedAt: performance.now(),
+    durationMs: Math.max(1, CONVERSATION_MOTION.durationMs * distance),
+  };
+  if (motionRaf === null) motionRaf = window.requestAnimationFrame(stepMotion);
 }
 
 function stepMotion(now: number): void {
   motionRaf = null;
-  const dt = Math.min(CONVERSATION_MOTION.dtMax, Math.max(0, (now - lastFrameTs) / 1000));
-  lastFrameTs = now;
-  const opening = revealAxis.target === 1 && revealAxis.value < 1;
-  const rate = motionRateFor({ opening, dragging: dragState !== null && dragState.moved });
-  const settledHeight = stepMotionAxis(heightAxis, dt, rate, CONVERSATION_MOTION.heightEpsilon);
-  const settledReveal = stepMotionAxis(revealAxis, dt, rate, CONVERSATION_MOTION.revealEpsilon);
-  streamShown.value = Math.max(0, heightAxis.value);
+  const anim = progressAnim;
+  if (!anim) return;
+  const u = Math.min(1, Math.max(0, (now - anim.startedAt) / anim.durationMs));
+  progress.value = anim.from + (anim.to - anim.from) * easeInOutCubic(u);
+  streamShown.value = streamHeightAt(progress.value);
   drawFrame();
-  if (settledHeight && settledReveal) {
-    streamShown.value = Math.max(0, heightAxis.value);
+  if (u >= 1) {
+    progressAnim = null;
+    progress.value = anim.to;
+    streamShown.value = streamHeightAt(anim.to);
     drawFrame();
     return;
   }
@@ -271,8 +303,16 @@ function drawFrame(): void {
   const showStream = streamH > 0.5;
   if (streamVisible.value !== showStream) streamVisible.value = showStream;
 
-  const reveal = Math.min(1, Math.max(0, revealAxis.value));
+  const reveal = Math.min(1, Math.max(0, progress.value));
   root.dataset.icReveal = reveal.toFixed(4);
+  /* 消息内容虚化：与开合同一条进度（下沉时模糊 + 淡出，升起时反向恢复）。 */
+  const mist = conversationContentMist(reveal);
+  root.dataset.icMist = mist.mist.toFixed(4);
+  const stream = streamEl.value;
+  if (stream) {
+    stream.style.opacity = mist.opacity.toFixed(4);
+    stream.style.filter = mist.blurPx > 0.01 ? "blur(" + mist.blurPx.toFixed(2) + "px)" : "none";
+  }
 
   const rootRect = typeof root.getBoundingClientRect === "function" ? root.getBoundingClientRect() : null;
   const leverRect = rectOf(leverEl.value);
@@ -430,7 +470,7 @@ let dragState: LeverDrag | null = null;
 let suppressClick = false;
 
 function displayedTotalHeight(): number {
-  return Math.max(0, heightAxis.value) + chromeHeight.value;
+  return Math.max(0, streamShown.value) + chromeHeight.value;
 }
 
 function removeDragListeners(): void {
@@ -480,15 +520,10 @@ function onLeverPointerMove(event: PointerEvent): void {
   const total = effectiveHeight(dragState.startTotal + delta);
   panelHeight.value = total;
   const streamTarget = Math.max(0, total - chromeHeight.value);
-  heightAxis.value = streamTarget;
-  heightAxis.target = streamTarget;
-  heightAxis.velocity = 0;
-  /* 拖动时线框随面板实时伸缩：已经展开就保持全揭示，展开途中则继续完成揭示。 */
-  if (revealAxis.target > 0) {
-    revealAxis.target = 1;
-    if (revealAxis.value >= 0.999) revealAxis.value = 1;
-  }
-  streamShown.value = Math.max(0, heightAxis.value);
+  /* 拖动是直接操作：停掉时间轴，消息高度跟手，线框保持全揭示（把手仍在面板顶边）。 */
+  stopMotion();
+  progress.value = 1;
+  streamShown.value = streamTarget;
   drawFrame();
   emit("update:height", total);
   schedulePublishGeometry();
@@ -653,9 +688,10 @@ function onGeometryChanged(): void {
   const chrome = measureChromeHeight();
   if (Math.abs(chrome - chromeHeight.value) > 0.5) chromeHeight.value = chrome;
   if (expandedState.value) {
-    heightAxis.target = Math.max(0, panelHeight.value - chromeHeight.value);
     startMotion();
   } else {
+    progress.value = 0;
+    streamShown.value = 0;
     drawFrame();
   }
   schedulePublishGeometry();
@@ -671,8 +707,7 @@ function onWindowResize(): void {
 function onReducedMotionChange(): void {
   reduced.value = prefersReducedMotion();
   if (reduced.value) {
-    stopMotion();
-    snapToTargets();
+    snapToProgress(targetProgress());
     drawFrame();
   }
 }
@@ -691,11 +726,8 @@ onMounted(() => {
     }
   }
   chromeHeight.value = measureChromeHeight();
-  heightAxis.value = expandedState.value ? Math.max(0, panelHeight.value - chromeHeight.value) : 0;
-  heightAxis.target = heightAxis.value;
-  revealAxis.value = expandedState.value ? 1 : 0;
-  revealAxis.target = revealAxis.value;
-  streamShown.value = Math.max(0, heightAxis.value);
+  progress.value = expandedState.value ? 1 : 0;
+  streamShown.value = streamHeightAt(progress.value);
   streamVisible.value = streamShown.value > 0.5;
   drawFrame();
   publishGeometryNow();
@@ -734,6 +766,7 @@ defineExpose({
   focusInput,
   expanded: expandedState,
   height: panelHeight,
+  progress,
   /** 只读给定向测试：当前可见内容的外接矩形（与发布值同一份算法） */
   measureVisibleFrame,
   /** 只读给定向测试 / E2E：最后一帧的线框几何（与画面同一份算法） */
@@ -793,7 +826,7 @@ function onComposerPointerDown(): void {
       :aria-hidden="expandedState ? 'false' : 'true'"
       :inert="expandedState ? undefined : true"
     >
-      <div class="ic-stream" data-ic-stream :id="panelId">
+      <div ref="streamEl" class="ic-stream" data-ic-stream :id="panelId">
         <MessageStream empty-variant="interactive" />
       </div>
     </div>
@@ -937,9 +970,19 @@ function onComposerPointerDown(): void {
   /* 顶边（把手 + 细线）占掉 30px：第一条消息不被线框压住。 */
   padding-top: 30px;
   background: transparent;
+  /* 开合时消息区高度随面板变化：关掉浏览器滚动锚定，消息内容才能与把手同速升降；
+     历史插入/阅读位置的锚定由 MessageStream 自己的逻辑负责（见 readingAnchor）。 */
+  overflow-anchor: none;
+  /* 空态覆盖层（.empty）锚定到面板消息区（.ic-stream）而不是滚动视口（.stream）：
+     否则 scrollTop 非零时空态会跟着滚、跑到把手上方；这里只为互动面板调整包含块。 */
+  position: static;
 }
+/* 空态：与把手同速升降（固定在面板顶边下方 40px），底边被操作行裁切；
+   把手永远在消息上方且不遮挡。虚化由 .ic-stream 的 opacity/filter 统一驱动。 */
 .ic-stream :deep(.empty) {
-  padding: 0 var(--sp-3);
+  inset: 0 0 auto 0;
+  justify-content: flex-start;
+  padding: var(--ic-empty-top, 40px) var(--sp-3) 0;
 }
 .ic-stream :deep(.empty .greet) {
   max-width: 100%;

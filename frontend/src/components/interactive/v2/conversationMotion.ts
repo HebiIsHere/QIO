@@ -2,39 +2,31 @@
  * 互动模式底部操作区的开合动效 / 线框几何纯函数（motion-core）。
  *
  * 来源：参考预览 `QIO_Animated_Chat_Preview.html` 的 approach()/drawFrame()，
- * 改写为无 DOM、无副作用、可离线单测的解析实现；冻结契约见
- * `_lead-logs/interactive-action/PLAN.md` §3.1。
+ * 改写为无 DOM、无副作用、可离线单测的解析实现；
+ * 2026-11-17 按用户确认的演示修订：线框出现 / 消失同速且共用一条
+ * easeInOutCubic（慢-快-慢）时间轴，并新增「消息随下沉虚化」的纯函数映射。
  *
  * 边界：
  * - 只做算术与字符串推导，不读 DOM、不读时钟、不发请求、不碰会话状态；
- * - 唯一的原地更新入口是 stepMotionAxis（按帧推进单个轴），其余函数均为纯函数；
+ * - 全部导出函数均为纯函数（组件只读取返回值驱动 rAF 时间轴）；
  * - 几何输出统一量化（路径坐标 2 位、长度 3 位、比率 4 位小数），避免浮点噪声进入
  *   SVG 属性与 data-* 观测值；非法输入回退到安全值，绝不输出 NaN。
  */
 
-/** 单轴临界阻尼状态：value 当前值、velocity 当前速度、target 目标值。 */
-export interface MotionAxis {
-  value: number;
-  velocity: number;
-  target: number;
-}
-
 /**
- * 开合动效常量（冻结）：
- * - openRate 展开 11 s⁻¹（慢，接近预览的舒展感）；
- * - closeRate 常规收起 21 s⁻¹（快，减少等待）；
- * - dragRate 拖动跟手 45 s⁻¹（更硬，跟指针走）；
- * - dtMax 单帧最大积分步长 0.04s（掉帧/后台恢复时不会一步跳太远）；
- * - heightEpsilon 高度轴吸附阈值（像素）；
- * - revealEpsilon 揭示轴吸附阈值（比例）。
+ * 开合时间轴常量（用户 2026-11-17 确认的演示口径，冻结）：
+ * - durationMs 完整「出现 / 消失」标称时长：两个方向相同（650ms），
+ *   中途反向时按剩余距离等比缩短 —— 出现与消失共用同一条时间轴；
+ * - progressEpsilon 归一化进度吸附阈值；
+ * - mistBlurPx / mistStartProgress / mistEndProgress：消息内容随面板收起
+ *   「下沉虚化」的最大模糊半径与进度窗口（start 之前不虚化，end 之后完全消失）。
  */
 export const CONVERSATION_MOTION = {
-  openRate: 11,
-  closeRate: 21,
-  dragRate: 45,
-  dtMax: 0.04,
-  heightEpsilon: 0.25,
-  revealEpsilon: 0.0015,
+  durationMs: 650,
+  progressEpsilon: 0.0015,
+  mistBlurPx: 6,
+  mistStartProgress: 0.5,
+  mistEndProgress: 0.15,
 } as const;
 
 /** 路径坐标量化位数。 */
@@ -76,87 +68,55 @@ function quantize(value: number, digits: number): number {
   return Object.is(rounded, -0) ? 0 : rounded;
 }
 
-/** 轴工厂：默认 value=target=0；只给 value 时 target 跟随 value（初始静止）。 */
-export function createMotionAxis(value = 0, target = value): MotionAxis {
-  const safeValue = finiteOr(value, 0);
+/** 归一化进度夹到 [0,1]；非有限值视为 0。 */
+export function clampProgress(value: number | undefined): number {
+  return clamp01(value);
+}
+
+/** 三次缓入缓出（慢-快-慢）：f(0)=0、f(0.5)=0.5、f(1)=1，两端一阶导为 0。 */
+export function easeInOutCubic(u: number): number {
+  const x = clamp01(u);
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+
+/**
+ * 线性时间 → 缓动进度：把 elapsedMs/durationMs 夹到 [0,1] 后过 easeInOutCubic。
+ * duration<=0 视为瞬间完成（返回 1）；非法输入按 0 处理。
+ */
+export function easedProgress(elapsedMs: number, durationMs: number): number {
+  const duration = finiteOr(durationMs, 0);
+  const elapsed = finiteOr(elapsedMs, 0);
+  if (!(duration > 0)) return 1;
+  return easeInOutCubic(elapsed / duration);
+}
+
+/** 消息内容虚化输出：mist=0 完全清晰、mist=1 完全虚化（透明度 0 + 最大模糊）。 */
+export interface ConversationContentMist {
+  /** 0..1 虚化程度。 */
+  mist: number;
+  /** 内容不透明度（1 - mist）。 */
+  opacity: number;
+  /** 模糊半径（px）。 */
+  blurPx: number;
+}
+
+/**
+ * 按开合进度计算消息内容虚化：进度 >= mistStartProgress 完全不虚化，
+ * <= mistEndProgress 完全消失，中间用 smoothstep 过渡。
+ * 展开 / 收起共用同一条映射，所以「下沉时虚化」与「升起时恢复」严格对称。
+ */
+export function conversationContentMist(progress: number | undefined): ConversationContentMist {
+  const value = clamp01(progress);
+  const start = CONVERSATION_MOTION.mistStartProgress;
+  const end = CONVERSATION_MOTION.mistEndProgress;
+  const span = Math.max(1e-6, start - end);
+  const raw = clamp01((start - value) / span);
+  const mist = raw * raw * (3 - 2 * raw);
   return {
-    value: safeValue,
-    velocity: 0,
-    target: finiteOr(target, safeValue),
+    mist: quantize(mist, RATIO_DIGITS),
+    opacity: quantize(1 - mist, RATIO_DIGITS),
+    blurPx: quantize(mist * CONVERSATION_MOTION.mistBlurPx, 2),
   };
-}
-
-/**
- * 单步临界阻尼逼近（预览 approach() 的 TS 版）：
- * - dt 先夹到 [0, dtMax]，负值/NaN 视为 0；
- * - 只有「越过 target」或「误差与速度都足够小」时才吸附，吸附后 value===target、velocity===0；
- * - 返回 true 表示本步已 settled（调用方可以停止 rAF 循环）。
- */
-export function stepMotionAxis(axis: MotionAxis, dtSeconds: number, rate: number, epsilon: number): boolean {
-  const dt = Math.min(CONVERSATION_MOTION.dtMax, Math.max(0, finiteOr(dtSeconds, 0)));
-  const safeRate = finiteOr(rate, 0);
-  const safeEpsilon = finiteNonNegative(epsilon);
-
-  const offset = axis.value - axis.target;
-  const momentum = axis.velocity + safeRate * offset;
-  const decay = Math.exp(-safeRate * dt);
-  const next = (offset + momentum * dt) * decay;
-  axis.velocity = (axis.velocity - safeRate * momentum * dt) * decay;
-
-  if (offset * next <= 0 || (Math.abs(next) < safeEpsilon && Math.abs(axis.velocity) < safeEpsilon * 20)) {
-    axis.value = axis.target;
-    axis.velocity = 0;
-    return true;
-  }
-  axis.value = axis.target + next;
-  return false;
-}
-
-/** 按当前状态选 rate：拖动优先（45），其次展开（11），其余收起（21）。 */
-export function motionRateFor(state: { opening: boolean; dragging: boolean }): number {
-  if (state.dragging) return CONVERSATION_MOTION.dragRate;
-  if (state.opening) return CONVERSATION_MOTION.openRate;
-  return CONVERSATION_MOTION.closeRate;
-}
-
-/**
- * 临界阻尼解析进度：1-(1+rt)e^{-rt}。
- * t<=0（含 NaN）返回 0；rate<=0 视为瞬间完成返回 1；结果夹在 [0,1]。
- * 该函数与 stepMotionAxis 的离散步进在零初速下逐帧一致，可用于离线校准。
- */
-export function criticallyDampedProgress(elapsedSeconds: number, rate: number): number {
-  const elapsed = finiteOr(elapsedSeconds, 0);
-  if (!(elapsed > 0)) return 0;
-  if (!(rate > 0)) return 1;
-  const x = rate * elapsed;
-  if (!Number.isFinite(x)) return 1; // 溢出（rate/t 极大）视作已完成
-  const remaining = (1 + x) * Math.exp(-x);
-  return Math.min(1, Math.max(0, 1 - remaining));
-}
-
-/**
- * criticallyDampedProgress 的反解：给定进度 p，求 t 使 1-(1+rt)e^{-rt}=p。
- * progress<=0（含 NaN）→ 0；progress>=1 或 rate<=0 → Infinity（永不完成）。
- * 用二分法反解（进度单调），精度到双精度浮点极限。
- */
-export function criticallyDampedDuration(progress: number, rate: number): number {
-  const target = finiteOr(progress, 0);
-  if (!(target > 0)) return 0;
-  if (!(rate > 0) || !Number.isFinite(rate)) return Number.POSITIVE_INFINITY;
-  if (target >= 1) return Number.POSITIVE_INFINITY;
-
-  // 先把上界扩到进度覆盖 target 的 x=rt 处
-  let low = 0;
-  let high = 2;
-  for (let guard = 0; guard < 64 && criticallyDampedProgress(high / rate, rate) < target; guard += 1) {
-    high *= 2;
-  }
-  for (let iterate = 0; iterate < 100; iterate += 1) {
-    const middle = (low + high) / 2;
-    if (criticallyDampedProgress(middle / rate, rate) < target) low = middle;
-    else high = middle;
-  }
-  return (low + high) / 2 / rate;
 }
 
 /** 线框几何输入（组件每次测量后传入；单位 px）。 */

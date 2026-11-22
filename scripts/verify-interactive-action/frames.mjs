@@ -34,14 +34,19 @@ const CDP_PORT = Number(process.env.QIO_CDP_PORT || "9333");
 const ONLY = (process.argv.find((a) => a.startsWith("--only=")) || "").split("=")[1] || process.env.QIO_IA_ONLY || "";
 const RUN_ID = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 14);
 
-// 到角目标：PLAN §5-1「约 0.22s」；预览实测 218.4ms（preview-baseline.json）。
-// PASS 窗口取 216±40ms（含真实几何与帧量化的合理偏差）；超出即 FAIL，不粉饰。
-// 到角目标：Lead 裁决区间 0.19–0.25s（预览基准 216–218ms）；PLAN 原文「约 0.22s」。
+// 2026-11-17 用户修订：出现 / 消失共用同一条 650ms、easeInOutCubic（慢-快-慢）时间轴。
+// 到角时间 = 650ms × easeInOutCubic⁻¹(cornerReveal)，1000×600 实测约 0.44s（含点击到首帧延迟）；
+// 这里给几何 + 帧量化留余量，并把「出现 / 消失同速」「两端慢中间快」写成单独断言。
 const THRESHOLDS = {
-  toCornerTargetMs: 216,
-  toCornerMinMs: 190,
-  toCornerMaxMs: 250,
+  durationMs: 650,
+  toCornerTargetMs: 380,
+  toCornerMinMs: 280,
+  toCornerMaxMs: 620,
   settleMaxMs: 1200,
+  symmetryToleranceMs: 120,
+  revealAt25PctMax: 0.3,
+  revealAt50PctRange: [0.3, 0.7],
+  revealAt75PctMin: 0.7,
 };
 
 const MANUAL_STEPS = [
@@ -685,8 +690,28 @@ function analyzeFrames(frames, originT, phase) {
     ? { expanded: settled.expanded, reveal: round(settled.reveal, 4), panelH: settled.panelH, streamH: round(settled.streamH, 2), root: settled.root, lever: settled.lever, capsule: settled.capsule }
     : null;
 
+  // 非线性口径：在动画时长 25% / 50% / 75% 处采样归一化揭示进度。
+  // 650ms easeInOutCubic 的期望约为 0.06 / 0.5 / 0.94（两端慢、中间快）。
+  const startReveal = pre ? pre.reveal : after.length ? after[0].reveal : null;
+  const targetReveal = settled ? settled.reveal : null;
+  function revealProgressAt(frac) {
+    if (settleMs === null || startReveal === null || targetReveal === null || !(settleMs > 0)) return null;
+    const goalMs = settleMs * frac;
+    let pick = null;
+    for (let i = 0; i < after.length; i += 1) {
+      if (rel(after[i].t) >= goalMs && after[i].reveal !== null) { pick = after[i]; break; }
+    }
+    if (!pick) return null;
+    const span = targetReveal - startReveal;
+    if (!(Math.abs(span) > 1e-6)) return null;
+    return round((pick.reveal - startReveal) / span, 4);
+  }
+
   return {
     phase: phase,
+    revealAt25Pct: revealProgressAt(0.25),
+    revealAt50Pct: revealProgressAt(0.5),
+    revealAt75Pct: revealProgressAt(0.75),
     frameStats: frameStats,
     corner: corner,
     height50Ms: height50,
@@ -824,7 +849,7 @@ async function scenarioMotion() {
     frameStats: m.frameStats,
   });
   const cornerMs = m.corner ? m.corner.interpMs : null;
-  record("§5-1 点击→横线首次到达转角在 0.19–0.25s（目标 216ms）", cornerMs !== null && cornerMs >= THRESHOLDS.toCornerMinMs && cornerMs <= THRESHOLDS.toCornerMaxMs, {
+  record("§5-1 点击→横线首次到达转角在 0.28–0.62s（650ms 慢-快-慢口径）", cornerMs !== null && cornerMs >= THRESHOLDS.toCornerMinMs && cornerMs <= THRESHOLDS.toCornerMaxMs, {
     clickToCornerMs: cornerMs,
     frameQuantizedMs: m.corner && m.corner.frameMs,
     source: m.corner && m.corner.source,
@@ -860,6 +885,17 @@ async function scenarioMotion() {
   const collapsedAfterShot = await shot("1000x600-collapsed-after");
   metrics.collapse1000 = { metrics: collapse.metrics, clickInfo: collapse.clickInfo };
   const c = collapse.metrics;
+  record("§5-1 出现 / 消失同速：展开与收起的 settle 时长差 ≤120ms（同一条 650ms 时间轴）", m.settleMs !== null && c.settleMs !== null && Math.abs(m.settleMs - c.settleMs) <= THRESHOLDS.symmetryToleranceMs, {
+    expandSettleMs: m.settleMs,
+    collapseSettleMs: c.settleMs,
+    deltaMs: m.settleMs !== null && c.settleMs !== null ? round(Math.abs(m.settleMs - c.settleMs), 1) : null,
+    toleranceMs: THRESHOLDS.symmetryToleranceMs,
+  });
+  record("§5-1 出现 / 消失共用同一条非线性（慢-快-慢）曲线：25% / 50% / 75% 进度符合 easeInOutCubic", m.revealAt25Pct !== null && m.revealAt25Pct <= THRESHOLDS.revealAt25PctMax && m.revealAt50Pct !== null && m.revealAt50Pct >= THRESHOLDS.revealAt50PctRange[0] && m.revealAt50Pct <= THRESHOLDS.revealAt50PctRange[1] && m.revealAt75Pct !== null && m.revealAt75Pct >= THRESHOLDS.revealAt75PctMin, {
+    expand: { at25: m.revealAt25Pct, at50: m.revealAt50Pct, at75: m.revealAt75Pct },
+    collapse: { at25: c.revealAt25Pct, at50: c.revealAt50Pct, at75: c.revealAt75Pct },
+    expected: { at25: 0.0625, at50: 0.5, at75: 0.9375 },
+  });
   record("§5-1 收起：reveal→0、高度→0、无过冲、settle 有界", c.monotonic === true && c.overshoot === false && c.settleMs !== null && c.settleMs <= THRESHOLDS.settleMaxMs && c.endState && c.endState.reveal <= 0.001 && c.endState.expanded === "false", {
     shot: collapsedAfterShot,
     settleMs: c.settleMs,
@@ -877,7 +913,9 @@ async function scenarioReverse() {
   await ensureCollapsed();
   await startProbe();
   await quickClick("[data-ic-toggle]");
-  await sleep(90);
+  // 650ms easeInOut（慢-快-慢）起始很慢：90ms 时 reveal 还不到 0.15，反向要取中段
+  // （约 350ms、reveal≈0.5）才能验证「从当前画面连续更新」。
+  await sleep(350);
   // 反向点击：把手在展开途中持续移动，真指针按下/松开可能落在不同元素上（竞态）。
   // 这里用元素自身的 click() 触发同一条 Vue handler（detail=0），只测「反向时动效连续」；
   // 开合的真指针路径已由 motion 场景的真实鼠标点击验证。
@@ -943,7 +981,13 @@ async function scenarioDrag() {
     await pressAt(collapsedLever.cx, collapsedLever.cy);
     await sleep(8);
     await releaseAt(collapsedLever.cx, collapsedLever.cy);
-    await sleep(150);
+    // 650ms easeInOut 起步慢 + CDP 按下有延迟：等面板总高越过 min=220 并留出余量再抓，
+    // 四段上移才有可区分行程（抓得太早时 press 瞬间高度还在 min 以下，第一段会被夹没）。
+    for (let wait = 0; wait < 160; wait += 1) {
+      const heightNow = await readPanelHeight();
+      if (heightNow !== null && heightNow >= 232) break;
+      await sleep(8);
+    }
     lever0 = await leverCenterFast();
     if (!lever0) throw new Error("展开途中读不到把手矩形");
     await pressFast(lever0.cx, lever0.cy);
@@ -1657,7 +1701,8 @@ function buildReport(summary) {
     const c = summary.metrics.collapse1000.metrics;
     lines.push("- 1000×600 收起：settle " + c.settleMs + "ms；高度 50%/90% = " + c.height50Ms + "/" + c.height90Ms + "ms");
   }
-  lines.push("- 预览基准（阶段 1，preview-baseline.json）：到角 218.4ms（帧 220.3ms），静态 cornerFraction 0.5722");
+  lines.push("- 动效口径（2026-11-17 用户修订）：出现 / 消失共用 650ms、easeInOutCubic（慢-快-慢）；到角时间随几何变化（1000×600 实测约 0.44s，含点击延迟）。");
+  lines.push("- 旧预览基准（preview-baseline.json，216–218ms 到角）只作历史参照，不再作为验收窗口。");
   lines.push("");
   lines.push("## 未覆盖 / 手工步骤");
   lines.push("");

@@ -22,10 +22,12 @@ run.ps1 会依次完成：清端口（8734 / 5199 / 8807 / 9333，只终止占�
   QIO_DEV_INSECURE / QIO_ENABLE_TEST_EVENTS、隔离 QIO_DATA_DIR、真实 TCP 探测确认端口），
   但把 PID / 日志都放在本产物目录，因此可以安全地对**其它工作树**取证而不会写到它们里面。
 
-## 当前状态（2026-11-17）
+## 当前状态（2026-11-22）
 
-产品代码已冻结，等待 Lead 发「实现完成，开始最终取证」后跑全场景；机器负载高时逐帧计时会被污染，
-因此最终全量必须在空闲机器上跑。阶段 1 基线如下。
+2026-11-17 用户修订动效口径：线框「出现 / 消失」同速、共用 650ms easeInOutCubic（慢-快-慢）时间轴；
+消息内容随把手同速升降、沉入操作行时同步虚化（opacity 1→0 + blur 0→6px）。harness 的到角窗口、
+同速断言、非线性断言与反向/拖动场景抓取时机已按新口径更新；最终全量 **PASS 52 / FAIL 0 / UNVERIFIED 0**。
+机器负载高时逐帧计时会被污染，最终全量应在空闲机器上跑。阶段 1 基线（旧 216ms 口径）仅作历史参照。
 
 ## 阶段 1 产物（改动前基线，已交付）
 
@@ -74,17 +76,20 @@ run.ps1 会依次完成：清端口（8734 / 5199 / 8807 / 9333，只终止占�
 - 帧量化值之外，按相邻两帧线性插值给亚帧估计；同时给帧量化值，避免过度精确。
 - 到角判定（Lead 2026-11-17 裁决）：**逐帧** reveal × data-ic-frame-path-length >= data-ic-frame-horizontal；
   data-ic-corner-reveal 只是完全展开后的静态比例，不能用于动画判定（仅作对照记录）。
-- PASS 窗口：0.19–0.25s（190–250ms，目标 216ms）；超出即 FAIL，不粉饰。预览基准 218.4ms。
+- PASS 窗口：0.28–0.62s（目标 380ms，650ms 口径下随几何与点击延迟浮动）；超出即 FAIL，不粉饰。
+  旧预览基准 218.4ms 已随 2026-11-17 用户修订失效，只作历史参照；同速/非线性由以下两项独立断言：
+  「展开与收起的 settle 时长差 ≤120ms」「25% / 50% / 75% 归一化进度符合 easeInOutCubic（≈0.06 / 0.5 / 0.94）」。
 - 线框「真的画出来了吗」：除数值断言外，还会把 svg[data-ic-frame] 连同解析后的渐变颜色离屏渲染到 canvas，
   统计非背景像素（防「data 属性有路径但视觉上不可见」；阶段 1 曾用它抓到一次渐变 y1=y2=0 的瞬时问题）。
 
 ### 指针/键盘竞态的如实处理
 
 - 展开途中「快速反向」：把手在展开时持续移动，真指针按下/松开可能落在不同元素上（浏览器把 click 派给
-  最近公共祖先）。因此反向那一下用元素自身的 element.click() 触发同一条 Vue handler；同场景的首次展开
-  与普通收起仍用真实鼠标事件（motion 场景）。报告里会写明方法。
-- 展开途中拖动：点击展开后约 5ms 内在原坐标按下（此时把手尚未移动），随后用真实 mouseMoved 拖动，
-  避免「先测量坐标、再按下」时把手已移走导致 pointerdown 落空。
+  最近公共祖先）。因此反向那一下用元素自身的 element.click() 触发同一条 Vue handler；650ms easeInOut
+  起步很慢，反向时机取约 350ms（reveal≈0.5）而非旧的 90ms；同场景的首次展开与普通收起仍用真实鼠标
+  事件（motion 场景）。报告里会写明方法。
+- 展开途中拖动：点击展开后轮询面板总高，等越过 min=220 并留余量（≥232）再抓把手，随后用真实 mouseMoved
+  拖动；抓得太早时 press 瞬间高度还在 min 以下，第一段位移会被 min 夹没，看起来像「不跟手」。
 - 键盘 Space：CDP 的 Input.dispatchKeyEvent 必须发 key=" "（不是 key="Space"），否则原生 button 不激活。
 
 ## 产物与断言
@@ -100,13 +105,14 @@ shots/*.png 是截图证据。FAIL 项退出码非 0。
 - 不并发跑两套（端口固定）；退出只关闭本脚本启动的进程。
 - 截图/日志不含真实密钥：凭据用假 Key（sk-verify-fake），只指向本机 fake provider。
 
-## 最终取证结果（2026-11-17，已交付）
+## 最终取证结果（2026-11-22，已交付）
 
 - 命令：powershell -ExecutionPolicy Bypass -File scripts/verify-interactive-action/run.ps1 -OutDir <repo>\_lead-logs\interactive-action\final
-- 结果：**PASS 50 / FAIL 0 / UNVERIFIED 0**（runId 20261117144914，HEAD 37d54344，系统 Edge 157，隔离数据域）。
-- 关键数值：点击→横线到角 **229.7ms**（帧量化 231.1ms，PASS 窗 190–250ms；预览基准 218.4ms）；展开高度 50%/90% = 172.4/372.8ms；展开 settle 847.2ms；收起 settle 462.9ms；
-  线框 pathLen 599.24 / horizontal 363.25 / 静态 cornerReveal 0.6062 / 动画到角比例 0.6767；左右横线起点=把手端点（delta 0px，含 leverInset=4）；
-  SVG height 245 = 胶囊中线 245（淡出终点一致）；高度与揭示同帧更新 49 同帧 / 0 reveal-only / 0 height-only；无 console error。
+- 结果：**PASS 52 / FAIL 0 / UNVERIFIED 0**（runId 20261122103444，HEAD 01dc16d1，系统 Edge，隔离数据域 + 本机 fake provider）。
+- 关键数值（650ms 慢-快-慢口径）：点击→横线到角 **386.6ms**（帧量化 391.9ms，PASS 窗 280–620ms）；展开高度 50%/90% = 343.9/478.9ms；展开 settle **675.4ms**；收起 settle **657.6ms**（同速差 17.8ms）；
+  展开归一化进度 25%/50%/75% = **0.056 / 0.492 / 0.940**，收起 = **0.055 / 0.489 / 0.940**（时间镜像、两端慢中间快）；线框 pathLen 599.24 / horizontal 363.25 / 静态 cornerReveal 0.6062；
+  左右横线起点=把手端点（delta 0px，含 leverInset=4）；SVG height 245 = 胶囊中线 245；高度与揭示同帧更新 37 同帧 / 1 reveal-only / 0 height-only；无 console error。
+- 展开途中拖动：抓握高度 255 → 拖动采样 253 / 273 / 280（跟手、无跳变），松手保留并写回记忆。
 - 工具栏三档：1440/1000=full（添加文字可见）、900=icons（railSide 339）、800=more（railSide 289 < RAIL_TOOLBAR_ICONS_MIN 300，Lead 裁决预期即 more）、720=more（更多面板可开、详情可打开、Esc 关）。
 - 排队状态：慢 SSE（单响应 40 分片 × 250ms，fake provider 独立实测 11.9s）下抓「running + queued>=1」瞬间：操作行显示「正在回复 · 已排队 1 条」，收起/展开前后一致。
 - chatFrameState：page 内 import('/src/interactive/chatFrameState.ts') 读真实模块：展开 {x:70,y:331,w:860,h:212}，收起/卸载均 null。
