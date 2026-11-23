@@ -5,7 +5,7 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
-最后核对：2026-11-22（**互动底部操作区动效修订已实现并验证：线框出现/消失同速 + 同一 easeInOutCubic（慢-快-慢）、消息内容随把手同速升降并在下沉时虚化；实机取证 PASS 52 / FAIL 0 / UNVERIFIED 0；QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
+最后核对：2026-11-23（**操作行按钮组外缘已收进输入胶囊两端半圆（P120）；互动底部操作区动效修订已实现并验证：线框出现/消失同速 + 同一 easeInOutCubic（慢-快-慢）、消息内容随把手同速升降并在下沉时虚化；实机取证 PASS 52 / FAIL 0 / UNVERIFIED 0；QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
 
 最后核对：2026-11-17（**凭据厂商新增 Command Code / OpenCode（套餐 vs API 调用）已实现并验证；QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
 
@@ -6506,9 +6506,22 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - `InteractiveConversation.vue` 的消息区 `.ic-stream` 增加顶部裁切 `clip-path: inset(var(--ic-frame-top, 17px) 0 0 0)`，`--ic-frame-top` 由 `drawFrame` 按实测把手中心写入：滚动消息与 QIO 滚动指示条只在顶边线以下绘制，不再溢到边框/把手上方。
   - 撤销上一版把 `.stream` 改成 `position: static` 的做法：QIO 滚动指示条依赖滚动容器做滚动偏移补偿，改成 static 后指示条会随 scrollTop 漂出面板；恢复 MessageStream 自己的 `position: relative` 后滚动条重新贴住面板内缘。
   - 空态：用 `data-ic-empty` 隐藏滚动指示条（贴底 settle 早期会把空态算成可滚动），并继续保证空态距面板顶边 40px；顶部裁切作为兜底，不再依赖与 MessageStream 抢写 scrollTop。
-- 修复 2（问题一对齐）：`.ic-rail` 左右内边距 8px → 12px，与输入胶囊同边界；模式切换高度 30px → 32px、字号与右侧工具一致。实测（1000×600）：模式按钮左缘 82 = 胶囊左缘 82，右侧工具组/提交按钮右缘 918 = 胶囊右缘 918，行内按钮全部 32px。
+- 修复 2（问题一对齐）：`.ic-rail` 左右内边距 8px → 12px，与输入胶囊同边界；模式切换高度 30px → 32px、字号与右侧工具一致。实测（1000×600）：模式按钮左缘 82 = 胶囊左缘 82，右侧工具组/提交按钮右缘 918 = 胶囊右缘 918，行内按钮全部 32px（2026-11-23 用户要求再向内收，P120 已改为 24px 内边距，见 P120）。
 - 修复 3（问题一右侧按钮统一，`BoardToolbar.vue` rail 样式）：添加 / 撤销 / 重做 / 书签 / 详情 / 提交统一 32px 高、14px 圆角、`--sp-2` 内边距、同一描边 / 底色 / 字号；「＋」改为继承文字色；提交按钮补透明描边以与禁用态同尺寸；所有禁用态统一为 `--text-faint` + `--bg-inset` + `--border-subtle`（不再有的半透明、有的换底）。
 - 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest 33 passed；实机 1000×600 隔离数据域截图与量值：滚动消息 + 滚动条时内容顶边被裁在 271+17px 的顶边线以下、滚动条右缘 927 < 面板右缘 930、顶边线以上无可见消息像素；空态 offset 恒 40px、`data-ic-empty` 时指示条 `display: none`；取证 harness 仍 **PASS 52 / FAIL 0 / UNVERIFIED 0**；前端全量 `npm test` 全绿。
 - 边界：顶部裁切只作用于消息区的视觉绘制，不改变滚动位置 / 元素测量（chatFrameState 与消息同步测量仍用未裁切矩形）；窄窗口三档工具栏由 harness 多视口检查覆盖。
 - 证据：`_lead-logs/fix-20261122/{rail-metrics.json,metrics.json,shots/}`（操作行前后对照、溢出修复前后截图）；harness 见 `_lead-logs/interactive-action/`；改动文件见本轮提交。
+
+### P120 — 互动底部操作区：左右按钮组再向内收，外缘落进输入胶囊两端半圆（2026-11-23）
+
+- **Status：** completed
+- 来源：用户反馈「按钮再往里收，尽可能保证在输入框的左右两侧半圆里面」——上一版把按钮外缘对齐到胶囊最外侧直边端点，视觉上仍顶在胶囊两端。
+- 实现：`.ic-rail` 左右内边距 12px → **24px（`--sp-6`）**。输入胶囊高 54px（border-radius 999 → 端部半圆半径 27px）；操作行最外侧按钮 32px 高、圆角 14px，外移 24px 后其外侧圆角端正好落在胶囊两端 27px 的半圆水平范围内。
+- 验证（实机 Edge + CDP，收起态）：
+  - 1000×600：胶囊 82–918，模式按钮 94–173（外侧圆角 94–108 在左半圆 82–109 内），提交按钮 822.8–906（外侧圆角 892–906 在右半圆 891–918 内）。
+  - 800×600：胶囊 61–739，最右「更多」按钮 695–727（圆角端 713–727 在右半圆 712–739 内）；720×600 同理。
+  - 1440 / 1000 / 900 / 800 / 720 五档：把手 / 模式 / 最外侧按钮命中全部为 true、面板无溢出、line-height 不变；视觉对照见 `rail-inset-compare.png`。
+- 验证：`npx vue-tsc --noEmit` exit 0；布局守卫更新为 `padding: 1px var(--sp-6)`；前端全量 `npm test` 全绿。
+- 边界：24px 是「按钮外侧圆角端全部落进 27px 半圆区」的最大公约位置；再往里收会让模式文字/工具组离开胶囊对应端，需要改胶囊半径或按钮尺寸。
+- 证据：`_lead-logs/fix-20261122/shots/{rail-inset-compare.png,40-collapsed-1000.png,40-collapsed-800.png,41-inset-*.png,zoom-42-inset-*.png}`；改动文件见本轮提交。
 

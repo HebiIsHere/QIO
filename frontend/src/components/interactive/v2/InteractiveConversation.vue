@@ -1013,9 +1013,9 @@ function onComposerPointerDown(): void {
   justify-content: space-between;
   gap: var(--sp-2);
   min-height: 36px;
-  /* 与 .ic-dock（输入胶囊）共用同一水平内边距：左侧模式按钮与胶囊左边界对齐，
-     右侧提交按钮与胶囊右边界对齐（问题一）。 */
-  padding: 1px var(--sp-3);
+  /* 按钮组再往里收：外缘落在输入胶囊两端半圆（radius = 胶囊高/2 = 27px）的
+     水平范围内，而不是顶到胶囊最外侧的直边端点（用户 2026-11-23 反馈）。 */
+  padding: 1px var(--sp-6);
   background: transparent;
 }
 .ic-rail-left,

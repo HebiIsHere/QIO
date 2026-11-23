@@ -69,9 +69,9 @@ describe("操作行：左模式切换 / 中常驻把手 / 右板面工具", () =
   });
 
   it("问题一：左右入口与输入胶囊同边界；右侧按钮同一套尺寸/禁用态/图标色", () => {
-    // 胶囊左右各 12px（.ic-dock 内边距），操作行也必须是 12px，否则左右各差 4px。
+    // 按钮组外缘再向内收，落在输入胶囊两端半圆（radius = 胶囊高/2）的水平范围内。
     const rail = block(conversation, ".ic-rail");
-    expect(rail).toContain("padding: 1px var(--sp-3)");
+    expect(rail).toContain("padding: 1px var(--sp-6)");
     // 左侧模式入口与右侧工具同高、同字号（不再 30px vs 32px）。
     const mode = block(view, ".im-mode-switch :deep(.mode-btn)");
     expect(mode).toContain("height: 32px");
