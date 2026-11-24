@@ -25,7 +25,7 @@ import { spreadPositions } from "../planet/layoutSlots";
 import { LEVEL_HW } from "../planet/topicData";
 import { useSessionStore } from "../stores/session";
 import QIcon from "../components/ui/QIcon.vue";
-import { vQioTip } from "../composables/useQioTip";
+import { suppressTip, vQioTip } from "../composables/useQioTip";
 import PageTools from "../components/planet/PageTools.vue";
 import ManagementArea from "../components/planet/ManagementArea.vue";
 import { usePlanetManageTransition } from "../composables/usePlanetManageTransition";
@@ -72,21 +72,21 @@ const SPEED = demoRaw === null
   : demoRaw === "slow"
     ? 3
     : Math.max(1, Math.min(50, Number.parseFloat(demoRaw) || 1));
-const OPEN_MS = 420 * SPEED;
-const SETTLE_MS = 180 * SPEED;
-const FADE_MS = 280 * SPEED;
+const OPEN_MS = 600 * SPEED;
+const SETTLE_MS = 210 * SPEED;
+const FADE_MS = 500 * SPEED;
 const demoStyle = slowDemo
   ? ({
-      "--dur-planet-backdrop": `${140 * SPEED}ms`,
-      "--dur-planet-in": `${420 * SPEED}ms`,
-      "--dur-planet-settle": `${180 * SPEED}ms`,
-      "--dur-planet-out": `${280 * SPEED}ms`,
+      "--dur-planet-backdrop": `${250 * SPEED}ms`,
+      "--dur-planet-in": `${600 * SPEED}ms`,
+      "--dur-planet-settle": `${210 * SPEED}ms`,
+      "--dur-planet-out": `${500 * SPEED}ms`,
       // 连续体走的是分层令牌：演示开关必须同时把它们放慢，否则
       // 「逐帧观察星球展开」在第四阶段之后就失效了（只剩铺底被放慢）。
-      "--mo-3-prepare": `${180 * SPEED}ms`,
-      "--mo-3-expand": `${520 * SPEED}ms`,
-      "--mo-3-settle": `${220 * SPEED}ms`,
-      "--mo-3-collapse": `${420 * SPEED}ms`,
+      "--mo-3-prepare": `${210 * SPEED}ms`,
+      "--mo-3-expand": `${600 * SPEED}ms`,
+      "--mo-3-settle": `${250 * SPEED}ms`,
+      "--mo-3-collapse": `${500 * SPEED}ms`,
     } as Record<string, string>)
   : undefined;
 
@@ -1168,8 +1168,19 @@ function focusInitialPlanetControl(): void {
   const root = rootRef.value;
   if (!root) return;
   const first = focusablesInPlanet()[0];
-  if (first) first.focus();
-  else root.focus();
+  if (first) {
+    /*
+     * 打开星球是**程序性聚焦**，不是用户主动悬停/键盘聚焦：
+     * 第一个可用控件是页面工具行的「全局搜索」图标按钮，它的 v-qio-tip 会在 focusin
+     * 时立即弹出（键盘可达性规则）——于是每次从对话页点星球都会冒出「全局搜索」浮层。
+     * 这里只抑制这一次初始聚焦触发的说明，下一帧立即恢复；真实悬停 / Tab 聚焦仍会出现。
+     */
+    suppressTip(first, true);
+    first.focus();
+    window.setTimeout(() => suppressTip(first, false), 0);
+  } else {
+    root.focus();
+  }
 }
 
 watch(
@@ -1599,9 +1610,12 @@ async function close() {
   // 若不捕获，迟到的收尾回调会带上新序号、把刚打开的新层关掉。
   const seqAtClose = props.seq;
   const epoch = ++closeEpoch;
-  // 收拢前把管理区落回收起的进度：收缩几何必须按「球心在内容区中央」算，
-  // 带着 --mp 位移去收拢会把对象缩到一个偏左的位置（还会残留 managing 类）。
-  manage.applyProgress(0);
+  /**
+   * 管理区展开时：不要瞬间 applyProgress(0)（星球会从左侧管理位一帧跳回中央），
+   * 而是让它沿自己的收起曲线与本次退出**同刻开始**归零——星球从左侧连续滑向入口小球。
+   * 若用户是普通浏览态（progress 已是 0）则不会触发任何动画。
+   */
+  if (manage.progress.value > 0.0005) manage.setExpanded(false);
   if (prefersReducedMotion()) {
     closing.value = true;
     layersIn.value = false;
@@ -1646,6 +1660,8 @@ async function close() {
   curtainOn.value = false;
   const settled = await runCollapseMotion(epoch, continuum);
   if (!settled) return;
+  // 尾段结束时管理收起的曲线可能还差最后一两帧：归零，保证小球落在入口正中。
+  manage.applyProgress(0);
   closing.value = true;
   resetContinuum(continuum);
   emit("close", seqAtClose);

@@ -668,11 +668,6 @@ const boardSize = computed(() => {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
-@media (max-width: 640px) {
-  /* 最窄窗口：模式切换只留圆点（aria-label / 提示仍在），给把手与工具让位。 */
-  .im-mode-switch :deep(.mode-text) { display: none; }
-  .im-mode-switch :deep(.mode-btn) { padding: 0 var(--sp-1); }
-}
 @media (max-width: 700px) {
   .im-floating-chat {
     bottom: 8px;

@@ -6575,3 +6575,25 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 边界："白色"使用 QIO 语义令牌 `--on-accent`（#ffeef8，暗/亮主题一致），不是硬编码纯白；`--planet-void` 保留给既有 WebGL 虚空语义，本次只改页面铺底。
 - 证据：`_lead-logs/fix-20261124-colors/shots/{lever-states.png,background-match.png,01-lever-collapsed.png,02-lever-hover.png,03-lever-expanded.png,04-planet.png}`；改动文件见本轮提交。
 
+### P124 — 星球页四项修复：打开不再弹「全局搜索」、管理态收起补左侧回归、窄窗模式按钮保持完整、开关稍慢（2026-11-24）
+
+- **Status：** completed
+- 来源：用户反馈「每次从对话页点记忆星球都会出现『全局搜索』」「记忆星球动画少了从左侧直接回归到对话模式小球的动画」「互动模式变窄时模式切换按钮不用再变短」「星球打开/关闭速度有些过快」。
+- 1) 打开星球不再冒出「全局搜索」：
+  - 它本来是页面工具行**搜索按钮的用途说明**（`v-qio-tip`），只应在悬停搜索图标或键盘 Tab 到它时出现；
+  - 根因：打开星球时 `focusInitialPlanetControl` 把焦点移入第一个可用控件（正是搜索按钮），tooltip 的 `focusin` 规则对**程序性聚焦**也立即显示；
+  - 修复：`focusInitialPlanetControl` 在本次 `focus()` 前后用 `suppressTip(first, true)` 临时停用该锚点，下一帧恢复；真实悬停 / 键盘聚焦仍会出现。新增 `planet-dialog-a11y` 用例守卫 `tipState.open === false`。
+- 2) 管理态收起补回「从左侧回到入口小球」的连续动画：
+  - 根因：`close()` 开头 `manage.applyProgress(0)` 把管理展开进度一帧归零，星球会从左侧管理位瞬移回中央，再走原有收缩；
+  - 修复：管理态下改为 `manage.setExpanded(false)`，管理进度沿自己的收起曲线与退出**同刻**归零；尾段结束再 `applyProgress(0)` 兜底，保证小球落在入口正中。普通浏览态（progress=0）不触发；
+  - 实机逐帧：画布中心约 28 → 474 → 678 → 833 → 906 → 923px，画布宽约 944 → 830 → 530 → 278 → 187 → 143 → 63 → 54px，轨迹连续、无中央瞬移。
+- 3) 互动模式窄窗模式按钮不再缩短：
+  - 删除 `InteractiveView.vue` 里 `@media (max-width: 640px)` 的「只留圆点 / 缩 padding」规则；
+  - 430 / 500 / 560 / 640px 实测完整「互动模式」均显示（按钮 79×28），右侧工具不溢出；`bottom-action-area-layout.test.ts` 增加守卫。
+- 4) 星球打开/关闭稍慢：
+  - `tokens.css` 低频令牌：`--mo-3-prepare` 180→210ms、`--mo-3-expand` 520→600ms、`--mo-3-settle` 220→250ms、`--mo-3-collapse` 420→500ms；
+  - `PlanetView.vue` 脚本 fallback（`OPEN_MS/SETTLE_MS/FADE_MS`）与 `?planetdemo` 覆盖值同步到新基准；`PlanetView.test.ts` 的固定等待按新时长调整。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest（PlanetView / a11y / mp-a-layout / tokens / PlanetDock / 布局守卫）107 passed；前端全量 `npm test` **636 files / 5616 tests 全绿**；实机 CDP 复核 tooltip、关闭轨迹、窄窗排版与开合时长。
+- 边界：初始焦点仍按 #38 落在第一个可用控件，只抑制本次说明浮层；速度调整只改星球低频令牌，不改变缓动曲线与其他高频动效。
+- 证据：`_lead-logs/fix-20261124-planet-close/{manage/montage.png,manage/frames/,mode/interactive-{640,500,430}x600.png}`、`_lead-logs/fix-20261124-colors/shots/07-planet-open-no-tooltip.png`；改动文件见本轮提交。
+

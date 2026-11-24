@@ -87,6 +87,8 @@ describe("操作行：左模式切换 / 中常驻把手 / 右板面工具", () =
     expect(mode).toContain("background: var(--bg-surface)");
     expect(mode).toContain("border: 1px solid var(--border-subtle)");
     expect(mode).toContain("border-radius: var(--qio-ui-radius)");
+    // 2026-11-24 用户口径：窄窗不再把模式按钮压成只留圆点的短按钮，完整文字始终保留。
+    expect(view).not.toContain(".im-mode-switch :deep(.mode-text) { display: none; }");
     // 右侧：文字/图标/详情/提交都是 28px 高、同一套描边/底色/字号/圆角。
     expect(toolbar).toContain('[data-tb-rail="true"] .tb-btn');
     expect(toolbar).toContain("height: 28px");
