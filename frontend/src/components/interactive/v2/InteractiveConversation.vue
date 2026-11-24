@@ -1074,18 +1074,20 @@ function onComposerPointerDown(): void {
   width: 100%;
   height: 5px;
   border-radius: 4px;
-  background: var(--border-strong);
-  transition: background var(--dur-fast) var(--ease);
+  /* 默认：主题洋红实心；被选中（展开）/ 悬停 / 键盘聚焦 / 拖动：白底 + 洋红边框。 */
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .ic-lever:hover .ic-lever-bar,
-.ic-lever:focus-visible .ic-lever-bar {
-  background: color-mix(in srgb, var(--accent) 58%, var(--border-strong));
+.ic-lever:focus-visible .ic-lever-bar,
+.ic[data-ic-expanded="true"] .ic-lever-bar,
+.ic[data-ic-dragging="true"] .ic-lever-bar {
+  background: var(--on-accent);
+  border-color: var(--accent);
 }
 .ic[data-ic-expanded="true"] .ic-lever {
   cursor: ns-resize;
-}
-.ic[data-ic-dragging="true"] .ic-lever-bar {
-  background: var(--accent);
 }
 .ic-lever:focus-visible {
   outline: 2px solid var(--focus-ring);

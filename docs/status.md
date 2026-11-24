@@ -6555,7 +6555,23 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - 1000×600：话题→聊天 **12**；mode→胶囊 / 胶囊→星球 **12 / 12**；两端贴齐（mode 左 353、星球右 951）；胶囊中心 664.5 vs 卡片中心 652（+12.5）；胶囊宽 441；话题标记 / 消息 / 输入左缘均 353；详情展开 12/12。
   - 1440×600：gaps 12/12；胶囊宽 860；胶囊中心 884.5 vs 卡片中心 872（+12.5）；mode/星球两侧各内缩 10.5px（整组居中）。
   - 800×600：gaps 12/12；胶囊宽 261；中心 +12.5。700×600：gaps 8/8；胶囊宽 446；中心 366 vs 卡片 380（−14）。
-  - 已知取舍：左侧 mode 实际宽 79px、右侧星球 54px；**「两侧 gap 相等 + 两端贴齐」与「胶囊严格居中」不能同时满足**。本版选前者（视觉等距），居中版（gaps 12/37、胶囊中心=卡片中心、宽 416/856）对照截图在 `variants/`，等用户选择后再定最终口径。
+  - 已知取舍：左侧 mode 实际宽 79px、右侧星球 54px；**「两侧 gap 相等 + 两端贴齐」与「胶囊严格居中」不能同时满足**。本版选前者（视觉等距），居中版（gaps 12/37、胶囊中心=卡片中心、宽 416/856）对照截图在 `variants/`；**用户 2026-11-24 确认按等距版走**（见 P123）。
 - 验证：`npx vue-tsc --noEmit` exit 0；定点 vitest（chat-box / ChatColumn / design-guards / scroll-fit）47 passed；前端全量 `npm test` **636 files / 5615 tests 全绿**；互动页 harness 不受本次改动影响。
 - 证据：`_lead-logs/fix-20261124-conversation-spacing/shots/{before-after-1000.png,final-equal-1000x600.png,final-equal-1440x600.png,final-equal-800x600.png,final-equal-700x600.png,final-equal-1000-details.png}`、`variants/`（居中版对照）；改动文件见本轮提交。
+
+### P123 — 记忆星球页背景与对话页同色；互动把手改为默认洋红 / 选中白底洋红边（2026-11-24）
+
+- **Status：** completed
+- 来源：用户确认 P122 按等距版走；并要求「记忆星球界面背景色换成同 QIO 对话模式背景相同的颜色；互动模式扁长把手未选中为主题洋红色，选中为白色、边框主题洋红色」。
+- 实现：
+  - `tokens.css` 新增全应用页面铺底令牌 `--app-backdrop`（暗/亮两套）= 对话页原有的「左上洋红径向渐变 + `--bg-base`」。
+  - `ConversationView.vue` 的整窗 `::before` 改用 `var(--app-backdrop)`；`PlanetView.vue` 的星球铺底 `::before` 由 `var(--planet-void)` 改为同一个 `var(--app-backdrop)`，两页背景完全同源。
+  - `InteractiveConversation.vue` 的 `.ic-lever-bar`：默认 `background: var(--accent)` + `border: 1px solid var(--accent)`；`hover / focus-visible / data-ic-expanded="true" / data-ic-dragging="true"` 时 `background: var(--on-accent)`（QIO 的 on-accent 白）+ `border-color: var(--accent)`；移除旧的 `color-mix` 悬停色与拖动强调色规则。
+  - `bottom-action-area-layout.test.ts` 增加把手配色守卫（默认洋红、选中白底洋红边）。
+- 验证（实机 Edge + CDP，light 主题）：
+  - 把手默认 `rgb(197,27,125)` / 边框同色；悬停与展开（选中）`rgb(255,238,248)` / 边框 `rgb(197,27,125)`；条高仍 5px（含 1px 边框）。
+  - 对话页与星球页 `::before` 计算值一致：`radial-gradient(at 0% 0%, rgba(197,27,125,.12) 0, transparent 46%)` + 底色 `rgb(252,252,251)`；截图见证据。
+  - `npx vue-tsc --noEmit` exit 0；定向 vitest（InteractiveConversation / PlanetView / mp-a-layout / design-guards / 布局守卫）113 passed；前端全量 `npm test` **636 files / 5615 tests 全绿**。
+- 边界："白色"使用 QIO 语义令牌 `--on-accent`（#ffeef8，暗/亮主题一致），不是硬编码纯白；`--planet-void` 保留给既有 WebGL 虚空语义，本次只改页面铺底。
+- 证据：`_lead-logs/fix-20261124-colors/shots/{lever-states.png,background-match.png,01-lever-collapsed.png,02-lever-hover.png,03-lever-expanded.png,04-planet.png}`；改动文件见本轮提交。
 

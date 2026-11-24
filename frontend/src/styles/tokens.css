@@ -2,6 +2,8 @@
 :root {
   /* 暗色「暗紫晶」默认 */
   --bg-base:#171015; --bg-surface:#1e161c; --bg-elevated:#261d24; --bg-inset:#130d12;
+  /* 全应用页面背景：对话页与记忆星球页共用同一层铺底（用户 2026-11-24 要求两页背景同色）。 */
+  --app-backdrop: radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%), var(--bg-base);
   --border-subtle:#302430; --border-strong:#463846;
   /* 文本四级：正文 / 次要（需阅读）/ muted（元数据，仍须可读）/ faint（纯装饰）
      muted 由 #6f636c（3.3:1）提到 5.4:1，小的状态/时间戳不再糊成一团 */
@@ -142,6 +144,8 @@
 }
 :root[data-theme="light"] {
   --bg-base:#fcfcfb; --bg-surface:#ffffff; --bg-elevated:#ffffff; --bg-inset:#f3f3f1;
+  /* 全应用页面背景：对话页与记忆星球页共用同一层铺底（用户 2026-11-24 要求两页背景同色）。 */
+  --app-backdrop: radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%), var(--bg-base);
   --border-subtle:#e7e7e4; --border-strong:#cbcbc6;
   /* 亮色主题：窗口阴影 alpha x0.5（几何/留白预算不变），颜色用本主题的近黑 */
   --window-shadow: 0 5px 20px rgba(20, 16, 24, .20), 0 1px 4px rgba(20, 16, 24, .15);

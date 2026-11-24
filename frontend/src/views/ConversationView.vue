@@ -781,9 +781,8 @@ onBeforeUnmount(() => {
   border-radius: var(--window-radius);
   z-index: -1;
   pointer-events: none;
-  background:
-    radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%),
-    var(--bg-base);
+  /* 与记忆星球页共用 --app-backdrop（2026-11-24）。 */
+  background: var(--app-backdrop);
 }
 .workspace-row {
   display: flex;

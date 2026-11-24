@@ -1817,9 +1817,11 @@ async function close() {
 /* 球态：管理区与页面工具行一律不出现（它们属于展开后的星球页） */
 .planet-view.ball .panel,
 .planet-view.ball .page-tools-layer { display: none; }
-/* 铺底：半透明地盖住聊天（不是整块纯色），A 阶段淡入、收缩时淡出 */
+/* 铺底：与对话页共用 --app-backdrop 的页面渐变，A 阶段淡入、收缩时淡出 */
 .planet-view::before {
-  content: ""; position: absolute; inset: 0; z-index: 1; background: var(--planet-void);
+  content: ""; position: absolute; inset: 0; z-index: 1;
+  /* 与 QIO 对话页共用同一套页面铺底（用户 2026-11-24 要求记忆星球界面背景同色）。 */
+  background: var(--app-backdrop);
   opacity: 0;
   transition: opacity var(--mo-3-expand) var(--ease-3-settle);
 }

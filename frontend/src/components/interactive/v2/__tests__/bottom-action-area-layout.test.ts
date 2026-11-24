@@ -54,9 +54,13 @@ describe("操作行：左模式切换 / 中常驻把手 / 右板面工具", () =
     const bar = block(conversation, ".ic-lever-bar");
     expect(bar).toContain("height: 5px");
     expect(bar).toContain("border-radius: 4px");
-    // 展开态可拖动、拖动中强调色
+    // 2026-11-24 用户口径：默认主题洋红实心；选中（展开）/ 悬停 / 拖动为白底 + 洋红边框。
+    expect(bar).toContain("background: var(--accent)");
+    expect(bar).toContain("border: 1px solid var(--accent)");
     expect(conversation).toContain('[data-ic-expanded="true"] .ic-lever');
+    expect(conversation).toContain('[data-ic-expanded="true"] .ic-lever-bar');
     expect(conversation).toContain('[data-ic-dragging="true"] .ic-lever-bar');
+    expect(conversation).toMatch(/\[data-ic-expanded="true"\] \.ic-lever-bar[\s\S]{0,200}background: var\(--on-accent\)/);
   });
 
   it("操作行透明、左右两组等宽让位：右侧工具量到确定可用宽度", () => {
