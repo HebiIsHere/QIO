@@ -1012,8 +1012,10 @@ function onComposerPointerDown(): void {
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
-  min-height: 36px;
-  /* 按钮组再往里收：外缘落在输入胶囊两端半圆（radius = 胶囊高/2 = 27px）的
+  /* 操作行比按钮高 2px：28px 按钮在 30px 行内上下各留 1px，配合 .ic-dock 顶部
+     6px 间距，让按钮和下方输入胶囊之间拉开呼吸感（用户 2026-11-24 反馈）。 */
+  min-height: 30px;
+  /* 按钮组往里收：外缘落在输入胶囊两端半圆（radius = 胶囊高/2 = 27px）的
      水平范围内，而不是顶到胶囊最外侧的直边端点（用户 2026-11-23 反馈）。 */
   padding: 1px var(--sp-6);
   background: transparent;
@@ -1095,7 +1097,8 @@ function onComposerPointerDown(): void {
   z-index: 1;
   flex: none;
   min-width: 0;
-  padding: 0 var(--sp-3) var(--sp-2);
+  /* 顶部 6px + 操作行按钮下方 1px：按钮与输入胶囊之间约 7px（按钮 28px 缩小后腾出）。 */
+  padding: 6px var(--sp-3) var(--sp-2);
 }
 .ic-entries {
   width: 100%;

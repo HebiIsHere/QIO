@@ -649,10 +649,20 @@ const boardSize = computed(() => {
   min-width: 0;
 }
 .im-mode-switch :deep(.mode-btn) {
-  /* 与右侧独立工具按钮同高、同字号：左侧入口和右侧工具是一个操作行。 */
-  height: 32px;
+  /* 与右侧工具按钮完全同一套外观：28px 高、14px 圆角、中性描边 + 白底；
+     左侧入口不再是透明的胶囊，避免左右按钮样式割裂。 */
+  height: 28px;
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+}
+.im-mode-switch :deep(.mode-btn:hover) {
+  color: var(--text-strong);
+  background: var(--bg-inset);
+  border-color: var(--border-strong);
 }
 .im-mode-switch :deep(.mode-btn:focus-visible) {
   outline: 2px solid var(--focus-ring);

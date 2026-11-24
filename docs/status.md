@@ -5,7 +5,7 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
-最后核对：2026-11-23（**操作行按钮组外缘已收进输入胶囊两端半圆（P120）；互动底部操作区动效修订已实现并验证：线框出现/消失同速 + 同一 easeInOutCubic（慢-快-慢）、消息内容随把手同速升降并在下沉时虚化；实机取证 PASS 52 / FAIL 0 / UNVERIFIED 0；QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
+最后核对：2026-11-24（**左右按钮组已统一为 28px 同款样式并把按钮与胶囊间距拉到 7px（P121）；操作行按钮组外缘已收进输入胶囊两端半圆（P120）；互动底部操作区动效修订已实现并验证：线框出现/消失同速 + 同一 easeInOutCubic（慢-快-慢）、消息内容随把手同速升降并在下沉时虚化；实机取证 PASS 52 / FAIL 0 / UNVERIFIED 0；QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
 
 最后核对：2026-11-17（**凭据厂商新增 Command Code / OpenCode（套餐 vs API 调用）已实现并验证；QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
 
@@ -6524,4 +6524,19 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 验证：`npx vue-tsc --noEmit` exit 0；布局守卫更新为 `padding: 1px var(--sp-6)`；前端全量 `npm test` 全绿。
 - 边界：24px 是「按钮外侧圆角端全部落进 27px 半圆区」的最大公约位置；再往里收会让模式文字/工具组离开胶囊对应端，需要改胶囊半径或按钮尺寸。
 - 证据：`_lead-logs/fix-20261122/shots/{rail-inset-compare.png,40-collapsed-1000.png,40-collapsed-800.png,41-inset-*.png,zoom-42-inset-*.png}`；改动文件见本轮提交。
+
+### P121 — 互动底部操作区：左右按钮统一为 28px 同款样式，按钮缩小换来与输入胶囊的间距（2026-11-24）
+
+- **Status：** completed
+- 来源：用户反馈「左侧和右侧的按钮在样式和与输入框的间距都会有些问题，按钮应该用统一的样式且通过按钮的缩小来增加和输入框的间距」。
+- 样式统一：
+  - 左侧模式切换从「透明胶囊 + 圆点文字」改为与右侧工具按钮完全同款：**28px 高、`--qio-ui-radius`（14px）圆角、`--bg-surface` 白底、`--border-subtle` 中性描边、`--fs-sm` 字号**，hover 时 `--bg-inset` + `--border-strong`；强调圆点保留。
+  - 右侧添加 / 撤销 / 重做 / 书签 / 详情 / 提交全部 32px → **28px**；图标按钮 28×28；提交/详情同高同 padding，禁用态规则沿用 P119。
+- 间距：操作行 `min-height` 36 → **30px**（28px 按钮上下各 1px），`.ic-dock` 顶部新增 **6px** padding；按钮底到胶囊顶从 **2px → 7px**。总 chrome 高度仍为 98px（收起态总高不变，不引起面板几何跳变）。
+- 验证（实机 Edge + CDP，收起态）：
+  - 1000×600：root 453–551（h=98 不变）；rail 453–483（h=30）；胶囊 82–918（top 489）；模式按钮 94–173、提交 822.8–906，均 h=28；按钮底 482 → 胶囊顶 489，间距 7px。
+  - 800×600 / 720×600：右侧最外「更多」按钮 28×28（800 下 699–727，胶囊右缘 739），无溢出；模式按钮样式实测 `h=28px / bg=rgb(255,255,255) / border=rgb(231,231,228) / radius=14px / fs=12.5px`，左右完全一致。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest（布局守卫 + rail 源码守卫 + 可读性守卫）33 passed；前端全量 `npm test` 全绿。
+- 边界：28px 是为桌面鼠标/触控板留出的紧凑尺寸，仍高于常见 24px 最小点击区；若后续要更强调「小而密」，可再降到 26px（行高 28px）并把间距拉到 9px，需要同步改布局守卫。
+- 证据：`_lead-logs/fix-20261124/shots/{50-collapsed-1000.png,50-collapsed-800.png,50-collapsed-720.png,zoom-51-*.png}`；改动文件见本轮提交。
 

@@ -675,14 +675,13 @@ function moreOpenSubmitDetails(): void {
 
 /* 独立按钮：各自的中性描边 / 命中区；行本身透明 */
 [data-tb-rail="true"] .tb-btn {
-  height: 32px;
-  /* 横向内边距统一 8px：与图标按钮的 32px 方框一起构成等距小间距，并让 full 档最长内容
-     （提交态「用同一身份重试」约 326px）在 344px 下界内仍有 18px 余量。 */
+  /* 2026-11-24：按钮整体缩小到 28px（左侧模式按钮同高），把空间让给与输入胶囊的间距。 */
+  height: 28px;
   padding: 0 var(--sp-2);
   border-radius: var(--qio-ui-radius);
 }
 [data-tb-rail="true"] .tb-icon-btn {
-  min-width: 32px;
+  min-width: 28px;
   padding: 0;
 }
 [data-tb-rail="true"] .tb-btn:hover:not(:disabled) {
@@ -716,7 +715,7 @@ function moreOpenSubmitDetails(): void {
   align-items: center;
   justify-content: center;
   gap: var(--sp-1);
-  height: 32px;
+  height: 28px;
   padding: 0 var(--sp-2);
   border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
@@ -725,7 +724,8 @@ function moreOpenSubmitDetails(): void {
   line-height: 1;
 }
 [data-tb-rail="true"] :deep(.add .tb-btn.is-icon-only) {
-  min-width: 32px;
+  min-width: 28px;
+  height: 28px;
   padding: 0;
   justify-content: center;
 }
@@ -748,7 +748,7 @@ function moreOpenSubmitDetails(): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 32px;
+  height: 28px;
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
   line-height: 1;
@@ -774,9 +774,9 @@ function moreOpenSubmitDetails(): void {
   cursor: default;
 }
 [data-tb-rail="true"] :deep(.actions .sc-details-icon) {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
   padding: 0;
   border-radius: var(--qio-ui-radius);
 }
@@ -787,7 +787,7 @@ function moreOpenSubmitDetails(): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 32px;
+  height: 28px;
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
   line-height: 1;

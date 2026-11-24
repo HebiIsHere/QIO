@@ -68,17 +68,24 @@ describe("操作行：左模式切换 / 中常驻把手 / 右板面工具", () =
     expect(right).toContain("width: var(--ic-rail-side");
   });
 
-  it("问题一：左右入口与输入胶囊同边界；右侧按钮同一套尺寸/禁用态/图标色", () => {
-    // 按钮组外缘再向内收，落在输入胶囊两端半圆（radius = 胶囊高/2）的水平范围内。
+  it("左右入口同边界、同一套按钮样式；按钮 28px 缩小以拉开与胶囊的间距", () => {
+    // 按钮组外缘收在输入胶囊两端半圆（radius = 胶囊高/2）的水平范围内。
     const rail = block(conversation, ".ic-rail");
     expect(rail).toContain("padding: 1px var(--sp-6)");
-    // 左侧模式入口与右侧工具同高、同字号（不再 30px vs 32px）。
+    // 操作行 30px、按钮 28px，下方 .ic-dock 顶部再让 6px：按钮与输入胶囊之间约 7px。
+    expect(rail).toContain("min-height: 30px");
+    const dock = block(conversation, ".ic-dock");
+    expect(dock).toContain("padding: 6px var(--sp-3) var(--sp-2)");
+    // 左侧模式入口与右侧工具完全同一套外观（28px 高、14px 圆角、中性描边 + 白底）。
     const mode = block(view, ".im-mode-switch :deep(.mode-btn)");
-    expect(mode).toContain("height: 32px");
+    expect(mode).toContain("height: 28px");
     expect(mode).toContain("font-size: var(--fs-sm)");
-    // 右侧：文字/图标/详情/提交都是 32px 高、同一套描边/底色/字号/圆角。
+    expect(mode).toContain("background: var(--bg-surface)");
+    expect(mode).toContain("border: 1px solid var(--border-subtle)");
+    expect(mode).toContain("border-radius: var(--qio-ui-radius)");
+    // 右侧：文字/图标/详情/提交都是 28px 高、同一套描边/底色/字号/圆角。
     expect(toolbar).toContain('[data-tb-rail="true"] .tb-btn');
-    expect(toolbar).toContain("height: 32px");
+    expect(toolbar).toContain("height: 28px");
     expect(toolbar).toContain('[data-tb-rail="true"] :deep(.add .plus)');
     expect(toolbar).toMatch(/\[data-tb-rail="true"\] :deep\(\.add \.plus\)\s*\{[^}]*color:\s*currentColor/);
     expect(toolbar).toMatch(/\[data-tb-rail="true"\] :deep\(\.actions \.submit\)\s*\{[^}]*padding: 0 var\(--sp-2\)/);

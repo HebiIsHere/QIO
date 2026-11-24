@@ -275,12 +275,12 @@ const addMenuSrc = read("components/interactive/AddMenu.vue");
 const submitSrc = read("components/interactive/SubmitCluster.vue");
 
 describe("rail 外观与跨组件契约（源码守卫）", () => {
-  it("操作行透明、单行不换行；独立按钮用中性描边 + --qio-ui-radius、高 30–32", () => {
+  it("操作行透明、单行不换行；独立按钮用中性描边 + --qio-ui-radius、高 28", () => {
     expect(toolbarSrc).toContain(".board-toolbar.is-rail");
     expect(toolbarSrc).toMatch(/\.board-toolbar\.is-rail \{[^}]*background: transparent/);
     expect(toolbarSrc).toMatch(/\.board-toolbar\.is-rail \{[^}]*border: 0/);
     expect(toolbarSrc).toMatch(/\[data-tb-rail="true"\] \.tb-main \{[^}]*flex-wrap: nowrap/);
-    expect(toolbarSrc).toMatch(/\[data-tb-rail="true"\] \.tb-btn \{[^}]*height: 32px/);
+    expect(toolbarSrc).toMatch(/\[data-tb-rail="true"\] \.tb-btn \{[^}]*height: 28px/);
     expect(toolbarSrc).toMatch(/\[data-tb-rail="true"\] \.tb-btn \{[^}]*border-radius: var\(--qio-ui-radius\)/);
     // 颜色只从语义令牌来（rail 样式里不出现硬编码色值）
     expect(toolbarSrc).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
