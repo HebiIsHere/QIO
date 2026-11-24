@@ -431,12 +431,14 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   font-family: var(--sans);
   position: relative;
+  /* 卡片/区块间距的唯一来源：话题卡 ↔ 状态区 ↔ 聊天卡都用它（不再由子项各自写 margin）。 */
+  gap: var(--conversation-card-gap, 12px);
 }
 /* ---- 话题栏 ---- */
 .topic-bar {
   flex: none;
-  /* 作为中央列的第一块，顶边与左栏/预览卡同一条线；与消息框共用 12px 间距 */
-  margin: 0 0 var(--conversation-card-gap, 12px);
+  /* 顶边与左栏/预览卡同一条线；与下方卡片的间距统一由 .chat-column 的 gap 提供。 */
+  margin: 0;
   min-width: 0;
 }
 .topic-main {
@@ -446,7 +448,8 @@ onBeforeUnmount(() => {
   width: 100%;
   min-width: 0;
   min-height: 50px;
-  padding: 10px 16px;
+  /* 与消息区 / 输入区共用 12px 横向内缩：话题文字、消息、胶囊左边线对齐。 */
+  padding: 10px var(--sp-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
@@ -523,7 +526,9 @@ onBeforeUnmount(() => {
    没有话题）都按同一套落位，避免「挤一段、松一段」。分隔线上下各 12px（对称）。 */
 .topic-details {
   flex: none;
-  margin: 6px 0 0;
+  /* 纵向间距由 .chat-column 的 gap 统一提供（它是 chat-column 的子项，不再是 topic-bar 内部块）；
+     这里不再写 margin-top，避免与 gap 叠加成 24px。 */
+  margin: 0;
   padding: 10px 14px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
@@ -633,7 +638,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 6px 12px 0;
+  /* 纵向间距由 .chat-column 的 gap 统一；这里只保留与左右内容对齐的 12px 内缩。 */
+  margin: 0 var(--sp-3);
   min-width: 0;
 }
 .notice {
@@ -701,7 +707,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin-top: var(--conversation-card-gap, 12px);
+  /* 与话题/状态区的间距由 .chat-column 的 gap 提供（此前与 topic-bar margin 叠加成 24px）。 */
   border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
   background: var(--bg-base);
@@ -733,4 +739,3 @@ onBeforeUnmount(() => {
   color: var(--text-strong);
 }
 </style>
-

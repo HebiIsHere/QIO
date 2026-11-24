@@ -6540,3 +6540,22 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 边界：28px 是为桌面鼠标/触控板留出的紧凑尺寸，仍高于常见 24px 最小点击区；若后续要更强调「小而密」，可再降到 26px（行高 28px）并把间距拉到 9px，需要同步改布局守卫。
 - 证据：`_lead-logs/fix-20261124/shots/{50-collapsed-1000.png,50-collapsed-800.png,50-collapsed-720.png,zoom-51-*.png}`；改动文件见本轮提交。
 
+### P122 — 对话页间距 v1：卡片/区块统一 12px、消息上下 12px、composer 两侧 gap 相等（2026-11-24）
+
+- **Status：** completed
+- 来源：用户看完对话页间距检查报告后确认先做一版试试（本轮不改互动页）。
+- 实现：
+  - `ChatColumn.vue` 的 `.chat-column` 增加 `gap: var(--conversation-card-gap, 12px)` 作为卡片/区块纵向间距的**唯一来源**；删除 `.topic-bar` margin-bottom 与 `.chat-box` margin-top（话题→聊天 24 → **12px**）；`.topic-details` 是 chat-column 的子项，margin 归零（原先与 gap 叠加成 18/24 → **12px**）；`.status-zone` 只保留 `margin: 0 12px`。
+  - `MessageStream.vue` 的 `.stream` 上下内边距 20/12 → **12/12**；轮次间 26px 保留为「消息节奏」；`.topic-main` 横向内边距 16 → **12px**（话题标记 / 消息 / 输入区左缘统一 353px）。
+  - `ComposerDock.vue`：保持原三列 `auto | minmax(0,860px) | 54px`，两侧 gap 统一 12px（≤700 为 8px）：mode 左贴、星球右贴、两端贴齐；胶囊宽度回到原值（1000 下 441）。取舍：mode(79) 比星球(54)宽，胶囊中心比卡片中心右移 12.5px；居中版对照见证据 `variants/`。
+  - `ComposerEntries.vue` 的 `.entry-row` padding 9/9 → `0 0 12px`：消息内容→入口 12、入口→胶囊 12、胶囊→卡片底 13（浏览器注入模拟实测）。
+  - `.input-pill` 内边距 6/7/6/8 → 6/8 对称。
+  - 测试：`chat-box-layout.test.ts` / `design-guards.test.ts` 更新（卡片 gap 单源、composer 两侧 gap 12、消息 12/12 守卫）；rail 与可读性守卫保持。
+- 实测（实机 Edge + CDP，滚动到顶）：
+  - 1000×600：话题→聊天 **12**；mode→胶囊 / 胶囊→星球 **12 / 12**；两端贴齐（mode 左 353、星球右 951）；胶囊中心 664.5 vs 卡片中心 652（+12.5）；胶囊宽 441；话题标记 / 消息 / 输入左缘均 353；详情展开 12/12。
+  - 1440×600：gaps 12/12；胶囊宽 860；胶囊中心 884.5 vs 卡片中心 872（+12.5）；mode/星球两侧各内缩 10.5px（整组居中）。
+  - 800×600：gaps 12/12；胶囊宽 261；中心 +12.5。700×600：gaps 8/8；胶囊宽 446；中心 366 vs 卡片 380（−14）。
+  - 已知取舍：左侧 mode 实际宽 79px、右侧星球 54px；**「两侧 gap 相等 + 两端贴齐」与「胶囊严格居中」不能同时满足**。本版选前者（视觉等距），居中版（gaps 12/37、胶囊中心=卡片中心、宽 416/856）对照截图在 `variants/`，等用户选择后再定最终口径。
+- 验证：`npx vue-tsc --noEmit` exit 0；定点 vitest（chat-box / ChatColumn / design-guards / scroll-fit）47 passed；前端全量 `npm test` **636 files / 5615 tests 全绿**；互动页 harness 不受本次改动影响。
+- 证据：`_lead-logs/fix-20261124-conversation-spacing/shots/{before-after-1000.png,final-equal-1000x600.png,final-equal-1440x600.png,final-equal-800x600.png,final-equal-700x600.png,final-equal-1000-details.png}`、`variants/`（居中版对照）；改动文件见本轮提交。
+

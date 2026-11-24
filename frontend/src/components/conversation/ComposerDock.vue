@@ -57,6 +57,8 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
  */
 .composer-grid {
   display: grid;
+  /* 左右控件宽度不等（mode 79 / 星球 54）时优先保证两侧 gap 相等：
+     mode 左贴、星球右贴，胶囊会因此比消息列中心右移约 12.5px（P122 的取舍，居中版见证据）。 */
   grid-template-columns: auto minmax(0, 860px) var(--planet-size, 54px);
   grid-template-rows: auto auto;
   column-gap: 12px;

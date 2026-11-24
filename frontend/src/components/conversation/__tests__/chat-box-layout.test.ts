@@ -67,7 +67,10 @@ describe("消息框：消息流 + 底部输入块同一个框", () => {
     expect(planetAt).toBeGreaterThan(stackAt);
     // 同一个 grid：入口行与胶囊都在第 2 列 → 以真实胶囊为基准居中
     const grid = block(dock, ".composer-grid");
+    // 2026-11-24：左右控件宽度不等（mode 79 / 星球 54）时优先保证两侧 gap 相等
+    //（12px）；取舍是胶囊中心右移约 12.5px，居中版见 P122 证据。
     expect(grid).toMatch(/grid-template-columns:\s*auto minmax\(0,\s*860px\) var\(--planet-size/);
+    expect(grid).toMatch(/column-gap:\s*12px/);
     expect(grid).toMatch(/align-items:\s*center/);
     expect(block(dock, ".composer-entries")).toMatch(/grid-column:\s*2/);
     expect(block(dock, ".composer-stack")).toMatch(/grid-column:\s*2/);
@@ -96,5 +99,16 @@ describe("消息框：消息流 + 底部输入块同一个框", () => {
     const stream = read("components/MessageStream.vue");
     expect(stream).toMatch(/var\(--chat-pad-inline/);
     expect(dock).toMatch(/var\(--chat-pad-inline/);
+  });
+
+  it("卡片间距只在 .chat-column gap 上定义一次（topic-bar / chat-box 不再各写 margin 叠加）", () => {
+    const column = block(chat, ".chat-column");
+    expect(column).toMatch(/gap:\s*var\(--conversation-card-gap/);
+    expect(block(chat, ".topic-bar")).not.toMatch(/margin:\s*0 0 var\(--conversation-card-gap/);
+    expect(block(chat, ".chat-box")).not.toMatch(/margin-top:\s*var\(--conversation-card-gap/);
+    // 横向内容内缩统一 12px：话题文字与消息/输入区共用 --sp-3。
+    expect(block(chat, ".topic-main")).toMatch(/padding:\s*10px var\(--sp-3\)/);
+    const stream = read("components/MessageStream.vue");
+    expect(stream).toMatch(/padding:\s*12px var\(--chat-pad-inline/);
   });
 });

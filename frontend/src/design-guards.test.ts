@@ -104,7 +104,8 @@ describe("输入区与消息列同一条列", () => {
       expect(stream).toBeTruthy();
       // 2026-10-27 消息框改版：消息流与输入区在同一个框里，左右留白必须同源；
       // 星球入口已移进输入行内部，不再需要给浮动球预留的 132px 右通道。
-      expect(stream!.text).toMatch(/padding:\s*20px\s+var\(--chat-pad-inline/);
+      // 2026-11-24：消息区上下留白统一为 12px（此前上 20 / 下 12）。
+      expect(stream!.text).toMatch(/padding:\s*12px\s+var\(--chat-pad-inline/);
       const dock = FILES.find((f) => f.path.endsWith("components/conversation/ComposerDock.vue"));
       expect(dock, "ComposerDock.vue").toBeTruthy();
       expect(dock!.text).toMatch(/padding:\s*0\s+var\(--chat-pad-inline/);
