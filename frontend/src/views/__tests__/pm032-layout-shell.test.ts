@@ -98,7 +98,15 @@ describe("#15/#86 底部操作区：轻量操作行 + 胶囊输入；唯一开�
     // 收起了旧的 ic-bar 开合条与 ic-resize 分隔条：同一元素同时承担开合与拖动调高
     expect(conversation).not.toContain('class="ic-bar"');
     expect(conversation).not.toContain('class="ic-resize"');
-    expect(conversation).toContain("data-ic-toggle\n        data-ic-resize");
+    /*
+      同一根把手 = 同一个元素上同时有这两个属性。
+      这里按**结构**判断，不按源码里的换行 / 缩进判断 —— 后者会随工作树的换行符
+      （LF / CRLF）与格式化变化而假红，而它想证明的只是「两个属性在同一个标签上」。
+    */
+    const leverTag = /<button\b[^>]*\bdata-ic-toggle\b[^>]*>/.exec(conversation)?.[0] ?? "";
+    expect(leverTag, "把手必须是一个 <button> 元素").not.toBe("");
+    expect(leverTag).toContain("data-ic-resize");
+    expect(leverTag).toContain('class="ic-lever"');
   });
 
   it("板面「添加」与随消息附件入口是两个用途（工具槽 vs 输入区入口行）", () => {
