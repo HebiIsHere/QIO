@@ -5,7 +5,21 @@
 - 设计意图与分层 → `docs/architecture.md`
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
-最后核对：2026-11-17（**QIO 0.3.4 已发布**：main @ 6241783e（0.3.3 + 板面规范化/上传收尾超时修复 + Command Code / OpenCode 厂商）→ release commit d4670bd3；签名安装包 129,200,744 字节 / SHA256 f3c1fbb9…；发布闸门 18 PASS / 0 FAIL；CI run 44037155678 10/10 job success；tag v0.3.4（annotated 00c77ec0）与 GitHub Release 已发布，公开 latest.json version=0.3.4；跨账号/真实签名更新链路/GUI 真机矩阵/Authenticode 仍 UNVERIFIED）。
+最后核对：2026-11-25（**互动板面 · 无限点阵画布（本轮只做本地定向回归与相邻逻辑测试；未跑全量、未触发 CI、未推送、未合并 main、未打标签、未发布）**：基线 `feat/interactive-action-area-20261117` @ `0063c0961c13a6a5562bc0cd3d99cda34a2e8b2c`（开工 `git ls-remote` 只读核对远端同 SHA，无后续推送）。**范围只限互动板面，不改记忆星球；底部浮动操作区沿用既有独立按钮 / 聊天把手 / 输入框 / 开合动效，未重做。**
+
+① **替换有限滚动模型**：`InteractiveWorkspace.vue` 去掉板面外围 `padding: 2px 8px 8px`、`.iw-board` 的 1px 边框与内层圆角（桌面窗口圆角 / 全局栏 / 卡片 / 浮层样式不变）；`BoardCanvas.vue` 删除 `surfaceSize` / `.board-scroll-content` / `applyScroll()` / `liveScroll()` / `onViewportScroll()` / `zoomAtScroll()` / `layoutScroll()` / `surfaceRect()` / `contentViewport()` 与容器滚动监听，改为组件内唯一视图状态 `Viewport { x, y, scale }`：视口 `overflow: hidden` 自己裁切，世界层 `.board-surface` 只做一次 `translate(x, y) scale(scale)`（`transform-origin: 0 0`），空板与有内容的板走同一条路径；正式交互路径上的 `rebaseToFit()` / `rebaseOrigin()` 整板重定位已移除（拖动 A 跨过原点只改 A，独立卡片 B 的坐标 / 更新时间 / 撤销记录都不变）。`cardLayout.extendedArea()` 不再把 `minX/minY` 夹回 0（负坐标区域可放新卡），也不再并入远处孤立障碍（只并进与可用区相交的那些），避免远处一张卡把新卡带走或形成超大范围扫描。**未**用放大 `BOARD_SURFACE_W/H`、预置超大空白区、隐藏滚动条或定期平移全部卡片来实现。
+
+② **统一坐标换算**：复用 `interactive/viewport.ts` 的 `toBoardPoint()` / `toScreenPoint()` / `panBy()` / `zoomAt()`，统一传**原始视口矩形 + 完整 view**（不再有「已扣滚动量」的配套函数）；新增 `safeScale()`（只挡非法值、**不夹到 MIN_SCALE**）、`visibleWorldRect()`、`worldBoundsOf()`、`fitViewToBounds()`、`gridPhase()`、`dotGridMetrics()`；`clampScale()` / `zoomAt()` 增加可选 `minScale` 参数（默认仍是 `MIN_SCALE`，正常滚轮手感不变）。世界层子组件（`BoardLinkLayer` / `BoardPreviewLayer` / `IntentLayer`）继续接收板面坐标；定尺寸浮层（`BoardResizeLayer` / `BoardCardAnchorLayer` / `BoardGroupAnchorLayer`）新增 `offset` prop，位置 = 板面锚点 × scale + view 偏移，屏幕命中尺寸不随缩放变化。手势分工不变：拖空白平移（屏幕位移）、空格+拖框选（起止两点各自换算到板面坐标）、拖卡片移动（屏幕位移 ÷ 缩放）、拖连接点建关系；平移 / 缩放只改查看状态，不 commit、不排保存、不进撤销栈，继续通过 `publishBoardArea()` / `publishBoardScale()` 发布视野。
+
+③ **点阵 / 卡片 / 新卡落点接到同一视野**：点阵铺在 `.board-viewport` 上，由 `view` 决定原点与间距（100% 时仍是 24px 点距，保留既有 `radial-gradient` 与主题色），缩得很小时按 2 的倍数合并点，相位用 `((offset % spacing) + spacing) % spacing` 收口（往返跨过零点不跳格）；只在视口边缘裁切，远处不出现纸张尽头。`board.ts` 的 `clampCardRect()` 保留有符号位置与 `BOARD_COORD_LIMIT` 有限值校验；`geometry.resolvePlacement({ policy: "bounded" })` 的拉伸避让职责保留。工具栏「添加」与**双击空白处建卡**共用正式创建逻辑（`defaultCardSeed` + `NEW_CARD_SIZE` + `addCard` + `store.commit`，建卡与选中是一次提交）；双击卡片 / 关系标签 / 把手 / 菜单 / 浮层不穿透建卡，完成一次拖动后浏览器补发的 `dblclick` 被时间窗挡掉。搜索 / 书签 / 预览定位改用 `revealDeltaInArea()` 算出的屏幕差量应用到 `view`（替换旧 `applyScroll()` 路径）。
+
+④ **「查看全部」**：`BoardToolbar` 新增常驻按钮 `data-im="view-all"`（可访问名称「查看全部」）与「更多」菜单项 `data-im="board-more-view-all"`，通过 `qio:interactive:view-all` 事件交给画布（与 `locate-card` / `locate-preview` 同一个显示态桥模式）。包围盒用**当前可展示**卡片与组的实际外框（含负坐标；收起组用折叠后真正显示的外框；已删除 / 隐藏对象不参与），目标矩形是扣除遮挡后的可用区并留 48px 余量；适配比例 = min(可用宽/包围盒宽, 可用高/包围盒高)，上限 1（单卡不被异常放大），下限 `FIT_MIN_SCALE = 0.02`；算出的比例随后成为**后续缩放的下限**，下一次滚轮不会跳回 0.25。空板回到初始视野与 100%。只改视图：卡片坐标 / 选中 / 连线记录均不改写。视野按 `boardId` 缓存（`qio-board-view:<boardId>`，只存 x/y/scale，与板面内容的保存状态完全分开），重开远坐标板面时恢复，缺少有效视野时用「查看全部」初始化。
+
+⑤ **本轮实际跑过的本地验证（只定向，未跑全量 / 未触发 CI / 未推送）**：`cd frontend`；`npm exec -- vitest run src/interactive/__tests__/viewport.test.ts src/interactive/__tests__/boardSurfaceBounds.test.ts src/interactive/__tests__/cardLayout.test.ts` → **3 files / 59 passed**；`npm exec -- vitest run src/components/interactive/__tests__/boardGrid.test.ts src/components/interactive/__tests__/scroll-board-viewport.test.ts src/components/interactive/__tests__/scroll-horizontal-fit.test.ts` → **3 files / 26 passed**；`npm exec -- vitest run src/components/interactive/__tests__/irl-verify-panzoom-draft.test.ts src/components/interactive/__tests__/acceptance-i2v2-canvas-locate.test.ts src/components/interactive/__tests__/acceptance-i2v2-link-gesture.test.ts` → **3 files / 13 passed**；相邻逻辑回归 `npm exec -- vitest run src/interactive src/components/interactive src/views` → **193 files / 2130 passed**；`npx vue-tsc --noEmit` → exit 0。新增用例：`components/interactive/__tests__/infinite-canvas.test.ts`（14 例：空板四方向平移与点阵相位、负坐标拖动只改本次对象、平移缩放不产生提交、查看全部含 <25% 适配与滚轮不跳回、双击建卡与不穿透）、`interactive/__tests__/infinite-canvas-save-reopen.test.ts`（4 例：负坐标卡片 / 关系端点 / 关系文字 / 曲线参数经 `store → api.saveBoardState()` 保存后重开逐字段一致）。旧模型断言按用户可观察行为改写（`boardGrid` 的 `background-attachment: local`、`scroll-board-viewport` 的 `overflow: auto` 与滚动量、`boardSurfaceBounds` 的整板重定位、`cardToolbarLayoutHarness` 的滚动量换算等），保留其中仍适用的坐标精度、手势与数据完整性检查。
+
+⑥ **本地窗口验收（真实 Edge + CDP，正式互动页 `/interactive`，隔离后端 8734 + vite 1420）**：空板向左上平移 → 远处（板面负坐标）双击建两张卡 → 连线并填写关系「属于（本地验收）」→ 自动保存 → 关闭重开 → 查看全部 → 再次点中原关系，全部 PASS。保存前后坐标与关系端点 ID：卡片 `c_mwvwic9j108ca` (-752, -296) / `c_mwvwicld2pqcv` (-60, 75)，关系 `l_mwvwidgi337b8` src=`c_mwvwic9j108ca` dst=`c_mwvwicld2pqcv` meaning=「属于（本地验收）」curve={x:0,y:0}；重开后逐字段一致。把 B 拖到 (5940, 4075) 后点「查看全部」：适配比例 **0.1253**（低于 25%），两卡同时落在可用区内（`allInside=true`）；再滚一级变为 0.1456，**没有跳回 0.25**。窄窗口 900×700：点阵铺满（`fillsWidth=true`）、底部按钮 7 个仍可点、`view-all` 仍在。证据：`_infinite-canvas-evidence/`（`report.json` + 10 张截图）、脚本 `frontend/scripts/verify-infinite-canvas.mjs`。
+
+⑦ **诚实边界**：本轮按用户要求**只做本地定向回归与相邻逻辑测试**，未跑前后端全量、未触发 CI、未推送、未合并 main、未打标签、未发布。保存重开已在**真实后端**（`uvicorn` 8734 + 真实 SQLite）上验证，不是前端模拟；但 Windows 原生 Tauri 壳内的同一路径、真实厂商模型、多窗口并发保存仍为未验证。`BoardPreviewLayer` / `IntentLayer` 的 `width` / `height` 现在传的是**当前视野的世界尺寸**（不再是固定画布尺寸），意图预览的拖动边界因此随视野变化（既有行为在无限画布下没有意义）。
 
 最后核对：2026-11-17（**凭据厂商新增 Command Code / OpenCode（套餐 vs API 调用）已实现并验证；QIO 0.3.3 已发布**：`main` 快进合并 `fix/qio032-46-r9` @ `58d325bc`（含 0.3.2 全量与 #46 第七至十轮修复）→ 签名安装包 + 发布闸门 **18 PASS / 0 FAIL** → tag `v0.3.3` → GitHub Release 已上传 exe / .sig / latest.json，公开 latest.json 实测 version=0.3.3；CI run `43828778826` 8/10，`frontend` 与 `rust (ubuntu-24.04)` 失败与 v0.3.2 发布 run 相同、属既有问题；跨账号/真实签名更新链路等边界见文末）。
 
@@ -6467,3 +6481,133 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 发布验证：公开 latest.json（\`https://github.com/HebiIsHere/QIO/releases/latest/download/latest.json\`）HTTP 200、\`version=0.3.4\`，内容与本地 latest.json SHA256 一致；Release 资产 exe / .sig / latest.json 均已上传；下载 URL 走 \`ghfast.top\` 加速。
 - 未验证边界：真实签名更新链路端到端、跨 Windows 账号/会话、安装版 GUI 真机矩阵、Windows Authenticode（沿用 0.3.3 口径）。
 - 证据：\`docs/releases/v0.3.4.md\`、\`dist-0.3.4-release/\`、\`_lead-logs/qio032-46/r11/build-0.3.4.log\` 与 \`publish-0.3.4.log\`。
+
+### P117 — 互动模式底部操作区重做（常驻把手 / 线框弧长揭示 / 玻璃面板 / 工具栏 rail）（2026-11-17）
+
+- **Status：** completed
+- 需求：按用户确认的互动预览重做互动页底部操作区（形态与动效参考 `C:\Users\zxy\Downloads\QIO_Animated_Chat_Preview.html`，实现以仓库真实组件、主题令牌与真实数据为准）：收起＝轻量操作行（左模式切换 / 中常驻把手 / 右板面工具）+ 独立胶囊输入；展开＝消息区在操作行上方长出，同一根把手固定在面板顶边，顶边由把手与左右两段细线接成，两侧线包住左右操作按钮、到输入胶囊实测水平中线处完全淡出；线框按弧长揭示（两条镜像 SVG 开放路径），高度与揭示在同一时间步临界阻尼补间（展开 11 s⁻¹ / 常规收起 21 s⁻¹ / 拖动跟手 45 s⁻¹）；玻璃材质集中在聊天面板、按真实面板范围裁剪；减少动画直接落最终几何。
+- 实现：
+  - 新建 `frontend/src/components/interactive/v2/conversationMotion.ts`：临界阻尼轴（dt 夹取 / 吸附）、解析进度与反解、镜像路径 + 解析弧长 + dasharray 揭示 + 玻璃裁剪/渐显 + 渐变色端点；纯函数可离线单测。
+  - 重写 `frontend/src/components/interactive/v2/InteractiveConversation.vue`：消息区 / 操作行 / 事项行 / 胶囊结构；`#mode-switch` / `#toolbar` 槽；同一根把手（点击开合、展开态拖动、↑/↓/Home/End、Esc 层级先取消拖动再收起，点击与超过阈值的拖动分开）；点击或聚焦输入区自动展开；开合 / 拖动只改显示并保持草稿、附件、排队、生成与阅读位置；chatFrameState 继续发布真实可见矩形（收起 / 卸载 null）；减少动画直接落位。
+  - `frontend/src/views/InteractiveView.vue`：模式切换移入操作行左侧、工具栏走 rail 形态、浮层宽度与消息列/胶囊同轴（860）；删除旧收起条与整条胶囊工具栏覆盖。
+  - `frontend/src/components/interactive/BoardToolbar.vue`：`rail` prop（默认关闭时 dock 行为不变）——透明单行、独立按钮、按自有实测宽度 full→icons→more 三档降级（撤销 / 重做 / 书签 / 提交详情收进「更多」，更多面板 Esc / 外点 / 焦点回位）；`AddMenu.vue` 增 `iconOnly`；`SubmitCluster.vue` 增 `hideDetails` 与 `openDetails()`；`frontend/src/interactive/toolbarLayout.ts` 增 `railToolbarMode`（阈值按真实渲染实测校准）。
+  - 测试：新增动效 / 线框几何单测、底部操作区布局守卫、rail 工具栏与三档降级单测；更新对话区 / 几何桥 / 页面壳守卫；删除随旧布局失效的输入区模式入口用例。
+- 验证：`npx vue-tsc --noEmit` exit 0；前端全量 vitest 与定向回归通过（日志见证据）；系统 Edge + CDP 实机（隔离数据域 + 本机 fake provider）：1000×600 点击→两侧横线首次到角 229.7ms（帧量化 231.1ms；预览同尺寸基准 218.4ms；验收窗 190–250ms），左右同步且起点 = 把手端点、竖边接续、SVG 高 = 胶囊中线 245、同帧更新 49/0/0；展开高度 50%/90% = 172.4/372.8ms、settle 847.2ms，收起 settle 462.9ms；线框离屏渲染像素确证可见；工具栏三档（1000/1440=full、900=icons、800/720=more）与更多菜单、暗/亮主题、1440/1000/900/800/720 视口、排队（「正在回复 · 已排队 1 条」）与待确认入口、键盘 / 拖动 / 拖动中 Esc / 减少动画 / 窗口变化、chatFrameState（展开矩形、收起 / 卸载 null）、草稿 / 附件 / 滚动 / 发送 / 提交 / 模式切换不变量均通过；实机取证 PASS 50 / FAIL 0 / UNVERIFIED 0，无页面 console error。
+- 边界：未做 Tauri 安装版真机验收；fake provider 只证明 QIO 自身链路，不证明真实厂商 / Tauri 原生窗口 / Windows 原生拖放；触屏 / 触控笔手势未覆盖。动画「到角」时刻位于上一帧与首个满足帧之间（报告同时给出线性插值与帧量化值）。
+- 证据：`_lead-logs/interactive-action/final/{summary.json,report.md,shots/}`（逐项结果与截图）、`_lead-logs/interactive-action/preview-baseline.json`（预览基准）、`scripts/verify-interactive-action/run.ps1`（一键复跑）；改动文件见本轮提交。
+
+### P118 — 互动底部操作区动效修订：线框出现/消失同速非线性 + 消息随把手同步/下沉虚化（2026-11-22）
+
+- **Status：** completed
+- 需求（用户 2026-11-17 演示修订，2026-11-22 确认实现）：问题三实际是「边框线消失明显快于出现」——出现与消失必须同速，且两个方向都使用非线性动画；消息内容的下降/消失速度要和扁长把手同步，把手永远在消息上方、不遮住上升/下降中的消息；在此基础上再叠加消息虚化。
+- 实现：
+  - `frontend/src/components/interactive/v2/conversationMotion.ts`：移除「展开 11 / 收起 21」两条临界阻尼轴，改为单条 **650ms、`easeInOutCubic`（慢-快-慢）时间轴**（中途反向按剩余距离等比缩短）；新增 `conversationContentMist(progress)` 纯函数（进度 ≥0.5 不虚化、≤0.15 完全消失：opacity 1→0 + blur 0→6px，smoothstep）。
+  - `frontend/src/components/interactive/v2/InteractiveConversation.vue`：高度 / 线框揭示 / 内容虚化共用同一个归一化 `progress`；点击开合 650ms 同速非线性，拖动保持直接跟手、线框保持全揭示，减少动画直接落位；空态覆盖层固定在面板顶边下方 40px（`--ic-empty-top`），随把手同速升降；消息流关闭浏览器滚动锚定（`overflow-anchor: none`），否则浏览器 scrollTop 修正会吃掉消息区随把手的位移；`.empty` 的绝对定位包含块改为 `.ic-stream`，空态不再随 scrollTop 滚动/跑到把手上方。
+  - 测试：`conversationMotion.test.ts` 重写（时间轴对称 / 非线性 / 虚化映射 / 几何口径不变）；`bottom-action-area-layout.test.ts` 守卫更新（同速非线性、消息跟随、虚化、overflow-anchor、空态偏移）；MessageStream 无产品改动。
+  - 取证 harness：`scripts/verify-interactive-action/frames.mjs` 口径改为 650ms 慢-快-慢（到角窗口 0.28–0.62s），新增「出现/消失 settle 差 ≤120ms」「25/50/75% 进度符合 easeInOutCubic」两项断言；反向 / 拖动场景抓取时机按新时间轴调整。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest（动效 / 布局 / 对话区 / 几何桥 / MessageStream）全绿；系统 Edge + CDP 实机（隔离数据域 + fake provider，1000×600）：
+  - 线框：点击→到角 386.6ms（帧量化 391.9ms）；展开 settle 675.4ms、收起 settle 657.6ms（同速差 17.8ms）；展开归一化进度 25%/50%/75% = 0.056/0.492/0.940，收起 = 0.055/0.489/0.940（时间镜像）；高度与揭示同帧更新 37 同帧 / 1 reveal-only / 0 height-only。
+  - 消息同步：空态内容顶 = 面板顶 +40px 恒定、与把手底间距 20.5px、0 重叠帧、逐帧位移误差 0；有消息时消息区与面板逐帧同步误差 0（scrollTop 不变）；收起时 opacity 单调 1→0、blur 0→6px，把手全程在消息上方。
+  - 不变量：拖动跟手（抓握 255 → 253/273/280）与松手保留、快速反向连续、减少动画落位、草稿 / 附件 / 排队 / 滚动位置 / 发送 / 模式切换 / chatFrameState 均通过；实机取证 **PASS 52 / FAIL 0 / UNVERIFIED 0**，无页面 console error。
+- 边界：未做 Tauri 安装版真机验收；fake provider 只证明 QIO 自身链路；虚化半径 6px、虚化窗口 0.5→0.15 进度为演示确认口径，后续可调；旧预览 216ms 到角口径已失效，仅作历史参照。
+- 证据：`_lead-logs/interactive-action/{summary.json,report.md,shots/}`、`_lead-logs/impl-verify/final/{result.json,shots/}`、`_lead-logs/impl-verify/rec/{real-open-close.gif,real-close-slow.gif,real-open-close-montage.png}`、`_lead-logs/demo/`（确认用演示页）；改动文件见本轮提交。
+
+### P119 — 互动底部操作区：消息/滚动条溢到边框外修复 + 操作行左右对齐与右侧按钮统一（2026-11-22）
+
+- **Status：** completed
+- 来源：用户实机截图反馈——滚动会话时消息与 QIO 滚动指示条出现在面板顶边线以上、滚动条穿过边框；以及之前的问题一（模式切换与输入胶囊未左对齐、右侧按钮样式不一致）。
+- 修复 1（溢出）：
+  - `InteractiveConversation.vue` 的消息区 `.ic-stream` 增加顶部裁切 `clip-path: inset(var(--ic-frame-top, 17px) 0 0 0)`，`--ic-frame-top` 由 `drawFrame` 按实测把手中心写入：滚动消息与 QIO 滚动指示条只在顶边线以下绘制，不再溢到边框/把手上方。
+  - 撤销上一版把 `.stream` 改成 `position: static` 的做法：QIO 滚动指示条依赖滚动容器做滚动偏移补偿，改成 static 后指示条会随 scrollTop 漂出面板；恢复 MessageStream 自己的 `position: relative` 后滚动条重新贴住面板内缘。
+  - 空态：用 `data-ic-empty` 隐藏滚动指示条（贴底 settle 早期会把空态算成可滚动），并继续保证空态距面板顶边 40px；顶部裁切作为兜底，不再依赖与 MessageStream 抢写 scrollTop。
+- 修复 2（问题一对齐）：`.ic-rail` 左右内边距 8px → 12px，与输入胶囊同边界；模式切换高度 30px → 32px、字号与右侧工具一致。实测（1000×600）：模式按钮左缘 82 = 胶囊左缘 82，右侧工具组/提交按钮右缘 918 = 胶囊右缘 918，行内按钮全部 32px（2026-11-23 用户要求再向内收，P120 已改为 24px 内边距，见 P120）。
+- 修复 3（问题一右侧按钮统一，`BoardToolbar.vue` rail 样式）：添加 / 撤销 / 重做 / 书签 / 详情 / 提交统一 32px 高、14px 圆角、`--sp-2` 内边距、同一描边 / 底色 / 字号；「＋」改为继承文字色；提交按钮补透明描边以与禁用态同尺寸；所有禁用态统一为 `--text-faint` + `--bg-inset` + `--border-subtle`（不再有的半透明、有的换底）。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest 33 passed；实机 1000×600 隔离数据域截图与量值：滚动消息 + 滚动条时内容顶边被裁在 271+17px 的顶边线以下、滚动条右缘 927 < 面板右缘 930、顶边线以上无可见消息像素；空态 offset 恒 40px、`data-ic-empty` 时指示条 `display: none`；取证 harness 仍 **PASS 52 / FAIL 0 / UNVERIFIED 0**；前端全量 `npm test` 全绿。
+- 边界：顶部裁切只作用于消息区的视觉绘制，不改变滚动位置 / 元素测量（chatFrameState 与消息同步测量仍用未裁切矩形）；窄窗口三档工具栏由 harness 多视口检查覆盖。
+- 证据：`_lead-logs/fix-20261122/{rail-metrics.json,metrics.json,shots/}`（操作行前后对照、溢出修复前后截图）；harness 见 `_lead-logs/interactive-action/`；改动文件见本轮提交。
+
+### P120 — 互动底部操作区：左右按钮组再向内收，外缘落进输入胶囊两端半圆（2026-11-23）
+
+- **Status：** completed
+- 来源：用户反馈「按钮再往里收，尽可能保证在输入框的左右两侧半圆里面」——上一版把按钮外缘对齐到胶囊最外侧直边端点，视觉上仍顶在胶囊两端。
+- 实现：`.ic-rail` 左右内边距 12px → **24px（`--sp-6`）**。输入胶囊高 54px（border-radius 999 → 端部半圆半径 27px）；操作行最外侧按钮 32px 高、圆角 14px，外移 24px 后其外侧圆角端正好落在胶囊两端 27px 的半圆水平范围内。
+- 验证（实机 Edge + CDP，收起态）：
+  - 1000×600：胶囊 82–918，模式按钮 94–173（外侧圆角 94–108 在左半圆 82–109 内），提交按钮 822.8–906（外侧圆角 892–906 在右半圆 891–918 内）。
+  - 800×600：胶囊 61–739，最右「更多」按钮 695–727（圆角端 713–727 在右半圆 712–739 内）；720×600 同理。
+  - 1440 / 1000 / 900 / 800 / 720 五档：把手 / 模式 / 最外侧按钮命中全部为 true、面板无溢出、line-height 不变；视觉对照见 `rail-inset-compare.png`。
+- 验证：`npx vue-tsc --noEmit` exit 0；布局守卫更新为 `padding: 1px var(--sp-6)`；前端全量 `npm test` 全绿。
+- 边界：24px 是「按钮外侧圆角端全部落进 27px 半圆区」的最大公约位置；再往里收会让模式文字/工具组离开胶囊对应端，需要改胶囊半径或按钮尺寸。
+- 证据：`_lead-logs/fix-20261122/shots/{rail-inset-compare.png,40-collapsed-1000.png,40-collapsed-800.png,41-inset-*.png,zoom-42-inset-*.png}`；改动文件见本轮提交。
+
+### P121 — 互动底部操作区：左右按钮统一为 28px 同款样式，按钮缩小换来与输入胶囊的间距（2026-11-24）
+
+- **Status：** completed
+- 来源：用户反馈「左侧和右侧的按钮在样式和与输入框的间距都会有些问题，按钮应该用统一的样式且通过按钮的缩小来增加和输入框的间距」。
+- 样式统一：
+  - 左侧模式切换从「透明胶囊 + 圆点文字」改为与右侧工具按钮完全同款：**28px 高、`--qio-ui-radius`（14px）圆角、`--bg-surface` 白底、`--border-subtle` 中性描边、`--fs-sm` 字号**，hover 时 `--bg-inset` + `--border-strong`；强调圆点保留。
+  - 右侧添加 / 撤销 / 重做 / 书签 / 详情 / 提交全部 32px → **28px**；图标按钮 28×28；提交/详情同高同 padding，禁用态规则沿用 P119。
+- 间距：操作行 `min-height` 36 → **30px**（28px 按钮上下各 1px），`.ic-dock` 顶部新增 **6px** padding；按钮底到胶囊顶从 **2px → 7px**。总 chrome 高度仍为 98px（收起态总高不变，不引起面板几何跳变）。
+- 验证（实机 Edge + CDP，收起态）：
+  - 1000×600：root 453–551（h=98 不变）；rail 453–483（h=30）；胶囊 82–918（top 489）；模式按钮 94–173、提交 822.8–906，均 h=28；按钮底 482 → 胶囊顶 489，间距 7px。
+  - 800×600 / 720×600：右侧最外「更多」按钮 28×28（800 下 699–727，胶囊右缘 739），无溢出；模式按钮样式实测 `h=28px / bg=rgb(255,255,255) / border=rgb(231,231,228) / radius=14px / fs=12.5px`，左右完全一致。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest（布局守卫 + rail 源码守卫 + 可读性守卫）33 passed；前端全量 `npm test` 全绿。
+- 边界：28px 是为桌面鼠标/触控板留出的紧凑尺寸，仍高于常见 24px 最小点击区；若后续要更强调「小而密」，可再降到 26px（行高 28px）并把间距拉到 9px，需要同步改布局守卫。
+- 证据：`_lead-logs/fix-20261124/shots/{50-collapsed-1000.png,50-collapsed-800.png,50-collapsed-720.png,zoom-51-*.png}`；改动文件见本轮提交。
+
+### P122 — 对话页间距 v1：卡片/区块统一 12px、消息上下 12px、composer 两侧 gap 相等（2026-11-24）
+
+- **Status：** completed
+- 来源：用户看完对话页间距检查报告后确认先做一版试试（本轮不改互动页）。
+- 实现：
+  - `ChatColumn.vue` 的 `.chat-column` 增加 `gap: var(--conversation-card-gap, 12px)` 作为卡片/区块纵向间距的**唯一来源**；删除 `.topic-bar` margin-bottom 与 `.chat-box` margin-top（话题→聊天 24 → **12px**）；`.topic-details` 是 chat-column 的子项，margin 归零（原先与 gap 叠加成 18/24 → **12px**）；`.status-zone` 只保留 `margin: 0 12px`。
+  - `MessageStream.vue` 的 `.stream` 上下内边距 20/12 → **12/12**；轮次间 26px 保留为「消息节奏」；`.topic-main` 横向内边距 16 → **12px**（话题标记 / 消息 / 输入区左缘统一 353px）。
+  - `ComposerDock.vue`：保持原三列 `auto | minmax(0,860px) | 54px`，两侧 gap 统一 12px（≤700 为 8px）：mode 左贴、星球右贴、两端贴齐；胶囊宽度回到原值（1000 下 441）。取舍：mode(79) 比星球(54)宽，胶囊中心比卡片中心右移 12.5px；居中版对照见证据 `variants/`。
+  - `ComposerEntries.vue` 的 `.entry-row` padding 9/9 → `0 0 12px`：消息内容→入口 12、入口→胶囊 12、胶囊→卡片底 13（浏览器注入模拟实测）。
+  - `.input-pill` 内边距 6/7/6/8 → 6/8 对称。
+  - 测试：`chat-box-layout.test.ts` / `design-guards.test.ts` 更新（卡片 gap 单源、composer 两侧 gap 12、消息 12/12 守卫）；rail 与可读性守卫保持。
+- 实测（实机 Edge + CDP，滚动到顶）：
+  - 1000×600：话题→聊天 **12**；mode→胶囊 / 胶囊→星球 **12 / 12**；两端贴齐（mode 左 353、星球右 951）；胶囊中心 664.5 vs 卡片中心 652（+12.5）；胶囊宽 441；话题标记 / 消息 / 输入左缘均 353；详情展开 12/12。
+  - 1440×600：gaps 12/12；胶囊宽 860；胶囊中心 884.5 vs 卡片中心 872（+12.5）；mode/星球两侧各内缩 10.5px（整组居中）。
+  - 800×600：gaps 12/12；胶囊宽 261；中心 +12.5。700×600：gaps 8/8；胶囊宽 446；中心 366 vs 卡片 380（−14）。
+  - 已知取舍：左侧 mode 实际宽 79px、右侧星球 54px；**「两侧 gap 相等 + 两端贴齐」与「胶囊严格居中」不能同时满足**。本版选前者（视觉等距），居中版（gaps 12/37、胶囊中心=卡片中心、宽 416/856）对照截图在 `variants/`；**用户 2026-11-24 确认按等距版走**（见 P123）。
+- 验证：`npx vue-tsc --noEmit` exit 0；定点 vitest（chat-box / ChatColumn / design-guards / scroll-fit）47 passed；前端全量 `npm test` **636 files / 5615 tests 全绿**；互动页 harness 不受本次改动影响。
+- 证据：`_lead-logs/fix-20261124-conversation-spacing/shots/{before-after-1000.png,final-equal-1000x600.png,final-equal-1440x600.png,final-equal-800x600.png,final-equal-700x600.png,final-equal-1000-details.png}`、`variants/`（居中版对照）；改动文件见本轮提交。
+
+### P123 — 记忆星球页背景与对话页同色；互动把手改为默认洋红 / 选中白底洋红边（2026-11-24）
+
+- **Status：** completed
+- 来源：用户确认 P122 按等距版走；并要求「记忆星球界面背景色换成同 QIO 对话模式背景相同的颜色；互动模式扁长把手未选中为主题洋红色，选中为白色、边框主题洋红色」。
+- 实现：
+  - `tokens.css` 新增全应用页面铺底令牌 `--app-backdrop`（暗/亮两套）= 对话页原有的「左上洋红径向渐变 + `--bg-base`」。
+  - `ConversationView.vue` 的整窗 `::before` 改用 `var(--app-backdrop)`；`PlanetView.vue` 的星球铺底 `::before` 由 `var(--planet-void)` 改为同一个 `var(--app-backdrop)`，两页背景完全同源。
+  - `InteractiveConversation.vue` 的 `.ic-lever-bar`：默认 `background: var(--accent)` + `border: 1px solid var(--accent)`；`hover / focus-visible / data-ic-expanded="true" / data-ic-dragging="true"` 时 `background: var(--on-accent)`（QIO 的 on-accent 白）+ `border-color: var(--accent)`；移除旧的 `color-mix` 悬停色与拖动强调色规则。
+  - `bottom-action-area-layout.test.ts` 增加把手配色守卫（默认洋红、选中白底洋红边）。
+- 验证（实机 Edge + CDP，light 主题）：
+  - 把手默认 `rgb(197,27,125)` / 边框同色；悬停与展开（选中）`rgb(255,238,248)` / 边框 `rgb(197,27,125)`；条高仍 5px（含 1px 边框）。
+  - 对话页与星球页 `::before` 计算值一致：`radial-gradient(at 0% 0%, rgba(197,27,125,.12) 0, transparent 46%)` + 底色 `rgb(252,252,251)`；截图见证据。
+  - `npx vue-tsc --noEmit` exit 0；定向 vitest（InteractiveConversation / PlanetView / mp-a-layout / design-guards / 布局守卫）113 passed；前端全量 `npm test` **636 files / 5615 tests 全绿**。
+- 边界："白色"使用 QIO 语义令牌 `--on-accent`（#ffeef8，暗/亮主题一致），不是硬编码纯白；`--planet-void` 保留给既有 WebGL 虚空语义，本次只改页面铺底。
+- 证据：`_lead-logs/fix-20261124-colors/shots/{lever-states.png,background-match.png,01-lever-collapsed.png,02-lever-hover.png,03-lever-expanded.png,04-planet.png}`；改动文件见本轮提交。
+
+### P124 — 星球页四项修复：打开不再弹「全局搜索」、管理态收起补左侧回归、窄窗模式按钮保持完整、开关稍慢（2026-11-24）
+
+- **Status：** completed
+- 来源：用户反馈「每次从对话页点记忆星球都会出现『全局搜索』」「记忆星球动画少了从左侧直接回归到对话模式小球的动画」「互动模式变窄时模式切换按钮不用再变短」「星球打开/关闭速度有些过快」。
+- 1) 打开星球不再冒出「全局搜索」：
+  - 它本来是页面工具行**搜索按钮的用途说明**（`v-qio-tip`），只应在悬停搜索图标或键盘 Tab 到它时出现；
+  - 根因：打开星球时 `focusInitialPlanetControl` 把焦点移入第一个可用控件（正是搜索按钮），tooltip 的 `focusin` 规则对**程序性聚焦**也立即显示；
+  - 修复：`focusInitialPlanetControl` 在本次 `focus()` 前后用 `suppressTip(first, true)` 临时停用该锚点，下一帧恢复；真实悬停 / 键盘聚焦仍会出现。新增 `planet-dialog-a11y` 用例守卫 `tipState.open === false`。
+- 2) 管理态收起补回「从左侧回到入口小球」的连续动画：
+  - 根因：`close()` 开头 `manage.applyProgress(0)` 把管理展开进度一帧归零，星球会从左侧管理位瞬移回中央，再走原有收缩；
+  - 修复：管理态下改为 `manage.setExpanded(false)`，管理进度沿自己的收起曲线与退出**同刻**归零；尾段结束再 `applyProgress(0)` 兜底，保证小球落在入口正中。普通浏览态（progress=0）不触发；
+  - 实机逐帧：画布中心约 28 → 474 → 678 → 833 → 906 → 923px，画布宽约 944 → 830 → 530 → 278 → 187 → 143 → 63 → 54px，轨迹连续、无中央瞬移。
+- 3) 互动模式窄窗模式按钮不再缩短：
+  - 删除 `InteractiveView.vue` 里 `@media (max-width: 640px)` 的「只留圆点 / 缩 padding」规则；
+  - 430 / 500 / 560 / 640px 实测完整「互动模式」均显示（按钮 79×28），右侧工具不溢出；`bottom-action-area-layout.test.ts` 增加守卫。
+- 4) 星球打开/关闭稍慢：
+  - `tokens.css` 低频令牌：`--mo-3-prepare` 180→210ms、`--mo-3-expand` 520→600ms、`--mo-3-settle` 220→250ms、`--mo-3-collapse` 420→500ms；
+  - `PlanetView.vue` 脚本 fallback（`OPEN_MS/SETTLE_MS/FADE_MS`）与 `?planetdemo` 覆盖值同步到新基准；`PlanetView.test.ts` 的固定等待按新时长调整。
+- 验证：`npx vue-tsc --noEmit` exit 0；定向 vitest（PlanetView / a11y / mp-a-layout / tokens / PlanetDock / 布局守卫）107 passed；前端全量 `npm test` **636 files / 5616 tests 全绿**；实机 CDP 复核 tooltip、关闭轨迹、窄窗排版与开合时长。
+- 边界：初始焦点仍按 #38 落在第一个可用控件，只抑制本次说明浮层；速度调整只改星球低频令牌，不改变缓动曲线与其他高频动效。
+- 证据：`_lead-logs/fix-20261124-planet-close/{manage/montage.png,manage/frames/,mode/interactive-{640,500,430}x600.png}`、`_lead-logs/fix-20261124-colors/shots/07-planet-open-no-tooltip.png`；改动文件见本轮提交。
+

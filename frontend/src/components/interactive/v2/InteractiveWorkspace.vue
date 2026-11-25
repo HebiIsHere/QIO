@@ -205,14 +205,19 @@ defineExpose({ measure, layout });
 </template>
 
 <style scoped>
-/* 页面外沿与对话页同一套节奏：顶部 2px（紧贴全局栏卡片下沿）、左右/底 8px。 */
+/*
+  页面外沿：**板面不再留白**（2026-11-25 无限画布）。
+  从前这里是 padding: 2px 8px 8px，板面因此比窗口小一圈；点阵纸要「从顶部全局栏下方
+  一直铺到窗口底部」，外围留白必须去掉。桌面窗口自身的圆角、全局栏、卡片与浮层的样式
+  都不在这里，保持原样。
+*/
 .iw {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   min-width: 0;
-  padding: 2px 8px 8px;
+  padding: 0;
   color: var(--text-primary);
   font-family: var(--sans);
 }
@@ -235,7 +240,11 @@ defineExpose({ measure, layout });
   min-width: 0;
 }
 
-/* 板面主区：圆形卡片容器，同时是现有板面浮层（工具栏/聊天）的定位舞台。 */
+/*
+  板面主区：同时是现有板面浮层（工具栏 / 聊天）的定位舞台。
+  2026-11-25（无限画布）：去掉 1px 边框与内层圆角 —— 点阵纸要铺满到窗口边缘，
+  板面外围不能再有一圈「纸的尽头」。桌面窗口自身的圆角由外壳负责，不受影响。
+*/
 .iw-board {
   position: relative;
   flex: 1;
@@ -244,8 +253,8 @@ defineExpose({ measure, layout });
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border: 0;
+  border-radius: 0;
   background: var(--bg-surface);
 }
 

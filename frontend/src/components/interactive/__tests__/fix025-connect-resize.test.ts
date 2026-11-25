@@ -108,30 +108,43 @@ function mountCanvas(): VueWrapper {
   return wrapper;
 }
 
-/** 让容器「真的能滚动」：jsdom 里 scrollLeft 才能被写进 DOM（坐标换算的事实来源）。 */
-function makeScrollable(view: HTMLElement, left = 0, top = 0): void {
-  Object.defineProperty(view, "scrollWidth", { value: VIEW_W * 2, configurable: true });
-  Object.defineProperty(view, "scrollHeight", { value: VIEW_H * 2, configurable: true });
-  Object.defineProperty(view, "scrollLeft", { value: left, writable: true, configurable: true });
-  Object.defineProperty(view, "scrollTop", { value: top, writable: true, configurable: true });
+/**
+ * 把视图平移到 (left, top)：无限画布下平移就是改 view（世界原点偏移），
+ * 不再有容器滚动量。用真实的平移手势驱动，保证走的是生产路径。
+ */
+async function panTo(left: number, top: number): Promise<void> {
+  const view = wrapper!.get(".board-viewport").element as HTMLElement;
+  view.dispatchEvent(pointer("pointerdown", VIEW_LEFT + 10, VIEW_TOP + 10));
+  window.dispatchEvent(pointer("pointermove", VIEW_LEFT + 10 + left, VIEW_TOP + 10 + top));
+  await nextTick();
+  window.dispatchEvent(pointer("pointerup", VIEW_LEFT + 10 + left, VIEW_TOP + 10 + top));
+  await nextTick();
 }
 
-function viewState(): { scale: number; scrollLeft: number; scrollTop: number } {
+interface ViewState {
+  scale: number;
+  /** 世界原点在视口内的偏移（= view.x / view.y） */
+  offsetX: number;
+  offsetY: number;
+}
+
+function viewState(): ViewState {
   const surface = wrapper!.get(".board-surface").element as HTMLElement;
-  const view = wrapper!.get(".board-viewport").element as HTMLElement;
-  const match = /scale\(([\d.]+)\)/.exec(surface.style.transform);
+  const transform = surface.style.transform;
+  const scaleMatch = /scale\(([\d.]+)\)/.exec(transform);
+  const translateMatch = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(transform);
   return {
-    scale: match ? Number(match[1]) : Number.NaN,
-    scrollLeft: view.scrollLeft,
-    scrollTop: view.scrollTop,
+    scale: scaleMatch ? Number(scaleMatch[1]) : Number.NaN,
+    offsetX: translateMatch ? Number(translateMatch[1]) : 0,
+    offsetY: translateMatch ? Number(translateMatch[2]) : 0,
   };
 }
 
 /** 板面坐标 → 屏幕坐标（与 BoardCanvas 的换算口径一致）。 */
-function screenOf(boardX: number, boardY: number, state: { scale: number; scrollLeft: number; scrollTop: number }) {
+function screenOf(boardX: number, boardY: number, state: ViewState) {
   return {
-    x: VIEW_LEFT + boardX * state.scale - state.scrollLeft,
-    y: VIEW_TOP + boardY * state.scale - state.scrollTop,
+    x: VIEW_LEFT + boardX * state.scale + state.offsetX,
+    y: VIEW_TOP + boardY * state.scale + state.offsetY,
   };
 }
 
@@ -179,14 +192,25 @@ function releaseAt(boardX: number, boardY: number): void {
 }
 
 /**
- * 让 .board-surface 的矩形与真实浏览器一致：内容原点 = 容器左上 − 滚动量。
- * 缩放层里的一切（卡片、连线、.select-rect）都相对它，工具栏也要减它才是 offsetParent 坐标。
+ * 让 .board-surface 的矩形与真实浏览器一致：内容原点 = 视口左上 + view 偏移。
+ * 缩放层里的一切（卡片、连线、.select-rect）都相对它。
  */
 function stubSurfaceRect(view: VueWrapper): void {
-  const viewport = view.get(".board-viewport").element as HTMLElement;
   const surface = view.get(".board-surface").element as HTMLElement;
-  surface.getBoundingClientRect = () =>
-    ({ left: VIEW_LEFT - viewport.scrollLeft, top: VIEW_TOP - viewport.scrollTop, right: VIEW_LEFT - viewport.scrollLeft, bottom: VIEW_TOP - viewport.scrollTop, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  surface.getBoundingClientRect = () => {
+    const state = viewState();
+    return {
+      left: VIEW_LEFT + state.offsetX,
+      top: VIEW_TOP + state.offsetY,
+      right: VIEW_LEFT + state.offsetX,
+      bottom: VIEW_TOP + state.offsetY,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+  };
 }
 
 /** 造一个 DOMRect 形状的盒子（jsdom 里组件只读 left/top/right/bottom/width/height）。 */
@@ -282,26 +306,28 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     expect(view.find('[data-im="resize-layer"]').exists()).toBe(true);
   });
 
-  it("位置统一：连接点宿主 = 尺寸把手宿主 = 卡片外框（displayRect × scale）", async () => {
+  it("位置统一：连接点宿主 = 尺寸把手宿主 = 卡片外框（displayRect × scale + view 偏移）", async () => {
     store.board = board([mkCard("a", 100, 100, 120, 80), mkCard("b", 600, 400)], { selection: ["a"] });
     mountCanvas();
+    // 卡片在世界层里（板面坐标）；两个浮层宿主在未缩放层里，位置 = 板面锚点 × scale + view 偏移
     const official = { left: "100px", top: "100px", width: "120px", height: "80px" };
     expect(styleOf(cardEl("a"))).toMatchObject(official);
     expect(connectHostStyle("a")).toMatchObject(official);
     expect(resizeHostStyle("a")).toMatchObject(official);
 
-    // 缩放后三者仍然一致（把手层与连接点层都在未缩放的内容层里，位置 = 显示矩形 × scale）
+    // 缩放后三者仍然一致（浮层位置 = 显示矩形 × scale + view 偏移）
     const view = wrapper!.get(".board-viewport").element as HTMLElement;
     view.dispatchEvent(new WheelEvent("wheel", { clientX: 500, clientY: 400, deltaY: -462, deltaMode: 0, bubbles: true, cancelable: true }));
     await nextTick();
     const state = viewState();
     expect(state.scale).toBeGreaterThan(1.9);
-    expect(connectHostStyle("a")).toMatchObject({
-      left: 100 * state.scale + "px",
-      top: 100 * state.scale + "px",
+    const expected = {
+      left: 100 * state.scale + state.offsetX + "px",
+      top: 100 * state.scale + state.offsetY + "px",
       width: 120 * state.scale + "px",
       height: 80 * state.scale + "px",
-    });
+    };
+    expect(connectHostStyle("a")).toMatchObject(expected);
     expect(connectHostStyle("a")).toEqual(resizeHostStyle("a"));
 
     // 展开不再产生第二套位置（F1）：三者仍然逐字段一致，且外框没变
@@ -309,12 +335,7 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     await nextTick();
     const expanded = rectOf(cardEl("a"));
     expect(expanded).toEqual({ x: 100, y: 100, w: 120, h: 80 });
-    expect(connectHostStyle("a")).toMatchObject({
-      left: 100 * state.scale + "px",
-      top: 100 * state.scale + "px",
-      width: 120 * state.scale + "px",
-      height: 80 * state.scale + "px",
-    });
+    expect(connectHostStyle("a")).toMatchObject(expected);
     expect(connectHostStyle("a")).toEqual(resizeHostStyle("a"));
   });
 
@@ -641,26 +662,21 @@ describe("hitCardAt 认显示矩形：resize / 平移缩放之后落点仍然准
     expect(store.board?.links).toHaveLength(1);
   });
 
-  it("只平移（滚动量 ≠ 0）之后：落点仍是板面坐标，滚动量不被重复计算", async () => {
+  it("只平移（view 偏移 ≠ 0）之后：落点仍是板面坐标，偏移不被重复计算", async () => {
     // 这一条钉住的是 0.2.5 §四「平移之后仍能命中」的坐标前提：
-    // 屏幕 → 板面必须与「板面 → 屏幕」严格互逆（原来 surfaceRect 已减过一次滚动量，
+    // 屏幕 → 板面必须与「板面 → 屏幕」严格互逆（旧模型里 surfaceRect 已减过一次滚动量，
     // view.x 又减一次；拖动用位移差看不出来，拖线用绝对坐标就直接判错卡片）。
     store.board = board([mkCard("a", 0, 0), mkCard("b", 900, 700)], { selection: ["a"] });
     const view = mountCanvas();
-    const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 800, 600);
-    element.dispatchEvent(new Event("scroll"));
-    await nextTick();
-    expect(element.scrollLeft).toBe(800);
-    expect(element.scrollTop).toBe(600);
-    expect(viewState().scale).toBe(1);
+    await panTo(-800, -600);
+    expect(viewState()).toMatchObject({ scale: 1, offsetX: -800, offsetY: -600 });
 
     // 按下连接点（坐标不参与判定，给一个视口里的点即可）
     connectPoints()[0].element.dispatchEvent(pointer("pointerdown", 500, 400));
     await nextTick();
     expect(wrapper!.find('[data-im="link-draft"]').exists()).toBe(true);
 
-    // b 的可见中心：屏幕 = 容器左上 + 板面 × 缩放 − 滚动量
+    // b 的可见中心：屏幕 = 容器左上 + 板面 × 缩放 + view 偏移
     moveTo(950, 730);
     await nextTick();
     expect(draftTarget()).toBe("b");
@@ -679,19 +695,18 @@ describe("hitCardAt 认显示矩形：resize / 平移缩放之后落点仍然准
     store.board = board([mkCard("a", 0, 0), mkCard("b", 400, 0)], { selection: ["a"] });
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 0, 0);
     element.dispatchEvent(new WheelEvent("wheel", { clientX: VIEW_LEFT + 200, clientY: VIEW_TOP + 100, deltaY: -462, deltaMode: 0, bubbles: true, cancelable: true }));
     await nextTick();
     const state = viewState();
     expect(state.scale).toBeGreaterThan(1.9);
 
     await pressConnectPoint(0, { x: 50, y: 9 });
-    const scrollBefore = { x: element.scrollLeft, y: element.scrollTop };
+    const viewBefore = { x: state.offsetX, y: state.offsetY };
     moveTo(450, 30); // b 的显示中心
     await nextTick();
     expect(draftTarget()).toBe("b");
     // 拖线不会顺手平移画布
-    expect({ x: element.scrollLeft, y: element.scrollTop }).toEqual(scrollBefore);
+    expect({ x: viewState().offsetX, y: viewState().offsetY }).toEqual(viewBefore);
     expect(view.get(".board-viewport").classes()).not.toContain("panning");
 
     // 板面 x=510 已在 b（400..500）之外：屏幕位移要按 scale 除回去，不能被放大成板面 40 单位
@@ -712,10 +727,8 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
     store.board = board([mkCard("a", 900, 700), mkCard("c", 1700, 1300), mkCard("far", 200, 200)], { selection: [] });
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 800, 600);
-    element.dispatchEvent(new Event("scroll"));
-    await nextTick();
-    expect(viewState()).toMatchObject({ scale: 1, scrollLeft: 800, scrollTop: 600 });
+    await panTo(-800, -600);
+    expect(viewState()).toMatchObject({ scale: 1, offsetX: -800, offsetY: -600 });
 
     // 空格 + 拖动空白处 = 框选（手势固定，不需要切换模式）
     window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true }));
@@ -738,10 +751,7 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
   it("平移之后：局部工具栏仍贴着选中卡片（相对宿主的屏幕位置正确）", async () => {
     store.board = board([mkCard("a", 900, 700)], { selection: ["a"] });
     const view = mountCanvas();
-    const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 800, 600);
-    element.dispatchEvent(new Event("scroll"));
-    await nextTick();
+    await panTo(-800, -600);
 
     /*
       2026-10-14 修正（结构变化后过时的断言）：
@@ -754,8 +764,8 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
     const host = view.get('[data-im="card-toolbar-host"]').element as HTMLElement;
     const cardElement = cardEl("a") as HTMLElement;
     const cardRect = () => {
-      const left = VIEW_LEFT + 900 * state.scale - state.scrollLeft;
-      const top = VIEW_TOP + 700 * state.scale - state.scrollTop;
+      const left = VIEW_LEFT + 900 * state.scale + state.offsetX;
+      const top = VIEW_TOP + 700 * state.scale + state.offsetY;
       return rectLike(left, top, 100 * state.scale, 60 * state.scale);
     };
     host.getBoundingClientRect = () => rectLike(VIEW_LEFT, VIEW_TOP, VIEW_W, VIEW_H);
@@ -782,10 +792,7 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
   it("平移之后：合并提示仍贴在目标卡片上方（相对卡片的屏幕位置正确）", async () => {
     store.board = board([mkCard("a", 830, 700), mkCard("b", 1000, 700)]);
     const view = mountCanvas();
-    const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 800, 600);
-    element.dispatchEvent(new Event("scroll"));
-    await nextTick();
+    await panTo(-800, -600);
     const state = viewState();
 
     // 把 a 拖到完全盖住 b：出现「松开后合并成组」提示
@@ -814,9 +821,7 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
     store.board = board([mkCard("a", 500, 400)]);
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 400, 300);
-    element.dispatchEvent(new Event("scroll"));
-    await nextTick();
+    await panTo(-400, -300);
     const before = viewState();
     expect(before.scale).toBe(1);
     const anchor = screenOf(500, 400, before);
@@ -826,8 +831,8 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
     const after = viewState();
     expect(after.scale).toBeGreaterThan(1.9);
     // 不变量：指针下的板面点 (500,400) 缩放后仍在同一屏幕位置（与 viewport.test.ts 的同一条口径）
-    expect(VIEW_LEFT + 500 * after.scale - after.scrollLeft).toBeCloseTo(anchor.x, 0);
-    expect(VIEW_TOP + 400 * after.scale - after.scrollTop).toBeCloseTo(anchor.y, 0);
+    expect(VIEW_LEFT + 500 * after.scale + after.offsetX).toBeCloseTo(anchor.x, 0);
+    expect(VIEW_TOP + 400 * after.scale + after.offsetY).toBeCloseTo(anchor.y, 0);
   });
 });
 
@@ -843,12 +848,9 @@ describe("框选虚线的渲染坐标：板面单位，缩放只作用一次", (
     store.board = board([mkCard("a", 900, 700)], { selection: [] });
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 800, 600);
-    stubSurfaceRect(view);
-    element.dispatchEvent(new Event("scroll"));
-    await nextTick();
+    await panTo(-800, -600);
     const state = viewState();
-    expect(state).toMatchObject({ scale: 1, scrollLeft: 800, scrollTop: 600 });
+    expect(state).toMatchObject({ scale: 1, offsetX: -800, offsetY: -600 });
 
     const from = screenOf(880, 680, state);
     const to = screenOf(1020, 780, state);
@@ -861,9 +863,9 @@ describe("框选虚线的渲染坐标：板面单位，缩放只作用一次", (
     expect(px(dashed.top)).toBeCloseTo(680, 0);
     expect(px(dashed.width)).toBeCloseTo(140, 0);
     expect(px(dashed.height)).toBeCloseTo(100, 0);
-    // 屏幕上：内容原点 + 板面单位 × 缩放 ＝ 指针按下的那个点（缩放为 1）
-    const surfaceLeft = VIEW_LEFT - state.scrollLeft;
-    const surfaceTop = VIEW_TOP - state.scrollTop;
+    // 屏幕上：视口原点 + view 偏移 + 板面单位 × 缩放 ＝ 指针按下的那个点（缩放为 1）
+    const surfaceLeft = VIEW_LEFT + state.offsetX;
+    const surfaceTop = VIEW_TOP + state.offsetY;
     expect(surfaceLeft + px(dashed.left) * state.scale).toBeCloseTo(from.x, 0);
     expect(surfaceTop + px(dashed.top) * state.scale).toBeCloseTo(from.y, 0);
 
@@ -877,10 +879,7 @@ describe("框选虚线的渲染坐标：板面单位，缩放只作用一次", (
     store.board = board([mkCard("a", 500, 400)]);
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
-    makeScrollable(element, 400, 300);
-    stubSurfaceRect(view);
-    element.dispatchEvent(new Event("scroll"));
-    await nextTick();
+    await panTo(-400, -300);
     const before = viewState();
     const anchorClient = screenOf(500, 400, before);
     element.dispatchEvent(new WheelEvent("wheel", { clientX: anchorClient.x, clientY: anchorClient.y, deltaY: -462, deltaMode: 0, bubbles: true, cancelable: true }));
@@ -900,8 +899,8 @@ describe("框选虚线的渲染坐标：板面单位，缩放只作用一次", (
     expect(px(dashed.width)).toBeCloseTo(100, 0);
     expect(px(dashed.height)).toBeCloseTo(60, 0);
     // 屏幕上：缩放只作用一次 —— 板面单位 × scale 正好等于指针拖过的屏幕位移
-    const surfaceLeft = VIEW_LEFT - state.scrollLeft;
-    const surfaceTop = VIEW_TOP - state.scrollTop;
+    const surfaceLeft = VIEW_LEFT + state.offsetX;
+    const surfaceTop = VIEW_TOP + state.offsetY;
     expect(surfaceLeft + px(dashed.left) * state.scale).toBeCloseTo(from.x, 0);
     expect(surfaceTop + px(dashed.top) * state.scale).toBeCloseTo(from.y, 0);
     expect(px(dashed.width) * state.scale).toBeCloseTo(to.x - from.x, 0);

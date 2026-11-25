@@ -187,8 +187,8 @@ export interface NewCardSlotInput {
  * 就直接接受 findFreeSlot 的「重叠面积最小」兜底 —— 用户看到新建的卡压在既有卡上。
  * 现在分两步，**视野大小不是落点搜索范围的上限**：
  * 1. 先在可见区域里找零重叠落点（既有行为不变）；
- * 2. 找不到就**向右 / 向下各让出一整张卡的空档**再搜一次（坐标可以自由延伸：
- *    画布随内容长大），直到拿到真正零重叠的落点；
+ * 2. 找不到就**从视野附近向四周各让出一整张卡的空档**再搜一次（坐标可以自由延伸，
+ *    负坐标同样可用），直到拿到真正零重叠的落点；
  * 3. 只有连扩大后的范围都放不下（病态输入）才退化为「重叠最小」——
  *    此时调用方（AddMenu）会如实说明，绝不假装放得下。
  *
@@ -237,10 +237,16 @@ function isFreeOf(rect: LayoutRect, obstacles: readonly LayoutRect[]): boolean {
 }
 
 /**
- * 扩大后的搜索范围：可见区域 ∪ 全部障碍，再向右 / 向下各让出「一张卡 + gap」的空档。
+ * 扩大后的搜索范围：**从当前视野附近**向右 / 向下各让出一整张卡的空档。
  *
- * 左 / 上不扩：坐标原点之外的内容永远看不见（负坐标会被 clampCardRect / rebaseToFit 处理），
- * 所以只在右下方向延伸 —— 这也正是用户能滚动到的方向。
+ * 2026-11-25（无限画布）改法：
+ * - 不再把 minX / minY 夹回 0 —— 板面坐标可以为负，用户平移到 (-8000, -6000) 时
+ *   新卡必须能落在眼前那块负坐标区域里（起点就是 area.x / area.y，可以是负数）；
+ * - 不再把**全部**障碍并进范围：远处一张孤立卡会把搜索范围撑成超大矩形，
+ *   新卡于是被带到离用户很远的地方（或形成一次超大范围扫描）。
+ *   现在只并进「与可用区相交（含 gap 余量）」的障碍，其余远处对象不参与范围计算
+ *   （它们仍然是障碍，只是不会把搜索范围拉走）；
+ * - 方向仍是右 / 下：新卡落在视野外侧紧邻的位置，用户一眼能看到它。
  */
 function extendedArea(
   area: LayoutRect,
@@ -250,22 +256,26 @@ function extendedArea(
   gap: number | undefined,
 ): LayoutRect {
   const spacing = Math.max(0, finite(gap, DEFAULT_LAYOUT_GAP));
+  const reach = Math.max(cardW, cardH) + spacing;
   let minX = area.x;
   let minY = area.y;
   let maxX = area.x + area.w;
   let maxY = area.y + area.h;
   for (const item of obstacles) {
+    // 只并进「够得着」的障碍：与可用区（外扩 reach）相交的那些
+    const nearX = item.x < area.x + area.w + reach && area.x - reach < item.x + item.w;
+    const nearY = item.y < area.y + area.h + reach && area.y - reach < item.y + item.h;
+    if (!nearX || !nearY) continue;
     minX = Math.min(minX, item.x);
     minY = Math.min(minY, item.y);
     maxX = Math.max(maxX, item.x + item.w);
     maxY = Math.max(maxY, item.y + item.h);
   }
-  const left = Math.max(0, minX);
-  const top = Math.max(0, minY);
+  // 起点就是可用区左上角（**不夹回 0**：负坐标区域同样可以放新卡）
   return {
-    x: left,
-    y: top,
-    w: Math.max(1, maxX + cardW + spacing - left),
-    h: Math.max(1, maxY + cardH + spacing - top),
+    x: minX,
+    y: minY,
+    w: Math.max(1, maxX + cardW + spacing - minX),
+    h: Math.max(1, maxY + cardH + spacing - minY),
   };
 }

@@ -62,8 +62,14 @@ const props = withDefaults(
   defineProps<{
     /** 悬浮对话工具栏：收起统计文字，只留提交按钮和可展开的状态图标。 */
     compact?: boolean;
+    /**
+     * rail 的 more 档：隐藏行上的「详情」按钮（提交按钮保留）。
+     * 详情入口改由 BoardToolbar 的「更多」菜单调用 expose 的 openDetails() 打开；
+     * 默认 false 时详情按钮照旧渲染，其它行为不变。
+     */
+    hideDetails?: boolean;
   }>(),
-  { compact: false },
+  { compact: false, hideDetails: false },
 );
 const emit = defineEmits<{ (e: "panel-open"): void }>();
 const store = useInteractiveStore();
@@ -81,6 +87,14 @@ function togglePanel(kind: PanelKind): void {
 }
 function closePanel(): void {
   openPanel.value = null;
+}
+/**
+ * 打开提交详情面板（供 rail 的「更多」菜单调用）：只开不 toggle ——
+ * 用户从「更多」里选「提交详情」时目标就是看见详情；已打开时保持打开，不因重复点而收起。
+ * 数据仍由面板自身的读取逻辑负责，这里不改任何板面 / 提交状态。
+ */
+function openDetails(): void {
+  if (openPanel.value !== "details") togglePanel("details");
 }
 
 /*
@@ -861,6 +875,8 @@ function onSubmit() {
 defineExpose({
   closePanel,
   isPanelOpen: () => openPanel.value !== null,
+  /** rail「更多」菜单用：打开提交详情面板（只开不 toggle）。 */
+  openDetails,
 });
 </script>
 
@@ -1209,6 +1225,7 @@ defineExpose({
     <!-- 第二行右：详情 + 提交给 QIO（主提交按钮用强调色；其余一律低强调） -->
     <div class="actions" data-im="submit-actions">
       <button
+        v-if="!hideDetails"
         class="details"
         :class="{ 'sc-details-icon': compact }"
         type="button"

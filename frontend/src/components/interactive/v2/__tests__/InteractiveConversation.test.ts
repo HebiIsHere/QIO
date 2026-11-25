@@ -1,11 +1,13 @@
 /**
- * 底部互动对话区（Phase 3-B，契约 §6.4）。
+ * 底部互动对话区（Phase 3-B / 2026-11 底部操作区重做）。
  *
  * 这里验的是**组件层真的接上了**，children 用轻量替身（MessageStream / Composer / ComposerEntries
  * 自己的行为由它们的既有测试负责）：
- * - 从输入区向上展开 / 收起、高度拖动与键盘调整；
+ * - 收起：轻量操作行（模式切换 / 常驻把手 / 板面工具槽）+ 胶囊输入区；
+ * - 展开：消息区在操作行上方长出，同一根把手留在面板顶边，顶边线框与玻璃出现；
  * - 收起只改显示：不停止回复、不清草稿/附件、不动排队；
  * - 板面操作自动收起，但不打断回复；
+ * - 高度拖动 / 键盘 / 记忆口径不变；
  * - 互动绑定由 props 可信传入并投影成发送选项（不拼进用户原文）。
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,8 +18,9 @@ import InteractiveConversation from "../InteractiveConversation.vue";
 import { useInteractiveStore } from "../../../../stores/interactive";
 import { useSessionStore } from "../../../../stores/session";
 import {
-  CONVERSATION_MIN_HEIGHT,
+  CONVERSATION_DEFAULT_HEIGHT,
   CONVERSATION_MAX_HEIGHT,
+  CONVERSATION_MIN_HEIGHT,
   clampConversationHeight,
 } from "../conversationLayout";
 
@@ -78,6 +81,10 @@ function pointer(type: string, x: number, y: number) {
   return new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true });
 }
 
+function pressEscape() {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+}
+
 function composerBinding(w: VueWrapper): Record<string, unknown> | null {
   const raw = w.get('[data-stub="composer"]').attributes("data-binding") ?? "";
   return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
@@ -105,23 +112,27 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("从输入区向上展开 / 收起", () => {
-  it("默认收起：只有输入区与入口条，没有会话流与高度分隔条", () => {
+describe("收起 / 展开：轻量操作行 + 常驻把手 + 胶囊输入", () => {
+  it("默认收起：没有消息区；操作行里有唯一的常驻把手，输入区与入口行始终挂载", () => {
     const { wrapper: w } = mountConversation();
     expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("false");
     expect(w.find('[data-stub="stream"]').exists()).toBe(false);
-    expect(w.find('[data-ic-resize]').exists()).toBe(false);
+    // 同一根把手：开合 + 调高合成一个控件（不再有分开的收起按钮 / 分隔条）
+    expect(w.findAll('[data-ic-toggle]').length).toBe(1);
+    const lever = w.get('[data-ic-toggle]');
+    expect(lever.attributes("data-ic-resize")).toBeDefined();
+    expect(lever.attributes("aria-expanded")).toBe("false");
+    expect(lever.attributes("aria-label")).toBe("展开对话");
+    expect(w.find('[data-ic-close]').exists()).toBe(false);
     expect(w.find('[data-stub="composer"]').exists()).toBe(true);
     expect(w.find('[data-stub="entries"]').exists()).toBe(true);
-    expect(w.get('[data-ic-toggle]').attributes("aria-expanded")).toBe("false");
-    // 文案 4 / 13：没有真实状态时状态行安静；入口只写「展开对话」，不再写「点开继续对话」。
+    // 没有真实状态时状态行安静
     expect(w.find('[data-ic-status]').exists()).toBe(false);
-    expect(w.get('[data-ic-toggle]').text()).toContain("展开对话");
-    expect(w.get('[data-ic-toggle]').text()).not.toContain("点开继续对话");
-    expect(w.get('[data-ic-toggle]').attributes("aria-label")).toBe("展开对话");
+    // 收起时线框不可见（隐藏），玻璃不可见
+    expect(w.get('[data-ic-frame]').attributes("hidden")).toBeDefined();
   });
 
-  it("展开后会话流出现在输入区上方，分隔条与无障碍状态齐全", async () => {
+  it("点击把手展开：消息区出现，把手 aria 关系与新视觉层齐全", async () => {
     const { wrapper: w } = mountConversation();
     await w.get('[data-ic-toggle]').trigger("click");
 
@@ -129,37 +140,42 @@ describe("从输入区向上展开 / 收起", () => {
     expect(w.emitted("expand")).toHaveLength(1);
     expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("true");
     expect(w.find('[data-stub="stream"]').exists()).toBe(true);
-    const separator = w.get('[data-ic-resize]');
-    expect(separator.attributes("role")).toBe("separator");
-    expect(separator.attributes("aria-orientation")).toBe("horizontal");
-    expect(Number(separator.attributes("aria-valuenow"))).toBeGreaterThan(0);
-    expect(w.get('[data-ic-toggle]').attributes("aria-expanded")).toBe("true");
+    const lever = w.get('[data-ic-toggle]');
+    expect(lever.attributes("aria-expanded")).toBe("true");
+    expect(lever.attributes("aria-label")).toBe("收起对话");
     // aria-controls 指向真正承载会话流的元素
-    const stream = w.get('[data-ic-stream]');
-    expect(w.get('[data-ic-toggle]').attributes("aria-controls")).toBe(stream.attributes("id"));
+    expect(lever.attributes("aria-controls")).toBe(w.get('[data-ic-stream]').attributes("id"));
+    // 顶边线框：两条镜像路径 + 玻璃；展开到底时揭示进度为 1、玻璃不透明。
+    // jsdom 量不到真实面板宽度（几何为安全零几何），路径字符串由浏览器 E2E 逐帧核对；
+    // 这里守 data 契约与玻璃透明度。
+    expect(w.get('[data-ic="conversation"]').attributes("data-ic-reveal")).toBe("1.0000");
+    expect(w.get('[data-ic-frame-path="left"]').attributes("data-ic-frame-path")).toBe("left");
+    expect(w.get('[data-ic-frame-path="right"]').attributes("data-ic-frame-path")).toBe("right");
+    expect(w.get('[data-ic="conversation"]').attributes("data-ic-frame-path-length")).toBeDefined();
+    expect(w.get('[data-ic-glass]').attributes("style")).toMatch(/opacity:\s*1(\.0+)?/);
+    // 消息区在操作行上方：DOM 顺序 = 消息区 → 操作行 → 输入区
+    const html = w.html();
+    expect(html.indexOf("data-ic-stream")).toBeLessThan(html.indexOf("data-ic-rail"));
+    expect(html.indexOf("data-ic-rail")).toBeLessThan(html.indexOf("data-ic-composer"));
   });
 
-  it("点击/聚焦输入区自动展开；#86 只保留输入区旁同一个开合入口，消息区上方不再叠关闭按钮", async () => {
+  it("点击 / 聚焦输入区自动展开；同一根把手再次点击收起", async () => {
     const { wrapper: w } = mountConversation();
     await w.get(".ic-composer").trigger("focusin");
     await nextTick();
     expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("true");
-    // #86：消息滚动区上方重叠的关闭按钮已移除；唯一入口是输入区旁的 data-ic-toggle。
-    expect(w.find('[data-ic-close]').exists()).toBe(false);
-    expect(w.findAll('[data-ic-toggle]').length).toBe(1);
+
     await w.get('[data-ic-toggle]').trigger("click");
     expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("false");
-    expect(w.get('[data-ic-toggle]').text()).toContain("展开对话");
-    expect(w.get('[data-ic-toggle]').text()).not.toContain("点开继续对话");
+    expect(w.get('[data-ic-toggle]').attributes("aria-label")).toBe("展开对话");
   });
 
-  it("展开后再次收起：会话流隐藏但不卸载（阅读位置与已渲染内容保留）", async () => {
+  it("展开后再次收起：会话流保留挂载但不可见（阅读位置与已渲染内容保留）", async () => {
     const { wrapper: w } = mountConversation({ expanded: true });
     expect(w.find('[data-stub="stream"]').isVisible()).toBe(true);
     await w.get('[data-ic-toggle]').trigger("click");
     expect(w.emitted("update:expanded")?.[0]).toEqual([false]);
     expect(w.emitted("collapse")).toHaveLength(1);
-    // 仍然挂载，只是不可见
     expect(w.find('[data-stub="stream"]').exists()).toBe(true);
     expect(w.find('[data-stub="stream"]').isVisible()).toBe(false);
   });
@@ -192,7 +208,7 @@ describe("收起不打断回复 / 不清草稿附件 / 不丢排队", () => {
     expect(session.turnQueue.queued[0].turn_id).toBe("t1");
     // 输入区始终挂载：收起不是清空
     expect(w.find('[data-stub="composer"]').exists()).toBe(true);
-    // 收起条如实说「回复没有被收起打断」
+    // 操作行左侧如实说「回复没有被收起打断」
     expect(w.get('[data-ic-status]').text()).toContain("正在回复");
     expect(w.get('[data-ic-status]').text()).toContain("已排队 1 条");
   });
@@ -219,15 +235,16 @@ describe("收起不打断回复 / 不清草稿附件 / 不丢排队", () => {
   });
 });
 
-describe("高度调整：拖动 / 键盘 / 记忆", () => {
+describe("高度调整：拖动 / 键盘 / 记忆（口径不变）", () => {
   it("初始高度按 props 渲染并写成 CSS 变量", () => {
     const { wrapper: w } = mountConversation({ expanded: true, height: 500, binding: { boardId: "b1" } });
     expect(panelVar(w)).toBe("500px");
-    expect(w.get('[data-ic-resize]').attributes("aria-valuenow")).toBe("500");
     expect(localStorage.getItem("qio-interactive-conversation:b1:height")).toBe("500");
+    const vm = w.vm as unknown as { height: number };
+    expect(vm.height).toBe(500);
   });
 
-  it("拖动分隔条改变高度（向上拖 = 变高），松手发 resize-end", async () => {
+  it("拖动同一根把手改变高度（向上拖 = 变高），松手发 resize-end", async () => {
     const { wrapper: w } = mountConversation({ expanded: true, height: 400 });
     const handle = w.get('[data-ic-resize]').element;
     handle.dispatchEvent(pointer("pointerdown", 100, 500));
@@ -241,6 +258,18 @@ describe("高度调整：拖动 / 键盘 / 记忆", () => {
     expect(lastEmitted(w, "resize-end")).toBe(500);
   });
 
+  it("小于阈值的移动不算拖动（点击仍然开合）", async () => {
+    const { wrapper: w } = mountConversation({ expanded: true, height: 400 });
+    const handle = w.get('[data-ic-resize]').element;
+    handle.dispatchEvent(pointer("pointerdown", 100, 500));
+    document.dispatchEvent(pointer("pointermove", 100, 498));
+    await nextTick();
+    expect(w.emitted("update:height")).toBeUndefined();
+    document.dispatchEvent(pointer("pointerup", 100, 498));
+    await nextTick();
+    expect(w.emitted("resize-end")).toBeUndefined();
+  });
+
   it("指针取消（pointercancel / Esc）恢复拖动前高度，不把中间态留下", async () => {
     const { wrapper: w } = mountConversation({ expanded: true, height: 400 });
     const handle = w.get('[data-ic-resize]').element;
@@ -248,7 +277,7 @@ describe("高度调整：拖动 / 键盘 / 记忆", () => {
     document.dispatchEvent(pointer("pointermove", 100, 450));
     await nextTick();
     expect(panelVar(w)).toBe("450px");
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    pressEscape();
     await nextTick();
     expect(panelVar(w)).toBe("400px");
     expect(w.emitted("resize-end")).toBeUndefined();
@@ -256,17 +285,27 @@ describe("高度调整：拖动 / 键盘 / 记忆", () => {
 
   it("键盘调整：上下方向键 ±步长，Home/End 到两端（都夹在口径内）", async () => {
     const { wrapper: w } = mountConversation({ expanded: true, height: 400 });
-    const separator = w.get('[data-ic-resize]');
-    await separator.trigger("keydown", { key: "ArrowDown" });
+    const handle = w.get('[data-ic-resize]');
+    await handle.trigger("keydown", { key: "ArrowDown" });
     expect(lastEmitted(w, "update:height")).toBe(376);
-    await separator.trigger("keydown", { key: "ArrowUp" });
+    await handle.trigger("keydown", { key: "ArrowUp" });
     expect(lastEmitted(w, "update:height")).toBe(400);
-    await separator.trigger("keydown", { key: "Home" });
+    await handle.trigger("keydown", { key: "Home" });
     expect(lastEmitted(w, "update:height")).toBe(CONVERSATION_MIN_HEIGHT);
-    await separator.trigger("keydown", { key: "End" });
+    await handle.trigger("keydown", { key: "End" });
     // End 到「口径内的最大高度」：视口较矮时是视口比例上限，而不是组件上限
     expect(lastEmitted(w, "update:height")).toBe(
       clampConversationHeight(CONVERSATION_MAX_HEIGHT, { viewportHeight: window.innerHeight }),
+    );
+  });
+
+  it("收起态按 ↑ 会先展开再调高；键位夹在口径内", async () => {
+    const { wrapper: w } = mountConversation();
+    await w.get('[data-ic-resize]').trigger("keydown", { key: "ArrowUp" });
+    await nextTick();
+    expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("true");
+    expect(lastEmitted(w, "update:height")).toBe(
+      clampConversationHeight(CONVERSATION_DEFAULT_HEIGHT + 24, { viewportHeight: window.innerHeight }),
     );
   });
 });
@@ -296,14 +335,21 @@ describe("互动绑定：props 可信传入，只做发送选项", () => {
 });
 
 describe("槽位与实例方法", () => {
-  it("header-extra 与 leading 槽位分别进入状态条与输入区", () => {
-    const { wrapper: w } = mountConversation({}, {
-      "header-extra": '<span data-slot="header-extra">模式切换</span>',
-      leading: '<span data-slot="leading">星球</span>',
-    });
-    expect(w.get('[data-ic-bar] [data-slot="header-extra"]').text()).toBe("模式切换");
+  it("模式切换在操作行左侧、工具在右侧、leading 进输入区", () => {
+    const { wrapper: w } = mountConversation(
+      {},
+      {
+        "mode-switch": '<span class="im-mode-switch" data-slot="mode">模式</span>',
+        toolbar: '<span data-slot="toolbar">工具</span>',
+        leading: '<span data-slot="leading">星球</span>',
+      },
+    );
+    expect(w.get('[data-ic-rail] .ic-rail-left [data-slot="mode"]').text()).toBe("模式");
+    expect(w.get('[data-ic-rail] .ic-rail-right [data-slot="toolbar"]').text()).toBe("工具");
     // leading 由 Composer 渲染：替身组件把它渲染在自己的根节点里
     expect(w.get('[data-stub="composer"] [data-slot="leading"]').text()).toBe("星球");
+    // 旧槽位已移除
+    expect(w.find('[data-ic="conversation"] .ic-composer [data-slot="mode"]').exists()).toBe(false);
   });
 
   it("expose：toggle / expand / collapse 只改显示", async () => {

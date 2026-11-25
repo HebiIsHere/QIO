@@ -4,8 +4,9 @@
  * 覆盖三件事（都用真实 BoardCanvas / BoardCard / TextCardEditor + 真实 store，
  * 只把网络与系统动作换成替身）：
  *
- * 1.【板面滚动区】策略 hidden：原生滚动条与 QIO 指示条都不出现，
- *    但滚动能力（scrollLeft / scrollTop / 平移）与坐标换算照旧 —— 不能靠 overflow: hidden 糊过去；
+ * 1.【板面视口】策略 hidden：原生滚动条与 QIO 指示条都不出现；
+ *    无限画布下视口自己裁切画面（overflow: hidden），平移由 view 驱动世界层 transform ——
+ *    空板也能向四个方向连续平移，且不产生任何板面保存 / 撤销记录；
  * 2.【一个主要纵向视口】卡片正文是那张卡唯一的主要纵向视口；代码块不再自己纵向滚动；
  *    展开阅读时材料自带的二维浏览区接管视口（卡片正文因此没有可滚范围）；
  * 3.【编辑态】连续编辑区：编辑框跟随内容增高、自己不滚动；最小高度按卡片高度收敛，
@@ -120,46 +121,72 @@ describe("板面滚动区：策略 hidden（指示条与原生滚动条都不出
     expect(view.querySelectorAll(".qio-scroll-thumb").length).toBe(0);
   });
 
-  it("滚动能力没有被拿掉：overflow 仍是 auto，scrollLeft / scrollTop 仍可写可读", () => {
+  it("视口自己裁切画面：overflow 是 hidden，不再靠容器滚动查看", () => {
     wrapper = mount(BoardCanvas, { attachTo: document.body });
     const view = wrapper.get(".board-viewport").element as HTMLElement;
-    // 规则层：overflow 不能改成 hidden / clip —— 那会连程序性滚动一起去掉
+    // 规则层：无限画布由 view 决定画面，视口只负责裁切
     const rule = cssBlock(source("components/interactive/BoardCanvas.vue"), ".board-viewport {");
-    expect(rule).toContain("overflow: auto");
-    expect(rule).not.toContain("overflow: hidden");
-    // 行为层：容器仍持有自己的滚动量（jsdom 里需要放开钳制，与 boardCanvas.test.ts 同一套做法）
-    Object.defineProperty(view, "scrollWidth", { value: 6000, configurable: true });
-    Object.defineProperty(view, "scrollHeight", { value: 4000, configurable: true });
-    Object.defineProperty(view, "clientWidth", { value: 3000, configurable: true });
-    Object.defineProperty(view, "clientHeight", { value: 2000, configurable: true });
-    view.scrollLeft = 320;
-    view.scrollTop = 180;
-    expect(view.scrollLeft).toBe(320);
-    expect(view.scrollTop).toBe(180);
+    expect(rule).toContain("overflow: hidden");
+    // 旧模型的滚动内容层已经不存在（它撑出有限内容区，空板向左上平移会碰边界）
+    expect(wrapper.find(".board-scroll-content").exists()).toBe(false);
+    // 世界层只做一次 translate + scale，尺寸由内容自己决定
+    const surfaceRule = cssBlock(source("components/interactive/BoardCanvas.vue"), ".board-surface {");
+    expect(surfaceRule).toContain("position: absolute");
+    expect(surfaceRule).not.toContain("min-width: 100%");
+    expect(view.style.backgroundSize).toBe("24px 24px");
   });
 
-  it("平移手势照旧把查看位置写进滚动量（策略 hidden 不改机制）", async () => {
+  it("空板也能向四个方向连续平移：世界层 transform 跟着走，板面状态一个字不变", async () => {
+    // 空板：没有任何卡片撑大内容区 —— 这正是旧模型会立刻碰到边界的情形
+    store.board = emptyState("board_t");
     wrapper = mount(BoardCanvas, { attachTo: document.body });
     const view = wrapper.get(".board-viewport").element as HTMLElement;
-    // 视口比板面（2400×1600）小：容器「真的能滚动」，平移才有可写的滚动量
-    Object.defineProperty(view, "scrollWidth", { value: 2400, configurable: true });
-    Object.defineProperty(view, "scrollHeight", { value: 1600, configurable: true });
     Object.defineProperty(view, "clientWidth", { value: 800, configurable: true });
     Object.defineProperty(view, "clientHeight", { value: 600, configurable: true });
-    // jsdom 里 scrollLeft / scrollTop 默认被钳在 0：显式做成可写属性（与 irl-verify-panzoom-draft 同一套做法）
-    Object.defineProperty(view, "scrollLeft", { value: 0, writable: true, configurable: true });
-    Object.defineProperty(view, "scrollTop", { value: 0, writable: true, configurable: true });
     view.getBoundingClientRect = () =>
       ({ left: 40, top: 100, right: 840, bottom: 700, width: 800, height: 600, x: 40, y: 100, toJSON: () => ({}) }) as DOMRect;
-    // 拖动空白处平移：起点在卡片（100..220 × 100..180）之外
-    view.dispatchEvent(new MouseEvent("pointerdown", { clientX: 1400, clientY: 1200, button: 0, bubbles: true, cancelable: true }));
-    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 1340, clientY: 1140, bubbles: true, cancelable: true }));
+    const surface = wrapper.get(".board-surface").element as HTMLElement;
+    const transformOf = () => surface.style.transform;
+
+    // 向左上拖（视野往右下走）：世界原点右移下移
+    view.dispatchEvent(new MouseEvent("pointerdown", { clientX: 400, clientY: 400, button: 0, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 700, clientY: 600, bubbles: true, cancelable: true }));
     await Promise.resolve();
-    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 1340, clientY: 1140, bubbles: true, cancelable: true }));
-    expect(view.scrollLeft).toBe(60);
-    expect(view.scrollTop).toBe(60);
-    // 平移只改查看方式：板面状态一个字没变
-    expect(store.board?.cards[0].x).toBe(100);
+    expect(transformOf()).toContain("translate(300px, 200px)");
+    // 继续向同一方向拖过两个屏幕：没有边界
+    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 400 + 1600, clientY: 400 + 1200, bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    expect(transformOf()).toContain("translate(1600px, 1200px)");
+    // 反向拖回原点：世界层回到 0（四个方向都连续）
+    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 400, clientY: 400, bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    expect(transformOf()).toContain("translate(0px, 0px)");
+    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 400, clientY: 400, bubbles: true, cancelable: true }));
+    // 平移只改查看方式：板面状态一个字没变，也没有任何提交
+    expect(store.board?.cards).toEqual([]);
+  });
+
+  it("平移不产生板面保存 / 撤销 / 提交记录", async () => {
+    wrapper = mount(BoardCanvas, { attachTo: document.body });
+    const view = wrapper.get(".board-viewport").element as HTMLElement;
+    Object.defineProperty(view, "clientWidth", { value: 800, configurable: true });
+    Object.defineProperty(view, "clientHeight", { value: 600, configurable: true });
+    view.getBoundingClientRect = () =>
+      ({ left: 40, top: 100, right: 840, bottom: 700, width: 800, height: 600, x: 40, y: 100, toJSON: () => ({}) }) as DOMRect;
+    const labels: string[] = [];
+    vi.spyOn(store, "commit").mockImplementation((next: BoardState, label: string) => {
+      labels.push(label);
+      store.board = { ...next, boardId: store.boardId };
+    });
+    const before = JSON.stringify(store.board);
+    view.dispatchEvent(new MouseEvent("pointerdown", { clientX: 400, clientY: 400, button: 0, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 900, clientY: 800, bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 900, clientY: 800, bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    expect(labels).toEqual([]);
+    expect(JSON.stringify(store.board)).toBe(before);
+    expect(store.undoStack).toHaveLength(0);
   });
 
   it("尺寸调整取消（pointercancel）：不提交、不留预览，指针状态清干净", async () => {

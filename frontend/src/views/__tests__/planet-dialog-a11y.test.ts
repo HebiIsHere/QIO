@@ -13,6 +13,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { nextTick, ref, shallowRef } from "vue";
 import PlanetView from "../PlanetView.vue";
 import { resetPlanetSession } from "../../composables/planetSession";
+import { hideTip, tipState } from "../../composables/useQioTip";
 
 const mocks = vi.hoisted(() => ({
   apiMock: {
@@ -134,6 +135,7 @@ beforeEach(() => {
   document.body.innerHTML = "";
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.removeAttribute("data-motion");
+  hideTip();
   mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
   mocks.apiMock.planetOverview.mockResolvedValue({ topics: SUMMARIES, total: 1, visible_capacity: 12 });
   mocks.apiMock.planetBrowse.mockResolvedValue(BROWSE);
@@ -173,6 +175,17 @@ describe("星球打开时是模态对话框（#38 / §4.3）", () => {
     expect(items.length).toBeGreaterThan(0);
     expect(root.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).toBe(items[0]);
+    w.unmount();
+  });
+
+  it("打开星球的程序性初始聚焦不会弹出「全局搜索」等用途说明", async () => {
+    const w = mountView(true);
+    await flushPromises();
+    await nextTick();
+    // 初始焦点仍落在第一个可用控件（搜索按钮），但 focusin 被临时抑制，不能把 v-qio-tip 带出来。
+    const items = planetFocusables(w.element as Element);
+    expect(document.activeElement).toBe(items[0]);
+    expect(tipState.open).toBe(false);
     w.unmount();
   });
 

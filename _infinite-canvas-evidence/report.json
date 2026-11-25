@@ -1,0 +1,274 @@
+[
+  {
+    "step": "clear-board",
+    "at": "2026-11-25T09:08:12.548Z",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "step": "open",
+    "at": "2026-11-25T09:08:18.682Z",
+    "url": "http://localhost:1420/#/interactive",
+    "boardViewport": true
+  },
+  {
+    "step": "pan-empty-board",
+    "at": "2026-11-25T09:08:19.602Z",
+    "before": {
+      "scale": 1,
+      "x": 156.5,
+      "y": -233.5
+    },
+    "after": {
+      "scale": 1,
+      "x": 1056.5,
+      "y": 466.5
+    },
+    "grid": {
+      "size": "24px 24px",
+      "position": "0.5px 10.5px"
+    },
+    "cards": 0,
+    "settled": {
+      "view": {
+        "scale": 1,
+        "x": 1056.5,
+        "y": 466.5
+      },
+      "grid": {
+        "size": "24px 24px",
+        "position": "0.5px 10.5px"
+      }
+    }
+  },
+  {
+    "step": "create-cards",
+    "at": "2026-11-25T09:08:20.521Z",
+    "boardA": {
+      "x": -752.02,
+      "y": -296.22
+    },
+    "boardB": {
+      "x": -60.01999999999998,
+      "y": 75.29999999999995
+    },
+    "cards": [
+      {
+        "id": "c_mwvwic9j108ca",
+        "left": -752,
+        "top": -296,
+        "width": 260,
+        "height": 170
+      },
+      {
+        "id": "c_mwvwicld2pqcv",
+        "left": -60,
+        "top": 75,
+        "width": 260,
+        "height": 170
+      }
+    ],
+    "view": {
+      "scale": 1,
+      "x": 1056.5,
+      "y": 466.5
+    }
+  },
+  {
+    "step": "create-link",
+    "at": "2026-11-25T09:08:21.802Z",
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 1154.5,
+      "y": 724.5
+    },
+    "links": [
+      {
+        "id": "l_mwvwidgi337b8",
+        "src": "c_mwvwic9j108ca",
+        "dst": "c_mwvwicld2pqcv",
+        "label": "关联（含义待填写）"
+      }
+    ],
+    "editorOpen": true
+  },
+  {
+    "step": "link-meaning",
+    "at": "2026-11-25T09:08:22.954Z",
+    "links": [
+      {
+        "id": "l_mwvwidgi337b8",
+        "src": "c_mwvwic9j108ca",
+        "dst": "c_mwvwicld2pqcv",
+        "label": "属于（本地验收）"
+      }
+    ]
+  },
+  {
+    "step": "saved-state",
+    "at": "2026-11-25T09:08:25.639Z",
+    "boardId": "board_default",
+    "seq": 23,
+    "cards": [
+      {
+        "id": "c_mwvwic9j108ca",
+        "x": -752,
+        "y": -296
+      },
+      {
+        "id": "c_mwvwicld2pqcv",
+        "x": -60,
+        "y": 75
+      }
+    ],
+    "links": [
+      {
+        "id": "l_mwvwidgi337b8",
+        "src": "c_mwvwic9j108ca",
+        "dst": "c_mwvwicld2pqcv",
+        "meaning": "属于（本地验收）",
+        "curve": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    ]
+  },
+  {
+    "step": "reopened",
+    "at": "2026-11-25T09:08:31.843Z",
+    "view": {
+      "scale": 1,
+      "x": 1056.5,
+      "y": 466.5
+    },
+    "cards": [
+      {
+        "id": "c_mwvwic9j108ca",
+        "left": -752,
+        "top": -296,
+        "width": 260,
+        "height": 170
+      },
+      {
+        "id": "c_mwvwicld2pqcv",
+        "left": -60,
+        "top": 75,
+        "width": 260,
+        "height": 170
+      }
+    ],
+    "links": [
+      {
+        "id": "l_mwvwidgi337b8",
+        "src": "c_mwvwic9j108ca",
+        "dst": "c_mwvwicld2pqcv",
+        "label": "属于（本地验收）"
+      }
+    ]
+  },
+  {
+    "step": "drag-far",
+    "at": "2026-11-25T09:08:33.136Z",
+    "cards": [
+      {
+        "id": "c_mwvwic9j108ca",
+        "left": -752,
+        "top": -296,
+        "width": 260,
+        "height": 170
+      },
+      {
+        "id": "c_mwvwicld2pqcv",
+        "left": 5940,
+        "top": 4075,
+        "width": 260,
+        "height": 170
+      }
+    ]
+  },
+  {
+    "step": "view-all",
+    "at": "2026-11-25T09:08:35.369Z",
+    "view": {
+      "scale": 0.125303,
+      "x": 350.675,
+      "y": 85.0896
+    },
+    "viewport": {
+      "left": 28,
+      "top": 98,
+      "width": 1384,
+      "height": 774
+    },
+    "cards": [
+      {
+        "id": "c_mwvwic9j108ca",
+        "screenX": 284.447144,
+        "screenY": 145.999912,
+        "screenRight": 317.025924,
+        "screenBottom": 167.301422
+      },
+      {
+        "id": "c_mwvwicld2pqcv",
+        "screenX": 1122.97482,
+        "screenY": 693.699325,
+        "screenRight": 1155.5536,
+        "screenBottom": 715.000835
+      }
+    ],
+    "allInside": true,
+    "belowMinScale": true
+  },
+  {
+    "step": "wheel-after-view-all",
+    "at": "2026-11-25T09:08:35.918Z",
+    "before": {
+      "scale": 0.125303,
+      "x": 350.675,
+      "y": 85.0896
+    },
+    "after": {
+      "scale": 0.145581,
+      "x": 295.437,
+      "y": 36.2302
+    }
+  },
+  {
+    "step": "relink",
+    "at": "2026-11-25T09:08:36.350Z",
+    "clicked": {
+      "x": 828.6452331542969,
+      "y": 497.3886413574219
+    },
+    "activeLink": "l_mwvwidgi337b8",
+    "links": [
+      {
+        "id": "l_mwvwidgi337b8",
+        "src": "c_mwvwic9j108ca",
+        "dst": "c_mwvwicld2pqcv",
+        "label": "属于（本地验收）"
+      }
+    ]
+  },
+  {
+    "step": "narrow-window",
+    "at": "2026-11-25T09:08:37.728Z",
+    "viewport": {
+      "left": 28,
+      "top": 98,
+      "width": 844,
+      "height": 574
+    },
+    "grid": {
+      "size": "13.9758px 13.9758px",
+      "position": "1.94568px 8.27862px"
+    },
+    "fillsWidth": true,
+    "toolbarButtons": 7,
+    "viewAllVisible": true
+  }
+]

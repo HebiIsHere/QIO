@@ -9,11 +9,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  CONVERSATION_INLINE_MIN_WIDTH,
-  conversationComposerLayout,
-  conversationStatusText,
-} from "../../components/interactive/v2/conversationLayout";
+import { conversationStatusText } from "../../components/interactive/v2/conversationLayout";
 import {
   PANEL_SIDE_BY_SIDE_MIN_WIDTH,
   panelSpaceMode,
@@ -85,21 +81,24 @@ describe("#14 常态工具栏移除未开放标注入口", () => {
   });
 });
 
-describe("#15/#86 底部两层：一排板面工具 + 一排聊天输入；聊天只有一个开合入口", () => {
-  it("对话区结构：工具栏在输入区上方，输入区始终挂载", () => {
-    const toolbarIndex = conversation.indexOf('class="ic-toolbar"');
-    const composerIndex = conversation.indexOf('class="ic-composer"');
-    expect(toolbarIndex).toBeGreaterThan(-1);
-    expect(composerIndex).toBeGreaterThan(toolbarIndex);
+describe("#15/#86 底部操作区：轻量操作行 + 胶囊输入；唯一开关是同一根把手", () => {
+  it("对话区结构：消息区在操作行上方，操作行在输入区上方，输入区始终挂载", () => {
+    const streamIndex = conversation.indexOf("data-ic-stream");
+    const railIndex = conversation.indexOf("data-ic-rail");
+    const composerIndex = conversation.indexOf("data-ic-composer");
+    expect(streamIndex).toBeGreaterThan(-1);
+    expect(railIndex).toBeGreaterThan(streamIndex);
+    expect(composerIndex).toBeGreaterThan(railIndex);
   });
 
-  it("消息滚动区上方不再有重复的关闭按钮；唯一入口在输入区旁", () => {
+  it("消息滚动区上方不再有重复的关闭按钮；开合与调高是同一根居中把手", () => {
     expect(conversation).not.toContain("data-ic-close");
-    expect(count(conversation, 'data-ic-toggle')).toBe(1);
-    const barIndex = conversation.indexOf('class="ic-bar"');
-    const composerIndex = conversation.indexOf('class="ic-composer"');
-    expect(barIndex).toBeGreaterThan(-1);
-    expect(composerIndex).toBeGreaterThan(barIndex);
+    expect(count(conversation, "data-ic-toggle")).toBe(1);
+    expect(count(conversation, "data-ic-resize")).toBe(1);
+    // 收起了旧的 ic-bar 开合条与 ic-resize 分隔条：同一元素同时承担开合与拖动调高
+    expect(conversation).not.toContain('class="ic-bar"');
+    expect(conversation).not.toContain('class="ic-resize"');
+    expect(conversation).toContain("data-ic-toggle\n        data-ic-resize");
   });
 
   it("板面「添加」与随消息附件入口是两个用途（工具槽 vs 输入区入口行）", () => {
@@ -122,29 +121,10 @@ describe("文案 4 / 13：展开 / 收起只写「展开对话」「收起对话
     expect(conversation).not.toContain("点开继续对话");
     expect(conversation).not.toContain("从输入区向上展开");
     expect(conversation).not.toContain("不影响正在进行的回复");
-    expect(conversation).toContain(":aria-label=\"expandedState ? '收起对话' : '展开对话'\"");
+    expect(conversation).toContain("leverLabel");
+    expect(conversation).toContain('"收起对话" : "展开对话"');
     // 折叠有进行中回复时真实状态仍要显示（不是只有展开才看得到）
     expect(conversation).toContain("v-if=\"statusText\"");
-  });
-});
-
-describe("#88 模式入口布局按实际可用宽度提前切换", () => {
-  it("纯函数边界：量不到宽度时先 stacked（圆点完整可见），够宽才 inline", () => {
-    expect(CONVERSATION_INLINE_MIN_WIDTH).toBeGreaterThan(860);
-    expect(conversationComposerLayout(0)).toBe("stacked");
-    expect(conversationComposerLayout(Number.NaN)).toBe("stacked");
-    expect(conversationComposerLayout(CONVERSATION_INLINE_MIN_WIDTH - 1)).toBe("stacked");
-    expect(conversationComposerLayout(CONVERSATION_INLINE_MIN_WIDTH)).toBe("inline");
-    expect(conversationComposerLayout(1600)).toBe("inline");
-  });
-
-  it("组件用实测宽度（data-ic-layout）而不是视口媒体查询", () => {
-    expect(conversation).toContain("conversationComposerLayout");
-    expect(conversation).toContain(':data-ic-layout="composerLayout"');
-    expect(conversation).not.toContain("@media (max-width: 1120px)");
-    // 窄档不再用 padding-left 硬挪工具组：工具组与输入框同一条 860 列
-    expect(conversation).not.toContain("padding-left: 92px");
-    expect(conversation).toContain('[data-ic-layout="stacked"] .ic-toolbar');
   });
 });
 
@@ -259,14 +239,12 @@ describe("#03/#13/#80/#81 提交区主状态与门禁（数据由 i-state 提供
   });
 });
 
-describe("#76 工具区连续、轻量的承载面（文字/连线不从按钮间隙穿出）", () => {
-  it("悬浮工具栏有条连续承载面，按钮退为透明表面", () => {
-    expect(view).toContain("#76");
-    expect(view).toContain(".ic-toolbar .board-toolbar");
-    expect(view).toMatch(/border-radius:\s*var\(--r-pill\)/);
-    expect(view).toContain("backdrop-filter: blur(10px)");
-    // 承载面不再是完全透明（否则卡片文字会从按钮间隙透出）
-    expect(view).not.toMatch(/\.ic-toolbar \.board-toolbar\) \{\s*padding: 0;\s*border: 0;\s*border-radius: 0;\s*background: transparent;/);
+describe("#76 操作行透明、按钮独立（不再给工具栏套整条胶囊）", () => {
+  it("整条操作行透明；工具栏不再有整条胶囊承载面（按钮由 BoardToolbar rail 形态自己负责）", () => {
+    expect(conversation).toContain(".ic-rail");
+    expect(conversation).toMatch(/\.ic-rail \{[\s\S]*?background: transparent/);
+    expect(view).not.toContain(".ic-toolbar .board-toolbar");
+    expect(view).not.toContain("backdrop-filter: blur(10px)");
   });
 });
 

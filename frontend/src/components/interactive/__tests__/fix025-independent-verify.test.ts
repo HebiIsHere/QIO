@@ -84,8 +84,15 @@ function scaleOf(wrapper: VueWrapper): number {
   return m ? Number(m[1]) : Number.NaN;
 }
 
-function screenOf(boardX: number, boardY: number, scale: number) {
-  return { x: VIEW_LEFT + boardX * scale, y: VIEW_TOP + boardY * scale };
+/** 世界原点在视口内的偏移（= view.x / view.y）：定尺寸浮层的局部坐标要加上它。 */
+function viewOffsetOf(wrapper: VueWrapper): { x: number; y: number } {
+  const surface = wrapper.get(".board-surface").element as HTMLElement;
+  const m = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(surface.style.transform);
+  return { x: m ? Number(m[1]) : 0, y: m ? Number(m[2]) : 0 };
+}
+
+function screenOf(boardX: number, boardY: number, scale: number, offset = { x: 0, y: 0 }) {
+  return { x: VIEW_LEFT + boardX * scale + offset.x, y: VIEW_TOP + boardY * scale + offset.y };
 }
 
 /** 这张卡这一帧的显示矩形（直接读 BoardCard 收到的渲染坐标，不猜内部实现） */
@@ -242,11 +249,13 @@ describe("A 连接点归属与定位（jsdom 可判的部分）", () => {
     expect(scale).toBeCloseTo(0.5, 2);
     const display = displayRectOf(wrapper, "a")!;
     expect(display).toBeTruthy();
+    const offset = viewOffsetOf(wrapper);
     for (const point of connectPoints(wrapper, "a")) {
       const host = positionedHost(point.element);
       expect(host, "连接点应有一个定位宿主").toBeTruthy();
-      expect(px(host!.style.left)).toBeCloseTo(display.x * scale, 1);
-      expect(px(host!.style.top)).toBeCloseTo(display.y * scale, 1);
+      // 宿主局部坐标 = 板面锚点 × 缩放 + 世界原点偏移（浮层不随画布缩放）
+      expect(px(host!.style.left)).toBeCloseTo(display.x * scale + offset.x, 1);
+      expect(px(host!.style.top)).toBeCloseTo(display.y * scale + offset.y, 1);
       expect(parseFloat(host!.style.width)).toBeCloseTo(display.w * scale, 1);
       expect(parseFloat(host!.style.height)).toBeCloseTo(display.h * scale, 1);
     }
@@ -300,8 +309,9 @@ describe("A 连接点归属与定位（jsdom 可判的部分）", () => {
     expect(scale).toBeCloseTo(0.5, 2);
     const point = connectPoints(wrapper, "b")[0];
     const host = positionedHost(point.element)!;
-    expect(px(host.style.left)).toBeCloseTo(after.x * scale, 1);
-    expect(px(host.style.top)).toBeCloseTo(after.y * scale, 1);
+    const offset = viewOffsetOf(wrapper);
+    expect(px(host.style.left)).toBeCloseTo(after.x * scale + offset.x, 1);
+    expect(px(host.style.top)).toBeCloseTo(after.y * scale + offset.y, 1);
     expect(parseFloat(host.style.width)).toBeCloseTo(after.w * scale, 1);
     expect(parseFloat(host.style.height)).toBeCloseTo(after.h * scale, 1);
   });
@@ -375,13 +385,15 @@ describe("B hitCardAt 必须用当前显示矩形（展开不产生第二套位�
   }
 
   async function expectTargetFor(wrapper: VueWrapper, fromId: string, source: { x: number; y: number }, probeBoard: { x: number; y: number }, scale: number) {
-    const start = screenOf(source.x, source.y, scale);
+    // 屏幕坐标必须带上当前 view 偏移（缩放后世界原点不再在视口左上角）
+    const offset = viewOffsetOf(wrapper);
+    const start = screenOf(source.x, source.y, scale, offset);
     const point = wrapper.findAll('[data-im="connect-point"][data-card-id="' + fromId + '"]')[0];
     expect(point, "源卡片应有连接点").toBeTruthy();
     point.element.dispatchEvent(pointer("pointerdown", start.x, start.y));
     await wrapper.vm.$nextTick();
     expect(wrapper.find('[data-im="link-draft"]').exists()).toBe(true);
-    const target = screenOf(probeBoard.x, probeBoard.y, scale);
+    const target = screenOf(probeBoard.x, probeBoard.y, scale, offset);
     window.dispatchEvent(pointer("pointermove", target.x, target.y));
     await wrapper.vm.$nextTick();
     const draft = wrapper.get('[data-im="link-draft"]');

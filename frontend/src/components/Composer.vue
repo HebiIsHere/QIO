@@ -1712,7 +1712,8 @@ async function stopTurn() {
   /* 单行高度由这里锁定（= --composer-pill-h）；多行输入时自然增高，
      星球入口仍按单行高度对齐（球直径 = 输入框高度，见 ComposerDock 的 --planet-size）。 */
   min-height: var(--composer-pill-h, 54px);
-  padding: 6px 7px 6px 8px;
+  /* 左右对称 8px：与整体 12px 内缩节奏一致，不再左 8 / 右 7。 */
+  padding: 6px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
   background: var(--bg-surface);

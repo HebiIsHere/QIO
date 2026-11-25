@@ -226,7 +226,7 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.initMock).toHaveBeenCalled();
     expect(mocks.attachBrowseMock).toHaveBeenCalled();
     expect(attachedSession?.windowSlots().filter(Boolean).map((s) => s!.topic_id)).toEqual(["t1"]);
-    expect(mocks.goMock).toHaveBeenLastCalledWith("planet", null, 420);
+    expect(mocks.goMock).toHaveBeenLastCalledWith("planet", null, 600);
     w.unmount();
   });
 
@@ -251,7 +251,7 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.pullBackMock).not.toHaveBeenCalled();
     expect(w.classes()).toContain("settling");
     expect(w.emitted("close")).toBeFalsy();
-    await vi.advanceTimersByTimeAsync(620);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
     w.unmount();
@@ -270,7 +270,7 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.rotateBackMock).toHaveBeenCalledTimes(1);
     expect(mocks.rotateBackMock.mock.calls[0][0]).toBeGreaterThan(100);
 
-    await vi.advanceTimersByTimeAsync(620);
+    await vi.advanceTimersByTimeAsync(2000);
     vi.useRealTimers();
     w.unmount();
   });
@@ -288,7 +288,7 @@ describe("PlanetView 相机联动", () => {
     expect(mocks.handleClickMock).not.toHaveBeenCalled();
     expect(mocks.goMock).toHaveBeenCalledTimes(1); // 只有挂载时那一次 go("planet")
 
-    await vi.advanceTimersByTimeAsync(620);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
     w.unmount();
@@ -326,7 +326,7 @@ describe("PlanetView 相机联动", () => {
     await flushPromises();
     expect(mocks.goMock).not.toHaveBeenCalled();
     expect(mocks.focusTopicMock).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(620);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
     w.unmount();
@@ -495,7 +495,7 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
     expect(w.classes()).toContain("settling");
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     expect(w.emitted("close")).toBeTruthy();
     w.unmount();
   });
@@ -576,7 +576,7 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     expect(mocks.apiMock.setAnchor).toHaveBeenCalledWith("t2", null, expect.objectContaining({ requestId: expect.any(String), baseNavVersion: expect.any(Number) }));
     expect(session.currentTopicId).toBe("t2");
     expect(w.classes()).toContain("settling");
-    await vi.advanceTimersByTimeAsync(620);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(w.emitted("close")).toBeTruthy();
     vi.useRealTimers();
     w.unmount();
@@ -725,7 +725,7 @@ describe("PlanetView 实例复用（性能：不再每次重建 WebGL 场景）"
     expect(w.classes()).toContain("settling");
     await w.setProps({ seq: 8 });
     await flushPromises();
-    await vi.advanceTimersByTimeAsync(620);
+    await vi.advanceTimersByTimeAsync(2000);
 
     expect(w.emitted("close")).toBeUndefined();
     expect(w.classes()).not.toContain("closing");
@@ -771,7 +771,7 @@ describe("PlanetView 连续体编排（第四阶段）", () => {
     await vi.advanceTimersByTimeAsync(260);
     await flushPromises();
     expect(planetContinuum.phase).toBe("returning");
-    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(1200);
     await flushPromises();
     expect(planetContinuum.phase).toBe("idle");
     expect(w.emitted("close")).toBeTruthy();

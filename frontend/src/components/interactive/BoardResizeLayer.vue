@@ -38,6 +38,11 @@ const props = withDefaults(
     boxes: Record<string, LayoutRect>;
     /** 画布缩放：屏幕 px = 板面单位 × scale */
     scale: number;
+    /**
+     * 世界原点在视口内的偏移（屏幕像素，= BoardCanvas 的 view.x / view.y）。
+     * 本层不随画布缩放，所以局部坐标 = 板面锚点 × scale + offset。
+     */
+    offset?: { x: number; y: number };
     /** 无障碍名称（一般是「卡片标题：尺寸调整」） */
     labels?: Record<string, string>;
     /** 关系编辑 / 拖线进行中时整层让路（只关尺寸把手，不关连接点） */
@@ -48,7 +53,7 @@ const props = withDefaults(
      */
     connectBoxes?: Record<string, LayoutRect>;
   }>(),
-  { labels: () => ({}), disabled: false, connectBoxes: () => ({}) },
+  { labels: () => ({}), disabled: false, connectBoxes: () => ({}), offset: () => ({ x: 0, y: 0 }) },
 );
 
 const emit = defineEmits<{
@@ -75,11 +80,20 @@ const CONNECT_LABELS: Record<ConnectSide, string> = {
   left: "左边",
 };
 
-/** 宿主定位：显示槽位（板面坐标）× 缩放。把手与连接点用**同一个**换算，不各写一套。 */
+/** 非有限 / 非正的偏移按 0 处理：宁可差一点，也不让把手画到不存在的位置。 */
+const safeOffset = computed(() => ({
+  x: Number.isFinite(props.offset?.x) ? Number(props.offset.x) : 0,
+  y: Number.isFinite(props.offset?.y) ? Number(props.offset.y) : 0,
+}));
+
+/**
+ * 宿主定位：显示槽位（板面坐标）× 缩放 + 世界原点偏移。
+ * 把手与连接点用**同一个**换算，不各写一套。
+ */
 function hostStyle(box: LayoutRect, scale: number): Record<string, string> {
   return {
-    left: box.x * scale + "px",
-    top: box.y * scale + "px",
+    left: box.x * scale + safeOffset.value.x + "px",
+    top: box.y * scale + safeOffset.value.y + "px",
     width: Math.max(1, box.w * scale) + "px",
     height: Math.max(1, box.h * scale) + "px",
   };

@@ -7,13 +7,13 @@
  *
  * 1. `Element.prototype.getBoundingClientRect` 全局替换，按下面几条真实浏览器语义算外框；
  * 2. 容器（.board-shell/.board-main/.board-viewport/.card-toolbar-host）与板面可视区同盒；
- * 3. `.board-scroll-content` = 可视区原点 − 真实 scrollLeft/Top；
- * 4. `.board-surface` 按组件自己写的行内 `transform: scale()` 缩放（事实来源是组件，不是测试猜测）；
- * 5. 卡片 / 工具栏的屏幕外框 = 其 **containing block（最近的非 static 祖先）** 的原点
+ * 3. `.board-surface` 是**无限画布的世界层**：按组件自己写的行内
+ *    `transform: translate(x, y) scale(s)` 定位与缩放（事实来源是组件，不是测试猜测）；
+ *    它的原点 = 可视区原点 + translate 偏移，不再有「内容原点 − 滚动量」这回事；
+ * 4. 卡片 / 工具栏的屏幕外框 = 其 **containing block（最近的非 static 祖先）** 的原点
  *    + 行内 left/top × （该祖先及其祖先的 scale 乘积）；
- * 6. offsetWidth / offsetHeight / clientWidth / clientHeight 返回「布局自然尺寸」
- *    （浏览器语义：不含祖先 transform），scrollWidth / scrollHeight 返回内容尺寸，
- *    scrollLeft / scrollTop 可写 —— 组件写进去的滚动量就是事实。
+ * 5. offsetWidth / offsetHeight / clientWidth / clientHeight 返回「布局自然尺寸」
+ *    （浏览器语义：不含祖先 transform）。
  *
  * 于是测试可以直接断言：工具栏屏幕 left 与卡片屏幕 left 的差、卡片顶边到工具栏底边的距离
  * —— 与真实浏览器同一套几何口径（真实浏览器对照见 D:\\qio-dev\\_tb-evidence 下的探针）。
@@ -39,7 +39,7 @@ export interface LayoutOptions {
   surfaceSize: { w: number; h: number };
   /** 工具栏自然尺寸（jsdom 量不到，必须由测试给出），默认 337.59×35.25（真实应用实测值） */
   toolbarSize?: { w: number; h: number };
-  /** 初始滚动量（真实 scrollLeft / scrollTop） */
+  /** 初始视图偏移（世界原点在视口内的 CSS 像素偏移；等价于旧模型的「滚动量取反」） */
   scroll?: { x: number; y: number };
   /** 卡片自然尺寸兜底（按 data-card-id）；缺省读行内 width/height */
   cardNatural?: Record<string, { w: number; h: number }>;
@@ -205,39 +205,21 @@ export function installCardToolbarLayout(root: HTMLElement, options: LayoutOptio
     Object.defineProperty(host, "clientWidth", { value: viewportRect.width, configurable: true });
     Object.defineProperty(host, "clientHeight", { value: viewportRect.height, configurable: true });
   }
-  Object.defineProperty(viewport, "scrollLeft", {
-    value: options.scroll?.x ?? 0,
-    writable: true,
-    configurable: true,
-  });
-  Object.defineProperty(viewport, "scrollTop", {
-    value: options.scroll?.y ?? 0,
-    writable: true,
-    configurable: true,
-  });
-
-  function refreshScrollBounds(): void {
-    const scaleX = scale().x;
-    Object.defineProperty(viewport, "scrollWidth", {
-      value: options.surfaceSize.w * scaleX,
-      configurable: true,
-    });
-    Object.defineProperty(viewport, "scrollHeight", {
-      value: options.surfaceSize.h * scale().y,
-      configurable: true,
-    });
+  /**
+   * 视图偏移（世界原点在视口内的 CSS 像素偏移）。
+   *
+   * 无限画布下它就是 .board-surface 行内 transform 的 translate 部分 ——
+   * 桩不再自己存一份「滚动量」，而是**读组件写出来的事实**。
+   */
+  function liveScroll(): { x: number; y: number } {
+    const transform = inlineTransform(surface);
+    const match = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(transform);
+    return { x: match ? Number(match[1]) : 0, y: match ? Number(match[2]) : 0 };
   }
 
   function scale(): { x: number; y: number } {
     if (!surface) return { x: 1, y: 1 };
     return parseScale(inlineTransform(surface));
-  }
-
-  function liveScroll(): { x: number; y: number } {
-    return {
-      x: Number.isFinite(viewport.scrollLeft) ? viewport.scrollLeft : 0,
-      y: Number.isFinite(viewport.scrollTop) ? viewport.scrollTop : 0,
-    };
   }
 
   function viewportLayoutRect(): LayoutRect {
@@ -251,31 +233,15 @@ export function installCardToolbarLayout(root: HTMLElement, options: LayoutOptio
     };
   }
 
-  function scrollContentRect(): LayoutRect {
-    const scroll = liveScroll();
-    const origin = { left: viewportRect.left - scroll.x, top: viewportRect.top - scroll.y };
-    const scaleNow = scale();
-    return {
-      left: origin.left,
-      top: origin.top,
-      right: origin.left + options.surfaceSize.w * scaleNow.x,
-      bottom: origin.top + options.surfaceSize.h * scaleNow.y,
-      width: options.surfaceSize.w * scaleNow.x,
-      height: options.surfaceSize.h * scaleNow.y,
-    };
-  }
-
+  /**
+   * 世界层原点：视口左上 + view 偏移（= .board-surface 的 translate）。
+   * 无限画布下世界层没有固定尺寸，这里只给一个「原点」矩形（宽高 0）。
+   */
   function surfaceRect(): LayoutRect {
-    const base = scrollContentRect();
-    const scaleNow = scale();
-    return {
-      left: base.left,
-      top: base.top,
-      right: base.left + options.surfaceSize.w * scaleNow.x,
-      bottom: base.top + options.surfaceSize.h * scaleNow.y,
-      width: options.surfaceSize.w * scaleNow.x,
-      height: options.surfaceSize.h * scaleNow.y,
-    };
+    const offset = liveScroll();
+    const left = viewportRect.left + offset.x;
+    const top = viewportRect.top + offset.y;
+    return { left, top, right: left, bottom: top, width: 0, height: 0 };
   }
 
   function naturalSize(element: HTMLElement): { w: number; h: number } {
@@ -304,7 +270,6 @@ export function installCardToolbarLayout(root: HTMLElement, options: LayoutOptio
     if (element === viewport || element === host || element.classList.contains("board-main") || element.classList.contains("board-shell")) {
       return viewportLayoutRect();
     }
-    if (element.classList.contains("board-scroll-content")) return scrollContentRect();
     if (element.classList.contains("board-surface")) return surfaceRect();
     if (element.matches('[data-im="card"]')) return cardRectOf(element as HTMLElement);
     if (element.matches('[data-im="card-toolbar"]')) return toolbarRect() ?? ZERO;
@@ -428,8 +393,6 @@ export function installCardToolbarLayout(root: HTMLElement, options: LayoutOptio
     } as DOMRect;
   };
 
-  refreshScrollBounds();
-
   return {
     viewport,
     surface,
@@ -437,9 +400,21 @@ export function installCardToolbarLayout(root: HTMLElement, options: LayoutOptio
     host,
     scale: () => scale().x,
     scroll: liveScroll,
+    /**
+     * 把视图平移到 (x, y)：无限画布下没有容器滚动量，
+     * 这里用真实的平移手势驱动组件（走生产路径，不伪造内部状态）。
+     */
     setScroll(x: number, y: number) {
-      viewport.scrollLeft = x;
-      viewport.scrollTop = y;
+      const from = liveScroll();
+      const dx = x - from.x;
+      const dy = y - from.y;
+      const startX = viewportRect.left + 10;
+      const startY = viewportRect.top + 10;
+      const pointer = (type: string, clientX: number, clientY: number) =>
+        new MouseEvent(type, { clientX, clientY, button: 0, bubbles: true, cancelable: true });
+      viewport.dispatchEvent(pointer("pointerdown", startX, startY));
+      window.dispatchEvent(pointer("pointermove", startX + dx, startY + dy));
+      window.dispatchEvent(pointer("pointerup", startX + dx, startY + dy));
     },
     setViewport(rect) {
       viewportRect = { ...rect };

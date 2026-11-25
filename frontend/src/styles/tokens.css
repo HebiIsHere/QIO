@@ -2,6 +2,8 @@
 :root {
   /* 暗色「暗紫晶」默认 */
   --bg-base:#171015; --bg-surface:#1e161c; --bg-elevated:#261d24; --bg-inset:#130d12;
+  /* 全应用页面背景：对话页与记忆星球页共用同一层铺底（用户 2026-11-24 要求两页背景同色）。 */
+  --app-backdrop: radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%), var(--bg-base);
   --border-subtle:#302430; --border-strong:#463846;
   /* 文本四级：正文 / 次要（需阅读）/ muted（元数据，仍须可读）/ faint（纯装饰）
      muted 由 #6f636c（3.3:1）提到 5.4:1，小的状态/时间戳不再糊成一团 */
@@ -49,13 +51,13 @@
      旧 --r-* 保留给未纳入本轮的历史组件，不新增近似值。 */
   --qio-ui-radius:14px;
   /* ===== 动效令牌 v3（2026-09-15 第四阶段）：三层动效 =====
-     高频 --mo-1-*（80–180ms）· 中频 --mo-2-*（200–280ms）· 低频 --mo-3-*（180–520ms）。
+     高频 --mo-1-*（80–180ms）· 中频 --mo-2-*（200–280ms）· 低频 --mo-3-*（200–600ms）。
      规范名是唯一事实来源；下面 --dur-* 全部降级为兼容别名（既有组件不改也自动获得新分层），
      组件里不再允许出现裸时长/裸曲线/裸位移。 */
   --mo-1-press:80ms; --mo-1-state:150ms; --mo-1-fast:140ms; --mo-1-exit:150ms;
   --mo-1-menu:170ms; --mo-1-wide:180ms;
   --mo-2-in:240ms; --mo-2-move:210ms; --mo-2-out:200ms; --mo-2-wide:280ms;
-  --mo-3-prepare:180ms; --mo-3-expand:520ms; --mo-3-settle:220ms; --mo-3-collapse:420ms;
+  --mo-3-prepare:210ms; --mo-3-expand:600ms; --mo-3-settle:250ms; --mo-3-collapse:500ms;
   /* 曲线集刻意保持少：同一层共享曲线，不为单个组件发明 easing。
      --ease-3-* 只服务 Planet 这类低频关键转场，不得复制到按钮与列表。 */
   --ease-1:cubic-bezier(.2,.8,.24,1);
@@ -142,6 +144,8 @@
 }
 :root[data-theme="light"] {
   --bg-base:#fcfcfb; --bg-surface:#ffffff; --bg-elevated:#ffffff; --bg-inset:#f3f3f1;
+  /* 全应用页面背景：对话页与记忆星球页共用同一层铺底（用户 2026-11-24 要求两页背景同色）。 */
+  --app-backdrop: radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%), var(--bg-base);
   --border-subtle:#e7e7e4; --border-strong:#cbcbc6;
   /* 亮色主题：窗口阴影 alpha x0.5（几何/留白预算不变），颜色用本主题的近黑 */
   --window-shadow: 0 5px 20px rgba(20, 16, 24, .20), 0 1px 4px rgba(20, 16, 24, .15);

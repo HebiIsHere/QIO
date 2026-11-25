@@ -120,27 +120,29 @@ function stubGeometry(wrapper: VueWrapper) {
 
 interface ViewState {
   scale: number;
-  scrollLeft: number;
-  scrollTop: number;
+  /** 世界原点在视口内的偏移（= view.x / view.y） */
+  offsetX: number;
+  offsetY: number;
 }
 
-/** 查看状态：内容用 transform 缩放，平移查看位置 = 容器滚动。 */
+/** 查看状态：世界层只做一次 translate + scale（无限画布，没有容器滚动量）。 */
 function viewState(wrapper: VueWrapper): ViewState {
   const surface = wrapper.get(".board-surface").element as HTMLElement;
-  const view = wrapper.get(".board-viewport").element as HTMLElement;
-  const match = /scale\(([\d.]+)\)/.exec(surface.style.transform);
+  const transform = surface.style.transform;
+  const scaleMatch = /scale\(([\d.]+)\)/.exec(transform);
+  const translateMatch = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(transform);
   return {
-    scale: match ? Number(match[1]) : Number.NaN,
-    scrollLeft: view.scrollLeft,
-    scrollTop: view.scrollTop,
+    scale: scaleMatch ? Number(scaleMatch[1]) : Number.NaN,
+    offsetX: translateMatch ? Number(translateMatch[1]) : 0,
+    offsetY: translateMatch ? Number(translateMatch[2]) : 0,
   };
 }
 
 /** 板面坐标 → 屏幕坐标（按上面确定的换算关系）。 */
 function screenOf(boardX: number, boardY: number, state: ViewState) {
   return {
-    x: VIEW_LEFT + boardX * state.scale - state.scrollLeft,
-    y: VIEW_TOP + boardY * state.scale - state.scrollTop,
+    x: VIEW_LEFT + boardX * state.scale + state.offsetX,
+    y: VIEW_TOP + boardY * state.scale + state.offsetY,
   };
 }
 
@@ -382,7 +384,6 @@ describe("BoardCanvas 接线", () => {
     const wrapper = mountCanvas();
     const before = JSON.stringify(store.board);
     const view = wrapper.get(".board-viewport").element as HTMLElement;
-    // 容器比内容大：先把缩放调大，让内容比容器大、可以滚动查看
     view.dispatchEvent(wheel(500, 400, -462));
     await wrapper.vm.$nextTick();
     const zoomed = viewState(wrapper);
@@ -392,17 +393,15 @@ describe("BoardCanvas 接线", () => {
     window.dispatchEvent(pointer("pointermove", 560, 450));
     await wrapper.vm.$nextTick();
     const panned = viewState(wrapper);
-    // 向右下拖 = 查看位置向左上移动 = 滚动量减少 60 / 50
-    expect(panned.scrollLeft).toBe(zoomed.scrollLeft - 60);
-    expect(panned.scrollTop).toBe(zoomed.scrollTop - 50);
+    // 向右下拖 = 世界原点跟着指针右移下移（屏幕位移，不除以缩放）
+    expect(panned.offsetX).toBeCloseTo(zoomed.offsetX + 60, 6);
+    expect(panned.offsetY).toBeCloseTo(zoomed.offsetY + 50, 6);
     expect(panned.scale).toBe(zoomed.scale);
     window.dispatchEvent(pointer("pointerup", 560, 450));
     await wrapper.vm.$nextTick();
     expect(JSON.stringify(store.board)).toBe(before);
     expect(labels).toEqual([]);
     // 平移是查看动作：既不产生改动，也不留通知。
-    // （原来这里断言 toContain("平移")，靠的其实是当时那条**常驻**操作提示；
-    //   提示改成「用过一次就收起」之后，这条断言换成对行为本身的检查。）
     expect(wrapper.find(".banner").exists(), "平移不该留下任何提示条").toBe(false);
     wrapper.unmount();
   });
@@ -547,7 +546,7 @@ describe("BoardCanvas 接线", () => {
     setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0)] });
     const wrapper = mountCanvas();
     const view = wrapper.get(".board-viewport").element;
-    const anchorScreen = screenOf(200, 100, { scale: 1, scrollLeft: 0, scrollTop: 0 });
+    const anchorScreen = screenOf(200, 100, { scale: 1, offsetX: 0, offsetY: 0 });
     // 真实用户就是在板面上滚轮（事件目标是板面容器）
     const event = wheel(anchorScreen.x, anchorScreen.y, -462, view);
     expect(event.defaultPrevented).toBe(true);
