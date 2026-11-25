@@ -79,6 +79,28 @@ def _orphans(data_dir: Path, keep: list[str]) -> list[Path]:
     ]
 
 
+async def _wait_no_orphans(
+    svc: AttachmentService, data_dir: Path, keep: list[str], *, timeout: float = 10.0
+) -> list[Path]:
+    """等「无人认领的副本」被清干净，返回最后仍然残留的那些。
+
+    为什么不能立刻断言：取消路径上的文件清理是**异步**的 —— 工作线程可能还在写，
+    服务会等它真正结束（plan.finished）再删目标文件与临时文件。CI 慢 runner 上
+    这段等待可能超过测试里任何固定 sleep，于是「行已删、文件还没删完」被误判成
+    残留（与它想证明的「取消后不留无人认领副本」无关）。
+    这里按**最终状态**判定：先等清理任务结束，再轮询到没有残留或超时。
+    """
+    pending = list(getattr(svc, "_cleanup_tasks", ()))
+    if pending:
+        await asyncio.wait(pending, timeout=timeout)
+    deadline = asyncio.get_running_loop().time() + timeout
+    leftovers = _orphans(data_dir, keep)
+    while leftovers and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+        leftovers = _orphans(data_dir, keep)
+    return leftovers
+
+
 async def _two_retry_attachments(svc, tmp_path):
     a = _ready(svc, _write(tmp_path / "一.bin", b"a" * 4096))
     b = _ready(svc, _write(tmp_path / "二.bin", b"b" * 4096))
@@ -148,7 +170,7 @@ async def test_cancel_during_second_clone_rolls_back_first_clone(svc, tmp_path, 
         "F16：取消后前序克隆残留",
         [r.id for r in svc.list(turn_id="turn_new", check=False)],
     )
-    leftovers = _orphans(tmp_path / "data", [a.stored_path, b.stored_path])
+    leftovers = await _wait_no_orphans(svc, tmp_path / "data", [a.stored_path, b.stored_path])
     assert leftovers == [], ("取消后不得留下无人认领的副本", leftovers)
     assert svc.get(a.id).turn_id == "turn_old" and svc.get(b.id).turn_id == "turn_old"
 
