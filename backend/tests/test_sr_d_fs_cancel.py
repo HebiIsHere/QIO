@@ -251,11 +251,14 @@ async def test_fs_write_late_result_does_not_override_returned_state(tmp_path):
     """晚到的写入结果不覆盖已返回的终态：返回之后再完成也不产生第二个结果。"""
     target = tmp_path / "w4.txt"
     gate = threading.Event()
+    # 后台写入真正完成时置位：用它代替固定 sleep，慢 runner 上也不会读到「还没写完」的文件
+    written = threading.Event()
     original = fs_tools._write_file
 
     def gated_write(path: Path, content: str) -> None:
         gate.wait(10)
         original(path, content)
+        written.set()
 
     fs_tools._write_file = gated_write
     try:
@@ -270,7 +273,9 @@ async def test_fs_write_late_result_does_not_override_returned_state(tmp_path):
         assert result.ok is False
         returned_error = result.error
         gate.set()  # 释放：后台写入此刻才真实完成（晚到结果）
-        await asyncio.sleep(0.3)
+        # 等「后台写入真的完成」而不是等一个固定时长：CI 慢 runner 上 0.3s 可能不够，
+        # 那会让这条用例读到尚未落盘的文件而假红（与它想证明的语义无关）。
+        assert await asyncio.to_thread(written.wait, 10), "后台写入没有在预期时间内完成"
         # 已返回的终态不会因为后台完成而改变
         assert result.error == returned_error
         assert result.ok is False
