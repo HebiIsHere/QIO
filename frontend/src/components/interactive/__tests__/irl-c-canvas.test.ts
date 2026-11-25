@@ -153,16 +153,19 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
     expect(host.find('[data-resize-handle="se"]').exists()).toBe(true);
     expect(host.find("[data-resize-keys]").exists()).toBe(false);
 
-    // 缩放后：把手层在**未缩放**的内容层里，位置随缩放走，热区仍是 10px / 16px
+    // 缩放后：把手层在**未缩放**的浮层里，位置 = 板面锚点 × 缩放 + view 偏移，热区仍是真像素
     view.get(".board-viewport").element.dispatchEvent(
       new WheelEvent("wheel", { clientX: 500, clientY: 400, deltaY: -462, deltaMode: 0, bubbles: true, cancelable: true }),
     );
     await nextTick();
-    const scale = Number(/scale\(([\d.]+)\)/.exec(styleOf(view.get(".board-surface").element).transform ?? "")?.[1] ?? "1");
+    const transform = styleOf(view.get(".board-surface").element).transform ?? "";
+    const scale = Number(/scale\(([\d.]+)\)/.exec(transform)?.[1] ?? "1");
+    const offsetX = Number(/translate\((-?[\d.]+)px/.exec(transform)?.[1] ?? "0");
+    const offsetY = Number(/translate\(-?[\d.]+px,\s*(-?[\d.]+)px/.exec(transform)?.[1] ?? "0");
     expect(scale).toBeGreaterThan(1.9);
     expect(styleOf(view.get('[data-resize-card-id="c1"]').element)).toMatchObject({
-      left: 100 * scale + "px",
-      top: 100 * scale + "px",
+      left: 100 * scale + offsetX + "px",
+      top: 100 * scale + offsetY + "px",
       width: 120 * scale + "px",
       height: 80 * scale + "px",
     });

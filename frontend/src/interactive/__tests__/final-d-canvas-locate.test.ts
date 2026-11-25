@@ -36,20 +36,29 @@ function wheel(x: number, y: number, deltaY: number, target?: Element): Event {
   return event;
 }
 
-function viewState(wrapper: VueWrapper): { scale: number; scrollLeft: number; scrollTop: number } {
+interface ViewState {
+  scale: number;
+  /** 世界原点在视口内的偏移（= view.x / view.y） */
+  offsetX: number;
+  offsetY: number;
+}
+
+/** 查看状态：世界层只做一次 translate + scale（无限画布，没有容器滚动量）。 */
+function viewState(wrapper: VueWrapper): ViewState {
   const surface = wrapper.get(".board-surface").element as HTMLElement;
-  const view = wrapper.get(".board-viewport").element as HTMLElement;
-  const match = /scale\(([\d.]+)\)/.exec(surface.style.transform);
+  const transform = surface.style.transform;
+  const scaleMatch = /scale\(([\d.]+)\)/.exec(transform);
+  const translateMatch = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(transform);
   return {
-    scale: match ? Number(match[1]) : Number.NaN,
-    scrollLeft: view.scrollLeft,
-    scrollTop: view.scrollTop,
+    scale: scaleMatch ? Number(scaleMatch[1]) : Number.NaN,
+    offsetX: translateMatch ? Number(translateMatch[1]) : 0,
+    offsetY: translateMatch ? Number(translateMatch[2]) : 0,
   };
 }
 
 /** 板面坐标 → 屏幕坐标（按桩几何的换算关系）。 */
-function screenOf(boardX: number, boardY: number, state: { scale: number; scrollLeft: number; scrollTop: number }) {
-  return { x: VIEW_LEFT + boardX * state.scale - state.scrollLeft, y: VIEW_TOP + boardY * state.scale - state.scrollTop };
+function screenOf(boardX: number, boardY: number, state: ViewState) {
+  return { x: VIEW_LEFT + boardX * state.scale + state.offsetX, y: VIEW_TOP + boardY * state.scale + state.offsetY };
 }
 
 /**
@@ -142,19 +151,17 @@ describe("BoardCanvas 预览定位四方向（19a）", () => {
     wrapper.unmount();
   });
 
-  it("极远坐标：数值有限、不抛错，滚动被夹在板面滚动范围内", async () => {
+  it("极远坐标：数值有限、不抛错，视图偏移仍是有限数（无限画布没有滚动范围可夹）", async () => {
     const wrapper = mountCanvas();
     await wheelZoomTo(1.5, wrapper);
-    const state0 = viewState(wrapper);
     locateBounds({ x: 1e6, y: 1e6, w: 200, h: 100 });
     await wrapper.vm.$nextTick();
     const state1 = viewState(wrapper);
-    const maxScrollX = 2400 * state1.scale - VIEW_W;
-    const maxScrollY = 1600 * state1.scale - VIEW_H;
-    expect(state1.scrollLeft).toBeGreaterThanOrEqual(0);
-    expect(state1.scrollLeft).toBeLessThanOrEqual(Math.max(0, maxScrollX) + 1);
-    expect(state1.scrollTop).toBeGreaterThanOrEqual(0);
-    expect(state1.scrollTop).toBeLessThanOrEqual(Math.max(0, maxScrollY) + 1);
+    // 无限画布：没有「板面滚动范围」这回事，只要求偏移是有限数、缩放没被写坏
+    expect(Number.isFinite(state1.offsetX)).toBe(true);
+    expect(Number.isFinite(state1.offsetY)).toBe(true);
+    expect(state1.scale).toBeGreaterThan(0);
+    expect(Number.isFinite(state1.scale)).toBe(true);
     wrapper.unmount();
   });
 
@@ -170,8 +177,11 @@ describe("BoardCanvas 预览定位四方向（19a）", () => {
     // 以右下深处为缩放中心：缩放后 (100,100) 处的卡片落到视口左上外
     const leftScreen = screenOf(100, 100, state0);
     const beforeState = viewState(wrapper);
-    const outLeft = beforeState.scrollLeft > 0 && leftScreen.x < VIEW_LEFT + 80;
-    const outTop = beforeState.scrollTop > 0 && leftScreen.y < VIEW_TOP + 80;
+    // 前置条件：视图确实被平移过（世界原点偏移非零），且卡片落在视口左 / 上外
+    const panned = beforeState.offsetX !== 0 || beforeState.offsetY !== 0;
+    const outLeft = leftScreen.x < VIEW_LEFT + 80;
+    const outTop = leftScreen.y < VIEW_TOP + 80;
+    expect(panned).toBe(true);
     expect(outLeft || outTop).toBe(true);
     window.dispatchEvent(new CustomEvent("qio:interactive:locate-card", { detail: { cardId } }));
     await wrapper.vm.$nextTick();

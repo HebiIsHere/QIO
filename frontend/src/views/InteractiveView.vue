@@ -55,6 +55,16 @@ const toolbarRef = ref<InstanceType<typeof BoardToolbar> | null>(null);
 function onSubmitPanelOpen(): void {
   if (panelSpace.value === "switch") store.closeTaskCenter();
 }
+
+/**
+ * 「查看全部」：工具栏只发事件，视野由画布自己算（它知道可用区、遮挡与内容包围盒）。
+ *
+ * 用 window 事件而不是组件 ref：画布在 #board 插槽里，页面壳不持有它的实例；
+ * 与既有的 qio:interactive:locate-card / locate-preview 同一个模式（显示态桥，不进板面状态）。
+ */
+function onViewAll(): void {
+  window.dispatchEvent(new CustomEvent("qio:interactive:view-all"));
+}
 watch(
   () => store.tasksOpen,
   (open) => {
@@ -532,6 +542,7 @@ const boardSize = computed(() => {
                     :bookmarks-open="bookmarksOpen"
                     @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
                     @panel-open="onSubmitPanelOpen"
+                    @view-all="onViewAll"
                   />
                 </template>
                 <template #extra-panel="{ id }">

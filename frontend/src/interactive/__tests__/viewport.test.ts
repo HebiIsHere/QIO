@@ -11,7 +11,10 @@ import {
   clampScale,
   clampScroll,
   clampViewport,
+  dotGridMetrics,
   effectiveRect,
+  fitViewToBounds,
+  gridPhase,
   IDENTITY_VIEWPORT,
   MAX_SCALE,
   MIN_SCALE,
@@ -20,11 +23,14 @@ import {
   pointInRect,
   rectFromDrag,
   rectsIntersect,
+  safeScale,
   scrollFromViewport,
   toBoardPoint,
   toScreenPoint,
+  visibleWorldRect,
   wheelDeltaY,
   wheelZoomFactor,
+  worldBoundsOf,
   zoomAt,
   zoomAtScroll,
   type Viewport,
@@ -238,6 +244,152 @@ describe("滚动模型：内容用 transform 缩放 + 容器滚动查看", () =>
     const byScroll = toBoardPoint({ scale, x: -scroll.x, y: -scroll.y }, client, rect);
     const byTranslate = toBoardPoint({ scale, x: -260, y: -140 }, client, rect);
     expect(byScroll).toEqual(byTranslate);
+  });
+});
+
+describe("无限画布：视野、适配与点阵相位", () => {
+  it("visibleWorldRect：空板同样是一块有限的板面区域（不依赖任何卡片）", () => {
+    const rect = visibleWorldRect({ scale: 1, x: 0, y: 0 }, { w: 800, h: 600 });
+    expect(rect).toEqual({ x: 0, y: 0, w: 800, h: 600 });
+    // 平移到负坐标区域：视野跟着走（四个方向都连续）
+    const panned = visibleWorldRect({ scale: 1, x: 8000, y: 6000 }, { w: 800, h: 600 });
+    expect(panned).toEqual({ x: -8000, y: -6000, w: 800, h: 600 });
+    // 缩放：视野覆盖的板面范围跟着变大
+    const zoomed = visibleWorldRect({ scale: 0.5, x: 0, y: 0 }, { w: 800, h: 600 });
+    expect(zoomed).toEqual({ x: 0, y: 0, w: 1600, h: 1200 });
+  });
+
+  it("worldBoundsOf：包含负坐标；空数组返回 null（不编造一个框）", () => {
+    expect(worldBoundsOf([])).toBeNull();
+    const bounds = worldBoundsOf([
+      { x: -8000, y: -6000, w: 260, h: 170 },
+      { x: 100, y: 100, w: 260, h: 170 },
+    ]);
+    expect(bounds).toEqual({ x: -8000, y: -6000, w: 8360, h: 6270 });
+  });
+
+  it("fitViewToBounds：包围盒中心对准可用区中心，比例按可用宽高求", () => {
+    const bounds = { x: -1000, y: -500, w: 2000, h: 1000 };
+    const view = fitViewToBounds(bounds, { w: 800, h: 600 }, {
+      area: { left: 40, top: 100, right: 840, bottom: 700 },
+      rect: { left: 40, top: 100 },
+      margin: 0,
+      maxScale: 1,
+      minScale: 0.05,
+    })!;
+    // 可用 800×600，包围盒 2000×1000 → 比例 = min(0.4, 0.6) = 0.4
+    expect(view.scale).toBeCloseTo(0.4, 10);
+    // 包围盒中心 (0,0) 落在可用区中心（相对视口原点 = 400, 300）
+    expect(view.x).toBeCloseTo(400, 10);
+    expect(view.y).toBeCloseTo(300, 10);
+    // 反算：包围盒中心投影回屏幕就是可用区中心
+    const center = toScreenPoint(view, { x: 0, y: 0 }, { left: 40, top: 100 });
+    expect(center.x).toBeCloseTo(440, 10);
+    expect(center.y).toBeCloseTo(400, 10);
+  });
+
+  it("fitViewToBounds：两张远卡需要低于 25% 时如实给出更小的比例", () => {
+    // 两张卡相距 20000：可用区 800 宽 → 需要 0.04
+    const bounds = { x: -10000, y: 0, w: 20000, h: 200 };
+    const view = fitViewToBounds(bounds, { w: 800, h: 600 }, {
+      area: { left: 0, top: 0, right: 800, bottom: 600 },
+      rect: { left: 0, top: 0 },
+      margin: 0,
+      maxScale: 1,
+      minScale: 0.01,
+    })!;
+    expect(view.scale).toBeLessThan(MIN_SCALE);
+    expect(view.scale).toBeCloseTo(0.04, 10);
+    // 这个比例必须能贯通到投影 / 逆投影（不能被 clampScale 夹回 0.25）
+    const point = toBoardPoint(view, { x: 400, y: 300 }, { left: 0, top: 0 });
+    expect(point.x).toBeCloseTo(0, 6);
+    const back = toScreenPoint(view, point, { left: 0, top: 0 });
+    expect(back.x).toBeCloseTo(400, 6);
+  });
+
+  it("fitViewToBounds：单卡居中且不被异常放大（比例上限 1）", () => {
+    const bounds = { x: 100, y: 100, w: 260, h: 170 };
+    const view = fitViewToBounds(bounds, { w: 800, h: 600 }, {
+      area: { left: 0, top: 0, right: 800, bottom: 600 },
+      rect: { left: 0, top: 0 },
+      margin: 0,
+      maxScale: 1,
+      minScale: MIN_SCALE,
+    })!;
+    expect(view.scale).toBe(1);
+    // 卡片中心 (230, 185) 落在可用区中心 (400, 300)
+    expect(view.x).toBeCloseTo(400 - 230, 10);
+    expect(view.y).toBeCloseTo(300 - 185, 10);
+  });
+
+  it("fitViewToBounds：空包围盒 / 零面积可用区返回 null（调用方回到初始视野）", () => {
+    expect(fitViewToBounds(null, { w: 800, h: 600 }, {
+      area: { left: 0, top: 0, right: 800, bottom: 600 },
+      rect: { left: 0, top: 0 },
+    })).toBeNull();
+    expect(fitViewToBounds({ x: 0, y: 0, w: 100, h: 100 }, { w: 800, h: 600 }, {
+      area: { left: 0, top: 0, right: 0, bottom: 0 },
+      rect: { left: 0, top: 0 },
+    })).toBeNull();
+  });
+
+  it("clampScale 接受更小的下限：查看全部之后滚轮不会跳回 0.25", () => {
+    expect(clampScale(0.1)).toBe(MIN_SCALE);
+    expect(clampScale(0.1, 0.05)).toBeCloseTo(0.1, 10);
+    // 下限本身也被夹在 [0, MAX_SCALE] 里
+    expect(clampScale(0.1, -1)).toBeCloseTo(0.1, 10);
+    expect(clampScale(99, 0.05)).toBe(MAX_SCALE);
+  });
+
+  it("zoomAt 接受更小的下限：低于 25% 时继续缩放不跳", () => {
+    const view: Viewport = { scale: 0.1, x: 0, y: 0 };
+    const zoomed = zoomAt(view, 0.5, { x: 400, y: 300 }, RECT, 0.05);
+    expect(zoomed.scale).toBeCloseTo(0.05, 10);
+    // 指针下的板面点仍在同一屏幕位置
+    const anchor = toBoardPoint(view, { x: 400, y: 300 }, RECT);
+    const screen = toScreenPoint(zoomed, anchor, RECT);
+    expect(screen.x).toBeCloseTo(400, 6);
+    expect(screen.y).toBeCloseTo(300, 6);
+  });
+
+  it("panBy 不夹缩放：查看全部压到 10% 之后平移一次不会突然放大", () => {
+    const panned = panBy({ scale: 0.1, x: 0, y: 0 }, 30, 40);
+    expect(panned).toEqual({ scale: 0.1, x: 30, y: 40 });
+  });
+
+  it("safeScale 只挡非法值，不夹到 MIN_SCALE（投影与画面必须读同一个比例）", () => {
+    expect(safeScale(0.1)).toBe(0.1);
+    expect(safeScale(0)).toBe(1);
+    expect(safeScale(Number.NaN)).toBe(1);
+    expect(safeScale(-2)).toBe(1);
+  });
+
+  it("gridPhase：负偏移用取模收口，往返跨过零点不跳格", () => {
+    expect(gridPhase(0, 24)).toBe(0);
+    expect(gridPhase(24, 24)).toBe(0);
+    expect(gridPhase(-24, 24)).toBe(0);
+    expect(gridPhase(-1, 24)).toBe(23);
+    expect(gridPhase(-25, 24)).toBe(23);
+    expect(gridPhase(25, 24)).toBe(1);
+    // 往返：-7 与 +17 是同一个相位
+    expect(gridPhase(-7, 24)).toBe(gridPhase(17, 24));
+    // 非法间距不产生 NaN
+    expect(gridPhase(5, 0)).toBe(0);
+    expect(gridPhase(5, Number.NaN)).toBe(0);
+  });
+
+  it("dotGridMetrics：100% 时 24px；缩得很小时按 2 的倍数合并点", () => {
+    expect(dotGridMetrics({ scale: 1, x: 0, y: 0 }, 24, 8).spacing).toBe(24);
+    // 50%：12px ≥ 8px 下限，不合并
+    expect(dotGridMetrics({ scale: 0.5, x: 0, y: 0 }, 24, 8).spacing).toBe(12);
+    // 25%：6px < 8px → 世界间距翻倍到 48，屏幕间距 12px
+    expect(dotGridMetrics({ scale: 0.25, x: 0, y: 0 }, 24, 8).spacing).toBe(12);
+    // 10%：2.4px → 翻倍两次到 96，屏幕间距 9.6px
+    expect(dotGridMetrics({ scale: 0.1, x: 0, y: 0 }, 24, 8).spacing).toBeCloseTo(9.6, 10);
+    // 相位用同一个世界原点算：合并前后不跳格
+    const metrics = dotGridMetrics({ scale: 0.25, x: -30, y: 18 }, 24, 8);
+    expect(metrics.phaseX).toBe(gridPhase(-30, metrics.spacing));
+    expect(metrics.phaseY).toBe(gridPhase(18, metrics.spacing));
   });
 });
 

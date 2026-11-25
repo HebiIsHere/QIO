@@ -101,17 +101,17 @@ function expectAnchored(m: ToolbarMeasurement): void {
   expect(Math.abs((m.gap as number) + m.toolbarRect!.height)).toBeLessThanOrEqual(1);
 }
 
-function viewState(): { scale: number; scrollLeft: number; scrollTop: number } {
-  const scroll = harness!.scroll();
-  return { scale: harness!.scale(), scrollLeft: scroll.x, scrollTop: scroll.y };
+function viewState(): { scale: number; offsetX: number; offsetY: number } {
+  const offset = harness!.scroll();
+  return { scale: harness!.scale(), offsetX: offset.x, offsetY: offset.y };
 }
 
-/** 板面坐标 → 屏幕坐标（与画布口径一致）。 */
+/** 板面坐标 → 屏幕坐标（与画布口径一致：视口左上 + 板面 × 缩放 + view 偏移）。 */
 function screenOf(boardX: number, boardY: number): { x: number; y: number } {
   const state = viewState();
   return {
-    x: VIEW.left + boardX * state.scale - state.scrollLeft,
-    y: VIEW.top + boardY * state.scale - state.scrollTop,
+    x: VIEW.left + boardX * state.scale + state.offsetX,
+    y: VIEW.top + boardY * state.scale + state.offsetY,
   };
 }
 
@@ -196,7 +196,7 @@ describe("固定锚点：基本与缩放", () => {
     expect(harness!.scale()).toBeGreaterThanOrEqual(2.49);
   });
 
-  it("平移（真实 scrollLeft/Top 非零）：工具栏跟着卡片走，相对位置不变", async () => {
+  it("平移（view 偏移非零）：工具栏跟着卡片走，相对位置不变", async () => {
     store.board = board([mkCard("c1", 900, 700)], { selection: ["c1"] });
     mountCanvas();
     await flushFrame();
@@ -207,8 +207,9 @@ describe("固定锚点：基本与缩放", () => {
     await nextTick();
     window.dispatchEvent(pointer("pointermove", from.x - 120, from.y - 90));
     await flushFrame();
-    expect(harness!.scroll().x).toBeGreaterThan(0);
-    expect(harness!.scroll().y).toBeGreaterThan(0);
+    // 向左上拖 = 世界原点左移上移（view 偏移变成负数）
+    expect(harness!.scroll().x).toBeLessThan(0);
+    expect(harness!.scroll().y).toBeLessThan(0);
     expectAnchored(harness!.measure());
     window.dispatchEvent(pointer("pointerup", from.x - 120, from.y - 90));
     await flushFrame();

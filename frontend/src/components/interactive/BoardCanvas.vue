@@ -67,26 +67,33 @@ import {
 } from "../../interactive/overlayPlacement";
 import { prefersReducedMotion } from "../../utils/motion";
 import {
-  BOARD_SURFACE_H,
-  BOARD_SURFACE_W,
-  rebaseOrigin,
-  rebaseToFit,
+  addCard,
+  defaultCardSeed,
+  setSelection as setBoardSelection,
 } from "../../interactive/board";
 import {
-  clampViewport,
-  effectiveRect,
-  clampScroll,
+  clampScale,
+  dotGridMetrics,
+  fitViewToBounds,
   IDENTITY_VIEWPORT,
+  MAX_SCALE,
+  MIN_SCALE,
+  panBy,
   publishBoardArea,
   rectFromDrag,
+  safeScale,
   toBoardPoint,
+  toScreenPoint,
+  visibleWorldRect,
   wheelDeltaY,
   wheelZoomFactor,
-  zoomAtScroll,
+  worldBoundsOf,
+  zoomAt,
   type DOMRectLike,
   type Viewport,
+  type WorldRect,
 } from "../../interactive/viewport";
-import { cardSizeLimits, DEFAULT_LAYOUT_GAP, type LayoutRect } from "../../interactive/cardLayout";
+import { cardSizeLimits, DEFAULT_LAYOUT_GAP, NEW_CARD_SIZE, type LayoutRect } from "../../interactive/cardLayout";
 import { resolvePlacement, type PlacementResult } from "../../interactive/geometry";
 // Phase 2 集成（task-14）：统一几何（Phase 2-A）/ 图片比例（Phase 2-C）/ 组端点（Phase 2-B）。
 // 显示矩形、组缩放、避让都走同一份纯函数，画布不再自己维护第二套坐标。
@@ -131,32 +138,25 @@ import BoardLinkLayer from "./BoardLinkLayer.vue";
 import BoardPreviewLayer from "./BoardPreviewLayer.vue";
 import BoardResizeLayer from "./BoardResizeLayer.vue";
 
-/** 板面坐标系大小：卡片位置是板面状态，平移 / 缩放只是查看方式。 */
-// 画布尺寸与卡片坐标夹取共用 board.ts 的同一对常量（板面坐标的唯一事实源）
-const SURFACE_W = BOARD_SURFACE_W;
-const SURFACE_H = BOARD_SURFACE_H;
-//: 内容之外的留白：拖到边界后还能继续往外拖（画布会跟着长）
-const SURFACE_PAD = 400;
-
 /*
-  画布尺寸 = max(最小画布, 内容包围盒 + 留白)（2026-10-14 用户要求「板面无限」，方案 B）。
-  原来固定 2400×1600：卡片一碰边就被夹住，越不过去。
-  现在画布随内容增长 —— 卡片能往右下拖到任意远，滚动范围跟着变。
-  左上仍以 0 为界（坐标原点不漂，见 board.ts 的 clampCardRect 说明）。
+  无限画布（2026-11-25）：**没有**「画布尺寸」这回事。
+
+  旧模型用 surfaceSize 撑出一块有限内容区，再靠容器滚动查看 —— 空板向左 / 上平移
+  会立刻碰到滚动边界（浏览器不接受负滚动量）。现在唯一视图状态是组件内的
+  Viewport { x, y, scale }：视口自己裁切，内容层只做一次 translate + scale。
+  空板与有内容的板走同一条路径，四个方向都能连续平移。
+
+  因此这里不再有 SURFACE_W / SURFACE_H / SURFACE_PAD，也不再有「按最远卡片分配 DOM」。
 */
-const surfaceSize = computed(() => {
-  let maxX = 0;
-  let maxY = 0;
-  for (const card of liveCards.value) {
-    if (card.deleted) continue;
-    maxX = Math.max(maxX, card.x + card.w);
-    maxY = Math.max(maxY, card.y + card.h);
-  }
-  return {
-    w: Math.max(SURFACE_W, Math.ceil(maxX + SURFACE_PAD)),
-    h: Math.max(SURFACE_H, Math.ceil(maxY + SURFACE_PAD)),
-  };
-});
+
+/**
+ * 「查看全部」允许的最低适配比例。
+ *
+ * 正常滚轮缩放下限是 MIN_SCALE（0.25）；但两张相距很远的卡片要同屏时，
+ * 适配比例可能远低于它。这里给一个很低的硬下限（只挡 0 与异常值），
+ * 算出来的比例随后会成为**后续缩放的下限**，所以不会出现「下一次滚轮跳回 0.25」。
+ */
+const FIT_MIN_SCALE = 0.02;
 
 /** 工具栏 / 提示与卡片之间的间距（屏幕像素）。 */
 const TOOLBAR_GAP = 10;
@@ -184,7 +184,8 @@ interface DragState {
 
 interface PanState {
   startClient: { x: number; y: number };
-  startScroll: { x: number; y: number };
+  /** 按下那一刻的视图快照：平移量从它算起，不累加（避免逐帧误差累积） */
+  startView: Viewport;
   moved: boolean;
 }
 
@@ -208,13 +209,76 @@ const surface = ref<HTMLElement | null>(null);
 const viewportEl = ref<HTMLElement | null>(null);
 const shell = ref<HTMLElement | null>(null);
 /**
- * 查看状态：**缩放 + 滚动**。
- * 内容用 transform: scale() 缩放，平移查看位置就是容器的 scrollLeft / scrollTop
- * （两者叠加会让坐标算错：滚动会改变内容原点在屏幕上的位置）。
- * 滚动量用 ref 保存，作为坐标换算的**唯一事实来源**（不依赖浏览器取整后的 scrollLeft）。
+ * 查看状态：**唯一**的视图事实来源。
+ *
+ * `x / y` = 世界原点在视口内的 CSS 像素偏移，`scale` = 缩放。
+ * 内容层按 `translate(x, y) scale(scale)` 渲染（transform-origin: 0 0），视口自己裁切；
+ * 不再有容器滚动量，也不再有「内容撑多大」这回事 —— 空板同样能向四个方向连续平移。
+ *
+ * 平移 / 缩放只改这里：不 commit、不排保存、不进卡片撤销栈。
  */
 const view = ref<Viewport>({ ...IDENTITY_VIEWPORT });
-const scroll = ref({ x: 0, y: 0 });
+/**
+ * 缩放下限：正常是 MIN_SCALE（0.25）。
+ * 「查看全部」需要比 25% 更小的适配比例时，把那个比例记在这里作为**后续缩放的下限**，
+ * 否则下一次 clampScale 就会把画面跳回 0.25。
+ */
+const minScale = ref(MIN_SCALE);
+
+/*
+  视野缓存（**显示态**，与板面内容的保存状态完全分开）。
+
+  为什么需要：重开远坐标板面时，卡片坐标可能是 (-12000, -9000) —— 按初始视野打开
+  就是一片空白，用户会以为内容丢了。这里按 boardId 记住上次的视野，重开时恢复；
+  没有有效缓存时用「查看全部」初始化。
+
+  边界：
+  - 只存查看状态（x / y / scale），不进板面状态、不产生表达、不排保存；
+  - 按 boardId 隔离：切板不会把 A 的视野带到 B；
+  - 存本机（localStorage），读写失败一律退回「没有缓存」，绝不因此报错。
+*/
+const BOARD_VIEW_KEY_PREFIX = "qio-board-view:";
+
+interface CachedBoardView {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+function boardViewKey(boardId: string): string {
+  return BOARD_VIEW_KEY_PREFIX + boardId;
+}
+
+function readCachedView(boardId: string): CachedBoardView | null {
+  if (!boardId) return null;
+  try {
+    const raw = (globalThis as { localStorage?: Storage | null }).localStorage?.getItem(boardViewKey(boardId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedBoardView>;
+    const x = Number(parsed?.x);
+    const y = Number(parsed?.y);
+    const scale = Number(parsed?.scale);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(scale) || scale <= 0) return null;
+    return { x, y, scale };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedView(boardId: string, next: Viewport): void {
+  if (!boardId) return;
+  try {
+    (globalThis as { localStorage?: Storage | null }).localStorage?.setItem(
+      boardViewKey(boardId),
+      JSON.stringify({ x: next.x, y: next.y, scale: next.scale }),
+    );
+  } catch {
+    // 存不进去也不影响本次会话：视野已经在内存里
+  }
+}
+
+/** 当前板面 id（视野缓存按它隔离）。 */
+const currentBoardId = computed(() => String(store.boardId ?? ""));
 
 const dragging = ref<DragState | null>(null);
 /**
@@ -376,7 +440,6 @@ const overlay = ref({ left: 0, top: 0, visible: false });
 const overlaySettled = ref(false);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 let locatedTimer: ReturnType<typeof setTimeout> | null = null;
-let scrollSyncLock = false;
 
 /**
  * 手势是固定的（契约 §10.7），画布不再有「指针模式」：
@@ -577,7 +640,6 @@ function onWindowResize(): void {
 
 /**
  * 板面可视范围（**板面坐标**）：容器像素尺寸 ÷ 缩放。
- * 容器量不到尺寸（jsdom 没有真实布局）时 containerSize() 已经兜底成板面大小。
  * 这是「可用区域」的兜底口径：量不到屏幕几何时退回到它 + 原点 0。
  */
 const stageSize = computed(() => {
@@ -587,8 +649,13 @@ const stageSize = computed(() => {
   return { w: size.w / scale, h: size.h / scale };
 });
 
-/** 缩放的安全值：非有限 / 非正一律按 1（与 viewport 的 clampScale 同一条口径）。 */
-const scaleSafe = computed(() => (Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1));
+/**
+ * 缩放的安全值：非有限 / 非正一律按 1。
+ *
+ * 注意**不夹到 MIN_SCALE**：「查看全部」可能把比例压到 25% 以下，
+ * 投影 / 逆投影 / 点阵 / 后续滚轮必须读同一个比例，否则画面与命中会错位。
+ */
+const scaleSafe = computed(() => safeScale(view.value.scale));
 
 /** 屏幕矩形（左上 + 右下）。 */
 interface ScreenBox {
@@ -638,20 +705,6 @@ function overlayScreenBox(selector: string): ScreenBox | null {
 }
 
 /**
- * 平移后的真实滚动量：只在容器**真的能滚动**时认它。
- * jsdom 没有真实布局（scrollWidth 恒为 0、setter 会把滚动量钳到 0），
- * 无条件采用会让「可视起点」在测试里变成幽灵坐标。
- */
-function layoutScroll(): { x: number; y: number } {
-  const element = viewportEl.value;
-  if (!element) return { x: 0, y: 0 };
-  const live = liveScroll();
-  const canScrollX = element.scrollWidth > element.clientWidth + 1;
-  const canScrollY = element.scrollHeight > element.clientHeight + 1;
-  return { x: canScrollX ? live.x : 0, y: canScrollY ? live.y : 0 };
-}
-
-/**
  * **实际可用屏幕区域**：容器可视矩形扣掉自绘标题栏、底部工具栏、审批浮层与对话窗口。
  *
  * 与 boardRegion（板面坐标版本）共用这一份扣减顺序：展开阅读、定位、添加菜单看到的
@@ -681,16 +734,19 @@ function usableScreenBox(): ScreenBox | null {
 }
 
 /**
- * 板面**可用区域**（板面坐标）：平移 / 滚动后的可视起点 + 缩放之后，
- * 再扣掉自绘标题栏、底部工具栏、对话窗口（chatObstacleFrame）与审批浮层。
+ * 板面**可用区域**（板面坐标）：当前视野再扣掉自绘标题栏、底部工具栏、
+ * 对话窗口（chatObstacleFrame）与审批浮层。
  *
- * 为什么必须扣：只按「容器宽高 + 画布原点」算，展开卡会盖住底部工具栏 / 对话窗口，
+ * 为什么必须扣：只按「容器宽高 + 世界原点」算，展开卡会盖住底部工具栏 / 对话窗口，
  * 用户既读不到展开的内容，也点不到被压住的按钮（任务书 §7.4）。
  * X 轴与 Y 轴都要扣：工具栏吃的是高度、对话窗口两轴都吃。
+ *
+ * 无限画布下换算只有一步：可用区左上角相对视口原点的屏幕偏移 ÷ 缩放，
+ * 再加上「视口左上角对应的板面点」（= −view.x / scale）。没有滚动量可减。
  */
 const boardRegion = computed<{ origin: { x: number; y: number }; size: { w: number; h: number } }>(() => {
   void stageTick.value;
-  const scale = scaleSafe.value;
+  const scale = safeScale(view.value.scale);
   const box = viewportScreenBox();
   const usable = usableScreenBox();
   if (!box || !usable) {
@@ -698,11 +754,13 @@ const boardRegion = computed<{ origin: { x: number; y: number }; size: { w: numb
     return { origin: { x: 0, y: 0 }, size: stageSize.value };
   }
   const work: ScreenBox = usable;
-  const scrollNow = layoutScroll();
   const insetLeft = Math.max(0, work.left - box.left);
   const insetTop = Math.max(0, work.top - box.top);
   return {
-    origin: { x: (scrollNow.x + insetLeft) / scale, y: (scrollNow.y + insetTop) / scale },
+    origin: {
+      x: -finiteNumber(view.value.x) / scale + insetLeft / scale,
+      y: -finiteNumber(view.value.y) / scale + insetTop / scale,
+    },
     size: {
       w: Math.max(0, work.right - work.left) / scale,
       h: Math.max(0, work.bottom - work.top) / scale,
@@ -1253,57 +1311,42 @@ function cancelLinkDraft(message: string): void {
   notice.value = message;
 }
 
-// --- 视口：平移 / 缩放 / 坐标换算 -----------------------------------------
+// --- 视口：平移 / 缩放 / 坐标换算（无限画布） ------------------------------
+//
+// 唯一视图状态是 view { x, y, scale }：
+//   x / y = 世界原点在视口内的 CSS 像素偏移；scale = 缩放。
+// 内容层只做一次 translate(x, y) scale(scale)（transform-origin: 0 0），视口自己裁切。
+// 没有容器滚动量、没有「内容撑多大」——空板与有内容的板走同一条路径。
 
+/** 世界层（卡片 / 组框 / 连线 / 预览）的变换：只作用一次。 */
 const surfaceStyle = computed(() => ({
-  width: surfaceSize.value.w * view.value.scale + "px",
-  height: surfaceSize.value.h * view.value.scale + "px",
-  transform: `scale(${view.value.scale})`,
+  transform: `translate(${view.value.x}px, ${view.value.y}px) scale(${view.value.scale})`,
   transformOrigin: "0 0",
 }));
 
-const contentStyle = computed(() => ({
-  width: surfaceSize.value.w * view.value.scale + "px",
-  height: surfaceSize.value.h * view.value.scale + "px",
-}));
-
-/** 板面内容原点在屏幕上的位置（含滚动量）—— 所有坐标换算都用它。 */
 /**
- * 真实滚动量：DOM 是最终事实（用户拖滚动条、浏览器自动滚动都会改它）。
- * 只在容器**真的能滚动**时采用 DOM 值：jsdom 没有真实布局，scrollLeft 会被钳制，
- * 无条件采用反而会让坐标换算失真（单元测试里就是这种情况）。
- */
-function liveScroll(): { x: number; y: number } {
-  const element = viewportEl.value;
-  if (!element) return { x: scroll.value.x, y: scroll.value.y };
-  const canScrollX = element.scrollWidth > element.clientWidth + 1;
-  const canScrollY = element.scrollHeight > element.clientHeight + 1;
-  const x = canScrollX ? element.scrollLeft : scroll.value.x;
-  const y = canScrollY ? element.scrollTop : scroll.value.y;
-  if (x !== scroll.value.x || y !== scroll.value.y) {
-    scroll.value = { x, y };
-    view.value = { ...view.value, x: -x, y: -y };
-  }
-  return { x, y };
-}
-
-/**
- * 板面坐标 → 屏幕坐标，**与真实渲染一致**：
- *   屏幕 = 容器左上 + 板面坐标 × 缩放 − 容器滚动量。
+ * 定尺寸浮层的世界原点偏移（屏幕像素）。
  *
- * 19 复核修正：原来定位用 `toScreenPoint(view, point, surfaceRect())`，而 surfaceRect() 是
- * 「内容原点」位置（已经把滚动量减掉了），view.x 又是 −滚动量 —— 滚动量被减了两次。
- * 滚动为 0 时碰巧正确，一旦平移过（滚动 ≠ 0）定位就会往错误方向/错误幅度移动，
- * 右侧与下侧离屏的预览因此永远进不了可用区。
+ * 这些层**不随画布缩放**（把手 / 连接点 / 锚点要保持真实屏幕命中尺寸），
+ * 所以它们的局部坐标 = 板面锚点 × scale + 这个偏移。
+ * 与 surfaceStyle 的 translate 是同一个量，只是浮层自己不做 scale。
  */
-function screenPointOfBoard(boardX: number, boardY: number, viewRect: DOMRectLike): { x: number; y: number } {
-  const live = liveScroll();
-  const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
+const viewOffset = computed(() => ({ x: finiteNumber(view.value.x), y: finiteNumber(view.value.y) }));
+
+/**
+ * 点阵：铺在 .board-viewport 上，由 view 决定原点与间距。
+ *
+ * 100% 缩放时点距仍是 24px（保留既有疏密）；缩得很小时按 2 的倍数合并点，
+ * 避免糊成一片。相位用**同一个世界原点**算（gridPhase 处理负偏移），
+ * 往返跨过零点不会跳格。
+ */
+const gridStyle = computed(() => {
+  const metrics = dotGridMetrics(view.value, 24, 8);
   return {
-    x: finiteNumber(viewRect.left) + finiteNumber(boardX) * scale - live.x,
-    y: finiteNumber(viewRect.top) + finiteNumber(boardY) * scale - live.y,
+    backgroundSize: `${metrics.spacing}px ${metrics.spacing}px`,
+    backgroundPosition: `${metrics.phaseX}px ${metrics.phaseY}px`,
   };
-}
+});
 
 function finiteNumber(value: unknown, fallback = 0): number {
   const result = typeof value === "number" ? value : Number(value);
@@ -1311,36 +1354,9 @@ function finiteNumber(value: unknown, fallback = 0): number {
 }
 
 /**
- * 内容原点：板面 (0,0) 在屏幕上的位置 = 容器左上 − 滚动量（{@link effectiveRect}）。
- * 与 {@link contentViewport} **配套**使用：两者缺一个就会把滚动量算错（见下面的说明）。
- */
-function surfaceRect(): DOMRectLike {
-  const element = viewportEl.value;
-  if (!element) return { left: 0, top: 0 };
-  const rect = typeof element.getBoundingClientRect === "function"
-    ? element.getBoundingClientRect()
-    : { left: 0, top: 0 };
-  const live = liveScroll();
-  return effectiveRect(rect, live.x, live.y);
-}
-
-/**
- * 与 surfaceRect() 配套的视口：surfaceRect() 已经是**内容原点**（滚动量减过一次），
- * 所以这里的平移量必须留 0 —— 再传 view.value（x / y = −滚动量）就会减第二次。
- *
- * 这是本文件坐标换算的唯一口径：**屏幕 → 板面**走
- * toBoardPoint(contentViewport(), client, surfaceRect())，
- * **板面 → 屏幕**走 screenPointOfBoard(x, y, 容器原始矩形)，两者严格互逆。
- * （例外只有 zoomAtScroll：它自己的口径是「容器原始矩形 + scroll」，见 {@link viewportRect}。）
- */
-function contentViewport(): Viewport {
-  return { scale: view.value.scale, x: 0, y: 0 };
-}
-
-/**
- * 容器自身的屏幕矩形（**不含**滚动量）：zoomAtScroll 的口径是「容器原始矩形 + scroll」，
- * 它内部自己会减滚动量；传 surfaceRect()（内容原点）会让滚动量被减两次
- * —— 平移之后滚轮一滚画面就跳（指针下的板面点留不住）。
+ * 视口自身的屏幕矩形（**原始**矩形，不减任何滚动量）。
+ * 这是坐标换算的唯一原点：屏幕 → 板面走 toBoardPoint(view, client, rect)，
+ * 板面 → 屏幕走 toScreenPoint(view, point, rect)，两者严格互逆。
  */
 function viewportRect(): DOMRectLike {
   const element = viewportEl.value;
@@ -1349,85 +1365,191 @@ function viewportRect(): DOMRectLike {
   return { left: finiteNumber(rect.left), top: finiteNumber(rect.top) };
 }
 
-/**
- * 屏幕坐标 → 板面坐标：必须与 {@link screenPointOfBoard} **严格互逆**：
- *   板面 = (屏幕 − 容器左上 + 滚动量) ÷ 缩放。
- *
- * surfaceRect() 给的是「内容原点」（已经把滚动量减掉），所以这里平移量必须传 0（{@link contentViewport}）。
- * 原来传的是 view.value（x / y = −滚动量）：滚动量被减了两次 —— 一旦平移过，
- * 拖线落点会整体偏移「滚动量 ÷ 缩放」：线画在卡片上，判定却落在别处。
- * 拖动看不出来（用的是位移差，偏移在 offset 里被减掉），而连接点拖线用的是**绝对坐标**，
- * 所以这个回归只在「先平移再拖线」时暴露（0.2.5 §四）。
- */
-function boardPointOf(event: { clientX: number; clientY: number }): { x: number; y: number } {
-  return toBoardPoint(contentViewport(), { x: event.clientX, y: event.clientY }, surfaceRect());
+/** 板面坐标 → 屏幕坐标（与 {@link boardPointOf} 严格互逆）。 */
+function screenPointOfBoard(boardX: number, boardY: number, viewRect: DOMRectLike): { x: number; y: number } {
+  return toScreenPoint(view.value, { x: finiteNumber(boardX), y: finiteNumber(boardY) }, viewRect);
 }
 
+/** 屏幕坐标 → 板面坐标。 */
+function boardPointOf(event: { clientX: number; clientY: number }): { x: number; y: number } {
+  return toBoardPoint(view.value, { x: event.clientX, y: event.clientY }, viewportRect());
+}
+
+/** 视口尺寸（CSS 像素）；量不到时退回 0（调用方据此回落到既有口径）。 */
 function containerSize(): { w: number; h: number } {
   const element = viewportEl.value;
-  if (!element) return { w: surfaceSize.value.w, h: surfaceSize.value.h };
-  return { w: element.clientWidth || surfaceSize.value.w, h: element.clientHeight || surfaceSize.value.h };
+  if (!element) return { w: 0, h: 0 };
+  return { w: Math.max(0, element.clientWidth || 0), h: Math.max(0, element.clientHeight || 0) };
 }
 
-/** 把滚动量写回容器（滚动量本身已经是坐标换算的事实来源）。 */
-function applyScroll(next: { x: number; y: number }) {
-  scroll.value = clampScroll(next, view.value.scale, containerSize(), { w: surfaceSize.value.w, h: surfaceSize.value.h });
-  const element = viewportEl.value;
-  if (!element) return;
-  // 浏览器不接受负滚动量：以 DOM 为准回写，保证坐标换算与真实显示一致
-  element.scrollLeft = scroll.value.x;
-  element.scrollTop = scroll.value.y;
-  /**
-   * 只有容器**真的能滚动**时才以 DOM 为准回写（与 onViewportScroll 同一条口径）。
-   * jsdom 没有真实布局：scrollWidth/scrollHeight 恒为 0，setter 会把滚动量钳到 0，
-   * 无条件回写会让定位、平移、框选在测试环境里全部「算了却没动」，
-   * 从而把真实缺陷掩盖成假通过、或把真实修复显示成失败。
-   */
-  const canScrollX = element.scrollWidth > element.clientWidth + 1;
-  const canScrollY = element.scrollHeight > element.clientHeight + 1;
-  if (canScrollX || canScrollY) {
-    scroll.value = {
-      x: canScrollX ? element.scrollLeft : scroll.value.x,
-      y: canScrollY ? element.scrollTop : scroll.value.y,
-    };
-  }
-  scrollSyncLock = true;
-  void nextTick(() => {
-    scrollSyncLock = false;
-  });
+/** 当前视口覆盖的板面矩形（世界坐标）。 */
+const visibleWorld = computed<WorldRect>(() => visibleWorldRect(view.value, containerSize()));
+
+/** 以指针附近为缩放中心：指针下的板面点保持在同一屏幕位置。 */
+function zoomAtPointer(factor: number, client: { x: number; y: number }) {
+  view.value = zoomAt(view.value, factor, client, viewportRect(), minScale.value);
 }
 
 /**
- * 用户直接拖动滚动条 / 触控板滚动时，把滚动量同步进 ref。
- * 只在容器**真的能滚动**时同步：jsdom 没有真实布局，scrollLeft 会被浏览器取整或钳制，
- * 无条件同步反而会让坐标换算失真。
+ * 把某个板面矩形移进**屏幕可用区**需要的位移（屏幕像素）。
+ *
+ * 只在用户明确点击「定位 / 完整查看」时调用：不给任何自动追踪，
+ * 也绝不改卡片本身。返回的 dx / dy 直接加到 view.x / view.y 上。
  */
-function onViewportScroll() {
-  if (scrollSyncLock) return;
-  const element = viewportEl.value;
-  if (!element) return;
-  const canScrollX = element.scrollWidth > element.clientWidth + 1;
-  const canScrollY = element.scrollHeight > element.clientHeight + 1;
-  if (!canScrollX && !canScrollY) return;
-  if (canScrollX) scroll.value = { ...scroll.value, x: element.scrollLeft };
-  if (canScrollY) scroll.value = { ...scroll.value, y: element.scrollTop };
-  view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
+function revealDeltaInArea(
+  bounds: LayoutRect,
+  originRect: DOMRectLike,
+  area: ScreenBox,
+  margin: number,
+): { dx: number; dy: number } {
+  const scale = safeScale(view.value.scale);
+  const screen = screenPointOfBoard(bounds.x, bounds.y, originRect);
+  if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return { dx: 0, dy: 0 };
+  const left = finiteNumber(area.left);
+  const top = finiteNumber(area.top);
+  const right = Math.max(left, finiteNumber(area.right));
+  const bottom = Math.max(top, finiteNumber(area.bottom));
+  const width = Math.max(0, finiteNumber(bounds.w)) * scale;
+  const height = Math.max(0, finiteNumber(bounds.h)) * scale;
+  const availW = Math.max(0, right - left - margin * 2);
+  const availH = Math.max(0, bottom - top - margin * 2);
+  let dx = 0;
+  let dy = 0;
+  if (width > availW) dx = left + margin - screen.x;
+  else if (screen.x < left + margin) dx = left + margin - screen.x;
+  else if (screen.x + width > right - margin) dx = right - margin - (screen.x + width);
+  if (height > availH) dy = top + margin - screen.y;
+  else if (screen.y < top + margin) dy = top + margin - screen.y;
+  else if (screen.y + height > bottom - margin) dy = bottom - margin - (screen.y + height);
+  return { dx, dy };
 }
 
-/** 以指针附近为缩放中心：同时收敛缩放与滚动，指针下的板面点保持不动。 */
-function zoomAtPointer(factor: number, client: { x: number; y: number }) {
-  const result = zoomAtScroll(
-    liveScroll(),
-    view.value.scale,
-    factor,
-    client,
-    // 容器**原始**矩形 + scroll：zoomAtScroll 内部自己换算内容原点（见 viewportRect 的说明）
-    viewportRect(),
-    containerSize(),
-    { w: surfaceSize.value.w, h: surfaceSize.value.h },
-  );
-  view.value = { scale: result.scale, x: -result.scroll.x, y: -result.scroll.y };
-  applyScroll(result.scroll);
+/** 只动查看位置（view），板面状态一个字段都不改。 */
+function applyReveal(dx: number, dy: number): void {
+  if (!dx && !dy) return;
+  view.value = panBy(view.value, dx, dy);
+}
+
+// --- 查看全部 -------------------------------------------------------------
+
+/**
+ * 当前**可展示**对象的世界外框（板面坐标）。
+ *
+ * - 卡片：真正画在板面上的那些（收起的组成员不单独画，已删除 / 隐藏的不参与）；
+ * - 组：收起组用**折叠后真正显示的外框**（displayGroups 已经压成紧凑框），
+ *   展开组用成员派生出的显示外框；
+ * - 已删除对象不参与。
+ */
+function contentWorldBounds(): WorldRect | null {
+  const rects: WorldRect[] = [];
+  for (const card of renderedCards.value) {
+    const rect = displayRect(card);
+    rects.push({ x: rect.x, y: rect.y, w: rect.w, h: rect.h });
+  }
+  for (const group of displayGroups.value) {
+    if (group.deleted) continue;
+    rects.push({ x: group.x, y: group.y, w: group.w, h: group.h });
+  }
+  return worldBoundsOf(rects);
+}
+
+/**
+ * 「查看全部」：把当前可展示内容放进扣掉遮挡后的可用区。
+ *
+ * - 空板：回到初始视野与 100%（不编造一个空包围盒）；
+ * - 单卡：居中且不被异常放大（适配比例上限 1）；
+ * - 两张远卡需要低于 25% 才能同屏时，如实给出那个比例，并把它记成
+ *   **后续缩放的下限**（minScale），下一次滚轮不会跳回 0.25。
+ *
+ * 只改视图：卡片坐标、选中状态、连线记录一个字段都不改。
+ */
+function viewAll(): void {
+  const bounds = contentWorldBounds();
+  const element = viewportEl.value;
+  const box = viewportScreenBox();
+  const usable = usableScreenBox();
+  if (!bounds || !element || !box || !usable) {
+    // 空板 / 量不到几何：回到初始视野与 100%
+    minScale.value = MIN_SCALE;
+    view.value = { ...IDENTITY_VIEWPORT };
+    notice.value = "板面还没有内容：已回到初始视野。";
+    return;
+  }
+  const fitted = fitViewToBounds(bounds, containerSize(), {
+    area: usable,
+    rect: { left: box.left, top: box.top },
+    margin: 48,
+    maxScale: 1,
+    // 下限放到很低：两张远卡需要低于 25% 才能同屏时，这里必须如实给出那个比例
+    // （随后它会被记成后续缩放的下限，下一次滚轮才不会跳回 0.25）
+    minScale: FIT_MIN_SCALE,
+  });
+  if (!fitted) {
+    minScale.value = MIN_SCALE;
+    view.value = { ...IDENTITY_VIEWPORT };
+    return;
+  }
+  // 适配比例可能低于 MIN_SCALE：把它作为后续缩放的下限，滚轮才不会跳回 0.25
+  minScale.value = Math.min(MIN_SCALE, fitted.scale);
+  view.value = fitted;
+  notice.value = "已把全部内容放进当前可用区域（只改查看位置，不改卡片）。";
+}
+
+/**
+ * 恢复某块板面的视野。
+ *
+ * 顺序：有效缓存 → 用它；没有缓存 → 用「查看全部」初始化（远坐标板面因此不会白屏）。
+ * 只改查看状态，不碰任何板面数据。
+ */
+function restoreViewForBoard(boardId: string): void {
+  const cached = readCachedView(boardId);
+  if (cached) {
+    minScale.value = Math.min(MIN_SCALE, cached.scale);
+    view.value = { ...cached };
+    return;
+  }
+  // 没有有效视野：用「查看全部」初始化（空板会回到初始视野与 100%）
+  viewAll();
+}
+
+/**
+ * 板面切换 / 首次读到内容：恢复该板面的视野（按 boardId 隔离）。
+ *
+ * 只在**真的读到过板面**（store.boardLoadedOnce）时恢复：
+ * 挂载时 store 里可能只是本地占位 / 测试夹具，那时恢复缓存会覆盖调用方设定的视野。
+ */
+watch(
+  () => [currentBoardId.value, Boolean(boardState.value), Boolean(store.boardLoadedOnce)] as const,
+  ([boardId, hasBoard, loaded], previous) => {
+    if (!hasBoard || !boardId || !loaded) return;
+    const previousBoardId = previous?.[0] ?? "";
+    const previousLoaded = Boolean(previous?.[2]);
+    // 同一块板面已经恢复过：不重复覆盖用户当前的视野
+    if (previousLoaded && previousBoardId === boardId) return;
+    restoreViewForBoard(boardId);
+  },
+  { immediate: true },
+);
+
+/** 视野变化就写回缓存（只写显示态；与板面内容的保存状态完全分开）。 */
+watch(
+  view,
+  (next) => {
+    const boardId = currentBoardId.value;
+    if (!boardId) return;
+    writeCachedView(boardId, next);
+  },
+  { deep: true },
+);
+
+/** 「查看全部」入口（工具栏 / 更多菜单通过事件触发）。 */
+function onViewAll(): void {
+  viewAll();
+}
+
+/** window 事件包装：与 locate-card / locate-preview 同一个模式（显示态桥，不进板面状态）。 */
+function onViewAllEvent(): void {
+  viewAll();
 }
 
 // --- 拖动：预演 → 放下 / 中断 ---------------------------------------------
@@ -1466,11 +1588,12 @@ function onPointerMove(event: PointerEvent) {
   const current = boardState.value;
   const pan = panning.value;
   if (pan) {
+    // 平移用**屏幕位移**（不除以缩放）：视野跟着指针走，与缩放比例无关
     const dx = event.clientX - pan.startClient.x;
     const dy = event.clientY - pan.startClient.y;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) pan.moved = true;
-    applyScroll({ x: pan.startScroll.x - dx, y: pan.startScroll.y - dy });
-    view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
+    // 从按下时的视图快照算起，不逐帧累加（避免误差累积与丢帧漂移）
+    view.value = panBy(pan.startView, dx, dy);
     return;
   }
   const drag = dragging.value;
@@ -1526,23 +1649,13 @@ function onPointerUp() {
     const changed = stateDiffers(normalizeState(current), result.state);
     if (changed) {
       /*
-        2026-10-14（方案 B 第二步：左上也要无限）：
-        卡片被拖到负坐标（画布左上之外）时，把**整块板面整体平移**回 ≥0 的区域，
-        并把视图滚动量补上同样的量 —— 卡片在屏幕上原地不动，用户察觉不到坐标系换了原点。
-        这样卡片的 x/y 永远是"相对画布原点"的非负值，渲染 / 连线 / 组框 / 工具栏换算都不用改。
+        2026-11-25（无限画布）：**不再**做整板重定位。
+        从前卡片被拖到负坐标时会把整块板面整体平移回 ≥0 并补滚动量 ——
+        拖动 A 跨过原点会改掉独立卡片 B 的坐标、更新时间和撤销记录。
+        现在板面坐标本来就有符号：拖动只改本次应移动的对象，别人的坐标一个字段都不动。
       */
       // 图片卡落点后再收敛一次尺寸（比例来自 meta.display；非图片卡不受影响）
-      let nextState = constrainImageCardState(result.state, drag.cardId);
-      // 阈值是 0：只有真的拖到负坐标才重定位（用留白当阈值会让普通拖动也整体平移）
-      const rebase = rebaseToFit(nextState, 0);
-      if (rebase.dx || rebase.dy) {
-        nextState = rebaseOrigin(nextState, rebase.dx, rebase.dy);
-        const scale = view.value.scale;
-        applyScroll({
-          x: scroll.value.x + rebase.dx * scale,
-          y: scroll.value.y + rebase.dy * scale,
-        });
-      }
+      const nextState = constrainImageCardState(result.state, drag.cardId);
       commit(nextState, label);
       /*
         2026-10-14（用户要求「把这个删掉」）：**只移动位置不再弹提示**。
@@ -1555,6 +1668,8 @@ function onPointerUp() {
     } else {
       notice.value = "卡片没有移动：板面没有产生改动，也没有保存。";
     }
+    // 拖动卡片结束后浏览器仍会派发 dblclick：不能让它变成「双击建卡」
+    suppressDblclickUntil = Date.now() + DBLCLICK_AFTER_DRAG_MS;
     requestPlacement();
     return;
   }
@@ -1566,20 +1681,27 @@ function onPointerUp() {
     if (!pan.moved && current && current.selection.length) {
       commit(setSelection(current, []), "清空选择");
     }
-    if (pan.moved) markBoardHintSeen();
+    if (pan.moved) {
+      markBoardHintSeen();
+      // 拖动结束后浏览器仍会派发 dblclick：不能让它变成「双击建卡」
+      suppressDblclickUntil = Date.now() + DBLCLICK_AFTER_DRAG_MS;
+    }
     return;
   }
   const rect = rectSelect.value;
   if (rect && current) {
     rectSelect.value = null;
     detachPointerListeners();
-    // 与 boardPointOf 同一口径：surfaceRect() 已是内容原点，平移量必须留 0（否则框选整体偏移）
-    const area = rectFromDrag(contentViewport(), rect.startClient, rect.currentClient, surfaceRect());
+    // 起止两点分别换算到板面坐标再判相交（缩放 / 平移后范围仍然准确）
+    const area = rectFromDrag(view.value, rect.startClient, rect.currentClient, viewportRect());
     if (area.w > 4 || area.h > 4) {
       commit(selectInRect(current, area, rect.additive), "框选卡片");
       notice.value = "已框选 " + area.w.toFixed(0) + "×" + area.h.toFixed(0) + " 板面范围内的卡片。";
     }
-    if (rect.moved) markBoardHintSeen();
+    if (rect.moved) {
+      markBoardHintSeen();
+      suppressDblclickUntil = Date.now() + DBLCLICK_AFTER_DRAG_MS;
+    }
     return;
   }
   const draft = linkDraft.value;
@@ -1807,6 +1929,9 @@ function onSurfacePointerDown(event: PointerEvent) {
   // 输入框 / 可编辑内容里按下不启动板面操作（空格正常输入）
   if (isTypingTarget(event.target)) return;
   event.preventDefault();
+  // 新的一次按下 = 用户真的又点了一下：上一次拖动留下的 dblclick 抑制到此为止
+  // （拖动结束后浏览器会补发 dblclick，但那只发生在**没有**新的 pointerdown 时）
+  suppressDblclickUntil = 0;
   const rect = rectSelect.value;
   if (rect) return;
   if (dragging.value || panning.value || linkDraft.value) return;
@@ -1825,7 +1950,8 @@ function onSurfacePointerDown(event: PointerEvent) {
   }
   panning.value = {
     startClient: { x: event.clientX, y: event.clientY },
-    startScroll: { ...scroll.value },
+    // 按下时的视图快照：平移量从它算起（不累加，避免逐帧误差）
+    startView: { ...view.value },
     moved: false,
   };
   if (current && current.selection.length) {
@@ -1833,6 +1959,57 @@ function onSurfacePointerDown(event: PointerEvent) {
     notice.value = "";
   }
   attachPointerListeners();
+}
+
+/**
+ * 双击空白处建一张文字卡（与工具栏「添加」共用正式创建逻辑）。
+ *
+ * 落点 = 指针对应的**板面坐标**（不是屏幕坐标）：平移 / 缩放到 (-8000, -6000) 附近时，
+ * 新卡就出现在眼前那块负坐标区域里。
+ *
+ * 不穿透：双击卡片、关系标签、把手、菜单或浮层时一律不建卡 ——
+ * 这些元素自己会处理双击（或至少被 isBoardInteractive 认出来），
+ * 完成一次拖动后浏览器仍可能派发 dblclick，这里用「刚结束拖动」的时间窗挡掉。
+ */
+const DBLCLICK_AFTER_DRAG_MS = 320;
+let suppressDblclickUntil = 0;
+
+function onSurfaceDoubleClick(event: MouseEvent) {
+  if (event.button !== 0) return;
+  if (isBoardInteractive(event.target) || insideScrollable(event.target)) return;
+  if (isTypingTarget(event.target)) return;
+  // 刚结束一次拖动 / 平移 / 框选：浏览器仍会派发 dblclick，不能当成建卡意图
+  if (Date.now() < suppressDblclickUntil) return;
+  if (dragging.value || panning.value || rectSelect.value || linkDraft.value || resizing.value) return;
+  const current = boardState.value;
+  if (!current) return;
+  if (store.boardEditBlockedReason) {
+    showNotice("板面当前不可编辑：" + store.boardEditBlockedReason, { tone: "error" });
+    return;
+  }
+  event.preventDefault();
+  const point = boardPointOf(event);
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+  // 与工具栏「添加」同一份默认内容与默认尺寸（board.ts 的 defaultCardSeed / NEW_CARD_SIZE）
+  const seed = defaultCardSeed("text");
+  const before = new Set(current.cards.map((card) => card.id));
+  const next = addCard(current, {
+    kind: "text",
+    content: seed.content,
+    meta: seed.meta,
+    // 新建文字卡默认提交给 QIO（与工具栏添加一致，可在卡片工具栏里取消）
+    checked: true,
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    w: NEW_CARD_SIZE.w,
+    h: NEW_CARD_SIZE.h,
+  });
+  const created = next.cards.find((card) => !before.has(card.id));
+  if (!created) return;
+  // 建卡 + 选中是**一次**提交：撤销一次就回到建卡前
+  if (!commit(setBoardSelection(next, [created.id]), "双击空白处新建文字卡")) return;
+  showNotice("已新建一张文字卡：可以直接输入内容（板面会自动保存，不会调用 QIO）。", { tone: "success" });
+  requestPlacement();
 }
 
 function onWheel(event: WheelEvent) {
@@ -1849,18 +2026,16 @@ function onWheel(event: WheelEvent) {
 /**
  * 框选虚线的样式：**板面单位**。
  *
- * .select-rect 画在 .board-surface 内部，而那一层带 transform: scale() —— 它的坐标就是板面坐标，
- * 缩放由 surface 统一作用**一次**。所以这里必须给板面矩形：与松手时 selectInRect 用的是
- * 同一条换算（rectFromDrag + contentViewport），不再做视口 / 缩放换算。
+ * .select-rect 画在 .board-surface 内部，而那一层带 transform: translate + scale ——
+ * 它的坐标就是板面坐标，变换由世界层统一作用**一次**。所以这里必须给板面矩形：
+ * 与松手时 selectInRect 用的是同一条换算（rectFromDrag + view + 视口原始矩形）。
  *
- * 30：原来按「视口相对像素」给 left/top/width/height —— 平移之后虚线整体偏 −滚动量
- * （选区判定是对的，画出来的框是错的），缩放 ≠ 1 时再被 surface 的 transform 二次缩放。
  * 现在板面单位 = 所见即所得：拖动全程跟着指针，缩放只作用一次。
  */
 const rectStyle = computed(() => {
   const rect = rectSelect.value;
   if (!rect || !viewportEl.value) return {};
-  const area = rectFromDrag(contentViewport(), rect.startClient, rect.currentClient, surfaceRect());
+  const area = rectFromDrag(view.value, rect.startClient, rect.currentClient, viewportRect());
   return {
     left: area.x + "px",
     top: area.y + "px",
@@ -2141,9 +2316,9 @@ function measureAnchoredCard(handle: BoardCardHandle, card: BoardCardModel): { r
   const viewRect = elementScreenRect(viewportEl.value) ?? { left: 0, top: 0, right: 0, bottom: 0 };
   const display = displayRect(card);
   const scale = scaleSafe.value;
-  // 不读 liveScroll（它会回写 scroll / view）：滚动量以 ref 为准，等价且没有副作用
-  const left = viewRect.left + display.x * scale - scroll.value.x;
-  const top = viewRect.top + display.y * scale - scroll.value.y;
+  // 与 screenPointOfBoard 同一口径：视口原始矩形 + 完整 view（世界原点偏移 + 缩放）
+  const left = viewRect.left + display.x * scale + finiteNumber(view.value.x);
+  const top = viewRect.top + display.y * scale + finiteNumber(view.value.y);
   const height = card.folded ? 60 : display.h;
   return {
     rect: { left, top, right: left + display.w * scale, bottom: top + height * scale },
@@ -2301,7 +2476,7 @@ const primarySelectedId = computed(() => {
   这里刻意**不**监听 layoutPlan：定位只读 DOM 几何，不把显示布局卷进来。
 */
 watch(
-  () => [view.value.scale, view.value.x, view.value.y, scroll.value.x, scroll.value.y, store.expandedCardIds],
+  () => [view.value.scale, view.value.x, view.value.y, store.expandedCardIds],
   () => requestPlacement(),
 );
 watch(toolbarOwnerId, () => {
@@ -3275,69 +3450,6 @@ const editingLinkSummary = computed(() => {
  */
 type ScreenRectLike = DOMRectLike & { right?: number; bottom?: number; width?: number; height?: number };
 
-/**
- * 一次性把某个板面矩形移进**屏幕可用区**需要的位移。
- *
- * **只在用户明确点击「定位 / 完整查看」时调用**（F1/A6）：不给任何自动追踪、
- * 不因为缩放 / 平移 / 浮层开合而调整，也绝不改卡片本身。
- *
- * originRect 只用来把板面坐标换算成屏幕坐标（容器原始矩形 + 当前滚动量）；
- * area 是**实际可用区域**（已扣浮动遮挡）。两者分开，滚动量不会被算两次，
- * 也不会把「被对话窗口盖住的那块屏幕」当成可见区域。
- *
- * 明确视图策略：
- * - 整个矩形放得下 → 上下左右各夹一次，让它完整可见；
- * - 矩形比可用区还大（大卡 / 大预览）→ **只对齐左上角**，不再试图把右下边也拉进来 ——
- *   否则同一张卡会在两次定位之间左右 / 上下轮流对齐，看着像"两边轮流跳"。
- */
-function revealDeltaInArea(
-  bounds: LayoutRect,
-  originRect: ScreenRectLike,
-  area: ScreenBox,
-  margin: number,
-): { dx: number; dy: number } {
-  const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
-  const screen = screenPointOfBoard(bounds.x, bounds.y, originRect);
-  if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return { dx: 0, dy: 0 };
-  const left = finiteNumber(area.left);
-  const top = finiteNumber(area.top);
-  const right = Math.max(left, finiteNumber(area.right));
-  const bottom = Math.max(top, finiteNumber(area.bottom));
-  const width = Math.max(0, finiteNumber(bounds.w)) * scale;
-  const height = Math.max(0, finiteNumber(bounds.h)) * scale;
-  const availW = Math.max(0, right - left - margin * 2);
-  const availH = Math.max(0, bottom - top - margin * 2);
-  let dx = 0;
-  let dy = 0;
-  if (width > availW) dx = left + margin - screen.x;
-  else if (screen.x < left + margin) dx = left + margin - screen.x;
-  else if (screen.x + width > right - margin) dx = right - margin - (screen.x + width);
-  if (height > availH) dy = top + margin - screen.y;
-  else if (screen.y < top + margin) dy = top + margin - screen.y;
-  else if (screen.y + height > bottom - margin) dy = bottom - margin - (screen.y + height);
-  return { dx, dy };
-}
-
-/**
- * 旧口径包装：可用区 = 传入的可视矩形（待审批预览定位沿用；卡片定位走
- * {@link revealDeltaInArea}，还要扣掉浮动对话等遮挡）。
- */
-function revealDelta(bounds: LayoutRect, viewRect: ScreenRectLike, margin: number): { dx: number; dy: number } {
-  // DOMRectLike 只保证 left / top：右 / 下边缺失时用宽高兜底（jsdom 的桩几何两种都有）
-  const left = finiteNumber(viewRect.left);
-  const top = finiteNumber(viewRect.top);
-  const right = Number.isFinite(viewRect.right) ? Number(viewRect.right) : left + finiteNumber(viewRect.width);
-  const bottom = Number.isFinite(viewRect.bottom) ? Number(viewRect.bottom) : top + finiteNumber(viewRect.height);
-  return revealDeltaInArea(bounds, viewRect, { left, top, right, bottom }, margin);
-}
-
-/** 只动查看位置（滚动），板面状态一个字段都不改。 */
-function applyReveal(dx: number, dy: number): void {
-  if (!dx && !dy) return;
-  applyScroll({ x: scroll.value.x - dx, y: scroll.value.y - dy });
-  view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
-}
-
 /** 定位请求序号：只执行用户最后一次明确请求，不排队、不持续追踪（F08）。 */
 let locateSeq = 0;
 
@@ -3387,9 +3499,14 @@ async function locate(cardId: string) {
     const usable = usableScreenBox();
     // 显示矩形与卡片渲染同源（正式几何；展开收起只切显示，不改位置）。
     const bounds = displayRect(target);
-    const delta = usable
-      ? revealDeltaInArea(bounds, container, usable, 80)
-      : revealDelta(bounds, container as ScreenRectLike, 80);
+    // 可用区 = 扣掉遮挡后的真实可见区域；量不到时退回视口自身矩形
+    const area: ScreenBox = usable ?? {
+      left: finiteNumber(container.left),
+      top: finiteNumber(container.top),
+      right: finiteNumber(container.left) + finiteNumber(container.width),
+      bottom: finiteNumber(container.top) + finiteNumber(container.height),
+    };
+    const delta = revealDeltaInArea(bounds, container, area, 80);
     applyReveal(delta.dx, delta.dy);
   }
   highlightId.value = cardId;
@@ -3426,12 +3543,21 @@ function onLocatePreview(event: Event) {
   if (!bounds || !element) return;
   /**
    * 用户明确点击「在板面上定位」：只调这一次视野（F1/A6）。
-   * 四方向统一走 {@link revealDelta}：放得下就整块移进来，比可视区还大就只对齐左上角；
-   * 数值先做有限性检查，NaN / 非有限值不参与计算，避免把滚动位置写坏。
+   * 四方向统一走 {@link revealDeltaInArea}：放得下就整块移进来，比可视区还大就只对齐左上角；
+   * 数值先做有限性检查，NaN / 非有限值不参与计算，避免把视图写坏。
    */
-  const delta = revealDelta(
+  const container = element.getBoundingClientRect();
+  const usable = usableScreenBox();
+  const area: ScreenBox = usable ?? {
+    left: finiteNumber(container.left),
+    top: finiteNumber(container.top),
+    right: finiteNumber(container.left) + finiteNumber(container.width),
+    bottom: finiteNumber(container.top) + finiteNumber(container.height),
+  };
+  const delta = revealDeltaInArea(
     { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
-    element.getBoundingClientRect(),
+    container,
+    area,
     60,
   );
   applyReveal(delta.dx, delta.dy);
@@ -3540,7 +3666,6 @@ function onKeyUp(event: KeyboardEvent) {
 onMounted(() => {
   // 滚轮要 preventDefault（否则浏览器会把页面也滚走），所以显式用非被动监听
   viewportEl.value?.addEventListener("wheel", onWheel, { passive: false });
-  viewportEl.value?.addEventListener("scroll", onViewportScroll, { passive: true });
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   // 窗口尺寸变化会改变「板面可视范围」：展开卡的内收要跟着重算
@@ -3550,6 +3675,8 @@ onMounted(() => {
   document.addEventListener("visibilitychange", onVisibilityChange);
   window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.addEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
+  // 「查看全部」：工具栏 / 更多菜单发事件，视野由画布自己算（它知道可用区与遮挡）
+  window.addEventListener("qio:interactive:view-all", onViewAllEvent as EventListener);
   // 工具栏宿主自己的尺寸变化（窗口 / 布局变化）也要重新定位
   if (typeof ResizeObserver === "function" && toolbarHostEl.value) {
     hostResizeObserver = new ResizeObserver(() => requestPlacement());
@@ -3570,7 +3697,6 @@ onBeforeUnmount(() => {
     noticeTimer = null;
   }
   viewportEl.value?.removeEventListener("wheel", onWheel);
-  viewportEl.value?.removeEventListener("scroll", onViewportScroll);
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
   window.removeEventListener("resize", onWindowResize);
@@ -3578,6 +3704,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
   window.removeEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.removeEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
+  window.removeEventListener("qio:interactive:view-all", onViewAllEvent as EventListener);
   detachPointerListeners();
   // 卸载时同样复位：组件已经不在了，临时按键状态不许残留（20）
   resetTransientGesture();
@@ -3643,29 +3770,31 @@ onBeforeUnmount(() => {
 
     <div class="board-main">
       <!--
-        板面滚动区：策略 **hidden**（统一滚动规则）。
-        - 原生滚动条与 QIO 指示条都不出现（板面上已经有「拖动空白处平移」这条显式手势，
-          再画一条指示条只会占住卡片边缘）；
-        - 但滚动能力一个不少：overflow 仍是 auto，scrollLeft / scrollTop、平移、滚轮缩放、
-          定位与坐标换算（canScroll / insideScrollable 读的是 computed overflow）全部照旧。
-        不要为了「藏滚动条」改成 overflow: hidden / clip —— 那会连程序性滚动一起去掉。
+        板面视口（无限画布）：**自己裁切**，不再靠容器滚动查看。
+        - 点阵铺在这一层（背景由 view 决定原点与间距，见 gridStyle）；
+        - 世界层 .board-surface 只做一次 translate + scale（transform-origin: 0 0），
+          卡片 / 组框 / 连线 / 预览都在里面，坐标就是板面坐标；
+        - 定尺寸浮层（尺寸把手、连接点、锚点）在**未缩放**的 .board-overlay 里，
+          位置 = 板面锚点 × scale + view 偏移（屏幕像素命中尺寸不随缩放变化）；
+        - 空板与有内容的板走同一条路径：四个方向都能连续平移。
       -->
       <div
         ref="viewportEl"
         class="board-viewport"
         v-qio-scrollbar="'hidden'"
         :class="{ dragging: Boolean(dragging), panning: Boolean(panning), framing: Boolean(rectSelect) }"
+        :style="gridStyle"
         @pointerdown="onSurfacePointerDown"
         @pointermove="onBoardHoverMove"
         @pointerleave="onBoardHoverLeave"
+        @dblclick="onSurfaceDoubleClick"
       >
-        <div class="board-scroll-content" :style="contentStyle">
-          <div
-            ref="surface"
-            class="board-surface"
-            :class="{ resizing: Boolean(resizing), dragging: Boolean(dragging), 'link-target-card': linkTarget.kind === 'card' }"
-            :style="surfaceStyle"
-          >
+        <div
+          ref="surface"
+          class="board-surface"
+          :class="{ resizing: Boolean(resizing), dragging: Boolean(dragging), 'link-target-card': linkTarget.kind === 'card' }"
+          :style="surfaceStyle"
+        >
           <BoardGroupFrame
             v-for="group in displayGroups"
             :key="group.id"
@@ -3731,8 +3860,8 @@ onBeforeUnmount(() => {
             :cards="displayCards"
             :active-link-id="editingLinkId"
             :scale="scaleSafe"
-            :width="surfaceSize.w"
-            :height="surfaceSize.h"
+            :width="visibleWorld.w"
+            :height="visibleWorld.h"
             :draft-from-id="linkDraft ? linkDraft.fromId : null"
             :draft-point="linkDraft ? linkDraft.point : null"
             :draft-target-id="linkDraft ? linkDraft.targetId : null"
@@ -3748,23 +3877,30 @@ onBeforeUnmount(() => {
           <BoardPreviewLayer
             :intents="previewIntents"
             :located-intent-id="locatedIntentId"
-            :width="surfaceSize.w"
-            :height="surfaceSize.h"
+            :width="visibleWorld.w"
+            :height="visibleWorld.h"
           />
 
           <!-- 虚拟意图层等板面坐标系叠层：由页面注入，随画布一起缩放/平移。 -->
-          <slot name="overlay" :scale="scaleSafe" :width="surfaceSize.w" :height="surfaceSize.h" />
+          <slot name="overlay" :scale="scaleSafe" :width="visibleWorld.w" :height="visibleWorld.h" />
 
             <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
-          </div>
+        </div>
 
+        <!--
+          定尺寸浮层（**不随画布缩放**）：尺寸把手、连接点、端点锚点。
+          位置 = 板面锚点 × scale + view 偏移（见各层的 hostStyle），
+          所以 10px 边 / 16px 角 / 18px 连接点在任何缩放下都是真实屏幕像素。
+          整层 pointer-events: none，只有把手热区与连接点接管指针。
+        -->
+        <div class="board-overlay">
           <!--
             组端点锚点层：只画已经被关系使用的组边缘锚点（不常驻四个端口）。
-            与卡片连接点同一套「未缩放屏幕像素」定位，位置 = 板面锚点 × scale。
           -->
           <BoardGroupAnchorLayer
             :anchors="groupAnchors"
             :scale="scaleSafe"
+            :offset="viewOffset"
             :selected-group-ids="selectedGroupIds"
             :hovered-group-id="hoveredGroupId"
             @anchor-down="onGroupAnchorDown"
@@ -3777,21 +3913,20 @@ onBeforeUnmount(() => {
           <BoardCardAnchorLayer
             :anchors="renderedCardAnchors"
             :scale="scaleSafe"
+            :offset="viewOffset"
             :selected-card-ids="selection"
             :hovered-card-id="hoveredCardId"
             @anchor-down="onCardAnchorDown"
           />
 
           <!--
-            尺寸把手 + 关系连接点层：放在**未缩放**的滚动内容层里（不在 .board-surface 内部）。
-            位置 = 显示槽位（displayRect）× 缩放，所以 10px 边 / 16px 角 / 18px 连接点在
-            任何缩放下都是真实屏幕像素；整层 pointer-events: none，只有把手热区与连接点
-            接管指针，卡片正文、组框与连线都不被挡住。连接点在同层更高 z-index 上：
-            四边中点按下 = 拖线，其余边 / 角 = 尺寸调整，两种操作同时可用。
+            尺寸把手 + 关系连接点层：位置 = 显示槽位（displayRect）× 缩放 + view 偏移。
+            连接点在同层更高 z-index 上：四边中点按下 = 拖线，其余边 / 角 = 尺寸调整。
           -->
           <BoardResizeLayer
             :boxes="resizeBoxes"
             :scale="scaleSafe"
+            :offset="viewOffset"
             :labels="resizeLabels"
             :disabled="resizeDisabled"
             :connect-boxes="connectBoxes"
@@ -3936,34 +4071,54 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 /*
-  板面滚动区：overflow 仍是 auto（滚动能力保留），滚动条外观由统一规则去掉：
-  v-qio-scrollbar="'hidden'" 补上 .qio-scroll-host 与 data-qio-scroll="hidden"，
-  引擎在 hidden 策略下**完全不建指示条、不挂监听**，data-qio-range 固定 none。
-  坐标系与手势读的都是 computed overflow（见 canScroll / insideScrollable），不受影响。
+  板面视口（无限画布）：**自己裁切**，不再有滚动容器。
+  - overflow: hidden 是这里唯一正确的选择：视口裁切画面，内容层做平移 / 缩放；
+    没有滚动范围，所以空板也能向四个方向连续平移（旧模型靠容器滚动，负方向立刻到边界）。
+  - 点阵铺在这一层：background-size / background-position 由 gridStyle 按 view 写入，
+    100% 缩放时点距仍是 24px；缩得很小时按 2 的倍数合并点（同一个世界原点算相位）。
+  - v-qio-scrollbar="'hidden'" 保留：它只补宿主标记，不建指示条、不挂监听。
 */
 .board-viewport {
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   background-color: var(--bg-surface);
   background-image: radial-gradient(circle, color-mix(in srgb, var(--accent) 16%, transparent) 0 1px, transparent 1.1px);
-  background-size: 24px 24px;
-  background-attachment: local;
+  background-repeat: repeat;
   touch-action: none;
 }
 .board-viewport.dragging { user-select: none; }
 .board-viewport.panning { cursor: grabbing; }
 .board-viewport.framing { cursor: crosshair; }
-.board-scroll-content { position: relative; min-width: 100%; min-height: 100%; }
+/*
+  世界层：卡片 / 组框 / 连线 / 预览都在这里，坐标就是板面坐标。
+  只做一次 translate + scale（transform-origin: 0 0），尺寸由内容自己决定 ——
+  绝不按最远卡片的坐标分配等大的 DOM / Canvas / SVG。
+*/
 .board-surface {
-  position: relative;
-  min-width: 100%;
-  min-height: 100%;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
   background: transparent;
   will-change: transform;
+}
+/*
+  定尺寸浮层：不随画布缩放，位置 = 板面锚点 × scale + view 偏移。
+  与 .board-surface 并列在视口里，所以不会被世界层的 scale 二次缩放。
+*/
+.board-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 45;
 }
 /* 暗色底同主题色点阵，略提高一点点可见度；亮色保持白底。 */
 :global(:root:not([data-theme="light"])) .board-viewport {

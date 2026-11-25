@@ -101,7 +101,7 @@ describe("布局桩 · 正向：真实组件上量得到可解释的几何", () 
     expect(m.toolbarParent).toContain("card-toolbar-host");
   });
 
-  it("滚动量参与换算：内容原点 = 可视区原点 − scrollLeft/Top", async () => {
+  it("视图偏移参与换算：世界层原点 = 可视区原点 + view 偏移（无限画布没有滚动量）", async () => {
     store.board = board([mkCard("c1", 300, 200)], { selection: ["c1"] });
     wrapper = mount(BoardCanvas, { attachTo: document.body });
     harness = installCardToolbarLayout(wrapper.get(".board-shell").element as HTMLElement, {
@@ -110,11 +110,11 @@ describe("布局桩 · 正向：真实组件上量得到可解释的几何", () 
       toolbarSize: TOOLBAR,
     });
     await flushFrame(2);
-    harness.setScroll(500, 300);
-    (wrapper.get(".board-viewport").element as HTMLElement).dispatchEvent(new Event("scroll"));
+    // 平移手势把视图移到 (-500, -300)：世界原点左移上移
+    harness.setScroll(-500, -300);
     await flushFrame();
     const m = harness.measure();
-    expect(m.scroll).toEqual({ x: 500, y: 300 });
+    expect(m.scroll).toEqual({ x: -500, y: -300 });
     expect(m.cardRect!.left).toBeCloseTo(VIEW.left + 300 - 500, 3);
     expect(m.dx).toBeCloseTo(0, 3);
     expect(m.gap).toBeCloseTo(-TOOLBAR.h, 3);

@@ -94,35 +94,33 @@ function stubGeometry(wrapper: VueWrapper) {
   shell.getBoundingClientRect = () => rect(VIEW_LEFT, VIEW_TOP, VIEW_W, VIEW_H);
   Object.defineProperty(view, "clientWidth", { value: VIEW_W, configurable: true });
   Object.defineProperty(view, "clientHeight", { value: VIEW_H, configurable: true });
-  // 让容器「真的能滚动」：jsdom 里 scrollLeft / scrollTop 才会被写进 DOM（坐标换算的事实来源）。
-  Object.defineProperty(view, "scrollWidth", { value: 4000, configurable: true });
-  Object.defineProperty(view, "scrollHeight", { value: 4000, configurable: true });
-  Object.defineProperty(view, "scrollLeft", { value: 0, writable: true, configurable: true });
-  Object.defineProperty(view, "scrollTop", { value: 0, writable: true, configurable: true });
 }
 
 interface ViewState {
   scale: number;
-  scrollLeft: number;
-  scrollTop: number;
+  /** 世界原点在视口内的偏移（= view.x / view.y） */
+  offsetX: number;
+  offsetY: number;
 }
 
+/** 查看状态：世界层只做一次 translate + scale（无限画布，没有容器滚动量）。 */
 function viewState(wrapper: VueWrapper): ViewState {
   const surface = wrapper.get(".board-surface").element as HTMLElement;
-  const view = wrapper.get(".board-viewport").element as HTMLElement;
-  const match = /scale\(([\d.]+)\)/.exec(surface.style.transform);
+  const transform = surface.style.transform;
+  const scaleMatch = /scale\(([\d.]+)\)/.exec(transform);
+  const translateMatch = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(transform);
   return {
-    scale: match ? Number(match[1]) : Number.NaN,
-    scrollLeft: view.scrollLeft,
-    scrollTop: view.scrollTop,
+    scale: scaleMatch ? Number(scaleMatch[1]) : Number.NaN,
+    offsetX: translateMatch ? Number(translateMatch[1]) : 0,
+    offsetY: translateMatch ? Number(translateMatch[2]) : 0,
   };
 }
 
-/** 板面坐标 → 屏幕坐标（与 BoardCanvas.screenPointOfBoard 同一口径：容器左上 − 滚动量）。 */
+/** 板面坐标 → 屏幕坐标（与 BoardCanvas.screenPointOfBoard 同一口径：视口左上 + 板面 × 缩放 + view 偏移）。 */
 function screenOf(boardX: number, boardY: number, state: ViewState) {
   return {
-    x: VIEW_LEFT + boardX * state.scale - state.scrollLeft,
-    y: VIEW_TOP + boardY * state.scale - state.scrollTop,
+    x: VIEW_LEFT + boardX * state.scale + state.offsetX,
+    y: VIEW_TOP + boardY * state.scale + state.offsetY,
   };
 }
 
@@ -217,8 +215,8 @@ describe("F08 定位收起组内卡片：先展开、再按实际可用视野定
     expect(board.groupById(after, "g1")!.members).toEqual(["a", "b"]);
     expect(board.cardById(after, "b")).toMatchObject({ x: 100, y: 1300, content: "要定位的卡片" });
     expect(board.participationOf(board.cardById(after, "b")!)).toBe("included");
-    // 深处卡片被滚进实际可用区（视口 800×600）
-    expect(viewState(wrapper).scrollTop).toBeGreaterThan(0);
+    // 深处卡片被移进实际可用区（视口 800×600）：视图偏移必须真的变了
+    expect(viewState(wrapper).offsetY).not.toBe(0);
     expectCardInsideUsableArea(wrapper, board.cardById(after, "b")!, {
       left: VIEW_LEFT,
       top: VIEW_TOP,
@@ -287,23 +285,24 @@ describe("F08 定位收起组内卡片：先展开、再按实际可用视野定
     mounted.splice(mounted.indexOf(wrapper), 1);
   });
 
-  it("定位只执行明确请求的那一次：之后用户手动滚动不会被抢回", async () => {
+  it("定位只执行明确请求的那一次：之后用户自己平移不会被抢回", async () => {
     setBoard(mkState([mkCard("far", 2000, 1200)]));
     const wrapper = mountCanvas();
     locateCard("far");
     await flushLocate();
     const located = viewState(wrapper);
-    expect(located.scrollLeft).toBeGreaterThan(0);
-    expect(located.scrollTop).toBeGreaterThan(0);
+    expect(located.offsetX).not.toBe(0);
+    expect(located.offsetY).not.toBe(0);
 
-    // 用户自己滚回左上：定位不得持续追踪 / 自动抢视野
+    // 用户自己拖回原点：定位不得持续追踪 / 自动抢视野
     const view = wrapper.get(".board-viewport").element as HTMLElement;
-    view.scrollLeft = 0;
-    view.scrollTop = 0;
-    view.dispatchEvent(new Event("scroll"));
+    view.dispatchEvent(new MouseEvent("pointerdown", { clientX: 400, clientY: 400, button: 0, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 400 - located.offsetX, clientY: 400 - located.offsetY, bubbles: true, cancelable: true }));
+    await nextTick();
+    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 400 - located.offsetX, clientY: 400 - located.offsetY, bubbles: true, cancelable: true }));
     await flushLocate();
-    expect(viewState(wrapper).scrollLeft).toBe(0);
-    expect(viewState(wrapper).scrollTop).toBe(0);
+    expect(viewState(wrapper).offsetX).toBeCloseTo(0, 6);
+    expect(viewState(wrapper).offsetY).toBeCloseTo(0, 6);
     wrapper.unmount();
     mounted.splice(mounted.indexOf(wrapper), 1);
   });

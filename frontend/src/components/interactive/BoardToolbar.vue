@@ -62,6 +62,11 @@ const emit = defineEmits<{
   (e: "toggle-bookmarks"): void;
   /** 提交详情 / 上次结果 / 过程面板任一被打开（页面壳据此做窄窗面板切换，#05）。 */
   (e: "panel-open"): void;
+  /**
+   * 「查看全部」：把当前可展示内容放进扣掉遮挡后的可用区。
+   * 只改查看位置（画布自己处理），不改任何板面数据。
+   */
+  (e: "view-all"): void;
 }>();
 
 const store = useInteractiveStore();
@@ -249,6 +254,11 @@ function moreOpenSubmitDetails(): void {
   submitRef.value?.openDetails?.();
   closeMore(true);
 }
+/** 「查看全部」：只发事件，视野由画布自己算（工具栏不碰任何几何）。 */
+function viewAll(): void {
+  emit("view-all");
+  closeMore(true);
+}
 
 </script>
 
@@ -337,6 +347,28 @@ function moreOpenSubmitDetails(): void {
           </svg>
         </button>
 
+        <!--
+          「查看全部」：把当前可展示内容（含负坐标）放进扣掉遮挡后的可用区。
+          只改查看位置，不改卡片坐标 / 选中 / 连线；空板回到初始视野与 100%。
+        -->
+        <button
+          class="tb-btn tb-icon-btn"
+          type="button"
+          data-im="view-all"
+          aria-label="查看全部"
+          v-qio-tip="'查看全部：把板面上的内容放进当前可用区域'"
+          @click="viewAll"
+        >
+          <svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.4 5.6V2.4h3.2" />
+              <path d="M13.6 5.6V2.4h-3.2" />
+              <path d="M2.4 10.4v3.2h3.2" />
+              <path d="M13.6 10.4v3.2h-3.2" />
+            </g>
+          </svg>
+        </button>
+
         <!-- 2026-10-14：用户要求删除「操作说明」入口与浮层（手势说明不再常驻界面） -->
       </div>
 
@@ -418,6 +450,13 @@ function moreOpenSubmitDetails(): void {
             v-qio-tip="props.bookmarksOpen ? '收起书签栏' : '打开书签栏'"
             @click="moreToggleBookmarks"
           >书签栏</button>
+          <button
+            class="tb-more-item"
+            type="button"
+            data-im="board-more-view-all"
+            v-qio-tip="'查看全部：把板面上的内容放进当前可用区域'"
+            @click="viewAll"
+          >查看全部</button>
           <button
             class="tb-more-item"
             type="button"

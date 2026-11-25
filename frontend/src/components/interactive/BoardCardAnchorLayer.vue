@@ -23,12 +23,14 @@ const props = withDefaults(
     anchors: CardAnchor[];
     /** 画布缩放：屏幕 px = 板面坐标 × scale。 */
     scale: number;
+    /** 世界原点在视口内的偏移（屏幕像素，= BoardCanvas 的 view.x / view.y）。 */
+    offset?: { x: number; y: number };
     /** 选中的组：锚点从空心圆点变短条（纯显示）。 */
     selectedCardIds?: string[];
     /** 指针悬停的组：锚点从空心圆点变短条（纯显示）。 */
     hoveredCardId?: string | null;
   }>(),
-  { selectedCardIds: () => [], hoveredCardId: null },
+  { selectedCardIds: () => [], hoveredCardId: null, offset: () => ({ x: 0, y: 0 }) },
 );
 
 const emit = defineEmits<{
@@ -39,11 +41,17 @@ const safeScale = computed(() => (Number.isFinite(props.scale) && props.scale > 
 
 const selected = computed(() => new Set(props.selectedCardIds));
 
+/** 非有限 / 非正的偏移按 0 处理。 */
+const safeOffset = computed(() => ({
+  x: Number.isFinite(props.offset?.x) ? Number(props.offset.x) : 0,
+  y: Number.isFinite(props.offset?.y) ? Number(props.offset.y) : 0,
+}));
+
 /** 锚点宿主的位置：精确落在卡片边框边缘的交点上（中心对齐）。 */
 function anchorStyle(anchor: CardAnchor): Record<string, string> {
   return {
-    left: anchor.x * safeScale.value + "px",
-    top: anchor.y * safeScale.value + "px",
+    left: anchor.x * safeScale.value + safeOffset.value.x + "px",
+    top: anchor.y * safeScale.value + safeOffset.value.y + "px",
   };
 }
 
