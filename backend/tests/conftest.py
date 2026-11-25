@@ -91,6 +91,20 @@ SERIAL_NODEIDS: dict[str, str] = {
     'test_dev_tools.py::test_dev_run_tests_pass_and_fail': (
         'requires_docker：真实容器执行，共享 docker 守护进程资源'
     ),
+    # 真实双线程 + 两个 SQLite 连接抢同一个审批行：断言「恰一方成功」。
+    # 并行组里其它 worker 同时压 SQLite（WAL + busy_timeout）时，两个线程的
+    # BEGIN IMMEDIATE 可能都拿到写锁窗口，CAS 的「恰一方成功」不变量在负载下抖动
+    # （CI py3.12 实测 sum(...)==2）。它测的是严格时序下的并发不变量，属于
+    # 「严格时序」类，放进串行组才稳定；语义与断言一个字都没改。
+    'test_r9h4_approval.py::test_approve_and_cancel_race_only_one_state_transition': (
+        '严格时序：真实双线程 + 两个 SQLite 连接并发推进同一审批行，断言恰一方成功'
+    ),
+    'test_r9h4_approval.py::test_two_connections_only_one_advances_same_confirmation_stage': (
+        '严格时序：真实双线程 + 两个 SQLite 连接并发推进同一确认阶段'
+    ),
+    'test_r9h4_approval.py::test_duplicate_claim_only_one_attempt': (
+        '严格时序：真实双线程 + 两个 SQLite 连接并发领取同一审批'
+    ),
 }
 
 
